@@ -2,15 +2,117 @@
 default:
     @just --list
 
-# Alter tailor swatches
-alter:
-    @tailor alter
+# Build Nyala
+build:
+    @go build -ldflags "-s -w" -o nyala ./cmd/nyala
+
+# Run all local checks
+check:
+    @just tidy-check
+    @just fmt-check
+    @just lint
+    @just test
+    @just build
+    @just release-check
+    @nix flake check
+    @just vuln
+
+# Format Go sources
+fmt:
+    @gofmt -w ./cmd ./internal
+
+# Check Go formatting
+fmt-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    files="$(gofmt -l ./cmd ./internal)"
+    if [ -n "$files" ]; then
+        printf '%s\n' "$files"
+        exit 1
+    fi
 
 # Run linters
 lint:
+    @go vet ./...
+    @gocyclo -top 20 -avg -ignore '_test\.go$' .
+    @ineffassign ./...
+    @golangci-lint run
     @actionlint
 
-# Check what tailor would change and measure
-measure:
-    @tailor baste
-    @tailor measure
+# Check GoReleaser config
+release-check:
+    @goreleaser check
+
+# Build a local snapshot release
+release-snapshot:
+    @goreleaser release --snapshot --clean --skip=sign
+
+# Run tests with coverage
+coverage:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    coverage_file="${TMPDIR:-/tmp}/nyala-coverage.out"
+    go test -coverprofile="$coverage_file" -covermode=atomic ./...
+    go tool cover -func="$coverage_file"
+
+# Run tests
+test:
+    @go test ./...
+
+# Tidy Go modules
+tidy:
+    @go mod tidy
+
+# Check Go modules are tidy
+tidy-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    go mod tidy
+    if [ -n "$(git status --porcelain -- go.mod go.sum)" ]; then
+        git diff -- go.mod go.sum
+        git status --short -- go.mod go.sum
+        exit 1
+    fi
+
+# Run Go vulnerability checks
+vuln:
+    @govulncheck ./...
+
+# Create a new release tag (requires VERSION=x.y.z)
+release VERSION:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if ! [[ "{{VERSION}}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "Error: VERSION must be in format x.y.z (e.g. 0.1.0)"
+        exit 1
+    fi
+
+    if [ -n "$(git status --porcelain)" ]; then
+        echo "Error: Working directory is not clean"
+        exit 1
+    fi
+
+    if git show-ref --tags --verify --quiet "refs/tags/v{{VERSION}}"; then
+        echo "Error: Tag v{{VERSION}} already exists"
+        exit 1
+    fi
+
+    echo "Creating release v{{VERSION}}..."
+    git tag -a "v{{VERSION}}" -m "v{{VERSION}}"
+    echo "Tag v{{VERSION}} created"
+    echo ""
+    echo "To publish the release:"
+    echo "  git push origin v{{VERSION}}"
+    echo ""
+    echo "This release is configured for GoReleaser to:"
+    echo "  - Cross-compile binaries for linux and darwin (amd64, arm64)"
+    echo "  - Generate changelog from commits"
+    echo "  - Create GitHub release assets with bare binaries, tarballs, and checksums"
+    echo "  - Build native packages (deb, rpm, apk, archlinux)"
+    echo "  - Update the Homebrew tap (wimpysworld/homebrew-tap)"
+    echo "  - Update the AUR package (nyala-bin)"
+    echo "  - Generate the Nix package (pkgs/nyala/default.nix)"
+    echo "  - Build and publish Docker images (ghcr.io/wimpysworld/nyala)"
+    echo "  - Sign checksums with cosign (keyless)"
+    echo "  - Sign Docker images with cosign (keyless)"

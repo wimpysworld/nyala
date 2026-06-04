@@ -1,0 +1,90 @@
+name: "Nyala"
+description: "Install the Nyala CLI in a GitHub Actions runner 🦌"
+branding:
+  icon: "terminal"
+  color: "green"
+inputs:
+  version:
+    description: "Nyala version to install, for example 0.1.0. Defaults to the version matching this action release."
+    required: false
+  run:
+    description: "Run nyala after installing it."
+    required: false
+    default: "false"
+runs:
+  using: "composite"
+  steps:
+    - name: Determine version
+      id: version
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        version_pattern='^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+        tag_pattern='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+
+        if [[ -n "${INPUT_VERSION}" ]]; then
+          if [[ ! "${INPUT_VERSION}" =~ ${version_pattern} ]]; then
+            echo "::error::version must be in semver format, for example 0.1.0"
+            exit 1
+          fi
+          tag="v${INPUT_VERSION#v}"
+        elif [[ "${ACTION_REF}" =~ ^v[0-9]+\.[0-9]+ ]]; then
+          tag="${ACTION_REF}"
+        elif [[ "${ACTION_REF}" =~ ^v([0-9]+)$ ]]; then
+          major="${BASH_REMATCH[1]}"
+          tag=$(gh api "repos/${ACTION_REPO}/releases" --paginate --jq \
+            "[.[] | select(.prerelease == false) | .tag_name | select(startswith(\"v${major}.\"))] | first")
+          if [[ -z "${tag}" || "${tag}" == "null" ]]; then
+            echo "::error::No stable release found for major version v${major}"
+            exit 1
+          fi
+        else
+          tag=$(gh api "repos/${ACTION_REPO}/releases/latest" --jq '.tag_name')
+        fi
+
+        if [[ ! "${tag}" =~ ${tag_pattern} ]]; then
+          echo "::error::Resolved release tag is not valid: ${tag}"
+          exit 1
+        fi
+
+        echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+        echo "version=${tag#v}" >> "${GITHUB_OUTPUT}"
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INPUT_VERSION: ${{ inputs.version }}
+        ACTION_REF: ${{ github.action_ref }}
+        ACTION_REPO: ${{ github.action_repository }}
+
+    - name: Install nyala
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        case "${RUNNER_OS}-${RUNNER_ARCH}" in
+          Linux-X64) os="linux"; arch="amd64" ;;
+          Linux-ARM64) os="linux"; arch="arm64" ;;
+          macOS-X64) os="darwin"; arch="amd64" ;;
+          macOS-ARM64) os="darwin"; arch="arm64" ;;
+          *)
+            echo "::error::Unsupported platform: ${RUNNER_OS}-${RUNNER_ARCH}"
+            exit 1
+            ;;
+        esac
+
+        url="https://github.com/${ACTION_REPO}/releases/download/${TAG}/nyala-${os}-${arch}"
+        curl -fsSL "${url}" -o "${RUNNER_TEMP}/nyala"
+        chmod +x "${RUNNER_TEMP}/nyala"
+        echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+        echo "Installed nyala ${VERSION} for ${os}/${arch}"
+      env:
+        ACTION_REPO: ${{ github.action_repository }}
+        TAG: ${{ steps.version.outputs.tag }}
+        VERSION: ${{ steps.version.outputs.version }}
+        RUNNER_OS: ${{ runner.os }}
+        RUNNER_ARCH: ${{ runner.arch }}
+
+    - name: Run nyala
+      if: inputs.run == 'true'
+      shell: bash
+      run: nyala

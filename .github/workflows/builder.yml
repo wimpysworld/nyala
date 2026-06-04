@@ -1,0 +1,340 @@
+name: Builder 👷
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 9 * * 0" # Weekly
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  ACTIONLINT_VERSION: v1.7.12
+  GOLANGCI_LINT_VERSION: v2.12.2
+  GORELEASER_VERSION: v2.16.0
+  GOVULNCHECK_VERSION: v1.3.0
+
+jobs:
+  tidy:
+    name: Tidy 🧹
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Check module files
+        run: |
+          go mod tidy
+          if [ -n "$(git status --porcelain -- go.mod go.sum)" ]; then
+            git diff -- go.mod go.sum
+            git status --short -- go.mod go.sum
+            exit 1
+          fi
+
+  format:
+    name: Format 🎨
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Check Go formatting
+        run: |
+          files="$(gofmt -l ./cmd ./internal)"
+          if [ -n "${files}" ]; then
+            echo "Go files need formatting:"
+            echo "${files}"
+            exit 1
+          fi
+
+  lint-code:
+    name: Lint Code 🧽
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Run go vet
+        run: go vet ./...
+      - name: Check cyclomatic complexity
+        run: |
+          go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
+          gocyclo -top 20 -ignore '_test\.go$' -avg .
+      - name: Check ineffectual assignments
+        run: |
+          go install github.com/gordonklaus/ineffassign@latest
+          ineffassign ./...
+      - name: Install golangci-lint
+        run: go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
+      - name: Run golangci-lint
+        run: golangci-lint run
+
+  lint-actions:
+    name: Lint Actions ⚙️
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Install actionlint
+        run: go install "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}"
+      - name: Run actionlint
+        run: |
+          echo "::add-matcher::.github/actionlint-matcher.json"
+          actionlint -color
+
+  nix:
+    name: Nix ❄️
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: Check flake
+        run: nix flake check
+
+  test:
+    name: Test 🧪 (${{ matrix.goos }}/${{ matrix.goarch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            runner: ubuntu-24.04
+          - goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+          - goos: darwin
+            goarch: amd64
+            runner: macos-15-intel
+          - goos: darwin
+            goarch: arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Run tests
+        run: go test ./...
+      - name: Build Nyala
+        run: go build -o "${RUNNER_TEMP}/nyala" ./cmd/nyala
+
+  coverage:
+    name: Coverage 📊
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: robherley/go-test-action@v1
+        with:
+          testArguments: -coverprofile=coverage.out -covermode=atomic ./...
+          omit: untested
+
+  build:
+    name: Build 🏗️ (${{ matrix.goos }}/${{ matrix.goarch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CGO_ENABLED: "0"
+      GOARCH: ${{ matrix.goarch }}
+      GOOS: ${{ matrix.goos }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build Nyala
+        run: go build -o "${RUNNER_TEMP}/nyala-${GOOS}-${GOARCH}" ./cmd/nyala
+
+  security:
+    name: Security 🔒
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/dependency-review-action@v5
+        if: github.event_name == 'pull_request'
+        with:
+          fail-on-severity: moderate
+          allow-licenses: 0BSD, AFL-2.0, AFL-2.1, AFL-3.0, ANTLR-PD, ANTLR-PD-fallback, Apache-1.0, Apache-1.1, Apache-2.0, Artistic-2.0, BlueOak-1.0.0, BSD-1-Clause, BSD-2-Clause, BSD-2-Clause-FreeBSD, BSD-2-Clause-NetBSD, BSD-2-Clause-Patent, BSD-2-Clause-Views, BSD-3-Clause, BSD-3-Clause-Attribution, BSD-3-Clause-Clear, BSD-3-Clause-HP, BSD-3-Clause-LBNL, BSD-3-Clause-Modification, BSD-3-Clause-No-Nuclear-License-2014, BSD-3-Clause-No-Nuclear-Warranty, BSD-3-Clause-Open-MPI, BSD-3-Clause-Sun, BSD-4-Clause, BSD-4-Clause-Shortened, BSD-4-Clause-UC, BSD-Source-Code, BSL-1.0, bzip2-1.0.5, bzip2-1.0.6, CC0-1.0, CNRI-Python, CNRI-Python-GPL-Compatible, curl, ECL-2.0, FTL, HPND-Fenneberg-Livingston, HPND-sell-regexpr, HTMLTIDY, ICU, ImageMagick, Info-ZIP, Intel, Intel-ACPI, ISC, JasPer-2.0, Libpng, libpng-2.0, libtiff, Linux-OpenIB, LZMA-SDK-9.22, MIT, MIT-0, MIT-advertising, MIT-CMU, MIT-Modern-Variant, MIT-open-group, MITNFA, MS-PL, MulanPSL-1.0, MulanPSL-2.0, Multics, NCSA, Net-SNMP, NetCDF, NIST-Software, NTP, OLDAP-2.7, OLDAP-2.8, OpenSSL, PostgreSQL, PSF-2.0, SGI-B-2.0, SHL-0.5, Spencer-99, SunPro, TCL, TCP-wrappers, UCAR, Unicode-DFS-2015, Unicode-DFS-2016, UnixCrypt, Unlicense, UPL-1.0, W3C, X11, XFree86-1.1, Xnet, Zlib, zlib-acknowledgement, ZPL-2.0, ZPL-2.1
+          fail-on-scopes: runtime
+          comment-summary-in-pr: on-failure
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Install govulncheck
+        run: go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+      - name: Run govulncheck
+        run: govulncheck -format sarif -scan symbol ./... > govulncheck.sarif
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4.36.1
+        with:
+          sarif_file: govulncheck.sarif
+          category: govulncheck
+
+  sentinel:
+    name: Sentinel 👁️
+    needs: [tidy, format, lint-code, lint-actions, nix, test, coverage, build, security]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    env:
+      RESULTS: ${{ toJSON(needs.*.result) }}
+    steps:
+      - name: Check results
+        run: |
+          echo "Job results: ${RESULTS}"
+          if echo "${RESULTS}" | jq -e 'any(. == "failure" or . == "cancelled")' > /dev/null 2>&1; then
+            echo "One or more jobs failed or were cancelled"
+            exit 1
+          fi
+          echo "All jobs passed"
+
+  release-snapshot:
+    name: Release Snapshot 📦
+    needs: [sentinel]
+    if: >-
+      always()
+      && needs.sentinel.result == 'success'
+      && github.repository_owner == 'wimpysworld'
+      && github.event_name != 'schedule'
+      && (github.ref == 'refs/heads/main' || github.event_name == 'pull_request')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        uses: nick-fields/retry@v4
+        with:
+          timeout_seconds: 30
+          max_attempts: 3
+          retry_wait_seconds: 10
+          retry_on: error
+          command: |
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: Install GoReleaser
+        run: go install "github.com/goreleaser/goreleaser/v2@${GORELEASER_VERSION}"
+      - name: Run GoReleaser snapshot
+        run: goreleaser release --snapshot --clean --skip=sign
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    name: Release 📦
+    needs: [sentinel]
+    if: >-
+      always()
+      && needs.sentinel.result == 'success'
+      && github.repository_owner == 'wimpysworld'
+      && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        uses: nick-fields/retry@v4
+        with:
+          timeout_seconds: 30
+          max_attempts: 3
+          retry_wait_seconds: 10
+          retry_on: error
+          command: |
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+      - name: Install GoReleaser
+        run: go install "github.com/goreleaser/goreleaser/v2@${GORELEASER_VERSION}"
+      - name: Run GoReleaser
+        run: goreleaser release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          AUR_KEY: ${{ secrets.AUR_KEY }}
+      - name: Update floating major version tag
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: |
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: ${RELEASE_TAG}"
+            exit 1
+          fi
+          major="${RELEASE_TAG%%.*}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -fa "${major}" -m "Update ${major} tag to ${RELEASE_TAG}"
+          git push origin "${major}" --force
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+      - name: Update Go Report Card
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: curl -X POST -F "repo=github.com/$GITHUB_REPOSITORY" https://goreportcard.com/checks || true
