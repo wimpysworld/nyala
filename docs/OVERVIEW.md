@@ -73,6 +73,69 @@ type Engine interface {
 - **Dependency**: a compatible Chromium/Chrome must be installed (via chromedp's
   `ExecAllocator`, or `RemoteAllocator` to attach to a running instance). Accepted.
 
+### chromedp Screencast Support
+
+Screencast works on chromedp, but chromedp ships no helper for it. The protocol
+commands and the frame event are fully implemented in `cdproto/page`; the
+high-level `chromedp` package just never wrapped them. The `ChromiumEngine`
+implements the listen-decode-ack loop itself. Budget ~20 lines, not a feature.
+
+#### What's actually there
+
+These are real, callable, generated symbols in
+[`github.com/chromedp/cdproto/page`](https://pkg.go.dev/github.com/chromedp/cdproto/page),
+each with a working `Do(ctx)` executor - not stubs:
+
+- `page.StartScreencast()` → `Page.startScreencast`, with `WithFormat`,
+  `WithQuality`, `WithMaxWidth`, `WithMaxHeight`, `WithEveryNthFrame`
+- `page.StopScreencast()` → `Page.stopScreencast`
+- `page.ScreencastFrameAck(sessionID int64)` → `Page.screencastFrameAck`
+- `page.EventScreencastFrame` - the frame event (image data + `SessionID`)
+- `page.ScreencastFrameMetadata`, `page.ScreencastFormat`
+
+#### What's missing
+
+There is no `chromedp.Screencast()` convenience action (unlike
+`chromedp.CaptureScreenshot()`), and chromedp's event loop does **not** consume
+or ack frames for you. The maintainers declined to build a packaged feature
+(see [chromedp/chromedp#275](https://github.com/chromedp/chromedp/issues/275)).
+This is an ergonomics gap, not an implementation gap.
+
+#### The gotcha that makes it look broken
+
+⚠️ Chrome sends frames only as fast as you **acknowledge** them. If you don't
+call `ScreencastFrameAck` for each frame, the stream stalls after one or two
+frames. The frames aren't lost - they're withheld pending an ack that chromedp
+never sends on its own. This is almost certainly why some reports claim the
+events are "discarded/not handled".
+
+#### Minimal working pattern
+
+```go
+// 1. Start streaming.
+if err := chromedp.Run(ctx, page.StartScreencast().
+    WithFormat(page.ScreencastFormatJpeg).
+    WithMaxWidth(800).
+    WithMaxHeight(600).
+    WithEveryNthFrame(1),
+); err != nil {
+    return err
+}
+
+// 2. Pump frames yourself - chromedp won't.
+chromedp.ListenTarget(ctx, func(ev interface{}) {
+    if f, ok := ev.(*page.EventScreencastFrame); ok {
+        // f carries the JPEG/PNG frame data and f.SessionID.
+        // Hand the image to the renderer here.
+
+        // 3. MUST ack every frame or the stream stalls.
+        go func() {
+            _ = chromedp.Run(ctx, page.ScreencastFrameAck(f.SessionID))
+        }()
+    }
+})
+```
+
 ## Tech Stack
 
 | Concern | Choice | Notes |
