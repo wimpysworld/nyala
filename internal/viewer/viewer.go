@@ -23,6 +23,7 @@ import (
 	"syscall"
 
 	cterm "github.com/charmbracelet/x/term"
+	"golang.org/x/sys/unix"
 
 	"github.com/wimpysworld/nyala/internal/capture"
 	"github.com/wimpysworld/nyala/internal/metrics"
@@ -46,8 +47,6 @@ const (
 	// BackendKitty is the Kitty graphics backend. It ignores the scheme and
 	// colour toggles, which apply only to the block backend.
 	BackendKitty
-	// backendCount bounds the cycle; it is not a backend.
-	backendCount
 )
 
 // ColourMode selects the block backend's colour depth. The colour hotkey flips
@@ -64,7 +63,9 @@ const (
 // State is the viewer's full state machine. It is pure: every field is data and
 // every hotkey method mutates only this struct, so the machine is exercised in a
 // unit test without a live terminal. Cols and Rows are the terminal size in
-// cells; ImgW and ImgH are the loaded image's pixel dimensions.
+// cells; ImgW and ImgH are the loaded image's pixel dimensions. Enabled lists the
+// backends the Tab cycle steps through, in cycle order; CellPxX and CellPxY are
+// the real terminal cell pixel size used to scale the graphics backends.
 type State struct {
 	Backend Backend      // active backend in the cycle
 	Scheme  block.Scheme // block glyph scheme; applies only to the block backend
@@ -73,10 +74,15 @@ type State struct {
 	Rows    int          // terminal height in cells
 	ImgW    int          // loaded image width in pixels
 	ImgH    int          // loaded image height in pixels
+	Enabled []Backend    // backends in the Tab cycle, block first
+	CellPxX int          // terminal cell width in pixels for graphics scaling
+	CellPxY int          // terminal cell height in pixels for graphics scaling
 }
 
 // NewState builds the initial state: the block backend, the quadrant scheme,
-// truecolour, sized to a cols x rows terminal showing an imgW x imgH image.
+// truecolour, sized to a cols x rows terminal showing an imgW x imgH image. The
+// cycle holds every backend and the cell pixel size is the Route A default; Run
+// narrows the cycle and sets the real cell size after the terminal handshake.
 func NewState(cols, rows, imgW, imgH int) State {
 	return State{
 		Backend: BackendBlock,
@@ -86,14 +92,39 @@ func NewState(cols, rows, imgW, imgH int) State {
 		Rows:    rows,
 		ImgW:    imgW,
 		ImgH:    imgH,
+		Enabled: []Backend{BackendBlock, BackendSixel, BackendKitty},
+		CellPxX: capture.CellPxW,
+		CellPxY: capture.CellPxH,
 	}
 }
 
-// CycleBackend advances the backend block -> sixel -> kitty -> block and returns
-// the new backend. The scheme and colour state are untouched, so toggling them
-// on block and cycling away then back preserves the chosen scheme and colour.
+// SetEnabled records the backends the Tab cycle steps through, in cycle order. It
+// keeps block first when block is present and resets the active backend to the
+// first enabled backend, so the cycle never rests on a disabled backend.
+func (s *State) SetEnabled(enabled []Backend) {
+	if len(enabled) == 0 {
+		enabled = []Backend{BackendBlock}
+	}
+	s.Enabled = enabled
+	s.Backend = enabled[0]
+}
+
+// CycleBackend advances to the next enabled backend in cycle order and wraps,
+// then returns the new backend. With block only it stays on block. The scheme and
+// colour state are untouched, so toggling them on block and cycling away then
+// back preserves the chosen scheme and colour.
 func (s *State) CycleBackend() Backend {
-	s.Backend = (s.Backend + 1) % backendCount
+	if len(s.Enabled) == 0 {
+		return s.Backend
+	}
+	idx := 0
+	for i, b := range s.Enabled {
+		if b == s.Backend {
+			idx = i
+			break
+		}
+	}
+	s.Backend = s.Enabled[(idx+1)%len(s.Enabled)]
 	return s.Backend
 }
 
@@ -218,10 +249,11 @@ func (s *State) renderBlock(src *image.RGBA, w io.Writer) error {
 
 // renderGraphics downscales the source to the fitted pixel extent and encodes it
 // with the active graphics backend. Sixel and kitty draw a bitmap, so the fit
-// maps to pixels at the Route A cell size; the image keeps its aspect.
+// maps to pixels at the real terminal cell size, filling the letterbox; the image
+// keeps its aspect.
 func (s *State) renderGraphics(src *image.RGBA, fit block.Fit, w io.Writer) error {
-	pxW := fit.FitCols * capture.CellPxW
-	pxH := fit.FitRows * capture.CellPxH
+	pxW := fit.FitCols * s.CellPxX
+	pxH := fit.FitRows * s.CellPxY
 	sub := metrics.Downscale(src, pxW, pxH)
 	if s.Backend == BackendKitty {
 		if _, err := io.WriteString(w, kittyDeleteAll); err != nil {
@@ -328,11 +360,13 @@ const enterFullScreen = "\x1b[?7l\x1b[?25l"
 const exitFullScreen = "\x1b[?7h\x1b[?25h"
 
 // Run loads the PNG at path and runs the interactive viewer on the given TTY
-// until the user quits. It puts the terminal into raw mode, draws on resize and
-// on each redraw hotkey, and restores the terminal on exit. It returns an error
-// only on a setup or I/O failure; a clean quit returns nil. Run is the live
-// wiring around State; the state machine itself is tested without it.
-func Run(path string, tty *os.File) error {
+// until the user quits. It puts the terminal into raw mode, detects which
+// backends the terminal supports, draws on resize and on each redraw hotkey, and
+// restores the terminal on exit. forceAllBackends skips detection and enables
+// every backend for side-by-side testing. It returns an error only on a setup or
+// I/O failure; a clean quit returns nil. Run is the live wiring around State; the
+// state machine itself is tested without it.
+func Run(path string, tty *os.File, forceAllBackends bool) error {
 	src, err := LoadPNG(path)
 	if err != nil {
 		return err
@@ -353,15 +387,20 @@ func Run(path string, tty *os.File) error {
 	}
 	defer func() { _ = cterm.Restore(fd, oldState) }()
 
+	b := src.Bounds()
+	st := NewState(cols, rows, b.Dx(), b.Dy())
+
+	// Detection runs in raw mode but before the full-screen switch, the first
+	// draw, and the key reader, so the handshake replies are not consumed by the
+	// key goroutine.
+	configureBackends(&st, tty, cols, rows, forceAllBackends)
+
 	if _, err := io.WriteString(tty, enterFullScreen); err != nil {
 		return err
 	}
 	// Registered after the Restore defer, so LIFO runs it first: re-enable
 	// auto-wrap and show the cursor while still in raw mode, then Restore.
 	defer func() { _, _ = io.WriteString(tty, exitFullScreen) }()
-
-	b := src.Bounds()
-	st := NewState(cols, rows, b.Dx(), b.Dy())
 
 	winch := make(chan os.Signal, 1)
 	signal.Notify(winch, syscall.SIGWINCH)
@@ -402,6 +441,67 @@ func Run(path string, tty *os.File) error {
 			}
 		}
 	}
+}
+
+// configureBackends decides which backends the cycle offers and resolves the
+// real cell pixel size, then writes both into st. With forceAllBackends it
+// enables every backend and keeps the winsize cell size. Behind a multiplexer
+// (TMUX or STY set) it offers block only, because Stage 0 has no tmux or screen
+// passthrough. Otherwise it runs one terminal handshake and offers a graphics
+// backend only when the terminal confirms it.
+func configureBackends(st *State, tty *os.File, cols, rows int, forceAllBackends bool) {
+	winX, winY, winOK := winsizeCellPixels(tty.Fd(), cols, rows)
+	if winOK {
+		st.CellPxX = winX
+		st.CellPxY = winY
+	}
+
+	if forceAllBackends {
+		st.SetEnabled([]Backend{BackendBlock, BackendSixel, BackendKitty})
+		return
+	}
+
+	if multiplexed() {
+		st.SetEnabled([]Backend{BackendBlock})
+		return
+	}
+
+	res := probeTerminal(tty, cols, rows)
+	if !winOK {
+		st.CellPxX = res.CellPxX
+		st.CellPxY = res.CellPxY
+	}
+
+	enabled := []Backend{BackendBlock}
+	if res.Sixel {
+		enabled = append(enabled, BackendSixel)
+	}
+	if res.Kitty {
+		enabled = append(enabled, BackendKitty)
+	}
+	st.SetEnabled(enabled)
+}
+
+// multiplexed reports whether the viewer runs under tmux or GNU screen, by the
+// TMUX or STY environment variables. Stage 0 does not pass graphics through a
+// multiplexer, so it offers block only there.
+func multiplexed() bool {
+	return os.Getenv("TMUX") != "" || os.Getenv("STY") != ""
+}
+
+// winsizeCellPixels resolves the cell pixel size from the TIOCGWINSZ ioctl. It
+// returns ok=false when the kernel reports no pixel size, so the caller falls
+// back to the handshake replies. cols and rows are unused here but kept for a
+// symmetric resolution chain with parseCellPixels.
+func winsizeCellPixels(fd uintptr, _, _ int) (pxX, pxY int, ok bool) {
+	ws, err := unix.IoctlGetWinsize(int(fd), unix.TIOCGWINSZ)
+	if err != nil || ws == nil {
+		return 0, 0, false
+	}
+	if ws.Xpixel == 0 || ws.Ypixel == 0 || ws.Col == 0 || ws.Row == 0 {
+		return 0, 0, false
+	}
+	return int(ws.Xpixel) / int(ws.Col), int(ws.Ypixel) / int(ws.Row), true
 }
 
 // readKeys reads single bytes from r and sends them on the returned channel,

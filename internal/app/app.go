@@ -58,6 +58,8 @@ type CLI struct {
 	Out          string   `help:"Directory for the sweep reports and artefacts." default:"./diagnostics"`
 	UpdateGolden bool     `help:"Rewrite golden archives that changed, mirroring UPDATE_GOLDEN." name:"update-golden"`
 
+	AllRenderers bool `help:"Force every render backend into the viewer cycle, skipping terminal capability detection." name:"all-renderers"`
+
 	Image string `arg:"" optional:"" help:"PNG to view when not running diagnostics."`
 }
 
@@ -74,7 +76,7 @@ func Run(cli CLI, testdataDir string, tty *os.File) error {
 		fmt.Println(Message())
 		return nil
 	}
-	return viewer.Run(cli.Image, tty)
+	return viewer.Run(cli.Image, tty, cli.AllRenderers)
 }
 
 // runDiagnostics loads the fixtures and the gate files, runs the sweep, and maps

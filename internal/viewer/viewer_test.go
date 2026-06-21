@@ -27,6 +27,65 @@ func TestCycleBackendOrder(t *testing.T) {
 	}
 }
 
+// TestCycleBackendSkipsDisabled asserts CycleBackend steps only through the
+// enabled set: with sixel disabled it goes block -> kitty -> block.
+func TestCycleBackendSkipsDisabled(t *testing.T) {
+	s := NewState(120, 40, 64, 64)
+	s.SetEnabled([]Backend{BackendBlock, BackendKitty})
+	if s.Backend != BackendBlock {
+		t.Fatalf("after SetEnabled, backend = %d, want BackendBlock", s.Backend)
+	}
+	want := []Backend{BackendKitty, BackendBlock, BackendKitty}
+	for i, w := range want {
+		if got := s.CycleBackend(); got != w {
+			t.Fatalf("cycle %d: got %d, want %d", i, got, w)
+		}
+	}
+}
+
+// TestCycleBackendBlockOnly asserts CycleBackend stays on block when block is the
+// only enabled backend.
+func TestCycleBackendBlockOnly(t *testing.T) {
+	s := NewState(120, 40, 64, 64)
+	s.SetEnabled([]Backend{BackendBlock})
+	for i := 0; i < 3; i++ {
+		if got := s.CycleBackend(); got != BackendBlock {
+			t.Fatalf("cycle %d: got %d, want BackendBlock", i, got)
+		}
+	}
+}
+
+// TestCycleBackendAllThree asserts CycleBackend steps the full set block -> sixel
+// -> kitty -> block, the same as the default cycle.
+func TestCycleBackendAllThree(t *testing.T) {
+	s := NewState(120, 40, 64, 64)
+	s.SetEnabled([]Backend{BackendBlock, BackendSixel, BackendKitty})
+	want := []Backend{BackendSixel, BackendKitty, BackendBlock}
+	for i, w := range want {
+		if got := s.CycleBackend(); got != w {
+			t.Fatalf("cycle %d: got %d, want %d", i, got, w)
+		}
+	}
+}
+
+// TestTogglesApplyOnBlockWithSubset asserts the scheme and colour toggles still
+// act on block when the cycle omits sixel.
+func TestTogglesApplyOnBlockWithSubset(t *testing.T) {
+	s := NewState(120, 40, 64, 64)
+	s.SetEnabled([]Backend{BackendBlock, BackendKitty})
+	if got := s.ToggleScheme(); got != block.SchemeHalfBlock {
+		t.Fatalf("scheme toggle = %d, want SchemeHalfBlock", got)
+	}
+	if got := s.ToggleColour(); got != ColourXTerm256 {
+		t.Fatalf("colour toggle = %d, want ColourXTerm256", got)
+	}
+	s.CycleBackend() // kitty
+	s.CycleBackend() // block
+	if s.Scheme != block.SchemeHalfBlock || s.Colour != ColourXTerm256 {
+		t.Fatalf("toggles lost after cycle: scheme=%d colour=%d", s.Scheme, s.Colour)
+	}
+}
+
 // TestSchemeToggleFlips asserts the scheme toggle flips quadrant <-> half-block.
 func TestSchemeToggleFlips(t *testing.T) {
 	s := NewState(120, 40, 64, 64)

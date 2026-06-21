@@ -15,6 +15,7 @@ require (
 	github.com/otiai10/gosseract/v2 v2.4.1
 	github.com/raf555/pixelmatch v1.0.1
 	golang.org/x/perf v0.0.0-20260615155930-9e4b9ddef5b6
+	golang.org/x/sys v0.46.0
 	golang.org/x/tools v0.46.0
 	gonum.org/v1/plot v0.17.0
 )
@@ -41,7 +42,6 @@ require (
 	github.com/soniakeys/quant v1.0.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
 )
 
 require (
