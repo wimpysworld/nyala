@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi/kitty"
 
+	"github.com/wimpysworld/nyala/internal/capture"
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
@@ -117,6 +118,95 @@ func TestRenderPayloadRoundTrips(t *testing.T) {
 				t.Fatalf("pixel (%d,%d) = %v, want %v", x, y, got.RGBAAt(x, y), f.Img.RGBAAt(x, y))
 			}
 		}
+	}
+}
+
+// largeFrame builds an RGBA frame big enough that the base64 payload exceeds
+// kitty.MaxChunkSize, forcing the chunked transmit path. Each pixel varies so
+// the zlib-compressed payload stays large.
+func largeFrame(t *testing.T) render.Frame {
+	t.Helper()
+	const w, h = 256, 256
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			img.SetRGBA(x, y, color.RGBA{
+				R: uint8(x),
+				G: uint8(y),
+				B: uint8((x ^ y) & 0xff),
+				A: 0xff,
+			})
+		}
+	}
+	return render.Frame{Img: img}
+}
+
+func TestRenderEmitsDisplayAction(t *testing.T) {
+	var r Renderer
+	var buf bytes.Buffer
+	if err := r.Render(knownFrame(t), &buf); err != nil {
+		t.Fatalf("Render() = %v, want nil", err)
+	}
+	if !strings.Contains(buf.String(), "a=T") {
+		t.Errorf("output missing display action key a=T: %q", buf.String())
+	}
+}
+
+func TestRenderChunksLargePayload(t *testing.T) {
+	var r Renderer
+	var buf bytes.Buffer
+	if err := r.Render(largeFrame(t), &buf); err != nil {
+		t.Fatalf("Render() = %v, want nil", err)
+	}
+	out := buf.String()
+
+	if strings.Count(out, "\x1b_G") < 2 {
+		t.Fatalf("large payload not chunked: want more than one APC introducer, got %d", strings.Count(out, "\x1b_G"))
+	}
+	if !strings.Contains(out, "m=1") {
+		t.Errorf("chunked output missing m=1 continuation key")
+	}
+	if !strings.HasSuffix(out, "\x1b\\") {
+		t.Fatalf("chunked output does not end with String Terminator")
+	}
+	lastFrame := out[strings.LastIndex(out, "\x1b_G"):]
+	if !strings.HasPrefix(lastFrame, "\x1b_Gm=0;") {
+		t.Errorf("final frame does not carry m=0: %q", lastFrame[:min(len(lastFrame), 16)])
+	}
+}
+
+func TestRenderRoundTripsThroughDecode(t *testing.T) {
+	cases := []struct {
+		name string
+		f    render.Frame
+	}{
+		{"small single frame", knownFrame(t)},
+		{"large multi frame", largeFrame(t)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var r Renderer
+			var buf bytes.Buffer
+			if err := r.Render(tc.f, &buf); err != nil {
+				t.Fatalf("Render() = %v", err)
+			}
+			got, err := capture.DecodeKitty(buf.Bytes())
+			if err != nil {
+				t.Fatalf("DecodeKitty() = %v", err)
+			}
+			b := tc.f.Img.Bounds()
+			if got.Bounds() != b {
+				t.Fatalf("decoded bounds = %v, want %v", got.Bounds(), b)
+			}
+			src := tc.f.Img
+			for y := range b.Dy() {
+				for x := range b.Dx() {
+					if got.RGBAAt(x, y) != src.RGBAAt(x, y) {
+						t.Fatalf("pixel (%d,%d) = %v, want %v", x, y, got.RGBAAt(x, y), src.RGBAAt(x, y))
+					}
+				}
+			}
+		})
 	}
 }
 

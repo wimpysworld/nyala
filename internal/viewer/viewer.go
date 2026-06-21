@@ -223,6 +223,11 @@ func (s *State) renderGraphics(src *image.RGBA, fit block.Fit, w io.Writer) erro
 	pxW := fit.FitCols * capture.CellPxW
 	pxH := fit.FitRows * capture.CellPxH
 	sub := metrics.Downscale(src, pxW, pxH)
+	if s.Backend == BackendKitty {
+		if _, err := io.WriteString(w, kittyDeleteAll); err != nil {
+			return err
+		}
+	}
 	return s.Renderer().Render(render.Frame{Img: sub}, w)
 }
 
@@ -304,6 +309,12 @@ func LoadPNG(path string) (*image.RGBA, error) {
 // clearScreen homes the cursor and clears the terminal so the next frame draws
 // from the top-left without stale cells.
 const clearScreen = "\x1b[H\x1b[2J"
+
+// kittyDeleteAll deletes every Kitty image and frees its data (a=d,d=A). The
+// viewer writes it before a kitty redraw because clearScreen erases text but
+// not Kitty images, so without it each redraw would layer a new image over the
+// old ones.
+const kittyDeleteAll = "\x1b_Ga=d,d=A\x1b\\"
 
 // enterFullScreen disables auto-wrap (DECAWM, "\x1b[?7l") and hides the cursor
 // ("\x1b[?25l"). With auto-wrap off, a full-width row does not enter the

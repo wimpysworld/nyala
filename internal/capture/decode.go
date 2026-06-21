@@ -47,22 +47,19 @@ func DecodeSixel(payload []byte) (*image.RGBA, error) {
 // DecodeKitty decodes a complete Kitty graphics APC payload back to an
 // *image.RGBA. It accepts the framed bytes kitty.Renderer writes (the ESC _ G
 // introducer, the comma-separated options, a semicolon, the base64 payload, and
-// the ESC backslash terminator). It parses the options to learn the format,
-// the zlib compression, and the pixel dimensions, base64-decodes the body, then
-// reverses the payload with charmbracelet/x/ansi/kitty plus stdlib. Driving the
-// decoder from the transmitted options makes the round trip measure render
-// error, not a decoder assumption. The returned image is in RGBA channel order.
+// the ESC backslash terminator). A large image arrives as several consecutive
+// APC frames carrying the m= chunk key; DecodeKitty reassembles them. It parses
+// the first frame's options to learn the format, the zlib compression, and the
+// pixel dimensions, concatenates the base64 bodies, base64-decodes the result,
+// then reverses the payload with charmbracelet/x/ansi/kitty plus stdlib.
+// Driving the decoder from the transmitted options makes the round trip measure
+// render error, not a decoder assumption. The returned image is in RGBA channel
+// order.
 func DecodeKitty(payload []byte) (*image.RGBA, error) {
-	s := string(payload)
-	if !strings.HasPrefix(s, apcIntro) || !strings.HasSuffix(s, st) {
-		return nil, errors.New("capture: kitty payload missing APC envelope ESC _ G ... ESC backslash")
+	optsText, b64, err := reassembleKittyFrames(string(payload))
+	if err != nil {
+		return nil, err
 	}
-	inner := strings.TrimSuffix(strings.TrimPrefix(s, apcIntro), st)
-	semi := strings.IndexByte(inner, ';')
-	if semi < 0 {
-		return nil, errors.New("capture: kitty payload missing options/payload separator")
-	}
-	optsText, b64 := inner[:semi], inner[semi+1:]
 
 	var opts kitty.Options
 	if err := opts.UnmarshalText([]byte(optsText)); err != nil {
@@ -89,6 +86,49 @@ func DecodeKitty(payload []byte) (*image.RGBA, error) {
 		return nil, fmt.Errorf("capture: decode kitty image: %w", err)
 	}
 	return toRGBA(img), nil
+}
+
+// reassembleKittyFrames scans s for consecutive Kitty graphics frames and
+// returns the first frame's control section and the concatenated base64 bodies.
+// Each frame runs from the ESC _ G introducer to the ESC backslash terminator,
+// with the control section before the first ';' and the body after it. It stops
+// after the frame whose control carries m=0, or after a single frame with no m=
+// key (the small-image path), so the single-frame envelope decodes as before.
+func reassembleKittyFrames(s string) (control, body string, err error) {
+	var first string
+	var bodies strings.Builder
+	seen := false
+	for len(s) > 0 {
+		if !strings.HasPrefix(s, apcIntro) {
+			return "", "", errors.New("capture: kitty payload missing APC envelope ESC _ G ... ESC backslash")
+		}
+		end := strings.Index(s, st)
+		if end < 0 {
+			return "", "", errors.New("capture: kitty payload missing String Terminator ESC backslash")
+		}
+		inner := s[len(apcIntro):end]
+		s = s[end+len(st):]
+
+		semi := strings.IndexByte(inner, ';')
+		if semi < 0 {
+			return "", "", errors.New("capture: kitty payload missing options/payload separator")
+		}
+		frameControl, frameBody := inner[:semi], inner[semi+1:]
+		if !seen {
+			first = frameControl
+			seen = true
+		}
+		bodies.WriteString(frameBody)
+
+		more := strings.Contains(frameControl, "m=1")
+		if !more {
+			break
+		}
+	}
+	if !seen {
+		return "", "", errors.New("capture: kitty payload missing APC envelope ESC _ G ... ESC backslash")
+	}
+	return first, bodies.String(), nil
 }
 
 // toRGBA returns img as an *image.RGBA. If img already is one it is returned
