@@ -31,8 +31,11 @@ a bare Linux console via KMSCON.
 - Primary: KMSCON (active fork `kmscon/kmscon`) in a Linux TTY. As of libtsm
   late-2025 it supports 24-bit truecolour, scalable Unicode fonts, and mouse.
 - Also: any truecolour-capable terminal emulator (xterm, foot, kitty, wezterm).
-- Truecolour detection MUST use a DCS query/response, not `COLORTERM`. KMSCON does
-  not reliably set `COLORTERM`, so palette sniffing gives false negatives.
+- Truecolour detection uses env plus terminfo via `colorprofile`. A present
+  `COLORTERM` is a trusted positive signal; its absence is never read as "no
+  truecolour". No DCS query/response is used. KMSCON now sets `COLORTERM=kmscon`
+  or `truecolor`, and the DCS round-trip is a no-op on KMSCON's libtsm. See
+  `docs/STAGE-1-OVERVIEW.md` for the evidence.
 
 ## Architecture (key decision)
 

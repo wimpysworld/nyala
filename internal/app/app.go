@@ -60,6 +60,8 @@ type CLI struct {
 
 	AllRenderers bool `help:"Force every render backend into the viewer cycle, skipping terminal capability detection." name:"all-renderers"`
 
+	Color string `help:"Viewer colour mode: auto, truecolor, 256, or none." default:"auto" enum:"auto,truecolor,256,none"`
+
 	Image string `arg:"" optional:"" help:"PNG to view when not running diagnostics."`
 }
 
@@ -76,7 +78,7 @@ func Run(cli CLI, testdataDir string, tty *os.File) error {
 		fmt.Println(Message())
 		return nil
 	}
-	return viewer.Run(cli.Image, tty, cli.AllRenderers)
+	return viewer.Run(cli.Image, tty, cli.AllRenderers, cli.Color)
 }
 
 // runDiagnostics loads the fixtures and the gate files, runs the sweep, and maps

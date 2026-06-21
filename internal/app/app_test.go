@@ -96,6 +96,37 @@ func TestParseViewerImage(t *testing.T) {
 	}
 }
 
+func TestParseColorDefault(t *testing.T) {
+	cli := parse(t)
+	if cli.Color != "auto" {
+		t.Errorf("Color = %q, want %q by default", cli.Color, "auto")
+	}
+}
+
+func TestParseColorOverrides(t *testing.T) {
+	for _, mode := range []string{"truecolor", "256", "none"} {
+		cli := parse(t, "--color", mode)
+		if cli.Color != mode {
+			t.Errorf("--color %s: Color = %q, want %q", mode, cli.Color, mode)
+		}
+	}
+}
+
+func TestParseColorInvalid(t *testing.T) {
+	var cli CLI
+	parser, err := kong.New(
+		&cli,
+		kong.Name("nyala"),
+		kong.Vars{"version": "test"},
+	)
+	if err != nil {
+		t.Fatalf("kong.New: %v", err)
+	}
+	if _, err := parser.Parse([]string{"--color", "bogus"}); err == nil {
+		t.Errorf("--color bogus: want a parse error, got nil")
+	}
+}
+
 func TestParseGrid(t *testing.T) {
 	cols, rows, err := ParseGrid("120x40")
 	if err != nil {
