@@ -329,3 +329,24 @@ func TestSampleQuadrantChannelOrder(t *testing.T) {
 		t.Fatalf("bg channel order: got %v, want red", bg)
 	}
 }
+
+// TestRenderRowsEndCRLF asserts Render terminates every row with CRLF, not a
+// bare LF. With auto-wrap off in a raw terminal, the carriage return is needed
+// to return the cursor to column 0 each row; a bare LF leaves it interlaced.
+func TestRenderRowsEndCRLF(t *testing.T) {
+	br := Renderer{Cols: 2, Rows: 2}
+	img := image.NewRGBA(image.Rect(0, 0, 4, 8))
+	var buf bytes.Buffer
+	if err := br.Render(render.Frame{Img: img}, &buf); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	out := buf.Bytes()
+	if got := bytes.Count(out, []byte("\n")); got != br.Rows {
+		t.Fatalf("line feed count = %d, want %d (one per row)", got, br.Rows)
+	}
+	for i, b := range out {
+		if b == '\n' && (i == 0 || out[i-1] != '\r') {
+			t.Fatalf("line feed at byte %d not preceded by carriage return", i)
+		}
+	}
+}

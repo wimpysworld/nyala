@@ -100,8 +100,10 @@ var _ render.Renderer = (*Renderer)(nil)
 func (*Renderer) Name() string { return "block" }
 
 // Render composites the frame's image onto a Cols x Rows cell grid and writes
-// the grid to w as truecolour SGR sequences, one block glyph per cell. Output is
-// deterministic: the same Frame yields byte-identical output across runs.
+// the grid to w as truecolour SGR sequences, one block glyph per cell. Each row
+// ends with an SGR reset and a CRLF; the carriage return returns the cursor to
+// column 0 when auto-wrap is off in a raw terminal. Output is deterministic: the
+// same Frame yields byte-identical output across runs.
 func (br *Renderer) Render(f render.Frame, w io.Writer) error {
 	grid := br.Compose(f)
 	bw := bufio.NewWriter(w)
@@ -118,7 +120,7 @@ func (br *Renderer) Render(f render.Frame, w io.Writer) error {
 				return err
 			}
 		}
-		if _, err := bw.WriteString("\x1b[0m\n"); err != nil {
+		if _, err := bw.WriteString("\x1b[0m\r\n"); err != nil {
 			return err
 		}
 	}

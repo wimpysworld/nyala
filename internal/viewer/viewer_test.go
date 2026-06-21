@@ -234,6 +234,29 @@ func TestRenderFrameNoFit(t *testing.T) {
 	}
 }
 
+// TestWriteGridRowsEndCRLF asserts writeGrid terminates every row with CRLF, not
+// a bare LF. With auto-wrap off in raw mode, the carriage return is needed to
+// return the cursor to column 0 each row; a bare LF leaves it interlaced.
+func TestWriteGridRowsEndCRLF(t *testing.T) {
+	g := block.Grid{Cols: 2, Rows: 2, Cells: make([]block.Cell, 4)}
+	for i := range g.Cells {
+		g.Cells[i] = block.Cell{Glyph: ' ', FG: color.RGBA{A: 0xff}, BG: color.RGBA{A: 0xff}}
+	}
+	var buf bytes.Buffer
+	if err := writeGrid(g, ColourTrue, &buf); err != nil {
+		t.Fatalf("writeGrid: %v", err)
+	}
+	out := buf.String()
+	if got := strings.Count(out, "\n"); got != g.Rows {
+		t.Fatalf("line feed count = %d, want %d (one per row)", got, g.Rows)
+	}
+	for i := 0; i < len(out); i++ {
+		if out[i] == '\n' && (i == 0 || out[i-1] != '\r') {
+			t.Fatalf("line feed at byte %d not preceded by carriage return", i)
+		}
+	}
+}
+
 // solidImage builds a 16 x 16 RGBA image filled with one colour.
 func solidImage(c color.RGBA) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, 16, 16))

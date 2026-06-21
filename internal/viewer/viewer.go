@@ -240,8 +240,9 @@ func schemePixels(scheme block.Scheme, cols, rows int) (pxW, pxH int) {
 // writeGrid writes a composed grid to w as SGR cells, one block glyph per cell,
 // in the chosen colour mode. Truecolour emits 24-bit SGR; xterm-256 maps each
 // cell's fg and bg onto the 256-colour palette. Each row ends with an SGR reset
-// and a newline. It mirrors block.Renderer.Render but adds the colour toggle the
-// concrete renderer does not carry.
+// and a CRLF. The carriage return returns the cursor to column 0 when auto-wrap
+// is off in raw mode. It mirrors block.Renderer.Render but adds the colour
+// toggle the concrete renderer does not carry.
 func writeGrid(g block.Grid, mode ColourMode, w io.Writer) error {
 	var sb strings.Builder
 	for row := 0; row < g.Rows; row++ {
@@ -251,7 +252,7 @@ func writeGrid(g block.Grid, mode ColourMode, w io.Writer) error {
 			sb.WriteString(bgSGR(c.BG, mode))
 			sb.WriteRune(c.Glyph)
 		}
-		sb.WriteString("\x1b[0m\n")
+		sb.WriteString("\x1b[0m\r\n")
 	}
 	_, err := io.WriteString(w, sb.String())
 	return err
@@ -304,6 +305,17 @@ func LoadPNG(path string) (*image.RGBA, error) {
 // from the top-left without stale cells.
 const clearScreen = "\x1b[H\x1b[2J"
 
+// enterFullScreen disables auto-wrap (DECAWM, "\x1b[?7l") and hides the cursor
+// ("\x1b[?25l"). With auto-wrap off, a full-width row does not enter the
+// pending-wrap state, so the explicit carriage return and line feed advance one
+// physical line per grid row.
+const enterFullScreen = "\x1b[?7l\x1b[?25l"
+
+// exitFullScreen re-enables auto-wrap (DECAWM, "\x1b[?7h") and shows the cursor
+// ("\x1b[?25h"). Run writes it during teardown to restore the terminal to its
+// default state before the termios restore.
+const exitFullScreen = "\x1b[?7h\x1b[?25h"
+
 // Run loads the PNG at path and runs the interactive viewer on the given TTY
 // until the user quits. It puts the terminal into raw mode, draws on resize and
 // on each redraw hotkey, and restores the terminal on exit. It returns an error
@@ -329,6 +341,13 @@ func Run(path string, tty *os.File) error {
 		return fmt.Errorf("viewer: raw mode: %w", err)
 	}
 	defer func() { _ = cterm.Restore(fd, oldState) }()
+
+	if _, err := io.WriteString(tty, enterFullScreen); err != nil {
+		return err
+	}
+	// Registered after the Restore defer, so LIFO runs it first: re-enable
+	// auto-wrap and show the cursor while still in raw mode, then Restore.
+	defer func() { _, _ = io.WriteString(tty, exitFullScreen) }()
 
 	b := src.Bounds()
 	st := NewState(cols, rows, b.Dx(), b.Dy())

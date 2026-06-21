@@ -32,7 +32,7 @@
         "histDivergence": 0
       },
       "bytes": {
-        "block": 196120,
+        "block": 196160,
         "kitty": 25061
       }
     },
@@ -63,7 +63,7 @@
         "histDivergence": 0
       },
       "bytes": {
-        "block": 195496,
+        "block": 195536,
         "kitty": 35397
       }
     },
@@ -94,7 +94,7 @@
         "histDivergence": 0
       },
       "bytes": {
-        "block": 190133,
+        "block": 190173,
         "kitty": 66145
       }
     }
@@ -126,7 +126,7 @@
     },
     "bytesPerFrame": {
       "min": 25061,
-      "max": 196120
+      "max": 196160
     }
   },
   "sixelPsnrNoiseFloor": 0.2,
