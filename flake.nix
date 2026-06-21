@@ -44,7 +44,7 @@
           version = "0.0.0";
           src = nixpkgs.lib.cleanSource ./.;
           subPackages = [ "cmd/nyala" ];
-          vendorHash = "sha256-rq1N3+om6TWpN1aIIZFDMt6qWApAHnT18IysUtH8xlk=";
+          vendorHash = "sha256-OMak9QNVkpoXNaKV6UAb/MBSaP8aayx2xNoxatcPl8M=";
           # The shipped binary is static and cgo-free: the gosseract cgo lives
           # behind the "ocr" tag, off here, and subPackages excludes it. The
           # tesseract inputs only serve the OCR-tagged test build.
