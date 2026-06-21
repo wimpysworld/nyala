@@ -58,6 +58,9 @@ const (
 	ColourTrue ColourMode = iota
 	// ColourXTerm256 maps each block cell colour onto the xterm-256 palette.
 	ColourXTerm256
+	// ColourMono emits each cell's glyph with no fg/bg SGR, rendering a 1-bit
+	// silhouette on the terminal default fg/bg. detect_colour.go cites this value.
+	ColourMono
 )
 
 // State is the viewer's full state machine. It is pure: every field is data and
@@ -140,13 +143,16 @@ func (s *State) ToggleScheme() block.Scheme {
 	return s.Scheme
 }
 
-// ToggleColour flips the block colour depth between truecolour and xterm-256 and
-// returns the new mode. It changes only the colour mode; the active backend is
-// unchanged.
+// ToggleColour cycles the block colour depth truecolour -> xterm-256 ->
+// monochrome -> truecolour and returns the new mode. It changes only the colour
+// mode; the active backend is unchanged.
 func (s *State) ToggleColour() ColourMode {
-	if s.Colour == ColourTrue {
+	switch s.Colour {
+	case ColourTrue:
 		s.Colour = ColourXTerm256
-	} else {
+	case ColourXTerm256:
+		s.Colour = ColourMono
+	default:
 		s.Colour = ColourTrue
 	}
 	return s.Colour
@@ -276,10 +282,12 @@ func schemePixels(scheme block.Scheme, cols, rows int) (pxW, pxH int) {
 
 // writeGrid writes a composed grid to w as SGR cells, one block glyph per cell,
 // in the chosen colour mode. Truecolour emits 24-bit SGR; xterm-256 maps each
-// cell's fg and bg onto the 256-colour palette. Each row ends with an SGR reset
-// and a CRLF. The carriage return returns the cursor to column 0 when auto-wrap
-// is off in raw mode. It mirrors block.Renderer.Render but adds the colour
-// toggle the concrete renderer does not carry.
+// cell's fg and bg onto the 256-colour palette; monochrome emits the glyph alone
+// with no fg/bg SGR, rendering a 1-bit silhouette on the terminal default fg/bg.
+// Each row ends with an SGR reset and a CRLF. The carriage return returns the
+// cursor to column 0 when auto-wrap is off in raw mode. It mirrors
+// block.Renderer.Render but adds the colour toggle the concrete renderer does not
+// carry.
 func writeGrid(g block.Grid, mode ColourMode, w io.Writer) error {
 	var sb strings.Builder
 	for row := 0; row < g.Rows; row++ {
@@ -295,20 +303,30 @@ func writeGrid(g block.Grid, mode ColourMode, w io.Writer) error {
 	return err
 }
 
-// fgSGR returns the foreground SGR for a colour in the chosen mode.
+// fgSGR returns the foreground SGR for a colour in the chosen mode. Monochrome
+// emits no foreground SGR.
 func fgSGR(c color.RGBA, mode ColourMode) string {
-	if mode == ColourXTerm256 {
+	switch mode {
+	case ColourMono:
+		return ""
+	case ColourXTerm256:
 		return fmt.Sprintf("\x1b[38;5;%dm", block.XTerm256(c))
+	default:
+		return block.TrueColorFG(c)
 	}
-	return block.TrueColorFG(c)
 }
 
-// bgSGR returns the background SGR for a colour in the chosen mode.
+// bgSGR returns the background SGR for a colour in the chosen mode. Monochrome
+// emits no background SGR.
 func bgSGR(c color.RGBA, mode ColourMode) string {
-	if mode == ColourXTerm256 {
+	switch mode {
+	case ColourMono:
+		return ""
+	case ColourXTerm256:
 		return fmt.Sprintf("\x1b[48;5;%dm", block.XTerm256(c))
+	default:
+		return block.TrueColorBG(c)
 	}
-	return block.TrueColorBG(c)
 }
 
 // LoadPNG decodes the PNG at path into an *image.RGBA in RGBA channel order. A
@@ -365,8 +383,10 @@ const exitFullScreen = "\x1b[?7h\x1b[?25h"
 // restores the terminal on exit. forceAllBackends skips detection and enables
 // every backend for side-by-side testing. It returns an error only on a setup or
 // I/O failure; a clean quit returns nil. Run is the live wiring around State; the
-// state machine itself is tested without it.
-func Run(path string, tty *os.File, forceAllBackends bool) error {
+// state machine itself is tested without it. colourFlag is the --color intent
+// (auto, truecolor, 256, none); configureBackends resolves it against NO_COLOR
+// and detection.
+func Run(path string, tty *os.File, forceAllBackends bool, colourFlag string) error {
 	src, err := LoadPNG(path)
 	if err != nil {
 		return err
@@ -393,7 +413,7 @@ func Run(path string, tty *os.File, forceAllBackends bool) error {
 	// Detection runs in raw mode but before the full-screen switch, the first
 	// draw, and the key reader, so the handshake replies are not consumed by the
 	// key goroutine.
-	configureBackends(&st, tty, cols, rows, forceAllBackends)
+	configureBackends(&st, tty, cols, rows, forceAllBackends, colourFlag)
 
 	if _, err := io.WriteString(tty, enterFullScreen); err != nil {
 		return err
@@ -446,10 +466,15 @@ func Run(path string, tty *os.File, forceAllBackends bool) error {
 // configureBackends decides which backends the cycle offers and resolves the
 // real cell pixel size, then writes both into st. With forceAllBackends it
 // enables every backend and keeps the winsize cell size. Behind a multiplexer
-// (TMUX or STY set) it offers block only, because Stage 0 has no tmux or screen
+// (TMUX, ZELLIJ, herdr, or STY set) it offers block only, because Stage 0 has no
 // passthrough. Otherwise it runs one terminal handshake and offers a graphics
-// backend only when the terminal confirms it.
-func configureBackends(st *State, tty *os.File, cols, rows int, forceAllBackends bool) {
+// backend only when the terminal confirms it. The colour mode resolves first, on
+// every path, because it is multiplexer-agnostic and orthogonal to backend
+// forcing, so it must not strand at the NewState default behind an early return.
+func configureBackends(st *State, tty *os.File, cols, rows int, forceAllBackends bool, colourFlag string) {
+	detected := detectColour(os.Environ(), cterm.IsTerminal(tty.Fd()))
+	st.Colour = resolveColour(colourFlag, os.Environ(), detected)
+
 	winX, winY, winOK := winsizeCellPixels(tty.Fd(), cols, rows)
 	if winOK {
 		st.CellPxX = winX
@@ -482,11 +507,25 @@ func configureBackends(st *State, tty *os.File, cols, rows int, forceAllBackends
 	st.SetEnabled(enabled)
 }
 
-// multiplexed reports whether the viewer runs under tmux or GNU screen, by the
-// TMUX or STY environment variables. Stage 0 does not pass graphics through a
-// multiplexer, so it offers block only there.
+// multiplexed reports whether the viewer runs under a focus multiplexer: tmux
+// (TMUX), zellij (ZELLIJ present, any value), herdr (HERDR_ENV=1 with
+// HERDR_PANE_ID present), or GNU screen (STY). A bare ZELLIJ=0 is a presence
+// signal, not a truth value; herdr needs both keys so a stray var does not gate
+// graphics off. Stage 0 does not pass graphics through a multiplexer, so it
+// offers block only there.
 func multiplexed() bool {
-	return os.Getenv("TMUX") != "" || os.Getenv("STY") != ""
+	if os.Getenv("TMUX") != "" || os.Getenv("STY") != "" {
+		return true
+	}
+	if _, ok := os.LookupEnv("ZELLIJ"); ok {
+		return true
+	}
+	if os.Getenv("HERDR_ENV") == "1" {
+		if _, ok := os.LookupEnv("HERDR_PANE_ID"); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // winsizeCellPixels resolves the cell pixel size from the TIOCGWINSZ ioctl. It
@@ -498,11 +537,43 @@ func winsizeCellPixels(fd uintptr, _, _ int) (pxX, pxY int, ok bool) {
 	if err != nil || ws == nil {
 		return 0, 0, false
 	}
-	if ws.Xpixel == 0 || ws.Ypixel == 0 || ws.Col == 0 || ws.Row == 0 {
+	return deriveCellPixels(int(ws.Xpixel), int(ws.Ypixel), int(ws.Col), int(ws.Row))
+}
+
+// deriveCellPixels turns a winsize report into a per-cell pixel size. It is the
+// pure core of winsizeCellPixels, split out so the zero-guard and the sanity
+// bound are testable without a live ioctl. It returns ok=false when any field
+// is zero, so a bogus report (for example a 32000x0 winsize, Ypixel 0) falls
+// through, and ok=false when the derived cell px is outside the sane window.
+func deriveCellPixels(xpixel, ypixel, col, row int) (pxX, pxY int, ok bool) {
+	if xpixel == 0 || ypixel == 0 || col == 0 || row == 0 {
 		return 0, 0, false
 	}
-	return int(ws.Xpixel) / int(ws.Col), int(ws.Ypixel) / int(ws.Row), true
+	pxX = xpixel / col
+	pxY = ypixel / row
+	if !cellPxInBounds(pxX, pxY) {
+		return 0, 0, false
+	}
+	return pxX, pxY, true
 }
+
+// cellPxInBounds reports whether a derived cell pixel size sits inside the
+// winsize sanity window: 4..32 wide and 8..64 tall. A size outside it is a
+// bogus winsize report, so the caller falls through to the handshake or the
+// 8x16 default.
+func cellPxInBounds(pxX, pxY int) bool {
+	return pxX >= winsizeMinCellW && pxX <= winsizeMaxCellW &&
+		pxY >= winsizeMinCellH && pxY <= winsizeMaxCellH
+}
+
+// winsize cell-px sanity bounds. A derived cell width or height outside this
+// window is treated as a bogus winsize report and rejected to the safe default.
+const (
+	winsizeMinCellW = 4
+	winsizeMaxCellW = 32
+	winsizeMinCellH = 8
+	winsizeMaxCellH = 64
+)
 
 // readKeys reads single bytes from r and sends them on the returned channel,
 // closing it on EOF or read error. It runs in its own goroutine so Run can

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"image"
 	"image/color"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/wimpysworld/nyala/internal/capture"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 	"github.com/wimpysworld/nyala/internal/render/kitty"
@@ -100,17 +102,18 @@ func TestSchemeToggleFlips(t *testing.T) {
 	}
 }
 
-// TestColourToggleFlips asserts the colour toggle flips truecolour <-> xterm-256.
-func TestColourToggleFlips(t *testing.T) {
+// TestColourToggleCycle asserts the colour toggle cycles three modes:
+// ColourTrue -> ColourXTerm256 -> ColourMono -> ColourTrue.
+func TestColourToggleCycle(t *testing.T) {
 	s := NewState(120, 40, 64, 64)
 	if s.Colour != ColourTrue {
 		t.Fatalf("initial colour = %d, want ColourTrue", s.Colour)
 	}
-	if got := s.ToggleColour(); got != ColourXTerm256 {
-		t.Fatalf("first toggle = %d, want ColourXTerm256", got)
-	}
-	if got := s.ToggleColour(); got != ColourTrue {
-		t.Fatalf("second toggle = %d, want ColourTrue", got)
+	want := []ColourMode{ColourXTerm256, ColourMono, ColourTrue}
+	for i, w := range want {
+		if got := s.ToggleColour(); got != w {
+			t.Fatalf("toggle %d = %d, want %d", i, got, w)
+		}
 	}
 }
 
@@ -313,6 +316,229 @@ func TestWriteGridRowsEndCRLF(t *testing.T) {
 		if out[i] == '\n' && (i == 0 || out[i-1] != '\r') {
 			t.Fatalf("line feed at byte %d not preceded by carriage return", i)
 		}
+	}
+}
+
+// muxKeys is every focus-multiplexer env var multiplexed reads. clearMuxEnv
+// unsets all of them for the current test, registering cleanup, so a host-set
+// TMUX or ZELLIJ does not leak into a false-branch case.
+var muxKeys = []string{"TMUX", "ZELLIJ", "HERDR_ENV", "HERDR_PANE_ID", "STY"}
+
+func clearMuxEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range muxKeys {
+		t.Setenv(k, "") // register the cleanup restore
+		os.Unsetenv(k)  // then remove it so LookupEnv reports absent
+	}
+}
+
+// TestMultiplexedEnvKeys asserts multiplexed reports true for each focus
+// multiplexer and false when none is set. ZELLIJ is a presence signal: a bare
+// ZELLIJ=0 still gates. herdr needs both HERDR_ENV=1 and HERDR_PANE_ID; one key
+// alone does not gate.
+func TestMultiplexedEnvKeys(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want bool
+	}{
+		{"none set", nil, false},
+		{"tmux", map[string]string{"TMUX": "/tmp/tmux-1000/default,123,0"}, true},
+		{"zellij present", map[string]string{"ZELLIJ": "1"}, true},
+		{"zellij zero is presence", map[string]string{"ZELLIJ": "0"}, true},
+		{"screen", map[string]string{"STY": "1234.pts-0.host"}, true},
+		{"herdr both keys", map[string]string{"HERDR_ENV": "1", "HERDR_PANE_ID": "p1"}, true},
+		{"herdr env only", map[string]string{"HERDR_ENV": "1"}, false},
+		{"herdr pane only", map[string]string{"HERDR_PANE_ID": "p1"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clearMuxEnv(t)
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+			if got := multiplexed(); got != c.want {
+				t.Fatalf("multiplexed() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestConfigureBackendsSkipsHandshakeUnderMux asserts that under a multiplexer
+// env var configureBackends enables block only and does not run probeTerminal.
+// probeTerminal writes queryBytes() to the tty as its first act, so a tty file
+// left empty after the call proves the handshake did not run. A non-mux baseline
+// proves the same file path does carry a write when the handshake runs.
+func TestConfigureBackendsSkipsHandshakeUnderMux(t *testing.T) {
+	clearMuxEnv(t)
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+
+	tty := newTempTTY(t)
+	st := NewState(80, 24, 64, 64)
+	configureBackends(&st, tty, 80, 24, false, "auto")
+
+	if len(st.Enabled) != 1 || st.Enabled[0] != BackendBlock {
+		t.Fatalf("enabled = %v, want [BackendBlock]", st.Enabled)
+	}
+	if n := ttyByteCount(t, tty); n != 0 {
+		t.Fatalf("handshake wrote %d bytes under mux; probeTerminal must not run", n)
+	}
+}
+
+// TestConfigureBackendsRunsHandshakeWithoutMux is the skip-handshake baseline:
+// with no mux env var set, configureBackends calls probeTerminal, which writes
+// the query batch to the tty. A non-empty tty file proves the handshake ran, so
+// the empty-file assertion under mux is meaningful, not vacuous.
+func TestConfigureBackendsRunsHandshakeWithoutMux(t *testing.T) {
+	clearMuxEnv(t)
+
+	tty := newTempTTY(t)
+	st := NewState(80, 24, 64, 64)
+	configureBackends(&st, tty, 80, 24, false, "auto")
+
+	if n := ttyByteCount(t, tty); n == 0 {
+		t.Fatalf("handshake wrote no bytes without mux; probeTerminal should run")
+	}
+}
+
+// newTempTTY returns a regular temp file standing in for the tty. It is not a
+// terminal, so IsTerminal is false and the winsize ioctl fails, which is the
+// intended path: configureBackends falls through to the 8x16 default and any
+// probeTerminal write lands in the file where the test can read it back.
+func newTempTTY(t *testing.T) *os.File {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "nyala-tty-*")
+	if err != nil {
+		t.Fatalf("temp tty: %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	return f
+}
+
+// ttyByteCount returns the number of bytes written to the temp tty file.
+func ttyByteCount(t *testing.T, f *os.File) int64 {
+	t.Helper()
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatalf("stat tty: %v", err)
+	}
+	return info.Size()
+}
+
+// TestWriteGridMonoNoSGR asserts writeGrid in ColourMono emits each cell's glyph
+// with no fg SGR (\x1b[38;) and no bg SGR (\x1b[48;), and one reset-plus-CRLF
+// (\x1b[0m\r\n) per row. A leaked fg/bg sequence fails the test.
+func TestWriteGridMonoNoSGR(t *testing.T) {
+	g := block.Grid{Cols: 3, Rows: 2, Cells: make([]block.Cell, 6)}
+	for i := range g.Cells {
+		g.Cells[i] = block.Cell{Glyph: '#', FG: color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff}, BG: color.RGBA{R: 0x10, G: 0x20, B: 0x30, A: 0xff}}
+	}
+	var buf bytes.Buffer
+	if err := writeGrid(g, ColourMono, &buf); err != nil {
+		t.Fatalf("writeGrid: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "\x1b[38;") {
+		t.Fatalf("mono output leaked foreground SGR (\\x1b[38;)")
+	}
+	if strings.Contains(out, "\x1b[48;") {
+		t.Fatalf("mono output leaked background SGR (\\x1b[48;)")
+	}
+	if got := strings.Count(out, "\x1b[0m\r\n"); got != g.Rows {
+		t.Fatalf("reset-CRLF count = %d, want %d (one per row)", got, g.Rows)
+	}
+}
+
+// TestCellPxDefaultWhenGeometryAbsent asserts that when every geometry report is
+// absent the resolved cell pixel size is the 8x16 default (8 wide, 16 tall). The
+// source of truth is the pinned Route A raster: docs/STAGE-0.md:84 and
+// capture.CellPxW (8) / capture.CellPxH (16). NewState seeds these, and a temp
+// file tty has no winsize and no handshake reply, so the chain rests on them.
+func TestCellPxDefaultWhenGeometryAbsent(t *testing.T) {
+	if capture.CellPxW != 8 || capture.CellPxH != 16 {
+		t.Fatalf("capture default = %dx%d, want 8x16 (docs/STAGE-0.md:84)", capture.CellPxW, capture.CellPxH)
+	}
+	st := NewState(80, 24, 64, 64)
+	if st.CellPxX != 8 || st.CellPxY != 16 {
+		t.Fatalf("default cell px = %dx%d, want 8x16", st.CellPxX, st.CellPxY)
+	}
+}
+
+// TestCellPxInBounds exercises the real winsize sanity window. winsizeCellPixels
+// reads a live ioctl, so the bound is split into the pure cellPxInBounds, which
+// this table drives directly with the boundary values. That puts the real
+// comparison operators under test: flipping a < to <= at an edge fails a case
+// here. A derived cell px is accepted only when 4..32 wide and 8..64 tall.
+func TestCellPxInBounds(t *testing.T) {
+	if winsizeMinCellW != 4 || winsizeMaxCellW != 32 {
+		t.Fatalf("width bound = %d..%d, want 4..32", winsizeMinCellW, winsizeMaxCellW)
+	}
+	if winsizeMinCellH != 8 || winsizeMaxCellH != 64 {
+		t.Fatalf("height bound = %d..%d, want 8..64", winsizeMinCellH, winsizeMaxCellH)
+	}
+	cases := []struct {
+		name string
+		pxX  int
+		pxY  int
+		want bool
+	}{
+		{"in range", 8, 16, true},
+		{"min edge", winsizeMinCellW, winsizeMinCellH, true},
+		{"max edge", winsizeMaxCellW, winsizeMaxCellH, true},
+		{"width below min", winsizeMinCellW - 1, 16, false},
+		{"width above max", winsizeMaxCellW + 1, 16, false},
+		{"height below min", 8, winsizeMinCellH - 1, false},
+		{"height above max", 8, winsizeMaxCellH + 1, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := cellPxInBounds(c.pxX, c.pxY); got != c.want {
+				t.Fatalf("cellPxInBounds(%d, %d) = %v, want %v", c.pxX, c.pxY, got, c.want)
+			}
+		})
+	}
+}
+
+// TestDeriveCellPixels exercises the pure core of winsizeCellPixels with
+// synthetic winsize fields the live ioctl cannot supply. It pins the named
+// 32000x0 bogus report (STAGE-1-PROPOSAL.md criterion 9): Ypixel 0 trips the
+// zero-guard, so it resolves to ok=false before any division. It also pins a
+// healthy report and a derived cell px outside the sanity window.
+func TestDeriveCellPixels(t *testing.T) {
+	cases := []struct {
+		name                     string
+		xpixel, ypixel, col, row int
+		wantX, wantY             int
+		wantOK                   bool
+	}{
+		{"healthy 80x24 at 8x16", 640, 384, 80, 24, 8, 16, true},
+		{"32000x0 bogus winsize", 32000, 0, 80, 24, 0, 0, false},
+		{"zero xpixel", 0, 384, 80, 24, 0, 0, false},
+		{"zero col", 640, 384, 0, 24, 0, 0, false},
+		{"zero row", 640, 384, 80, 0, 0, 0, false},
+		{"derived cell px too wide", 32000, 384, 80, 24, 0, 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			x, y, ok := deriveCellPixels(c.xpixel, c.ypixel, c.col, c.row)
+			if ok != c.wantOK {
+				t.Fatalf("deriveCellPixels(%d,%d,%d,%d) ok = %v, want %v",
+					c.xpixel, c.ypixel, c.col, c.row, ok, c.wantOK)
+			}
+			if ok && (x != c.wantX || y != c.wantY) {
+				t.Fatalf("cell px = %dx%d, want %dx%d", x, y, c.wantX, c.wantY)
+			}
+		})
+	}
+}
+
+// TestWinsizeCellPixelsNonTTY pins the ioctl-failure fall-through the 8x16
+// default relies on. A non-terminal fd has no winsize, so the ioctl fails and
+// winsizeCellPixels returns ok=false before the pure core runs.
+func TestWinsizeCellPixelsNonTTY(t *testing.T) {
+	tty := newTempTTY(t)
+	if _, _, ok := winsizeCellPixels(tty.Fd(), 80, 24); ok {
+		t.Fatalf("winsizeCellPixels on a non-tty returned ok=true, want false")
 	}
 }
 
