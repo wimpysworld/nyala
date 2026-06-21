@@ -9,24 +9,24 @@
       "page": "linuxmatters",
       "mode": "block",
       "metrics": {
-        "ssim": 0.5081965088103106,
-        "msssim": 0.5607686846731925,
-        "psnr": 11.827430435263341,
-        "deltaE2000Mean": 11.65488451035419,
-        "histDivergence": 0.3288802083333332,
-        "bytesPerFrame": 176678
+        "ssim": 0.664624754373741,
+        "msssim": 0.854415985638591,
+        "psnr": 16.39126112232845,
+        "deltaE2000Mean": 5.936370625303932,
+        "histDivergence": 0.3215500217013886,
+        "bytesPerFrame": 176713
       }
     },
     {
       "page": "linuxmatters",
       "mode": "sixel",
       "metrics": {
-        "ssim": 0.9988645800978773,
-        "msssim": 0.9997951510500623,
-        "psnr": 46.40418132576484,
-        "deltaE2000Mean": 0.4011151899908093,
-        "histDivergence": 0.6023914930555556,
-        "bytesPerFrame": 346192
+        "ssim": 0.9987699010132007,
+        "msssim": 0.9997802336935686,
+        "psnr": 46.563828098455815,
+        "deltaE2000Mean": 0.3950455562231708,
+        "histDivergence": 0.602021484375,
+        "bytesPerFrame": 341116
       }
     },
     {
@@ -38,31 +38,31 @@
         "psnr": 1.7976931348623157e+308,
         "deltaE2000Mean": 0,
         "histDivergence": -2.220446049250313e-16,
-        "bytesPerFrame": 287985
+        "bytesPerFrame": 288627
       }
     },
     {
       "page": "testcard-01-greyscale",
       "mode": "block",
       "metrics": {
-        "ssim": 0.5900561578357892,
-        "msssim": 0.5218872932283899,
-        "psnr": 14.520843894237927,
-        "deltaE2000Mean": 6.335773431258184,
-        "histDivergence": 0.27461046006944445,
-        "bytesPerFrame": 196120
+        "ssim": 0.7012208640430497,
+        "msssim": 0.8466846444054691,
+        "psnr": 18.22275729075111,
+        "deltaE2000Mean": 3.6990137422137757,
+        "histDivergence": 0.2674018012152777,
+        "bytesPerFrame": 196160
       }
     },
     {
       "page": "testcard-01-greyscale",
       "mode": "sixel",
       "metrics": {
-        "ssim": 0.9996697713687946,
-        "msssim": 0.9998819683121799,
-        "psnr": 52.521712664575794,
-        "deltaE2000Mean": 0.08815227268908611,
-        "histDivergence": 0.15614800347222213,
-        "bytesPerFrame": 282718
+        "ssim": 0.999665009958209,
+        "msssim": 0.9998787307848043,
+        "psnr": 52.31695436453616,
+        "deltaE2000Mean": 0.09890796957386346,
+        "histDivergence": 0.1565728081597223,
+        "bytesPerFrame": 282574
       }
     },
     {
@@ -74,31 +74,31 @@
         "psnr": 1.7976931348623157e+308,
         "deltaE2000Mean": 0,
         "histDivergence": 0,
-        "bytesPerFrame": 169193
+        "bytesPerFrame": 169574
       }
     },
     {
       "page": "testcard-02-colour",
       "mode": "block",
       "metrics": {
-        "ssim": 0.5926989986008996,
-        "msssim": 0.5222249007541965,
-        "psnr": 14.701916714473871,
-        "deltaE2000Mean": 8.206053193388684,
-        "histDivergence": 0.27007107204861114,
-        "bytesPerFrame": 195496
+        "ssim": 0.7038392320454078,
+        "msssim": 0.844936451296953,
+        "psnr": 18.300782739695904,
+        "deltaE2000Mean": 4.453868322026009,
+        "histDivergence": 0.2631689453125,
+        "bytesPerFrame": 195536
       }
     },
     {
       "page": "testcard-02-colour",
       "mode": "sixel",
       "metrics": {
-        "ssim": 0.998252920007347,
-        "msssim": 0.9994117501434391,
-        "psnr": 46.88605526850219,
-        "deltaE2000Mean": 0.3027196623398851,
-        "histDivergence": 0.15519314236111104,
-        "bytesPerFrame": 263608
+        "ssim": 0.9984658527621059,
+        "msssim": 0.9994726864816585,
+        "psnr": 47.23906917253369,
+        "deltaE2000Mean": 0.3002201585210695,
+        "histDivergence": 0.15385253906249996,
+        "bytesPerFrame": 261085
       }
     },
     {
@@ -110,31 +110,31 @@
         "psnr": 1.7976931348623157e+308,
         "deltaE2000Mean": 0,
         "histDivergence": 0,
-        "bytesPerFrame": 204785
+        "bytesPerFrame": 205238
       }
     },
     {
       "page": "testcard-03-images",
       "mode": "block",
       "metrics": {
-        "ssim": 0.5108773539463795,
-        "msssim": 0.5184690423705723,
-        "psnr": 13.045192303756561,
-        "deltaE2000Mean": 11.221144877040388,
-        "histDivergence": 0.2105387369791667,
-        "bytesPerFrame": 190133
+        "ssim": 0.686544877631898,
+        "msssim": 0.8616381030034234,
+        "psnr": 18.42686005203174,
+        "deltaE2000Mean": 5.394535028179513,
+        "histDivergence": 0.20067003038194453,
+        "bytesPerFrame": 190175
       }
     },
     {
       "page": "testcard-03-images",
       "mode": "sixel",
       "metrics": {
-        "ssim": 0.981432534270374,
-        "msssim": 0.9965718418940497,
-        "psnr": 39.70003712885497,
-        "deltaE2000Mean": 1.0842947607577902,
-        "histDivergence": 0.24927517361111107,
-        "bytesPerFrame": 338703
+        "ssim": 0.9816143628338223,
+        "msssim": 0.9964594943164454,
+        "psnr": 39.60464069032602,
+        "deltaE2000Mean": 1.075864554603033,
+        "histDivergence": 0.24823567708333327,
+        "bytesPerFrame": 339638
       }
     },
     {
@@ -146,7 +146,7 @@
         "psnr": 1.7976931348623157e+308,
         "deltaE2000Mean": 0,
         "histDivergence": 0,
-        "bytesPerFrame": 677069
+        "bytesPerFrame": 678566
       }
     }
   ]

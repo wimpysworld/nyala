@@ -102,21 +102,22 @@ func TestBinarizeQuadrantSplit(t *testing.T) {
 		wantFG, wantBG color.RGBA
 	}{
 		{
-			// Top bright, bottom dark: mask 1100, lower half block. fg averages
+			// Top bright, bottom dark: mask 1100, upper half block. fg averages
 			// the bright top pair, bg the dark bottom pair.
 			name: "top bright bottom dark", x: bright, y: bright, z: dark, w: dark,
-			wantGlyph: 0x2584, wantFG: avgC(bright, bright), wantBG: avgC(dark, dark),
+			wantGlyph: 0x2580, wantFG: avgRGBA(bright, bright), wantBG: avgRGBA(dark, dark),
 		},
 		{
-			// Only top-left bright: mask 1000, upper-left quadrant. fg is the
-			// average of the three dark cells, bg the lone bright top-left.
+			// Only top-left bright: mask 1000, upper-left quadrant. fg is the lone
+			// bright top-left, bg the average of the three dark cells.
 			name: "top-left bright only", x: bright, y: dark, z: dark, w: dark,
-			wantGlyph: 0x2598, wantFG: avgC(avgC(dark, dark), dark), wantBG: bright,
+			wantGlyph: 0x2598, wantFG: bright, wantBG: avgRGBA(dark, dark, dark),
 		},
 		{
-			// Left column bright: mask 1010, upper-left-and-lower-right diagonal.
+			// Left column bright: mask 1010, left half block. fg averages the
+			// bright left pair, bg the dark right pair.
 			name: "left column bright", x: bright, y: dark, z: bright, w: dark,
-			wantGlyph: 0x259A, wantFG: avgC(dark, dark), wantBG: avgC(bright, bright),
+			wantGlyph: 0x258C, wantFG: avgRGBA(bright, bright), wantBG: avgRGBA(dark, dark),
 		},
 	}
 	for _, c := range cases {
@@ -135,6 +136,86 @@ func TestBinarizeQuadrantSplit(t *testing.T) {
 	}
 }
 
+// TestComposeQuadrantNotInverted catches the inversion bug directly. For each
+// single-bright-quadrant case it builds a 2x4 image with one sub-cell white and
+// the other three black, composes a 1x1 quadrant grid, and asserts the glyph is
+// the single-quadrant rune for that position, the foreground is the bright white
+// (each channel above the midpoint), and the background is the dark black. An
+// inverted cell would paint the bright quadrant dark, so the foreground would
+// come back black; this test fails on that.
+func TestComposeQuadrantNotInverted(t *testing.T) {
+	white := color.RGBA{R: 255, G: 255, B: 255, A: 0xff}
+	black := color.RGBA{R: 0, G: 0, B: 0, A: 0xff}
+
+	// Sub-cell pixel origins in the 2x4 block. Each sub-cell is 1 px wide, 2 tall.
+	type quad struct {
+		name      string
+		px, py    int // top pixel of the bright sub-cell column
+		wantGlyph rune
+	}
+	cases := []quad{
+		{"top-left", 0, 0, 0x2598},
+		{"top-right", 1, 0, 0x259D},
+		{"bottom-left", 0, 2, 0x2596},
+		{"bottom-right", 1, 2, 0x2597},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			img := fillRGBA(cellPxW, cellPxH, black)
+			set := func(x, y int, col color.RGBA) {
+				i := img.PixOffset(x, y)
+				img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = col.R, col.G, col.B, col.A
+			}
+			set(c.px, c.py, white)
+			set(c.px, c.py+1, white)
+
+			br := &Renderer{Cols: 1, Rows: 1}
+			g := br.Compose(render.Frame{Img: img})
+			cell := g.At(0, 0)
+			if cell.Glyph != c.wantGlyph {
+				t.Fatalf("glyph: got %#U, want %#U", cell.Glyph, c.wantGlyph)
+			}
+			if cell.FG.R <= 127 || cell.FG.G <= 127 || cell.FG.B <= 127 {
+				t.Fatalf("fg: got %v, want bright white (inverted?)", cell.FG)
+			}
+			if cell.BG != black {
+				t.Fatalf("bg: got %v, want dark black %v", cell.BG, black)
+			}
+		})
+	}
+}
+
+// TestComposeQuadrantTwoBright checks a two-quadrant split keeps fg and bg
+// unswapped. Top-left and top-right white, bottom pair black: mask 1100, upper
+// half block, foreground white, background black.
+func TestComposeQuadrantTwoBright(t *testing.T) {
+	white := color.RGBA{R: 255, G: 255, B: 255, A: 0xff}
+	black := color.RGBA{R: 0, G: 0, B: 0, A: 0xff}
+	img := fillRGBA(cellPxW, cellPxH, black)
+	set := func(x, y int, col color.RGBA) {
+		i := img.PixOffset(x, y)
+		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = col.R, col.G, col.B, col.A
+	}
+	// Both top sub-cells (rows 0 and 1, columns 0 and 1) white.
+	set(0, 0, white)
+	set(0, 1, white)
+	set(1, 0, white)
+	set(1, 1, white)
+
+	br := &Renderer{Cols: 1, Rows: 1}
+	g := br.Compose(render.Frame{Img: img})
+	cell := g.At(0, 0)
+	if cell.Glyph != 0x2580 {
+		t.Fatalf("glyph: got %#U, want U+2580 upper half", cell.Glyph)
+	}
+	if cell.FG != white {
+		t.Fatalf("fg: got %v, want white (swapped?)", cell.FG)
+	}
+	if cell.BG != black {
+		t.Fatalf("bg: got %v, want black (swapped?)", cell.BG)
+	}
+}
+
 // fillRGBA returns a w x h opaque image filled with one colour.
 func fillRGBA(w, h int, c color.RGBA) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
@@ -149,7 +230,8 @@ func fillRGBA(w, h int, c color.RGBA) *image.RGBA {
 
 // TestComposeTwoColourCell builds a synthetic one-cell frame whose top 2 rows
 // are bright and bottom 2 rows are dark, then asserts the composed cell carries
-// the lower-half-block glyph and the bright/dark fg/bg pair.
+// the upper-half-block glyph and the bright/dark fg/bg pair. The bright top set
+// is the foreground, so the glyph fills the upper half.
 func TestComposeTwoColourCell(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, cellPxW, cellPxH))
 	for y := 0; y < cellPxH; y++ {
@@ -165,8 +247,8 @@ func TestComposeTwoColourCell(t *testing.T) {
 	br := &Renderer{Cols: 1, Rows: 1}
 	g := br.Compose(render.Frame{Img: img})
 	cell := g.At(0, 0)
-	if cell.Glyph != 0x2584 {
-		t.Fatalf("glyph: got %#U, want U+2584", cell.Glyph)
+	if cell.Glyph != 0x2580 {
+		t.Fatalf("glyph: got %#U, want U+2580", cell.Glyph)
 	}
 	if cell.FG != bright {
 		t.Fatalf("fg: got %v, want bright %v", cell.FG, bright)

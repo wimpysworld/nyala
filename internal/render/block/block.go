@@ -72,9 +72,11 @@ func (g *Grid) At(col, row int) *Cell {
 
 // Renderer composites a Frame onto an owned cell grid, then writes one
 // truecolour SGR cell per grid cell. Scheme selects the pixel-to-cell mapping:
-// the quadrant (2x2) binarisation ported from Carbonyl's quad.rs, or the half-
-// block floor. The scheme is a backend-specific knob on this concrete type, not
-// on the render.Renderer interface. It satisfies render.Renderer.
+// the quadrant (2x2) binarisation, or the half-block floor. The quadrant scheme
+// is self-consistent: the glyph fills the bright quadrants with the foreground,
+// the dark quadrants with the background. The scheme is a backend-specific knob
+// on this concrete type, not on the render.Renderer interface. It satisfies
+// render.Renderer.
 type Renderer struct {
 	Cols   int    // requested grid width in cells
 	Rows   int    // requested grid height in cells
@@ -253,33 +255,40 @@ func pixel(img *image.RGBA, x, y int) (r, g, b uint8) {
 	return img.Pix[i], img.Pix[i+1], img.Pix[i+2]
 }
 
-// quadrant block glyphs keyed by the 4-bit mask a<<3 | b<<2 | c<<1 | d, where
-// a, b, c, d are the top-left, top-right, bottom-left, bottom-right luma-above-
-// midpoint flags. Ported one-to-one from Carbonyl's quad.rs match arms.
+// quadrant block glyphs keyed by the 4-bit mask TL<<3 | TR<<2 | BL<<1 | BR,
+// where each bit is set when that sub-cell's luma sits above the cell midpoint
+// (the bright sub-cells). The glyph is the Unicode quadrant block whose filled
+// quadrants are exactly the bright set, so the foreground colour paints the
+// bright quadrants. The two flat masks (0000 all dark, 1111 all bright) emit a
+// full block; their foreground equals their background, so the cell paints one
+// colour either way.
 var quadrantGlyphs = [16]rune{
-	0x2584, // 0000 lower half block
-	0x2596, // 0001 quadrant lower left
-	0x2597, // 0010 quadrant lower right
-	0x2584, // 0011 lower half block
-	0x259D, // 0100 quadrant upper right
-	0x259E, // 0101 quadrant upper right and lower left
-	0x2590, // 0110 right half block
-	0x2598, // 0111 quadrant upper left
-	0x2598, // 1000 quadrant upper left
-	0x258C, // 1001 left half block
-	0x259A, // 1010 quadrant upper left and lower right
-	0x259D, // 1011 quadrant upper right
-	0x2584, // 1100 lower half block
-	0x2597, // 1101 quadrant lower right
-	0x2596, // 1110 quadrant lower left
-	0x2584, // 1111 lower half block
+	0x2588, // 0000 full block (flat cell, fg == bg)
+	0x2597, // 0001 quadrant lower right (BR)
+	0x2596, // 0010 quadrant lower left (BL)
+	0x2584, // 0011 lower half block (BL, BR)
+	0x259D, // 0100 quadrant upper right (TR)
+	0x2590, // 0101 right half block (TR, BR)
+	0x259E, // 0110 quadrant upper right and lower left (TR, BL)
+	0x259F, // 0111 quadrant upper right, lower left, lower right (TR, BL, BR)
+	0x2598, // 1000 quadrant upper left (TL)
+	0x259A, // 1001 quadrant upper left and lower right (TL, BR)
+	0x258C, // 1010 left half block (TL, BL)
+	0x2599, // 1011 quadrant upper left, lower left, lower right (TL, BL, BR)
+	0x2580, // 1100 upper half block (TL, TR)
+	0x259C, // 1101 quadrant upper left, upper right, lower right (TL, TR, BR)
+	0x259B, // 1110 quadrant upper left, upper right, lower left (TL, TR, BL)
+	0x2588, // 1111 full block (flat cell, fg == bg)
 }
 
 // binarizeQuadrant turns the four sub-cell colours (x top-left, y top-right,
 // z bottom-left, w bottom-right) into one block glyph and two averaged colours.
-// It ports Carbonyl's binarize_quadrant: convert each sub-cell to Rec.601 luma,
-// split at the luma midpoint, build a 4-bit mask, then pick the glyph and the
-// (foreground, background) colour pair the mask selects.
+// It converts each sub-cell to Rec.601 luma, splits at the luma midpoint, and
+// builds the 4-bit mask TL<<3 | TR<<2 | BL<<1 | BR of the bright sub-cells. The
+// glyph is the quadrant block whose filled quadrants are the bright set; the
+// foreground is the average of the bright sub-cells, the background the average
+// of the dark ones. A flat cell (mask 0000 or 1111) emits a full block with
+// foreground equal to background.
 func binarizeQuadrant(x, y, z, w color.RGBA) (glyph rune, fg, bg color.RGBA) {
 	a := luma(x)
 	b := luma(y)
@@ -297,43 +306,49 @@ func binarizeQuadrant(x, y, z, w color.RGBA) (glyph rune, fg, bg color.RGBA) {
 	return glyph, fg, bg
 }
 
-// quadrantColours returns the (foreground, background) colour pair for a mask,
-// matching Carbonyl's quad.rs match arms one-to-one. The first colour of each
-// arm is the foreground, the second the background.
+// quadrantColours returns the (foreground, background) colour pair for a mask.
+// The four sub-cell colours are x (top-left), y (top-right), z (bottom-left),
+// and w (bottom-right). A sub-cell is bright when its mask bit is set: bit3
+// top-left, bit2 top-right, bit1 bottom-left, bit0 bottom-right. The foreground
+// is the average of the bright sub-cells, the background the average of the dark
+// ones. The two flat masks (0000 and 1111) have no split, so both colours are
+// the average of all four sub-cells.
 func quadrantColours(mask int, x, y, z, w color.RGBA) (fg, bg color.RGBA) {
-	switch mask {
-	case 0b0000:
-		return avgC(x, y), avgC(z, w)
-	case 0b0001:
-		return avgC(avgC(x, y), z), w
-	case 0b0010:
-		return avgC(avgC(x, y), w), z
-	case 0b0011:
-		return avgC(x, y), avgC(z, w)
-	case 0b0100:
-		return avgC(avgC(x, z), w), y
-	case 0b0101:
-		return avgC(x, z), avgC(y, w)
-	case 0b0110:
-		return avgC(x, w), avgC(y, z)
-	case 0b0111:
-		return avgC(avgC(y, z), w), x
-	case 0b1000:
-		return avgC(avgC(y, z), w), x
-	case 0b1001:
-		return avgC(y, z), avgC(x, w)
-	case 0b1010:
-		return avgC(y, w), avgC(x, z)
-	case 0b1011:
-		return avgC(avgC(x, z), w), y
-	case 0b1100:
-		return avgC(x, y), avgC(z, w)
-	case 0b1101:
-		return avgC(avgC(x, y), w), z
-	case 0b1110:
-		return avgC(avgC(x, y), z), w
-	default: // 0b1111
-		return avgC(x, y), avgC(z, w)
+	if mask == 0b0000 || mask == 0b1111 {
+		all := avgRGBA(x, y, z, w)
+		return all, all
+	}
+	cells := [4]color.RGBA{x, y, z, w}
+	var bright, dark []color.RGBA
+	for i, c := range cells {
+		if mask&(1<<(3-i)) != 0 {
+			bright = append(bright, c)
+		} else {
+			dark = append(dark, c)
+		}
+	}
+	return avgRGBA(bright...), avgRGBA(dark...)
+}
+
+// avgRGBA averages a set of RGBA colours per channel, with alpha forced opaque.
+// Channel order is RGBA. An empty set returns opaque black. It averages any
+// number of sub-cells, mirroring Carbonyl's avg_with for two.
+func avgRGBA(cs ...color.RGBA) color.RGBA {
+	if len(cs) == 0 {
+		return color.RGBA{A: 0xff}
+	}
+	var rs, gs, bs int
+	for _, c := range cs {
+		rs += int(c.R)
+		gs += int(c.G)
+		bs += int(c.B)
+	}
+	n := len(cs)
+	return color.RGBA{
+		R: clampByte(rs / n),
+		G: clampByte(gs / n),
+		B: clampByte(bs / n),
+		A: 0xff,
 	}
 }
 
@@ -341,17 +356,6 @@ func quadrantColours(mask int, x, y, z, w color.RGBA) (fg, bg color.RGBA) {
 // constants 0.299 R, 0.587 G, 0.114 B; channel order is RGBA.
 func luma(c color.RGBA) float64 {
 	return 0.299*float64(c.R) + 0.587*float64(c.G) + 0.114*float64(c.B)
-}
-
-// avgC averages two RGBA colours per channel, mirroring Carbonyl's avg_with.
-// Alpha is forced opaque. Channel order is RGBA.
-func avgC(a, b color.RGBA) color.RGBA {
-	return color.RGBA{
-		R: clampByte((int(a.R) + int(b.R)) / 2),
-		G: clampByte((int(a.G) + int(b.G)) / 2),
-		B: clampByte((int(a.B) + int(b.B)) / 2),
-		A: 0xff,
-	}
 }
 
 // boolBit maps a flag to 0 or 1 for mask assembly.
