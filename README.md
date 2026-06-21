@@ -1,10 +1,16 @@
-# 🦌 Nyala
+<h1 align="center">
+  <img src="assets/nyala-logo.png" width="256" height="256" alt="Nyala">
+  <br />
+  Nyala
+</h1>
 
-**A browser for the terminal.**
+<p align="center"><b>A browser for the terminal 🦌</b></p>
+
+<p align="center">Made with 💝 for 🐧🍏🪟</p>
 
 Nyala is a browser for the terminal. The goal: render real web pages - HTML5, CSS, JavaScript - directly to a TTY. It will drive headless Chromium via the Chrome DevTools Protocol and composite a crisp Unicode text layer over a quadrant-block bitmap, so text stays sharp rather than fuzzy. The primary target is a bare Linux console running [KMSCON](https://github.com/kmscon/kmscon), with no display server required.
 
-> **Early development.** The three rendering backends and the measurement harness are built (Stage 0); they render static images today. The browser pipeline, the crisp text overlay, and terminal-capability detection are the design goal, not yet wired. See [`docs/OVERVIEW.md`](docs/OVERVIEW.md) for the architecture and [`docs/STAGE-0.md`](docs/STAGE-0.md) for what Stage 0 covers.
+> **Early development.** The three rendering backends and the measurement harness are built (Stage 0); they render static images today. The browser pipeline, the crisp text overlay, and terminal-capability detection are the design goal, not yet wired. See [`docs/OVERVIEW.md`](docs/OVERVIEW.md) for the architecture and progress.
 
 ## Why Nyala?
 
