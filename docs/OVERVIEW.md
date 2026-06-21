@@ -820,7 +820,7 @@ path renders a real webpage with images as blocks and text as crisp glyphs; on f
 kitty the same `Frame` renders via Sixel and Kitty with no change above the `Renderer`
 seam. Measure correctness (golden frame), bytes per frame, and FPS on each target.
 
-Stage 0 is the image-based harness. Its working doc is [`STAGE-0.md`](./STAGE-0.md).
+Stage 0 is the image-based harness, and it is built. The record of the work done and the decisions made is in [`STAGE-0.md`](./STAGE-0.md).
 
 ## Prior Art (reference, not dependencies)
 
