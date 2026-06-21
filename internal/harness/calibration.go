@@ -10,6 +10,15 @@
 // is deterministic, so the floor is exactly zero, which is itself the recorded
 // baseline a real per-run jitter would have to clear.
 //
+// The sixel backend is the exception: its lossy encoder is non-deterministic, so
+// repeated identical renders jitter. The calibration measures that jitter as the
+// sixel PSNR noise floor: the standard deviation of PSNR across repeated sixel
+// renders, the worst card-wise value over the corpus. The standard deviation is
+// stable to the recorded precision, while the raw min/max spread never settles,
+// so the floor traces to data rather than a guess. The sixel PSNR threshold band
+// sits well above it. The value is quantised so the committed file stays
+// byte-stable despite the jitter.
+//
 // The CER ladder is gosseract-only and cgo-gated behind the "ocr" build tag, so
 // the CER numbers are measured by the tagged calibration path (see
 // calibration_ocr_test.go) and folded into the same committed file. The default
@@ -31,7 +40,23 @@ import (
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 	"github.com/wimpysworld/nyala/internal/render/kitty"
+	"github.com/wimpysworld/nyala/internal/render/sixel"
 )
+
+// sixelNoiseFloorRuns is how many times the calibration encodes and decodes each
+// card through the sixel backend to measure the PSNR jitter. The lossy encoder
+// draws PSNR from a near-continuous spread that never saturates, so the recorded
+// floor is the standard deviation of that spread (a stable estimator), not the
+// observed min/max (which grows run to run). This many runs is enough for the
+// standard deviation to settle to the committed precision.
+const sixelNoiseFloorRuns = 64
+
+// sixelNoiseFloorDP is the decimal precision the sixel PSNR noise floor is
+// quantised to, so the committed calibration file stays byte-stable across runs
+// despite the encoder jitter. The standard deviation settles near 0.2 dB with a
+// few thousandths of run-to-run wobble, so one decimal place keeps the committed
+// value stable while two would flap at a rounding boundary.
+const sixelNoiseFloorDP = 1
 
 // CalibCols and CalibRows are the pinned calibration grid: the Stage 0 120x40
 // sweep grid, so the calibration numbers match the grid the sweep runs at.
@@ -151,6 +176,16 @@ type Calibration struct {
 	// Ranges is the corpus-wide observed range of each metric, from absolute
 	// scores.
 	Ranges CalibRanges `json:"ranges"`
+	// SixelPSNRNoiseFloor is the sixel backend's intrinsic PSNR jitter in dB: the
+	// standard deviation of PSNR across repeated identical sixel renders, taken as
+	// the worst (largest) card-wise value over the corpus. The lossy sixel encoder
+	// is non-deterministic, so this is non-zero; the sixel PSNR threshold band sits
+	// well above it. The standard deviation is used because the encoder's PSNR
+	// spread is near-continuous and its observed min/max never settle, while the
+	// standard deviation is stable to the recorded precision. The byte cost is
+	// excluded from calibration for the same jitter reason, so this is the one
+	// sixel non-determinism number the file records.
+	SixelPSNRNoiseFloor float64 `json:"sixelPsnrNoiseFloor"`
 	// OCRBuilt reports whether the OCR ladder was measured. It is false when the
 	// calibration ran without the "ocr" build tag or without a Tesseract engine,
 	// in which case Ladder is empty and the CER numbers are unset.
@@ -179,11 +214,77 @@ func MeasureCalibration(rast *capture.Rasteriser, inputs []CalibInput) Calibrati
 		cards = append(cards, measureCard(rast, in))
 	}
 	return Calibration{
-		SchemaVersion: SchemaVersion,
-		Grid:          Viewport{Cols: CalibCols, Rows: CalibRows},
-		Cards:         cards,
-		Ranges:        rangesOf(cards),
+		SchemaVersion:       SchemaVersion,
+		Grid:                Viewport{Cols: CalibCols, Rows: CalibRows},
+		Cards:               cards,
+		Ranges:              rangesOf(cards),
+		SixelPSNRNoiseFloor: measureSixelPSNRNoiseFloor(inputs),
 	}
+}
+
+// measureSixelPSNRNoiseFloor measures the sixel backend's intrinsic PSNR jitter:
+// the standard deviation of PSNR across repeated identical sixel renders, taken
+// as the worst card-wise value over the corpus. For each card it downscales the
+// source to the sweep pixel geometry, encodes and decodes it through the sixel
+// backend sixelNoiseFloorRuns times, scores each decoded render against the same
+// reference, and computes the standard deviation of those PSNRs. The corpus-wide
+// maximum standard deviation is the band-driving number: the sixel PSNR threshold
+// sits well above it. The result is quantised to sixelNoiseFloorDP decimals so
+// the committed calibration file is byte-stable across runs despite the encoder
+// jitter. Channel order is RGBA.
+func measureSixelPSNRNoiseFloor(inputs []CalibInput) float64 {
+	pxW, pxH := CalibCols*capture.CellPxW, CalibRows*capture.CellPxH
+	var worst float64
+	for _, in := range inputs {
+		reference := metrics.Downscale(in.Src, pxW, pxH)
+		samples := make([]float64, 0, sixelNoiseFloorRuns)
+		for i := 0; i < sixelNoiseFloorRuns; i++ {
+			if p, ok := sixelRoundTripPSNR(reference); ok {
+				samples = append(samples, p)
+			}
+		}
+		if sd := stdDev(samples); sd > worst {
+			worst = sd
+		}
+	}
+	q := math.Pow(10, sixelNoiseFloorDP)
+	return math.Round(worst*q) / q
+}
+
+// stdDev returns the population standard deviation of xs, or zero for fewer than
+// two samples.
+func stdDev(xs []float64) float64 {
+	if len(xs) < 2 {
+		return 0
+	}
+	var mean float64
+	for _, x := range xs {
+		mean += x
+	}
+	mean /= float64(len(xs))
+	var sumsq float64
+	for _, x := range xs {
+		d := x - mean
+		sumsq += d * d
+	}
+	return math.Sqrt(sumsq / float64(len(xs)))
+}
+
+// sixelRoundTripPSNR encodes a reference through the sixel backend, decodes it
+// back, and returns the PSNR of the decoded render against the reference. The
+// second return is false when the encode or decode fails, so a failed run does
+// not skew the jitter spread. Channel order is RGBA.
+func sixelRoundTripPSNR(reference *image.RGBA) (float64, bool) {
+	var r sixel.Renderer
+	var buf bytes.Buffer
+	if err := r.Render(render.Frame{Img: reference}, &buf); err != nil {
+		return 0, false
+	}
+	img, err := capture.DecodeSixel(buf.Bytes())
+	if err != nil {
+		return 0, false
+	}
+	return metrics.ScorePair(img, reference).PSNR, true
 }
 
 // measureCard block-renders one card at the pinned grid and scores it absolute,

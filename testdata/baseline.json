@@ -21,12 +21,12 @@
       "page": "linuxmatters",
       "mode": "sixel",
       "metrics": {
-        "ssim": 0.9988822966495731,
-        "msssim": 0.9997984113697429,
-        "psnr": 46.470615405851454,
-        "deltaE2000Mean": 0.3896520599212161,
-        "histDivergence": 0.6013921440972223,
-        "bytesPerFrame": 344418
+        "ssim": 0.9988645800978773,
+        "msssim": 0.9997951510500623,
+        "psnr": 46.40418132576484,
+        "deltaE2000Mean": 0.4011151899908093,
+        "histDivergence": 0.6023914930555556,
+        "bytesPerFrame": 346192
       }
     },
     {
@@ -57,12 +57,12 @@
       "page": "testcard-01-greyscale",
       "mode": "sixel",
       "metrics": {
-        "ssim": 0.9996557520604994,
-        "msssim": 0.9998770548067839,
-        "psnr": 52.34378914633996,
-        "deltaE2000Mean": 0.0869928084548391,
-        "histDivergence": 0.15656629774305542,
-        "bytesPerFrame": 281822
+        "ssim": 0.9996697713687946,
+        "msssim": 0.9998819683121799,
+        "psnr": 52.521712664575794,
+        "deltaE2000Mean": 0.08815227268908611,
+        "histDivergence": 0.15614800347222213,
+        "bytesPerFrame": 282718
       }
     },
     {
@@ -93,12 +93,12 @@
       "page": "testcard-02-colour",
       "mode": "sixel",
       "metrics": {
-        "ssim": 0.9984645318488575,
-        "msssim": 0.9994718455911606,
-        "psnr": 47.175313997723684,
-        "deltaE2000Mean": 0.30286019770610084,
-        "histDivergence": 0.1539268663194444,
-        "bytesPerFrame": 265400
+        "ssim": 0.998252920007347,
+        "msssim": 0.9994117501434391,
+        "psnr": 46.88605526850219,
+        "deltaE2000Mean": 0.3027196623398851,
+        "histDivergence": 0.15519314236111104,
+        "bytesPerFrame": 263608
       }
     },
     {
@@ -129,12 +129,12 @@
       "page": "testcard-03-images",
       "mode": "sixel",
       "metrics": {
-        "ssim": 0.9805237122058963,
-        "msssim": 0.9961192289758642,
-        "psnr": 39.27241900829642,
-        "deltaE2000Mean": 1.0873567902235248,
-        "histDivergence": 0.24350802951388884,
-        "bytesPerFrame": 340745
+        "ssim": 0.981432534270374,
+        "msssim": 0.9965718418940497,
+        "psnr": 39.70003712885497,
+        "deltaE2000Mean": 1.0842947607577902,
+        "histDivergence": 0.24927517361111107,
+        "bytesPerFrame": 338703
       }
     },
     {

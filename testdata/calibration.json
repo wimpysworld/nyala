@@ -129,6 +129,7 @@
       "max": 196120
     }
   },
+  "sixelPsnrNoiseFloor": 0.2,
   "ocrBuilt": false,
   "cerBound": 0,
   "ladder": null
