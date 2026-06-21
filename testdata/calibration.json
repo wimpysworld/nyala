@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "grid": {
+    "cols": 120,
+    "rows": 40
+  },
+  "cards": [
+    {
+      "card": "testcard-01-greyscale.png",
+      "absolute": {
+        "ssim": 0.6156956350436952,
+        "msssim": 0.568030462429215,
+        "psnr": 16.547522776599212,
+        "deltaEMean": 4.813332760012647,
+        "deltaEP95": 25.128389166796207
+      },
+      "relative": {
+        "ssim": 0.6423742243891917,
+        "msssim": 0.5994751057453463,
+        "psnr": 17.326281919676298,
+        "deltaEMean": 4.350906649936124,
+        "deltaEP95": 22.923360803711542
+      },
+      "noiseFloor": {
+        "ssim": 0,
+        "msssim": 0,
+        "psnr": 0,
+        "deltaEMean": 0,
+        "deltaEP95": 0
+      }
+    },
+    {
+      "card": "testcard-02-colour.png",
+      "absolute": {
+        "ssim": 0.6206969737669144,
+        "msssim": 0.5674217365478335,
+        "psnr": 16.773765214021246,
+        "deltaEMean": 6.697482134773667,
+        "deltaEP95": 32.27904326550551
+      },
+      "relative": {
+        "ssim": 0.6461686907536501,
+        "msssim": 0.5967269111269555,
+        "psnr": 17.61769725819879,
+        "deltaEMean": 6.358099709026799,
+        "deltaEP95": 30.53447816932376
+      },
+      "noiseFloor": {
+        "ssim": 0,
+        "msssim": 0,
+        "psnr": 0,
+        "deltaEMean": 0,
+        "deltaEP95": 0
+      }
+    },
+    {
+      "card": "testcard-03-images.png",
+      "absolute": {
+        "ssim": 0.5390114508070105,
+        "msssim": 0.5564711086362036,
+        "psnr": 14.086221654135173,
+        "deltaEMean": 10.15791009532758,
+        "deltaEP95": 46.489813207984305
+      },
+      "relative": {
+        "ssim": 0.5719467852803601,
+        "msssim": 0.607519693886235,
+        "psnr": 14.740890063245264,
+        "deltaEMean": 9.31254342928436,
+        "deltaEP95": 44.17318122030451
+      },
+      "noiseFloor": {
+        "ssim": 0,
+        "msssim": 0,
+        "psnr": 0,
+        "deltaEMean": 0,
+        "deltaEP95": 0
+      }
+    }
+  ],
+  "ranges": {
+    "ssim": {
+      "min": 0.5390114508070105,
+      "max": 0.6206969737669144
+    },
+    "msssim": {
+      "min": 0.5564711086362036,
+      "max": 0.568030462429215
+    },
+    "psnr": {
+      "min": 14.086221654135173,
+      "max": 16.773765214021246
+    },
+    "deltaEMean": {
+      "min": 4.813332760012647,
+      "max": 10.15791009532758
+    },
+    "deltaEP95": {
+      "min": 25.128389166796207,
+      "max": 46.489813207984305
+    }
+  },
+  "ocrBuilt": false,
+  "cerBound": 0,
+  "ladder": null
+}

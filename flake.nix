@@ -22,18 +22,38 @@
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
       pkgsFor = system: import nixpkgs { inherit system; };
+      # Tesseract pinned to the eng and osd traineddata. It backs the OCR tests
+      # built under the "ocr" tag; the shipped nyala binary stays cgo-free.
+      tesseractFor =
+        system:
+        (pkgsFor system).tesseract.override {
+          enableLanguages = [
+            "eng"
+            "osd"
+          ];
+        };
       localPackage =
         system:
         let
           pkgs = pkgsFor system;
           buildGoModule = pkgs.buildGoModule.override { go = pkgs.go_1_26; };
+          tesseract = tesseractFor system;
         in
         buildGoModule {
           pname = "nyala";
           version = "0.0.0";
           src = nixpkgs.lib.cleanSource ./.;
           subPackages = [ "cmd/nyala" ];
-          vendorHash = "sha256-7t9ZaHHX2ECoC+qJvOuMV9b4IiBy+iS6GcyOZO7ptNQ=";
+          vendorHash = "sha256-rq1N3+om6TWpN1aIIZFDMt6qWApAHnT18IysUtH8xlk=";
+          # The shipped binary is static and cgo-free: the gosseract cgo lives
+          # behind the "ocr" tag, off here, and subPackages excludes it. The
+          # tesseract inputs only serve the OCR-tagged test build.
+          env.CGO_ENABLED = "0";
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [
+            tesseract
+            pkgs.leptonica
+          ];
           ldflags = [
             "-s"
             "-w"
@@ -52,6 +72,7 @@
         system:
         let
           pkgs = pkgsFor system;
+          tesseract = tesseractFor system;
         in
         {
           default = pkgs.mkShell {
@@ -66,7 +87,17 @@
               govulncheck
               ineffassign
               just
+              leptonica
+              pkg-config
+              tesseract
             ];
+
+            # gosseract links libtesseract directly, so the OCR tests need
+            # TESSDATA_PREFIX to find the eng and osd traineddata. The tagged
+            # tests run with `go test -tags ocr ./...`.
+            shellHook = ''
+              export TESSDATA_PREFIX="${tesseract}/share/tessdata"
+            '';
           };
         }
       );

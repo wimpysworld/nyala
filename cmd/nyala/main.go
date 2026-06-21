@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/alecthomas/kong"
 
@@ -10,17 +11,18 @@ import (
 
 var version = "dev"
 
-var cli struct {
-	Version kong.VersionFlag `help:"Show version."`
-}
-
 func main() {
-	kong.Parse(&cli,
+	var cli app.CLI
+	kong.Parse(
+		&cli,
 		kong.Name("nyala"),
 		kong.Description("A browser for the terminal."),
 		kong.UsageOnError(),
 		kong.Vars{"version": version},
 	)
 
-	fmt.Println(app.Message())
+	if err := app.Run(cli, "testdata", os.Stdin); err != nil {
+		fmt.Fprintln(os.Stderr, "nyala:", err)
+		os.Exit(1)
+	}
 }

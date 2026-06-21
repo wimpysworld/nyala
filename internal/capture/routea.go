@@ -1,0 +1,164 @@
+// Package capture turns a rendered backend's output back into an image so the
+// metrics can score it. Route A is the block backend's path: it rasterises the
+// owned cell grid (glyph, foreground, background per cell) to an *image.RGBA,
+// emulating a fixed-cell terminal.
+//
+// The cell raster is pinned at 8x16 pixels (1:2 aspect), the Stage 0 Route A
+// cell size. The output is deterministic: the same grid rasterises to a
+// byte-identical *image.RGBA across runs, and PNG writes are timestamp-free, so
+// golden frames stay stable. Channel order is RGBA throughout.
+package capture
+
+import (
+	"bytes"
+	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
+	"io"
+
+	xfont "golang.org/x/image/font"
+	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/font/sfnt"
+	"golang.org/x/image/math/fixed"
+
+	"github.com/wimpysworld/nyala/internal/render/block"
+	"github.com/wimpysworld/nyala/internal/render/font"
+)
+
+// CellPxW and CellPxH are the pinned Route A cell raster size in pixels: 8 wide
+// by 16 tall, a 1:2 aspect that matches the assumed terminal cell shape.
+const (
+	CellPxW = 8
+	CellPxH = 16
+)
+
+// baselineY is the glyph baseline, measured in pixels down from the cell top.
+// It sits 3 pixels above the cell bottom so descenders fit inside the 16-pixel
+// cell. faceSize is the font size in points; at 72 DPI one point is one pixel,
+// so the size is chosen to fill the 8x16 cell without spilling past it.
+const (
+	baselineY = CellPxH - 3
+	faceSize  = 16.0
+	faceDPI   = 72.0
+)
+
+// Rasteriser rasterises a block.Grid to an *image.RGBA at the pinned 8x16 cell
+// size. It holds one font.Face per embedded font so glyph drawing reuses a
+// parsed, sized face. Construct it with NewRasteriser; the zero value is not
+// usable.
+type Rasteriser struct {
+	atlas      *font.Atlas
+	faceByFont map[*sfnt.Font]xfont.Face
+}
+
+// NewRasteriser parses the embedded Route A fonts and builds a sized face for
+// each. It fails if a font does not load or a face cannot be built at the pinned
+// cell size.
+func NewRasteriser() (*Rasteriser, error) {
+	a, err := font.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load atlas: %w", err)
+	}
+	opts := &opentype.FaceOptions{Size: faceSize, DPI: faceDPI, Hinting: xfont.HintingFull}
+	primaryFace, err := opentype.NewFace(a.Primary, opts)
+	if err != nil {
+		return nil, fmt.Errorf("primary face: %w", err)
+	}
+	fallbackFace, err := opentype.NewFace(a.Fallback, opts)
+	if err != nil {
+		return nil, fmt.Errorf("fallback face: %w", err)
+	}
+	return &Rasteriser{
+		atlas: a,
+		faceByFont: map[*sfnt.Font]xfont.Face{
+			a.Primary:  primaryFace,
+			a.Fallback: fallbackFace,
+		},
+	}, nil
+}
+
+// Rasterise renders the grid to a fresh *image.RGBA of width Cols*8 and height
+// Rows*16. Each cell is filled with its background colour, then its glyph is
+// drawn in the foreground colour. The result is deterministic: the same grid
+// yields a byte-identical image across runs. Channel order is RGBA.
+func (r *Rasteriser) Rasterise(g block.Grid) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, g.Cols*CellPxW, g.Rows*CellPxH))
+	for row := 0; row < g.Rows; row++ {
+		for col := 0; col < g.Cols; col++ {
+			c := g.At(col, row)
+			r.drawCell(img, col, row, *c)
+		}
+	}
+	return img
+}
+
+// drawCell fills cell (col, row) with its background, then draws its glyph in the
+// foreground colour. The glyph baseline sits at baselineY within the cell; the
+// glyph is clipped to the cell rectangle so it never bleeds into a neighbour.
+func (r *Rasteriser) drawCell(img *image.RGBA, col, row int, c block.Cell) {
+	rect := image.Rect(col*CellPxW, row*CellPxH, (col+1)*CellPxW, (row+1)*CellPxH)
+	draw.Draw(img, rect, &image.Uniform{C: c.BG}, image.Point{}, draw.Src)
+
+	face := r.faceFor(c.Glyph)
+	if face == nil {
+		return
+	}
+	d := xfont.Drawer{
+		Dst:  clip{img: img, rect: rect},
+		Src:  &image.Uniform{C: c.FG},
+		Face: face,
+		Dot: fixed.Point26_6{
+			X: fixed.I(col * CellPxW),
+			Y: fixed.I(row*CellPxH + baselineY),
+		},
+	}
+	d.DrawString(string(c.Glyph))
+}
+
+// faceFor returns the face that covers r, preferring the primary. It returns nil
+// when neither font covers r, so drawCell leaves the cell as its background.
+func (r *Rasteriser) faceFor(glyph rune) xfont.Face {
+	f, _, ok := r.atlas.Resolve(glyph)
+	if !ok {
+		return nil
+	}
+	return r.faceByFont[f]
+}
+
+// clip wraps an *image.RGBA so glyph drawing cannot write outside one cell. Set
+// composites onto img only for points inside rect; reads pass through. This
+// stops a tall or wide glyph from bleeding into a neighbouring cell.
+type clip struct {
+	img  *image.RGBA
+	rect image.Rectangle
+}
+
+func (c clip) ColorModel() color.Model { return c.img.ColorModel() }
+func (c clip) Bounds() image.Rectangle { return c.img.Bounds() }
+func (c clip) At(x, y int) color.Color { return c.img.At(x, y) }
+func (c clip) Set(x, y int, col color.Color) {
+	if (image.Point{X: x, Y: y}).In(c.rect) {
+		c.img.Set(x, y, col)
+	}
+}
+
+// EncodePNG writes img to w as a timestamp-free PNG. The PNG encoder embeds no
+// timestamp, so encoding the same image yields a byte-identical stream across
+// runs, keeping golden frames stable.
+func EncodePNG(w io.Writer, img image.Image) error {
+	enc := png.Encoder{CompressionLevel: png.DefaultCompression}
+	return enc.Encode(w, img)
+}
+
+// EncodePNGBytes encodes img to a timestamp-free PNG and returns the bytes. It is
+// a convenience over EncodePNG for callers that need the raw bytes, such as a
+// determinism check.
+func EncodePNGBytes(img image.Image) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := EncodePNG(&buf, img); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}

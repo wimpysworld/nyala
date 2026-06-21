@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "source": "task 7.5 calibration (testdata/calibration.json); bands above the zero noise floor, fractions of the observed corpus ranges",
+  "metrics": {
+    "bytesPerFrame": {
+      "band": 0.05,
+      "higherIsBetter": false
+    },
+    "deltaE2000Mean": {
+      "band": 0.5,
+      "higherIsBetter": false
+    },
+    "histDivergence": {
+      "band": 0.05,
+      "higherIsBetter": false
+    },
+    "msssim": {
+      "band": 0.02,
+      "higherIsBetter": true
+    },
+    "psnr": {
+      "band": 0.5,
+      "higherIsBetter": true
+    },
+    "ssim": {
+      "band": 0.02,
+      "higherIsBetter": true
+    }
+  }
+}

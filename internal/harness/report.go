@@ -1,0 +1,83 @@
+// Package harness holds the Stage 0 metrics sweep, the golden track, and the
+// report schema that ties them together.
+//
+// Report is the per-(page, mode, run) record the sweep emits. Its keys are flat
+// and stably ordered so an agent can diff two runs field by field. The shape is
+// uniform across the block, sixel, and kitty modes: a metric that does not apply
+// to a mode serialises as JSON null, never as zero, so a missing measurement
+// never reads as a real value. Nullable fields are pointers for that reason.
+package harness
+
+// SchemaVersion is the report schema version. Bump it on any breaking change to
+// the JSON shape. Stage 0 pins it to 1.
+const SchemaVersion = 1
+
+// Viewport is the fixed cell grid the sweep renders at. Stage 0 pins 120x40.
+type Viewport struct {
+	Cols int `json:"cols"`
+	Rows int `json:"rows"`
+}
+
+// Quality holds the full-reference quality metrics for one render. Every metric
+// field is a pointer so a not-applicable metric serialises as null, not zero.
+type Quality struct {
+	MSSSIM         *float64 `json:"msssim"`
+	SSIM           *float64 `json:"ssim"`
+	PSNR           *float64 `json:"psnr"`
+	DeltaE2000Mean *float64 `json:"deltaE2000Mean"`
+	DeltaE2000P95  *float64 `json:"deltaE2000P95"`
+	DeltaEText     *float64 `json:"deltaEText"`
+	DeltaEBitmap   *float64 `json:"deltaEBitmap"`
+	HistDivergence *float64 `json:"histDivergence"`
+	OCRCER         *float64 `json:"ocrCER"`
+	OCRWER         *float64 `json:"ocrWER"`
+	MinLegiblePx   *int     `json:"minLegiblePx"`
+	ContrastMin    *float64 `json:"contrastMin"`
+	Sharpness      *float64 `json:"sharpness"`
+}
+
+// Perf holds the cost metrics for one render. Every metric field is a pointer so
+// a not-applicable metric serialises as null, not zero.
+type Perf struct {
+	RenderMs       *float64 `json:"renderMs"`
+	EncodeMs       *float64 `json:"encodeMs"`
+	BytesPerFrame  *int     `json:"bytesPerFrame"`
+	FPS            *float64 `json:"fps"`
+	AllocsPerFrame *int     `json:"allocsPerFrame"`
+	PeakRSSBytes   *int     `json:"peakRSSBytes"`
+}
+
+// CellStats counts the cells of the owned grid by class. The counts are always
+// present, so they are plain integers, not pointers.
+type CellStats struct {
+	Total          int `json:"total"`
+	TextCells      int `json:"textCells"`
+	BitmapCells    int `json:"bitmapCells"`
+	RegressedCells int `json:"regressedCells"`
+}
+
+// Artefacts holds the relative filenames of the emitted PNGs. QuantMap is a
+// pointer because the kitty mode emits no quant-error map, so it serialises as
+// null there.
+type Artefacts struct {
+	Composite string  `json:"composite"`
+	Heatmap   string  `json:"heatmap"`
+	CellMap   string  `json:"cellMap"`
+	QuantMap  *string `json:"quantMap"`
+	Histogram string  `json:"histogram"`
+}
+
+// Report is one sweep record for a single (page, mode, run). It marshals to the
+// flat-key shape fixed in docs/STAGE-0.md, uniform across all three modes.
+type Report struct {
+	SchemaVersion int       `json:"schemaVersion"`
+	Page          string    `json:"page"`
+	Mode          string    `json:"mode"`
+	Viewport      Viewport  `json:"viewport"`
+	NyalaCommit   string    `json:"nyalaCommit"`
+	Quality       Quality   `json:"quality"`
+	Perf          Perf      `json:"perf"`
+	CellStats     CellStats `json:"cellStats"`
+	Pass          bool      `json:"pass"`
+	Artefacts     Artefacts `json:"artefacts"`
+}

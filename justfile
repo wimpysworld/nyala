@@ -17,6 +17,10 @@ check:
     @nix flake check
     @just vuln
 
+# Run the diagnostics sweep
+diagnostics:
+    @go run ./cmd/nyala --diagnostics
+
 # Format Go sources
 fmt:
     @gofmt -w ./cmd ./internal
