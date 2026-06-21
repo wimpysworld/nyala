@@ -14,7 +14,11 @@
 // the measured noise floor. Each band is also a small fraction of the metric's
 // observed corpus range, so a real regression trips the gate while ordinary
 // run-to-run jitter (which the calibration showed to be zero for block, and
-// which only the lossy sixel path can introduce) stays inside the band.
+// which only the lossy sixel path can introduce) stays inside the band. The
+// calibration records all six ranges: the similarity, PSNR, and colour ranges
+// from the absolute block scores, the histDivergence range from the same scores,
+// and the bytesPerFrame range from the per-card frame byte cost across the
+// deterministic backends, so every band traces to data.
 package harness
 
 import (
@@ -58,13 +62,14 @@ type Thresholds struct {
 // the floor. The bands are small fractions of the observed corpus ranges in
 // testdata/calibration.json (SSIM 0.539..0.621, MS-SSIM 0.556..0.568, PSNR
 // 14.09..16.77 dB, dEMean 4.81..10.16): 0.02 on the 0..1 similarity indices,
-// 0.5 dB on PSNR, 0.5 dE on the colour mean, and a relative 5% on the frame
-// byte cost. Each band is large enough to absorb the lossy sixel round trip's
-// run-to-run jitter yet small enough that a genuine regression trips it.
+// 0.5 dB on PSNR, 0.5 dE on the colour mean, 0.05 on the histDivergence range,
+// and a relative 5% on the frame byte cost range. Each band is large enough to
+// absorb the lossy sixel round trip's run-to-run jitter yet small enough that a
+// genuine regression trips it.
 func DefaultThresholds() Thresholds {
 	return Thresholds{
 		SchemaVersion: SchemaVersion,
-		Source:        "task 7.5 calibration (testdata/calibration.json); bands above the zero noise floor, fractions of the observed corpus ranges",
+		Source:        "task 7.5 calibration (testdata/calibration.json); bands above the zero noise floor, fractions of the observed corpus ranges including the histDivergence and bytesPerFrame ranges",
 		Metrics: map[string]MetricThreshold{
 			"ssim":           {Band: 0.02, HigherIsBetter: true},
 			"msssim":         {Band: 0.02, HigherIsBetter: true},
@@ -76,8 +81,8 @@ func DefaultThresholds() Thresholds {
 	}
 }
 
-// bytesPerFrameRelative marks the bytesPerFrame band as a relative fraction of
-// the baseline rather than an absolute count, since frame sizes span orders of
+// bytesPerFrameMetric marks the bytesPerFrame band as a relative fraction of the
+// baseline rather than an absolute count, since frame sizes span orders of
 // magnitude across the three backends.
 const bytesPerFrameMetric = "bytesPerFrame"
 

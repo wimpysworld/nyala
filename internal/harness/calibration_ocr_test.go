@@ -37,7 +37,7 @@ const calibCERBound = 0.15
 const calibLadderRowH = 48
 
 // renderCalibLine draws s as dark text on a light ground at the given pixel cap
-// height using the embedded Cascadia face, mirroring the OCR package's render
+// height using the embedded FiraCode Nerd Font Mono face, mirroring the OCR package's render
 // helper so the calibration ladder matches the ladder test's geometry.
 func renderCalibLine(t *testing.T, s string, capPx int) *image.RGBA {
 	t.Helper()

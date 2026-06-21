@@ -82,6 +82,25 @@ func TestFitNeverStretches(t *testing.T) {
 		if f.OffsetRow < 0 || f.OffsetRow+f.FitRows > c.rows {
 			t.Fatalf("%v: row extent escapes grid", c)
 		}
+		// Aspect preservation: the on-screen filled extent is FitCols*cellAspectW
+		// wide by FitRows*cellAspectH tall and must match the image aspect
+		// imgW:imgH. Cross-multiply: fitW*imgH should equal fitH*imgW. Fit rounds
+		// one axis down by integer division and clamps at 1, so allow a tolerance
+		// of one rounding step on each axis. A bug that fit the wrong axis but
+		// stayed in bounds breaks this equality well beyond the tolerance.
+		fitW := f.FitCols * cellAspectW
+		fitH := f.FitRows * cellAspectH
+		lhs := fitW * c.imgH
+		rhs := fitH * c.imgW
+		diff := lhs - rhs
+		if diff < 0 {
+			diff = -diff
+		}
+		tol := cellAspectW*c.imgH + cellAspectH*c.imgW
+		if diff > tol {
+			t.Fatalf("%v: aspect not preserved: fitW*imgH=%d fitH*imgW=%d diff=%d tol=%d",
+				c, lhs, rhs, diff, tol)
+		}
 	}
 }
 

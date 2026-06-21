@@ -36,6 +36,23 @@ type Quality struct {
 	Sharpness      *float64 `json:"sharpness"`
 }
 
+// QualityRelative holds the relative quality metrics for one render, scored
+// against the ideal block render rather than the downscaled input. It isolates
+// the loss the real backend adds over the ideal block ceiling. Every metric
+// field is a pointer so a not-applicable metric serialises as null, not zero.
+// For kitty the ideal render equals the input, so its relative scores collapse
+// toward the absolute scores.
+type QualityRelative struct {
+	MSSSIM         *float64 `json:"msssim"`
+	SSIM           *float64 `json:"ssim"`
+	PSNR           *float64 `json:"psnr"`
+	MSE            *float64 `json:"mse"`
+	GMSD           *float64 `json:"gmsd"`
+	DeltaE2000Mean *float64 `json:"deltaE2000Mean"`
+	DeltaE2000P95  *float64 `json:"deltaE2000P95"`
+	HistDivergence *float64 `json:"histDivergence"`
+}
+
 // Perf holds the cost metrics for one render. Every metric field is a pointer so
 // a not-applicable metric serialises as null, not zero.
 type Perf struct {
@@ -70,14 +87,15 @@ type Artefacts struct {
 // Report is one sweep record for a single (page, mode, run). It marshals to the
 // flat-key shape fixed in docs/STAGE-0.md, uniform across all three modes.
 type Report struct {
-	SchemaVersion int       `json:"schemaVersion"`
-	Page          string    `json:"page"`
-	Mode          string    `json:"mode"`
-	Viewport      Viewport  `json:"viewport"`
-	NyalaCommit   string    `json:"nyalaCommit"`
-	Quality       Quality   `json:"quality"`
-	Perf          Perf      `json:"perf"`
-	CellStats     CellStats `json:"cellStats"`
-	Pass          bool      `json:"pass"`
-	Artefacts     Artefacts `json:"artefacts"`
+	SchemaVersion   int             `json:"schemaVersion"`
+	Page            string          `json:"page"`
+	Mode            string          `json:"mode"`
+	Viewport        Viewport        `json:"viewport"`
+	NyalaCommit     string          `json:"nyalaCommit"`
+	Quality         Quality         `json:"quality"`
+	QualityRelative QualityRelative `json:"qualityRelative"`
+	Perf            Perf            `json:"perf"`
+	CellStats       CellStats       `json:"cellStats"`
+	Pass            bool            `json:"pass"`
+	Artefacts       Artefacts       `json:"artefacts"`
 }

@@ -15,7 +15,7 @@ import (
 )
 
 // renderLine draws s as dark text on a light ground at the given pixel cap
-// height, using the embedded Cascadia face. It returns the image and the source
+// height, using the embedded FiraCode Nerd Font Mono face. It returns the image and the source
 // capital height that drives conditioning.
 func renderLine(t *testing.T, s string, capPx int) (*image.RGBA, int) {
 	t.Helper()

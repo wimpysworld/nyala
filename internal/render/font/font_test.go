@@ -53,7 +53,7 @@ func TestResolvePrefersPrimary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	// ASCII letters live in Cascadia Mono, so the primary must win.
+	// ASCII letters live in FiraCode Nerd Font Mono, so the primary must win.
 	f, _, ok := a.Resolve('A')
 	if !ok {
 		t.Fatal("'A' did not resolve")

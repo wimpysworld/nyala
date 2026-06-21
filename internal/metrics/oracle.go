@@ -64,9 +64,13 @@ const (
 
 // quadrantGlyphForMask maps a 4-bit foreground mask (bit3 top-left, bit2
 // top-right, bit1 bottom-left, bit0 bottom-right) to the quadrant block rune
-// whose filled quadrants match the foreground set. It mirrors the block
-// package's quadrant glyph table so the ideal render draws the same runes the
-// real renderer can emit.
+// whose filled quadrants match the foreground set. It is the full distinct
+// quadrant set, the best-achievable quadrant cell, so the oracle measures a
+// full-quadrant ideal ceiling. This table is independent of the block backend's
+// Carbonyl-collapsed table: that port folds many masks to half blocks and uses
+// different bit semantics, and it never emits U+2588, U+2580, U+2599, U+259B,
+// U+259C, or U+259F. So these are not the exact runes the block renderer emits;
+// they are the ideal ceiling those renders are scored against.
 // Bit layout: bit3 top-left, bit2 top-right, bit1 bottom-left, bit0
 // bottom-right. Each entry is the quadrant block rune whose filled quadrants
 // are exactly the set bits.

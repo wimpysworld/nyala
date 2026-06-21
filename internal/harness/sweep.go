@@ -191,7 +191,19 @@ func runOne(rast *capture.Rasteriser, cfg SweepConfig, in SweepInput, mode strin
 		return Report{}, err
 	}
 
-	rep.Quality = scoreQuality(mode, renderImg, reference, grid)
+	// The ideal block render is the relative-score reference: the tightest block
+	// render a quadrant backend could reach. For block, captureBlock already built
+	// the ideal grid; for sixel and kitty, build it from the same downscaled
+	// source so every mode scores against the one ceiling. Channel order is RGBA.
+	if ideal == nil {
+		composeSrc := metrics.Downscale(in.Src, cfg.Cols*2, cfg.Rows*4)
+		ig := metrics.IdealGrid(composeSrc, cfg.Cols, cfg.Rows)
+		ideal = &ig
+	}
+	idealImg := rast.Rasterise(*ideal)
+
+	rep.Quality = scoreQuality(mode, renderImg, reference, grid, rast)
+	rep.QualityRelative = scoreQualityRelative(renderImg, idealImg)
 	rep.Perf = toPerf(perf)
 	rep.CellStats = cellStats(cfg, grid)
 
@@ -275,10 +287,12 @@ func captureKitty(reference *image.RGBA) (*image.RGBA, metrics.FramePerf, error)
 }
 
 // scoreQuality scores one render against the reference and fills the report
-// Quality block. The block mode also reports the owned-grid contrast and
-// sharpness co-signals; sixel and kitty own no grid, so the cell co-signals
-// stay null.
-func scoreQuality(mode string, renderImg, reference *image.RGBA, grid *block.Grid) Quality {
+// Quality block. Sharpness (Laplacian variance on the decoded render) is reported
+// for all three modes. WCAG contrast is the owned cell-grid contrast for block;
+// for sixel and kitty, which own no grid, it is derived from the decoded pixels
+// over the ladder region. OCR scores come from the build-tagged hook: null in the
+// default cgo-free build, measured under the "ocr" tag.
+func scoreQuality(mode string, renderImg, reference *image.RGBA, grid *block.Grid, rast *capture.Rasteriser) Quality {
 	abs := metrics.ScorePair(renderImg, reference)
 	q := Quality{
 		MSSSIM:         f64v(abs.MSSSIM),
@@ -287,13 +301,145 @@ func scoreQuality(mode string, renderImg, reference *image.RGBA, grid *block.Gri
 		DeltaE2000Mean: f64v(abs.DeltaEMean),
 		DeltaE2000P95:  f64v(abs.DeltaEP95),
 		HistDivergence: f64v(1 - abs.HistIntersection),
+		Sharpness:      f64v(metrics.LaplacianVariance(renderImg)),
 	}
 	if mode == "block" && grid != nil {
 		wc := metrics.WCAGGrid(*grid)
 		q.ContrastMin = f64v(wc.Min)
-		q.Sharpness = f64v(metrics.LaplacianVariance(renderImg))
+	} else {
+		q.ContrastMin = f64v(pixelContrast(renderImg))
+	}
+	if cer, wer, minLeg := ocrScores(rast, mode, renderImg); cer != nil || wer != nil || minLeg != nil {
+		q.OCRCER = cer
+		q.OCRWER = wer
+		q.MinLegiblePx = minLeg
 	}
 	return q
+}
+
+// scoreQualityRelative scores one render against the ideal block render and fills
+// the report QualityRelative block. The ideal render is the tightest block render
+// a quadrant backend could reach, so the relative scores isolate the loss the
+// real backend adds over that ceiling. For kitty the ideal render tracks the
+// input, so the relative scores collapse toward the absolute scores; the computed
+// values are emitted, never null. Channel order is RGBA.
+func scoreQualityRelative(renderImg, idealImg *image.RGBA) QualityRelative {
+	rel := metrics.ScorePair(renderImg, idealImg)
+	return QualityRelative{
+		MSSSIM:         f64v(rel.MSSSIM),
+		SSIM:           f64v(rel.SSIM),
+		PSNR:           f64v(rel.PSNR),
+		MSE:            f64v(rel.MSE),
+		GMSD:           f64v(rel.GMSD),
+		DeltaE2000Mean: f64v(rel.DeltaEMean),
+		DeltaE2000P95:  f64v(rel.DeltaEP95),
+		HistDivergence: f64v(1 - rel.HistIntersection),
+	}
+}
+
+// pixelContrast derives a WCAG contrast ratio from the decoded pixels of a
+// gridless render (sixel, kitty). It splits the render's luminance into two
+// clusters by an Otsu threshold, takes each cluster's mean colour as a
+// representative foreground and background, and returns the WCAG contrast of that
+// pair. It is the pixel-derived contrast co-signal the per-mode matrix wants for
+// the gridless modes, where no owned cell grid carries per-cell foreground and
+// background colours. An empty image, or one whose pixels do not split, returns a
+// 1:1 ratio. Channel order is RGBA.
+func pixelContrast(img *image.RGBA) float64 {
+	b := img.Bounds()
+	if b.Empty() {
+		return 1
+	}
+	// Build the 8-bit luminance histogram and find the Otsu split.
+	var hist [256]int
+	var total int
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			c := img.RGBAAt(x, y)
+			hist[lumaByte(c.R, c.G, c.B)]++
+			total++
+		}
+	}
+	if total == 0 {
+		return 1
+	}
+	t := otsuSplit(hist[:], total)
+
+	// Accumulate each cluster's mean colour: below the threshold is the darker
+	// set, at or above is the lighter set.
+	var loR, loG, loB, loN float64
+	var hiR, hiG, hiB, hiN float64
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			c := img.RGBAAt(x, y)
+			if int(lumaByte(c.R, c.G, c.B)) < t {
+				loR, loG, loB, loN = loR+float64(c.R), loG+float64(c.G), loB+float64(c.B), loN+1
+			} else {
+				hiR, hiG, hiB, hiN = hiR+float64(c.R), hiG+float64(c.G), hiB+float64(c.B), hiN+1
+			}
+		}
+	}
+	if loN == 0 || hiN == 0 {
+		return 1
+	}
+	return metrics.WCAGContrast(
+		meanByte(loR, loN), meanByte(loG, loN), meanByte(loB, loN),
+		meanByte(hiR, hiN), meanByte(hiG, hiN), meanByte(hiB, hiN),
+	)
+}
+
+// lumaByte returns the BT.601 luma of an 8-bit RGB triple, rounded to a byte. It
+// feeds the Otsu histogram for the pixel-derived contrast split.
+func lumaByte(r, g, b uint8) uint8 {
+	y := 0.299*float64(r) + 0.587*float64(g) + 0.114*float64(b)
+	return uint8(y + 0.5)
+}
+
+// meanByte returns sum/count rounded and clamped to an 8-bit value.
+func meanByte(sum, count float64) uint8 {
+	v := sum/count + 0.5
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return uint8(v)
+}
+
+// otsuSplit returns the Otsu luminance threshold for a 256-bin histogram: the
+// level that maximises the between-class variance, splitting the pixels into a
+// dark and a light cluster. total is the pixel count. It returns 0 when the
+// histogram has no separable mass, which the caller treats as no split.
+func otsuSplit(hist []int, total int) int {
+	var sum float64
+	for i, n := range hist {
+		sum += float64(i) * float64(n)
+	}
+	var sumB, wB float64
+	var best float64
+	bestT := 0
+	for t := 0; t < 256; t++ {
+		wB += float64(hist[t])
+		if wB == 0 {
+			continue
+		}
+		wF := float64(total) - wB
+		if wF == 0 {
+			break
+		}
+		sumB += float64(t) * float64(hist[t])
+		mB := sumB / wB
+		mF := (sum - sumB) / wF
+		between := wB * wF * (mB - mF) * (mB - mF)
+		if between > best {
+			best = between
+			bestT = t
+		}
+	}
+	// The split lands at the level above the best threshold, so the darker set is
+	// strictly below it.
+	return bestT + 1
 }
 
 // cellStats counts the owned grid cells for the block mode; non-block modes own

@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"image"
+	"io"
 	"math"
 	"os"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
+	"github.com/wimpysworld/nyala/internal/render/kitty"
 )
 
 // CalibCols and CalibRows are the pinned calibration grid: the Stage 0 120x40
@@ -51,11 +53,12 @@ var CalibCards = []string{
 // the headline metrics calibration pins ranges from: the structural similarity
 // pair, PSNR, and the CIEDE2000 mean and p95.
 type CalibMetricSet struct {
-	SSIM       float64 `json:"ssim"`
-	MSSSIM     float64 `json:"msssim"`
-	PSNR       float64 `json:"psnr"`
-	DeltaEMean float64 `json:"deltaEMean"`
-	DeltaEP95  float64 `json:"deltaEP95"`
+	SSIM           float64 `json:"ssim"`
+	MSSSIM         float64 `json:"msssim"`
+	PSNR           float64 `json:"psnr"`
+	DeltaEMean     float64 `json:"deltaEMean"`
+	DeltaEP95      float64 `json:"deltaEP95"`
+	HistDivergence float64 `json:"histDivergence"`
 }
 
 // CalibCard holds one card's measured scores: absolute against the downscaled
@@ -72,6 +75,19 @@ type CalibCard struct {
 	// block renderer is deterministic, so every field is 0; a non-zero value
 	// would mean the render path is not reproducible.
 	NoiseFloor CalibMetricSet `json:"noiseFloor"`
+	// Bytes is the frame byte cost of the card through each backend, the data the
+	// bytesPerFrame threshold band traces to.
+	Bytes CalibByteCost `json:"bytes"`
+}
+
+// CalibByteCost is one card's frame byte cost through the deterministic
+// backends, measured by encoding the downscaled card to each wire payload and
+// counting the bytes. The lossy sixel encoder jitters its payload size run to
+// run, so it is omitted here to keep the committed file byte-stable; the block
+// and kitty costs bracket the corpus byte span the bytesPerFrame band fractions.
+type CalibByteCost struct {
+	Block int `json:"block"`
+	Kitty int `json:"kitty"`
 }
 
 // CalibRange is the observed min and max of one metric across all measured
@@ -81,14 +97,27 @@ type CalibRange struct {
 	Max float64 `json:"max"`
 }
 
+// CalibIntRange is the observed min and max of an integer metric (the frame byte
+// cost) across all measured cards and deterministic backends.
+type CalibIntRange struct {
+	Min int `json:"min"`
+	Max int `json:"max"`
+}
+
 // CalibRanges holds the corpus-wide observed range of each headline metric over
-// the measured cards, taken from the absolute scores.
+// the measured cards. The similarity, PSNR, and colour ranges are taken from the
+// absolute block scores. HistDivergence and BytesPerFrame trace to data too, so
+// every threshold band is a fraction of an observed range: HistDivergence comes
+// from the absolute block scores, BytesPerFrame from the per-card frame byte cost
+// measured across the deterministic backends.
 type CalibRanges struct {
-	SSIM       CalibRange `json:"ssim"`
-	MSSSIM     CalibRange `json:"msssim"`
-	PSNR       CalibRange `json:"psnr"`
-	DeltaEMean CalibRange `json:"deltaEMean"`
-	DeltaEP95  CalibRange `json:"deltaEP95"`
+	SSIM           CalibRange    `json:"ssim"`
+	MSSSIM         CalibRange    `json:"msssim"`
+	PSNR           CalibRange    `json:"psnr"`
+	DeltaEMean     CalibRange    `json:"deltaEMean"`
+	DeltaEP95      CalibRange    `json:"deltaEP95"`
+	HistDivergence CalibRange    `json:"histDivergence"`
+	BytesPerFrame  CalibIntRange `json:"bytesPerFrame"`
 }
 
 // CalibLadderRung is one OCR ladder rung's measured CER and WER on a card, with
@@ -176,7 +205,31 @@ func measureCard(rast *capture.Rasteriser, in CalibInput) CalibCard {
 		Absolute:   toCalibSet(scores.Absolute),
 		Relative:   toCalibSet(scores.Relative),
 		NoiseFloor: noiseFloorOf(noise),
+		Bytes:      measureBytes(composeSrc),
 	}
+}
+
+// measureBytes encodes the downscaled card through each backend and counts the
+// frame byte cost. The block byte cost is the cell-grid encoder output; the
+// sixel and kitty costs are the wire payload sizes. It is the data the
+// bytesPerFrame threshold band traces to.
+func measureBytes(composeSrc *image.RGBA) CalibByteCost {
+	br := block.Renderer{Cols: CalibCols, Rows: CalibRows}
+	return CalibByteCost{
+		Block: encodeBytes(func(w io.Writer) error { return br.Render(render.Frame{Img: composeSrc}, w) }),
+		Kitty: encodeBytes(func(w io.Writer) error { var r kitty.Renderer; return r.Render(render.Frame{Img: composeSrc}, w) }),
+	}
+}
+
+// encodeBytes runs one encode against a counting writer and returns the byte
+// count. An encode error returns 0, so a backend that cannot encode the card does
+// not skew the range with a partial count.
+func encodeBytes(encode func(io.Writer) error) int {
+	cw := metrics.NewCountingWriter(io.Discard)
+	if err := encode(cw); err != nil {
+		return 0
+	}
+	return int(cw.N)
 }
 
 // renderBlock composes the downscaled source onto the pinned block grid and
@@ -190,11 +243,12 @@ func renderBlock(rast *capture.Rasteriser, composeSrc *image.RGBA) *image.RGBA {
 // toCalibSet projects a metrics.MetricSet onto the calibration headline set.
 func toCalibSet(m metrics.MetricSet) CalibMetricSet {
 	return CalibMetricSet{
-		SSIM:       m.SSIM,
-		MSSSIM:     m.MSSSIM,
-		PSNR:       m.PSNR,
-		DeltaEMean: m.DeltaEMean,
-		DeltaEP95:  m.DeltaEP95,
+		SSIM:           m.SSIM,
+		MSSSIM:         m.MSSSIM,
+		PSNR:           m.PSNR,
+		DeltaEMean:     m.DeltaEMean,
+		DeltaEP95:      m.DeltaEP95,
+		HistDivergence: 1 - m.HistIntersection,
 	}
 }
 
@@ -211,11 +265,12 @@ func noiseFloorOf(m metrics.MetricSet) CalibMetricSet {
 		psnrGap = math.MaxFloat64 - m.PSNR
 	}
 	return CalibMetricSet{
-		SSIM:       1 - m.SSIM,
-		MSSSIM:     1 - m.MSSSIM,
-		PSNR:       psnrGap,
-		DeltaEMean: m.DeltaEMean,
-		DeltaEP95:  m.DeltaEP95,
+		SSIM:           1 - m.SSIM,
+		MSSSIM:         1 - m.MSSSIM,
+		PSNR:           psnrGap,
+		DeltaEMean:     m.DeltaEMean,
+		DeltaEP95:      m.DeltaEP95,
+		HistDivergence: 1 - m.HistIntersection,
 	}
 }
 
@@ -233,6 +288,8 @@ func rangesOf(cards []CalibCard) CalibRanges {
 			r.PSNR = CalibRange{Min: a.PSNR, Max: a.PSNR}
 			r.DeltaEMean = CalibRange{Min: a.DeltaEMean, Max: a.DeltaEMean}
 			r.DeltaEP95 = CalibRange{Min: a.DeltaEP95, Max: a.DeltaEP95}
+			r.HistDivergence = CalibRange{Min: a.HistDivergence, Max: a.HistDivergence}
+			r.BytesPerFrame = byteRangeOf(c.Bytes)
 			first = false
 			continue
 		}
@@ -241,8 +298,35 @@ func rangesOf(cards []CalibCard) CalibRanges {
 		r.PSNR = widen(r.PSNR, a.PSNR)
 		r.DeltaEMean = widen(r.DeltaEMean, a.DeltaEMean)
 		r.DeltaEP95 = widen(r.DeltaEP95, a.DeltaEP95)
+		r.HistDivergence = widen(r.HistDivergence, a.HistDivergence)
+		r.BytesPerFrame = widenInt(r.BytesPerFrame, byteRangeOf(c.Bytes))
 	}
 	return r
+}
+
+// byteRangeOf returns the min and max frame byte cost across the deterministic
+// backends for one card.
+func byteRangeOf(b CalibByteCost) CalibIntRange {
+	lo, hi := b.Block, b.Block
+	if b.Kitty < lo {
+		lo = b.Kitty
+	}
+	if b.Kitty > hi {
+		hi = b.Kitty
+	}
+	return CalibIntRange{Min: lo, Max: hi}
+}
+
+// widenInt returns r grown to include the span of v.
+func widenInt(r, v CalibIntRange) CalibIntRange {
+	out := r
+	if v.Min < out.Min {
+		out.Min = v.Min
+	}
+	if v.Max > out.Max {
+		out.Max = v.Max
+	}
+	return out
 }
 
 // widen returns r grown to include v.

@@ -228,6 +228,25 @@ Sixel/Kitty blit is out-of-band into a reserved page rectangle.
 Verdict: optional polish only. Adopt after chrome and scrolling exist, or vendor a
 dozen lines of spring maths. Do not let it shape the architecture.
 
+### bubbletint (theming)
+
+[`lrstanley/bubbletint`](https://github.com/lrstanley/bubbletint) is the intended
+theming layer for the chrome. It ships a large registry of named terminal colour
+schemes and maps each to Lipgloss colours, so the address bar, status line, and
+borders can switch theme at runtime from one tint.
+
+Use it for chrome theming only. It colours styled cells; it does not touch the
+bitmap viewport or the Sixel/Kitty blit. Adopt it once the Bubble Tea chrome
+exists (Stage 4), not before. Captured here so the choice is not lost.
+
+Future idea: drive the page's dark/light mode from the active tint. The web
+feature is the CSS `prefers-color-scheme` media query. Chromium emulates it over
+CDP with `Emulation.setEmulatedMedia` (`features: [{name: "prefers-color-scheme",
+value: "dark"|"light"}]`), which chromedp can call. Classify the active bubbletint
+theme as dark or light, then set the emulated media to match, so sites that honour
+`prefers-color-scheme` render in the same mode as the terminal chrome. Needs the
+browser layer (Stage 3) and the tint (Stage 4) first.
+
 ### Sixel in Go
 
 | Tool | Score | Maturity | Maintenance | Suitability for Nyala |

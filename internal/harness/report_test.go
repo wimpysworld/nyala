@@ -38,6 +38,16 @@ func fullReport() Report {
 			ContrastMin:    f64(4.7),
 			Sharpness:      f64(184.2),
 		},
+		QualityRelative: QualityRelative{
+			MSSSIM:         f64(0.99),
+			SSIM:           f64(0.98),
+			PSNR:           f64(44.1),
+			MSE:            f64(2.5),
+			GMSD:           f64(0.01),
+			DeltaE2000Mean: f64(0.4),
+			DeltaE2000P95:  f64(1.2),
+			HistDivergence: f64(0.01),
+		},
 		Perf: Perf{
 			RenderMs:       f64(1.8),
 			EncodeMs:       f64(0.6),
@@ -93,6 +103,16 @@ func TestMarshalShape(t *testing.T) {
 			"minLegiblePx":   float64(14),
 			"contrastMin":    4.7,
 			"sharpness":      184.2,
+		},
+		"qualityRelative": map[string]any{
+			"msssim":         0.99,
+			"ssim":           0.98,
+			"psnr":           44.1,
+			"mse":            2.5,
+			"gmsd":           0.01,
+			"deltaE2000Mean": 0.4,
+			"deltaE2000P95":  1.2,
+			"histDivergence": 0.01,
 		},
 		"perf": map[string]any{
 			"renderMs":       1.8,

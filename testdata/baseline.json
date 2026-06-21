@@ -9,11 +9,11 @@
       "page": "linuxmatters",
       "mode": "block",
       "metrics": {
-        "ssim": 0.5220558149434307,
-        "msssim": 0.5866624933449583,
-        "psnr": 12.074701479829383,
-        "deltaE2000Mean": 11.186237554669614,
-        "histDivergence": 0.3267702907986111,
+        "ssim": 0.5081965088103106,
+        "msssim": 0.5607686846731925,
+        "psnr": 11.827430435263341,
+        "deltaE2000Mean": 11.65488451035419,
+        "histDivergence": 0.3288802083333332,
         "bytesPerFrame": 176678
       }
     },
@@ -21,12 +21,12 @@
       "page": "linuxmatters",
       "mode": "sixel",
       "metrics": {
-        "ssim": 0.9988563979939873,
-        "msssim": 0.9997914366851076,
-        "psnr": 46.46311837545976,
-        "deltaE2000Mean": 0.3861275452811474,
-        "histDivergence": 0.6015603298611112,
-        "bytesPerFrame": 343987
+        "ssim": 0.9988822966495731,
+        "msssim": 0.9997984113697429,
+        "psnr": 46.470615405851454,
+        "deltaE2000Mean": 0.3896520599212161,
+        "histDivergence": 0.6013921440972223,
+        "bytesPerFrame": 344418
       }
     },
     {
@@ -45,11 +45,11 @@
       "page": "testcard-01-greyscale",
       "mode": "block",
       "metrics": {
-        "ssim": 0.591513064127276,
-        "msssim": 0.5479973202723196,
-        "psnr": 14.63592255193057,
-        "deltaE2000Mean": 6.204720972238152,
-        "histDivergence": 0.27557128906249995,
+        "ssim": 0.5900561578357892,
+        "msssim": 0.5218872932283899,
+        "psnr": 14.520843894237927,
+        "deltaE2000Mean": 6.335773431258184,
+        "histDivergence": 0.27461046006944445,
         "bytesPerFrame": 196120
       }
     },
@@ -57,12 +57,12 @@
       "page": "testcard-01-greyscale",
       "mode": "sixel",
       "metrics": {
-        "ssim": 0.9996507783796165,
-        "msssim": 0.9998754032739572,
-        "psnr": 52.166503680197074,
-        "deltaE2000Mean": 0.10537925359981908,
-        "histDivergence": 0.15715060763888877,
-        "bytesPerFrame": 281453
+        "ssim": 0.9996557520604994,
+        "msssim": 0.9998770548067839,
+        "psnr": 52.34378914633996,
+        "deltaE2000Mean": 0.0869928084548391,
+        "histDivergence": 0.15656629774305542,
+        "bytesPerFrame": 281822
       }
     },
     {
@@ -81,11 +81,11 @@
       "page": "testcard-02-colour",
       "mode": "block",
       "metrics": {
-        "ssim": 0.5965510942748077,
-        "msssim": 0.548565663190094,
-        "psnr": 14.820063815076264,
-        "deltaE2000Mean": 8.0180682516833,
-        "histDivergence": 0.2705159505208332,
+        "ssim": 0.5926989986008996,
+        "msssim": 0.5222249007541965,
+        "psnr": 14.701916714473871,
+        "deltaE2000Mean": 8.206053193388684,
+        "histDivergence": 0.27007107204861114,
         "bytesPerFrame": 195496
       }
     },
@@ -93,12 +93,12 @@
       "page": "testcard-02-colour",
       "mode": "sixel",
       "metrics": {
-        "ssim": 0.9982759851227854,
-        "msssim": 0.9994521021865845,
-        "psnr": 47.08765398577994,
-        "deltaE2000Mean": 0.307842338433637,
-        "histDivergence": 0.1529709201388888,
-        "bytesPerFrame": 262546
+        "ssim": 0.9984645318488575,
+        "msssim": 0.9994718455911606,
+        "psnr": 47.175313997723684,
+        "deltaE2000Mean": 0.30286019770610084,
+        "histDivergence": 0.1539268663194444,
+        "bytesPerFrame": 265400
       }
     },
     {
@@ -117,11 +117,11 @@
       "page": "testcard-03-images",
       "mode": "block",
       "metrics": {
-        "ssim": 0.5173549205580187,
-        "msssim": 0.5378340978531987,
-        "psnr": 13.028244937899595,
-        "deltaE2000Mean": 11.233194089032,
-        "histDivergence": 0.21797092013888897,
+        "ssim": 0.5108773539463795,
+        "msssim": 0.5184690423705723,
+        "psnr": 13.045192303756561,
+        "deltaE2000Mean": 11.221144877040388,
+        "histDivergence": 0.2105387369791667,
         "bytesPerFrame": 190133
       }
     },
@@ -129,12 +129,12 @@
       "page": "testcard-03-images",
       "mode": "sixel",
       "metrics": {
-        "ssim": 0.9817208921832897,
-        "msssim": 0.9964959145291749,
-        "psnr": 39.71888997020454,
-        "deltaE2000Mean": 1.091483379808158,
-        "histDivergence": 0.24783365885416675,
-        "bytesPerFrame": 335813
+        "ssim": 0.9805237122058963,
+        "msssim": 0.9961192289758642,
+        "psnr": 39.27241900829642,
+        "deltaE2000Mean": 1.0873567902235248,
+        "histDivergence": 0.24350802951388884,
+        "bytesPerFrame": 340745
       }
     },
     {

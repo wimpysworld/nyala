@@ -109,36 +109,48 @@ func TestIdealRenderDimensions(t *testing.T) {
 	}
 }
 
-// TestKittyScoresCollapse mirrors the Kitty case: a lossless backend renders the
-// ideal block render itself, so the render equals the ideal. Scoring that render
-// against the ideal (relative) must collapse to the identity maximum, and a
-// render scored against itself collapses the same way for both scores.
-func TestKittyScoresCollapse(t *testing.T) {
+// TestKittyScoresCollapseToAbsolute asserts the Kitty property: a lossless
+// backend reproduces the input, so for the kitty path the ideal render is the
+// input and the relative score equals the absolute score. The test builds a flat
+// source whose ideal render and downscaled input agree, renders that ideal as the
+// lossless output, then checks relative and absolute match metric by metric.
+func TestKittyScoresCollapseToAbsolute(t *testing.T) {
 	rast := newTestRasteriser(t)
 	cols, rows := 6, 4
-	src := halfSplitImage(cols, rows)
+	// Flat source: every cell's ideal is one flat colour, equal to the
+	// downscaled input, so the ideal render and the aligned input are the same
+	// image. This is the kitty case where ideal == input.
+	src := solidImage(cols*oracleCellW, rows*oracleCellH, color.RGBA{R: 90, G: 140, B: 200, A: 0xff})
+	render := IdealRender(rast, src, cols, rows)
 
-	// The "lossless" render is exactly the ideal render of the source.
-	ideal := IdealRender(rast, src, cols, rows)
+	s := Score(rast, render, src, cols, rows)
 
-	rel := ScorePair(ideal, ideal)
-	if rel.MSE != 0 {
-		t.Fatalf("relative MSE = %g, want 0 for an identical pair", rel.MSE)
+	if math.Abs(s.Relative.MSE-s.Absolute.MSE) > 1e-9 {
+		t.Errorf("relative MSE %g != absolute MSE %g", s.Relative.MSE, s.Absolute.MSE)
 	}
-	if rel.SSIM < 1-1e-9 {
-		t.Fatalf("relative SSIM = %g, want 1.0", rel.SSIM)
+	if math.Abs(s.Relative.SSIM-s.Absolute.SSIM) > 1e-9 {
+		t.Errorf("relative SSIM %g != absolute SSIM %g", s.Relative.SSIM, s.Absolute.SSIM)
 	}
-	if rel.MSSSIM < 1-1e-9 {
-		t.Fatalf("relative MSSSIM = %g, want 1.0", rel.MSSSIM)
+	if math.Abs(s.Relative.MSSSIM-s.Absolute.MSSSIM) > 1e-9 {
+		t.Errorf("relative MSSSIM %g != absolute MSSSIM %g", s.Relative.MSSSIM, s.Absolute.MSSSIM)
 	}
-	if rel.DeltaEMean != 0 || rel.DeltaEP95 != 0 {
-		t.Fatalf("relative dE mean=%g p95=%g, want 0", rel.DeltaEMean, rel.DeltaEP95)
+	if math.Abs(s.Relative.DeltaEMean-s.Absolute.DeltaEMean) > 1e-9 {
+		t.Errorf("relative dE mean %g != absolute %g", s.Relative.DeltaEMean, s.Absolute.DeltaEMean)
 	}
-	if rel.PSNR != PSNRInfinite {
-		t.Fatalf("relative PSNR = %g, want the infinite sentinel", rel.PSNR)
+	if math.Abs(s.Relative.DeltaEP95-s.Absolute.DeltaEP95) > 1e-9 {
+		t.Errorf("relative dE p95 %g != absolute %g", s.Relative.DeltaEP95, s.Absolute.DeltaEP95)
 	}
-	if rel.HistIntersection < 1-1e-9 {
-		t.Fatalf("relative HistIntersection = %g, want 1.0", rel.HistIntersection)
+	if math.Abs(s.Relative.HistIntersection-s.Absolute.HistIntersection) > 1e-9 {
+		t.Errorf("relative HistIntersection %g != absolute %g",
+			s.Relative.HistIntersection, s.Absolute.HistIntersection)
+	}
+	// The render is the ideal render itself, so the relative score is the
+	// identity maximum: zero error and full similarity.
+	if s.Relative.MSE != 0 {
+		t.Errorf("relative MSE = %g, want 0 for ideal == render", s.Relative.MSE)
+	}
+	if s.Relative.PSNR != PSNRInfinite {
+		t.Errorf("relative PSNR = %g, want the infinite sentinel", s.Relative.PSNR)
 	}
 }
 

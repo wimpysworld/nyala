@@ -2,9 +2,9 @@
 //
 // Route A renders the block backend's owned cell grid back to an image so the
 // metrics can score it. That render needs a deterministic, embedded font.
-// Cascadia Mono is the primary face; GNU Unifont is the fallback for code
-// points Cascadia lacks. Both faces ship in this package via go:embed so the
-// shipped binary carries them and no system font is read at runtime.
+// FiraCode Nerd Font Mono is the primary face; GNU Unifont is the fallback for
+// code points the primary lacks. Both faces ship in this package via go:embed
+// so the shipped binary carries them and no system font is read at runtime.
 //
 // GNU Unifont's official build ships as OpenType (.otf), not TrueType. Both
 // parse through golang.org/x/image/font/sfnt, so the fallback embeds the .otf.
@@ -17,18 +17,19 @@ import (
 	"golang.org/x/image/font/sfnt"
 )
 
-//go:embed CascadiaMono.ttf
-var cascadiaTTF []byte
+//go:embed FiraCodeNerdFontMono-Regular.ttf
+var firaCodeTTF []byte
 
 //go:embed Unifont.otf
 var unifontOTF []byte
 
 // Atlas holds the parsed primary and fallback fonts plus a reusable glyph
-// lookup buffer. The primary is Cascadia Mono; the fallback is GNU Unifont.
+// lookup buffer. The primary is FiraCode Nerd Font Mono; the fallback is GNU
+// Unifont.
 type Atlas struct {
-	// Primary is Cascadia Mono, the face used for most glyphs.
+	// Primary is FiraCode Nerd Font Mono, the face used for most glyphs.
 	Primary *sfnt.Font
-	// Fallback is GNU Unifont, used for code points Cascadia lacks.
+	// Fallback is GNU Unifont, used for code points the primary lacks.
 	Fallback *sfnt.Font
 
 	buf sfnt.Buffer
@@ -37,9 +38,9 @@ type Atlas struct {
 // Load parses the embedded fonts and returns the atlas. It fails if either
 // embedded font does not parse.
 func Load() (*Atlas, error) {
-	primary, err := sfnt.Parse(cascadiaTTF)
+	primary, err := sfnt.Parse(firaCodeTTF)
 	if err != nil {
-		return nil, fmt.Errorf("parse Cascadia Mono: %w", err)
+		return nil, fmt.Errorf("parse FiraCode Nerd Font Mono: %w", err)
 	}
 	fallback, err := sfnt.Parse(unifontOTF)
 	if err != nil {
@@ -74,8 +75,8 @@ type CoverageGap struct {
 }
 
 // Coverage checks every rune in glyphs against both fonts and returns the gaps:
-// the runes neither Cascadia Mono nor GNU Unifont can render. An empty result
-// means full coverage of the emitted glyph table.
+// the runes neither FiraCode Nerd Font Mono nor GNU Unifont can render. An empty
+// result means full coverage of the emitted glyph table.
 func (a *Atlas) Coverage(glyphs []rune) []CoverageGap {
 	var gaps []CoverageGap
 	for _, r := range glyphs {

@@ -24,6 +24,7 @@ import (
 
 	cterm "github.com/charmbracelet/x/term"
 
+	"github.com/wimpysworld/nyala/internal/capture"
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
@@ -219,19 +220,11 @@ func (s *State) renderBlock(src *image.RGBA, w io.Writer) error {
 // with the active graphics backend. Sixel and kitty draw a bitmap, so the fit
 // maps to pixels at the Route A cell size; the image keeps its aspect.
 func (s *State) renderGraphics(src *image.RGBA, fit block.Fit, w io.Writer) error {
-	pxW := fit.FitCols * graphicsCellPxW
-	pxH := fit.FitRows * graphicsCellPxH
+	pxW := fit.FitCols * capture.CellPxW
+	pxH := fit.FitRows * capture.CellPxH
 	sub := metrics.Downscale(src, pxW, pxH)
 	return s.Renderer().Render(render.Frame{Img: sub}, w)
 }
-
-// graphicsCellPxW and graphicsCellPxH are the on-screen pixels per cell the
-// graphics backends draw into. They follow the 1:2 cell aspect so the bitmap
-// keeps the image aspect the fit chose.
-const (
-	graphicsCellPxW = 8
-	graphicsCellPxH = 16
-)
 
 // schemePixels returns the source-pixel extent a cols x rows block grid samples
 // in the given scheme: 2x4 per cell for quadrant, 1x2 per cell for half-block.
