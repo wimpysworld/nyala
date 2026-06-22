@@ -36,8 +36,8 @@ func TestWriteBenchstatLineFormat(t *testing.T) {
 // unit. If benchstat cannot parse the output, this fails.
 func TestWriteBenchstatParses(t *testing.T) {
 	samples := []harness.MetricSample{
-		{Page: "testcard-01-greyscale", Mode: "kitty", Metric: "deltaE2000Mean", Unit: "deltaE/op", Value: 1.25},
-		{Page: "testcard-01-greyscale", Mode: "block", Metric: "bytesPerFrame", Unit: "B/frame", Value: 4096},
+		{Page: "testpage-01-grayscale", Mode: "kitty", Metric: "deltaE2000Mean", Unit: "deltaE/op", Value: 1.25},
+		{Page: "testpage-01-grayscale", Mode: "block", Metric: "bytesPerFrame", Unit: "B/frame", Value: 4096},
 	}
 	var buf bytes.Buffer
 	if err := harness.WriteBenchstat(&buf, samples); err != nil {
@@ -83,7 +83,7 @@ func TestWriteBenchstatRepeats(t *testing.T) {
 	samples := make([]harness.MetricSample, harness.MinRepeats)
 	for i := range samples {
 		samples[i] = harness.MetricSample{
-			Page: "testcard-02-colour", Mode: "sixel",
+			Page: "testpage-02-basic", Mode: "sixel",
 			Metric: "psnr", Unit: "psnr/op", Value: 30 + float64(i),
 		}
 	}

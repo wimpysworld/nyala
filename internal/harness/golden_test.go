@@ -8,28 +8,35 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
-// goldenFixtures lists the four committed pages and their source PNGs under
+// goldenFixtures lists the five committed pages and their source PNGs under
 // testdata/. Each page has one txtar archive under testdata/golden/.
 var goldenFixtures = []struct {
 	page string
 	png  string
 }{
 	{"linuxmatters", "linuxmatters.png"},
-	{"testcard-01-greyscale", "testcard-01-greyscale.png"},
-	{"testcard-02-colour", "testcard-02-colour.png"},
-	{"testcard-03-images", "testcard-03-images.png"},
+	{"testpage-01-grayscale", "testpage-01-grayscale.png"},
+	{"testpage-02-basic", "testpage-02-basic.png"},
+	{"testpage-03-cmyk", "testpage-03-cmyk.png"},
+	{"testpage-04-color", "testpage-04-color.png"},
 }
 
-// goldenGrid composes a fixture PNG into the pinned 120x40 block grid.
+// goldenGrid composes a fixture PNG into the pinned 120x40 block grid, matching
+// the sweep and calibration path. It first downscales the source to
+// CalibCols*2 x CalibRows*4, the geometry Compose maps to one 2x4 block per cell;
+// without this the full-resolution image is sampled at 2x4 px per cell, so only
+// its top-left corner is read and a margined page composes to near-blank.
 func goldenGrid(t *testing.T, png string) block.Grid {
 	t.Helper()
 	img := loadRGBA(t, filepath.Join("..", "..", "testdata", png))
-	br := block.Renderer{Cols: 120, Rows: 40}
-	return br.Compose(render.Frame{Img: img})
+	composeSrc := metrics.Downscale(img, CalibCols*2, CalibRows*4)
+	br := block.Renderer{Cols: CalibCols, Rows: CalibRows}
+	return br.Compose(render.Frame{Img: composeSrc})
 }
 
 // loadRGBA decodes a PNG into an *image.RGBA.
@@ -89,9 +96,9 @@ func TestGoldenTrack(t *testing.T) {
 // TestEncodeGridDeterministic checks the encoder is byte-stable across calls on
 // the same grid.
 func TestEncodeGridDeterministic(t *testing.T) {
-	g := goldenGrid(t, "testcard-01-greyscale.png")
-	a := EncodeGrid("testcard-01-greyscale", g, nil)
-	b := EncodeGrid("testcard-01-greyscale", g, nil)
+	g := goldenGrid(t, "testpage-01-grayscale.png")
+	a := EncodeGrid("testpage-01-grayscale", g, nil)
+	b := EncodeGrid("testpage-01-grayscale", g, nil)
 	if string(a) != string(b) {
 		t.Fatal("EncodeGrid output differs across identical calls")
 	}
@@ -99,9 +106,9 @@ func TestEncodeGridDeterministic(t *testing.T) {
 
 // TestDriftFails checks a drifted grid fails the comparison without update.
 func TestDriftFails(t *testing.T) {
-	g := goldenGrid(t, "testcard-02-colour.png")
+	g := goldenGrid(t, "testpage-02-basic.png")
 	*g.At(0, 0) = block.Cell{Glyph: '?', FG: color.RGBA{A: 0xff}, BG: color.RGBA{A: 0xff}}
-	ok, wrote, err := CompareGolden(goldenPath("testcard-02-colour"), "testcard-02-colour", g, nil, false)
+	ok, wrote, err := CompareGolden(goldenPath("testpage-02-basic"), "testpage-02-basic", g, nil, false)
 	if err != nil {
 		t.Fatalf("CompareGolden: %v", err)
 	}
@@ -113,13 +120,13 @@ func TestDriftFails(t *testing.T) {
 // TestUpdateWritesOnlyOnChange checks write-if-changed: a matching grid does not
 // rewrite the file, a drifted grid does.
 func TestUpdateWritesOnlyOnChange(t *testing.T) {
-	g := goldenGrid(t, "testcard-03-images.png")
+	g := goldenGrid(t, "testpage-03-cmyk.png")
 	tmp := filepath.Join(t.TempDir(), "page.txtar")
-	if err := os.WriteFile(tmp, EncodeGrid("testcard-03-images", g, nil), 0o644); err != nil {
+	if err := os.WriteFile(tmp, EncodeGrid("testpage-03-cmyk", g, nil), 0o644); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	ok, wrote, err := CompareGolden(tmp, "testcard-03-images", g, nil, true)
+	ok, wrote, err := CompareGolden(tmp, "testpage-03-cmyk", g, nil, true)
 	if err != nil || !ok {
 		t.Fatalf("matching update: ok=%v wrote=%v err=%v", ok, wrote, err)
 	}
@@ -128,7 +135,7 @@ func TestUpdateWritesOnlyOnChange(t *testing.T) {
 	}
 
 	*g.At(1, 1) = block.Cell{Glyph: '#', FG: color.RGBA{A: 0xff}, BG: color.RGBA{A: 0xff}}
-	ok, wrote, err = CompareGolden(tmp, "testcard-03-images", g, nil, true)
+	ok, wrote, err = CompareGolden(tmp, "testpage-03-cmyk", g, nil, true)
 	if err != nil || !ok {
 		t.Fatalf("drifted update: ok=%v wrote=%v err=%v", ok, wrote, err)
 	}

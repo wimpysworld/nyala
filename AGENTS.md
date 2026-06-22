@@ -24,8 +24,8 @@ Tools are pinned by the Nix flake. Enter the dev shell with `nix develop`, or le
 
 - `just build` - build the `nyala` binary.
 - `just test` - run the fast unit tests, the routine gate. It runs no corpus sweep, no calibration, and no rasteriser-driven full-corpus measurement, so the harness package finishes in seconds.
-- `just diagnostics` - run the heavy quality gate (`go test -tags diagnostics ./internal/harness/`) over the four committed fixtures at a fixed 120x40 grid. It runs one corpus sweep and one calibration, shared across the tagged tests, writes its report JSON/CSV, summary, and artefact PNGs to `testdata/diagnostics/` (gitignored), gates against the committed baseline and thresholds, and runs the calibration and golden tracks. It takes minutes, so run it deliberately, not on every change.
-- `just update-golden` - rerun the same harness test with `UPDATE_GOLDEN=1` to regenerate the committed golden archives.
+- `just diagnostics` - run the heavy quality gate (`go test -tags diagnostics ./internal/harness/`) over the five committed fixtures (`linuxmatters.png` plus the four `testpage-*` pages) at a fixed 120x40 grid; the calibration runs over the four test pages only. It runs one corpus sweep and one calibration, shared across the tagged tests, writes its report JSON/CSV, summary, and artefact PNGs to `testdata/diagnostics/` (gitignored), gates against the committed baseline and thresholds, and runs the calibration and golden tracks. It takes minutes, so run it deliberately, not on every change.
+- `just update-golden` - rerun `TestGoldenTrack` with `UPDATE_GOLDEN=1` to regenerate the committed golden archives.
 - `just lint` - go vet, gocyclo, ineffassign, golangci-lint, actionlint.
 - `just fmt` - format with gofmt; `just fmt-check` verifies.
 - `just tidy` - `go mod tidy`; `just tidy-check` verifies go.mod/go.sum are clean.

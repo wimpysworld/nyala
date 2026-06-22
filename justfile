@@ -21,9 +21,17 @@ check:
 diagnostics:
     @go test -v -tags diagnostics -count=1 ./internal/harness/
 
-# Regenerate golden archives
+# Regenerate golden archives via the golden track writer
 update-golden:
-    @UPDATE_GOLDEN=1 go test -v -tags diagnostics -run TestDiagnostics -count=1 ./internal/harness/
+    @UPDATE_GOLDEN=1 go test -run TestGoldenTrack -count=1 ./internal/harness/
+
+# Rebuild the test page PNGs from the committed PDFs at 150 DPI for reproducibility
+regen-fixtures:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for name in testpage-01-grayscale testpage-02-basic testpage-03-cmyk testpage-04-color; do
+        pdftoppm -png -r 150 -singlefile "testdata/${name}.pdf" "testdata/${name}"
+    done
 
 # Format Go sources
 fmt:

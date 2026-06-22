@@ -89,6 +89,7 @@
               just
               leptonica
               pkg-config
+              poppler-utils
               tesseract
             ];
 

@@ -156,16 +156,17 @@ The block path is deterministic, so its intrinsic-noise floor is zero; global ba
 
 ## Fixtures and the pinned grid
 
-Four committed PNGs in `testdata/` drive the sweep; each renders through every backend and doubles as a golden fixture.
+Five committed PNGs in `testdata/` drive the sweep; each renders through every backend and doubles as a golden fixture. The four `testpage-*` pages are rendered from committed PDFs at 150 DPI (rebuild with `just regen-fixtures`).
 
 | Fixture | Stresses |
 |---|---|
 | `linuxmatters.png` | Real page: dark UI, brand text, thumbnails, small body text, flat panels |
-| `testcard-01-greyscale.png` | Grey ramps, fine detail, registration marks, no hue |
-| `testcard-02-colour.png` | CMYK ramps, rainbow bars, gradients, saturated primaries |
-| `testcard-03-images.png` | Two photos, radial rainbow gradient, busy multi-hue artwork |
+| `testpage-01-grayscale.png` | Greyscale calibration sheet: grey ramps, gradients, text-size ladder, fine alignment marks, no hue |
+| `testpage-02-basic.png` | Basic colour calibration sheet: CMYK ramps, gradients, text-size ladder, alignment wheels and bars |
+| `testpage-03-cmyk.png` | Full CMYK calibration sheet: per-channel colour wheels, paint-roller bars, line gratings, gradients, gradient spheres |
+| `testpage-04-color.png` | Colour artwork sheet: saturated swirls, radial gradients, multi-hue starbursts, two photos |
 
-The three cards share a layout, so the same text sits on greyscale, saturated, and photographic backgrounds, isolating the background's effect on legibility.
+The test pages stress greyscale, basic colour, full CMYK, and photographic content across a shared text-size ladder, isolating the background's effect on legibility. The calibration measures the four test pages; the sweep adds `linuxmatters.png`.
 
 The sweep grid is pinned at 120 columns by 40 rows, cell 8x16 px, reference filter CatmullRom, RGBA everywhere.
 
