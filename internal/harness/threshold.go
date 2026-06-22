@@ -101,6 +101,36 @@ const (
 	bytesPerFrameMetric metricName = "bytesPerFrame"
 )
 
+// requiredGatedMetrics is the set of metric names that must have a global band
+// for the gate to be complete: every metric the gate checks. It is the
+// gatedMetrics table names plus the bytesPerFrame cost metric, which gateOne
+// handles after the table loop. Sourced from the const set, not literals.
+func requiredGatedMetrics() []metricName {
+	names := make([]metricName, 0, len(gatedMetrics)+1)
+	for _, m := range gatedMetrics {
+		names = append(names, m.name)
+	}
+	return append(names, bytesPerFrameMetric)
+}
+
+// validateGated checks every gated metric has a global band in t.Metrics, so a
+// present-but-incomplete thresholds file cannot silently disable a gate. A
+// per-mode override does not substitute for the global band, which is the
+// fallback every mode relies on. It returns one error naming the missing
+// metric(s) on a gap, nil otherwise.
+func (t Thresholds) validateGated() error {
+	var missing []string
+	for _, name := range requiredGatedMetrics() {
+		if _, ok := t.Metrics[string(name)]; !ok {
+			missing = append(missing, string(name))
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("harness: thresholds missing global band for gated metric(s): %v", missing)
+	}
+	return nil
+}
+
 // thresholdFor returns the band for a metric under a given mode: the per-mode
 // override in Modes when present, else the global Metrics band. The second
 // return is false when no band gates the metric for that mode.
@@ -263,11 +293,18 @@ func LoadBaseline(path string) (*Baseline, error) {
 }
 
 // LoadThresholds reads and decodes a committed thresholds file. A missing file
-// returns DefaultThresholds and no error, so the gate always has bands.
+// returns DefaultThresholds and no error, so the gate always has bands. Both the
+// decoded file and the default fallback are checked for gate completeness, so a
+// present-but-incomplete file or a corrupt default fails loud rather than
+// silently disabling a gate.
 func LoadThresholds(path string) (Thresholds, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return DefaultThresholds(), nil
+		t := DefaultThresholds()
+		if verr := t.validateGated(); verr != nil {
+			return Thresholds{}, verr
+		}
+		return t, nil
 	}
 	if err != nil {
 		return Thresholds{}, err
@@ -275,6 +312,9 @@ func LoadThresholds(path string) (Thresholds, error) {
 	var t Thresholds
 	if err := json.Unmarshal(data, &t); err != nil {
 		return Thresholds{}, fmt.Errorf("harness: decode thresholds %s: %w", path, err)
+	}
+	if verr := t.validateGated(); verr != nil {
+		return Thresholds{}, verr
 	}
 	return t, nil
 }
