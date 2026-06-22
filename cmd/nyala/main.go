@@ -23,7 +23,7 @@ func main() {
 		kong.Vars{"version": version},
 	)
 
-	if err := app.Run(cli, "testdata", os.Stdin); err != nil {
+	if err := app.Run(cli, os.Stdin); err != nil {
 		fmt.Fprintln(os.Stderr, "nyala:", err)
 		os.Exit(1)
 	}

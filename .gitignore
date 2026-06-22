@@ -2,4 +2,4 @@
 dist/
 /nyala
 /result
-/diagnostics/
+/testdata/diagnostics/

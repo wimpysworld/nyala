@@ -17,9 +17,13 @@ check:
     @nix flake check
     @just vuln
 
-# Run the diagnostics sweep
+# Run the heavy quality gate: sweep, calibration, and golden track
 diagnostics:
-    @go run ./cmd/nyala --diagnostics
+    @go test -v -tags diagnostics -count=1 ./internal/harness/
+
+# Regenerate golden archives
+update-golden:
+    @UPDATE_GOLDEN=1 go test -v -tags diagnostics -run TestDiagnostics -count=1 ./internal/harness/
 
 # Format Go sources
 fmt:
