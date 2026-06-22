@@ -8,13 +8,16 @@
 
 <p align="center">Made with 💝 for 🐧🍏</p>
 
-Nyala is a browser for the terminal. The goal: render real web pages - HTML5, CSS, JavaScript - directly to a TTY. It will drive headless Chromium via the Chrome DevTools Protocol and composite a crisp Unicode text layer over a quadrant-block bitmap, so text stays sharp rather than fuzzy. The primary target is a bare Linux console running [KMSCON](https://github.com/kmscon/kmscon), with no display server required.
+Nyala is a browser for the terminal. The goal: render real web pages - HTML5, CSS, JavaScript - directly to a TTY. It will drive headless Chromium via the Chrome DevTools Protocol and composite a crisp Unicode text layer over a quadrant-block bitmap, so text stays sharp rather than fuzzy. On a modern terminal it renders high-fidelity output through the Kitty graphics protocol or Sixel. And it runs anywhere, down to a bare Linux console under [KMSCON](https://github.com/kmscon/kmscon), with no display server required.
 
-> **Early development.** The three rendering backends and the measurement harness are built (Stage 0); they render static images today. The browser pipeline, the crisp text overlay, and terminal-capability detection are the design goal, not yet wired. See [`docs/OVERVIEW.md`](docs/OVERVIEW.md) for the architecture and progress.
+> [!IMPORTANT]
+> **Early development.** The three rendering backends and the measurement harness are built (Stage 0); they render static images today. The browser pipeline and the crisp text overlay are the design goal, not yet wired. See [`docs/OVERVIEW.md`](docs/OVERVIEW.md) for the architecture and progress.
 
 ## Why Nyala?
 
-A nyala is a browsing antelope - so the name is a literal pun on "browser". Five letters, easy to say, and the animal makes a natural mascot.
+Agentic development is moving to a terminal-first workflow. I started using [herdr](https://herdr.dev/) to organise my projects into "spaces", each with tabs for a coding agent, [lazygit](https://github.com/jesseduffield/lazygit) and [hunk](https://www.hunk.dev/), [gh dash](https://gh-dash.dev), the [fresh editor](https://getfresh.dev/), and [frogmouth](https://github.com/Textualize/frogmouth). Each space puts all my project tooling and reference at my fingertips, with one exception: a browser for project research and reference. So I made Nyala to fill that gap, taking inspiration from [browsh](https://www.brow.sh) and [carbonyl](https://github.com/fathyb/carbonyl). herdr is my preferred multiplexer for its agent integration, but [tmux](https://github.com/tmux/tmux) and [zellij](https://zellij.dev) are wildly popular, and agent-aware plugins will surely follow for both, so Nyala supports them too.
+
+A nyala is a browsing antelope. Yes, that kind of browsing. It makes a fine mascot.
 
 ## Rendering
 
@@ -26,7 +29,7 @@ Three rendering backends sit behind one `Renderer` seam. Swapping backend change
 | **Sixel** | Sixel graphics | Higher | Higher-fidelity bitmap than blocks, for terminals that speak Sixel. |
 | **Kitty** | Kitty graphics | Highest | Lossless RGBA, the sharpest path, for terminals that speak the Kitty protocol. |
 
-Block is the universal path and the floor. Sixel raises fidelity where supported. Kitty is the top of the ladder. For now the backend is chosen by flag or hotkey; automatic capability detection is a later stage.
+Kitty is the reason to run Nyala on a capable terminal: lossless RGBA, the sharpest path. Sixel is the next step down, a high-fidelity bitmap for terminals that speak it. Block is the guarantee Nyala works on any TTY, down to a bare Linux console under KMSCON with no graphics protocol. Nyala detects what the terminal supports and picks the highest-fidelity backend automatically: Kitty, then Sixel, then Block. Press Tab to cycle the supported backends, or pass `--all-renderers` to force all three into the cycle and skip detection.
 
 A measurement harness scores each render for quality, cost, and legibility. Run it with `nyala --diagnostics`.
 
