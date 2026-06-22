@@ -270,7 +270,25 @@ func (s *State) renderGraphics(src *image.RGBA, fit block.Fit, w io.Writer) erro
 			return err
 		}
 	}
+	if move := cursorPosition(fit.OffsetRow, fit.OffsetCol); move != "" {
+		if _, err := io.WriteString(w, move); err != nil {
+			return err
+		}
+	}
 	return s.Renderer().Render(render.Frame{Img: sub}, w)
+}
+
+// cursorPosition returns the CUP escape (\x1b[<row>;<col>H) that moves the
+// cursor to a centred cell offset, taking row and col as 0-based cell offsets
+// and emitting 1-based coordinates. It returns the empty string when both
+// offsets are 0, so a frame that fills the grid keeps clean output. The graphics
+// backends use it to centre the bitmap at the same offset the block path bakes
+// into letterbox cells via block.Renderer.FitGrid.
+func cursorPosition(row, col int) string {
+	if row == 0 && col == 0 {
+		return ""
+	}
+	return fmt.Sprintf("\x1b[%d;%dH", row+1, col+1)
 }
 
 // schemePixels returns the source-pixel extent a cols x rows block grid samples
