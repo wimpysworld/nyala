@@ -323,6 +323,74 @@ func TestRenderFrameGraphics(t *testing.T) {
 	}
 }
 
+// TestRenderFrameGraphicsCentres asserts the graphics backends move the cursor to
+// the centred cell offset before the bitmap, matching the block path: a
+// letterboxed fit emits the CUP escape \x1b[<row>;<col>H at the 1-based offset, and
+// a frame that fills the grid emits no cursor move. The kitty delete-all escape
+// (\x1b_Ga=d) must still precede the move on the kitty path.
+func TestRenderFrameGraphicsCentres(t *testing.T) {
+	cases := []struct {
+		name             string
+		cols, rows       int
+		imgW, imgH       int
+		wantMove         string // empty means assert no CUP escape
+		wantOffsetColRow string
+	}{
+		{"column letterbox", 8, 4, 16, 64, "\x1b[1;4H", "OffsetCol 3"},
+		{"row letterbox", 4, 4, 16, 16, "\x1b[2;1H", "OffsetRow 1"},
+		{"fills grid", 8, 4, 16, 16, "", "both offsets 0"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			src := solidImage(color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})
+			for _, b := range []Backend{BackendSixel, BackendKitty} {
+				s := NewState(c.cols, c.rows, c.imgW, c.imgH)
+				s.Backend = b
+				var buf bytes.Buffer
+				if err := s.RenderFrame(src, &buf); err != nil {
+					t.Fatalf("render backend %d: %v", b, err)
+				}
+				out := buf.String()
+				if c.wantMove == "" {
+					if strings.Contains(out, "\x1b[") && cupPresent(out) {
+						t.Fatalf("backend %d (%s): emitted a CUP move, want none", b, c.wantOffsetColRow)
+					}
+					continue
+				}
+				if !strings.Contains(out, c.wantMove) {
+					t.Fatalf("backend %d (%s): output missing CUP escape %q", b, c.wantOffsetColRow, c.wantMove)
+				}
+				if b == BackendKitty {
+					di := strings.Index(out, kittyDeleteAll)
+					mi := strings.Index(out, c.wantMove)
+					if di < 0 || mi < 0 || di > mi {
+						t.Fatalf("kitty: delete-all must precede the CUP move (delete=%d move=%d)", di, mi)
+					}
+				}
+			}
+		})
+	}
+}
+
+// cupPresent reports whether out holds a cursor-position escape (\x1b[<n>;<n>H).
+// It distinguishes the CUP move from the other CSI escapes the graphics payload
+// may carry, so the fills-grid case asserts the move is absent, not that no CSI
+// escape exists.
+func cupPresent(out string) bool {
+	for i := 0; i+1 < len(out); i++ {
+		if out[i] == '\x1b' && out[i+1] == '[' {
+			j := i + 2
+			for j < len(out) && (out[j] == ';' || (out[j] >= '0' && out[j] <= '9')) {
+				j++
+			}
+			if j < len(out) && out[j] == 'H' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // TestRenderFrameNoFit asserts a degenerate grid (zero cells) writes nothing and
 // does not error, so the viewer tolerates a collapsed terminal.
 func TestRenderFrameNoFit(t *testing.T) {
