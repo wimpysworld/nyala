@@ -319,9 +319,18 @@ func LoadThresholds(path string) (Thresholds, error) {
 	return t, nil
 }
 
+// dirMode and fileMode are the permission bits for directories and files the
+// harness writes under testdata.
+const (
+	dirMode  = 0o755
+	fileMode = 0o644
+)
+
 // compareFile writes want to path under update (write-if-changed) and reports
 // whether the committed bytes match. It is the shared body behind the baseline
-// and thresholds compare helpers.
+// and thresholds compare helpers. The write is non-atomic: it writes straight to
+// the target, which is acceptable for the gitignored testdata artefacts and not
+// a pattern to copy where a partial write would corrupt durable state.
 func compareFile(path string, want []byte, update bool) (ok bool, wrote bool, err error) {
 	got, readErr := os.ReadFile(path)
 	switch {
@@ -336,10 +345,10 @@ func compareFile(path string, want []byte, update bool) (ok bool, wrote bool, er
 	if !update {
 		return false, false, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), dirMode); err != nil {
 		return false, false, err
 	}
-	if err := os.WriteFile(path, want, 0o644); err != nil {
+	if err := os.WriteFile(path, want, fileMode); err != nil {
 		return false, false, err
 	}
 	return true, true, nil

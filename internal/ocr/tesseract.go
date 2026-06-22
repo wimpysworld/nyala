@@ -8,6 +8,7 @@ package ocr
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/png"
 
@@ -36,7 +37,7 @@ func NewEngine() (*Engine, error) {
 	c := gosseract.NewClient()
 	if err := c.SetWhitelist(DefaultWhitelist); err != nil {
 		c.Close()
-		return nil, err
+		return nil, fmt.Errorf("ocr: set whitelist: %w", err)
 	}
 	// Disable the DAWG dictionaries so Tesseract does not "correct" the known
 	// synthetic ladder strings against its word list.
@@ -50,12 +51,12 @@ func NewEngine() (*Engine, error) {
 	} {
 		if err := c.SetVariable(v, "0"); err != nil {
 			c.Close()
-			return nil, err
+			return nil, fmt.Errorf("ocr: set variable %q: %w", v, err)
 		}
 	}
 	if err := c.SetPageSegMode(gosseract.PSM_SINGLE_BLOCK); err != nil {
 		c.Close()
-		return nil, err
+		return nil, fmt.Errorf("ocr: set page seg mode: %w", err)
 	}
 	return &Engine{client: c, conditioning: DefaultConditioning()}, nil
 }
@@ -72,12 +73,16 @@ func (e *Engine) Recognise(src image.Image, srcCapHeight int) (string, error) {
 	cond := Condition(src, srcCapHeight, e.conditioning)
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, cond); err != nil {
-		return "", err
+		return "", fmt.Errorf("ocr: encode conditioned image: %w", err)
 	}
 	if err := e.client.SetImageFromBytes(buf.Bytes()); err != nil {
-		return "", err
+		return "", fmt.Errorf("ocr: set image: %w", err)
 	}
-	return e.client.Text()
+	txt, err := e.client.Text()
+	if err != nil {
+		return "", fmt.Errorf("ocr: recognise: %w", err)
+	}
+	return txt, nil
 }
 
 // ScoreImage conditions and OCRs src, then scores the result against truth.

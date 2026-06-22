@@ -22,6 +22,21 @@ import (
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
+// apcIntro opens a Kitty graphics Application Programming Command: ESC _ G.
+// st is the String Terminator, ESC backslash, that closes the envelope. They
+// mirror the names the capture decoder uses for the same bytes.
+const (
+	apcIntro = "\x1b_G"
+	st       = "\x1b\\"
+)
+
+// chunkMore is the m= key marking a frame that has more frames following;
+// chunkLast marks the final frame of a chunked transmission.
+const (
+	chunkMore = "m=1"
+	chunkLast = "m=0"
+)
+
 // Renderer emits a Frame as a Kitty graphics APC payload. It owns no cell
 // grid; it encodes the frame image directly with charmbracelet/x/ansi/kitty and
 // frames the base64 payload in the APC envelope. It satisfies render.Renderer.
@@ -50,7 +65,7 @@ func (*Renderer) Render(f render.Frame, w io.Writer) error {
 		Compression:  kitty.Zlib,
 		Transmission: kitty.Direct,
 		Action:       kitty.TransmitAndPut,
-		Quite:        2,
+		Quite:        2, // upstream spelling; sets q=2, suppress replies
 	}
 
 	var payload []byte
@@ -86,20 +101,27 @@ func (*Renderer) Render(f render.Frame, w io.Writer) error {
 // of 4 and a full base64 payload length is a multiple of 4, so each non-final
 // chunk stays a multiple of 4.
 func writeChunks(w io.Writer, payload []byte, optList []string) error {
-	first := strings.Join(optList, ",") + ",m=1"
+	first := strings.Join(optList, ",") + "," + chunkMore
 	for len(payload) > kitty.MaxChunkSize {
 		chunk := payload[:kitty.MaxChunkSize]
 		payload = payload[kitty.MaxChunkSize:]
-		control := "m=1"
+		control := chunkMore
 		if first != "" {
 			control = first
 			first = ""
 		}
-		if _, err := io.WriteString(w, "\x1b_G"+control+";"+string(chunk)+"\x1b\\"); err != nil {
-			return fmt.Errorf("kitty: write APC payload: %w", err)
+		if err := writeFrame(w, control, chunk); err != nil {
+			return err
 		}
 	}
-	if _, err := io.WriteString(w, "\x1b_Gm=0;"+string(payload)+"\x1b\\"); err != nil {
+	return writeFrame(w, chunkLast, payload)
+}
+
+// writeFrame writes one APC frame: the ESC _ G introducer, the control section,
+// a semicolon separator, the chunk body, then the ESC backslash terminator. It
+// wraps a write failure.
+func writeFrame(w io.Writer, control string, chunk []byte) error {
+	if _, err := io.WriteString(w, apcIntro+control+";"+string(chunk)+st); err != nil {
 		return fmt.Errorf("kitty: write APC payload: %w", err)
 	}
 	return nil

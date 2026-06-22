@@ -296,7 +296,7 @@ func collectSixelPSNRs(reference *image.RGBA) ([]float64, error) {
 	errs := make([]error, sixelNoiseFloorRuns)
 	jobs := make(chan int)
 	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
+	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

@@ -245,9 +245,9 @@ func (s *State) RenderFrame(src *image.RGBA, w io.Writer) error {
 // FitGrid recomputes the fit-and-letterbox placement from the State dimensions,
 // so the image stays centred without a passed-in Fit.
 func (s *State) renderBlock(src *image.RGBA, w io.Writer) error {
-	// Renderer() is the single construction site for the active backend; for the
-	// block backend it returns *block.Renderer carrying the current scheme.
-	br := s.Renderer().(*block.Renderer)
+	// One block.Renderer value drives both FitGrid and the inner Compose, so the
+	// grid size and scheme come from a single source.
+	br := block.Renderer{Cols: s.Cols, Rows: s.Rows, Scheme: s.Scheme}
 	grid := br.FitGrid(s.ImgW, s.ImgH, func(cols, rows int) block.Grid {
 		pxW, pxH := schemePixels(s.Scheme, cols, rows)
 		sub := metrics.Downscale(src, pxW, pxH)
@@ -288,7 +288,7 @@ func cursorPosition(row, col int) string {
 	if row == 0 && col == 0 {
 		return ""
 	}
-	return fmt.Sprintf("\x1b[%d;%dH", row+1, col+1)
+	return fmt.Sprintf(cupFormat, row+1, col+1)
 }
 
 // schemePixels returns the source-pixel extent a cols x rows block grid samples
@@ -323,7 +323,7 @@ func writeGrid(g block.Grid, mode ColourMode, w io.Writer) error {
 			sb.WriteString(bgSGR(c.BG, mode))
 			sb.WriteRune(c.Glyph)
 		}
-		sb.WriteString("\x1b[0m")
+		sb.WriteString(sgrReset)
 	}
 	_, err := io.WriteString(w, sb.String())
 	return err
@@ -336,7 +336,7 @@ func fgSGR(c color.RGBA, mode ColourMode) string {
 	case ColourMono:
 		return ""
 	case ColourXTerm256:
-		return fmt.Sprintf("\x1b[38;5;%dm", block.XTerm256(c))
+		return fmt.Sprintf(fg256Format, block.XTerm256(c))
 	default:
 		return block.TrueColorFG(c)
 	}
@@ -349,7 +349,7 @@ func bgSGR(c color.RGBA, mode ColourMode) string {
 	case ColourMono:
 		return ""
 	case ColourXTerm256:
-		return fmt.Sprintf("\x1b[48;5;%dm", block.XTerm256(c))
+		return fmt.Sprintf(bg256Format, block.XTerm256(c))
 	default:
 		return block.TrueColorBG(c)
 	}
@@ -381,6 +381,21 @@ func LoadPNG(path string) (*image.RGBA, error) {
 	}
 	return rgba, nil
 }
+
+// cupFormat is the CUP escape that moves the cursor to a 1-based row;column
+// (ESC [ row ; col H). cursorPosition fills it with 1-based coordinates.
+const cupFormat = "\x1b[%d;%dH"
+
+// sgrReset is the SGR reset escape (ESC [ 0 m) that ends each grid row's colour
+// run.
+const sgrReset = "\x1b[0m"
+
+// fg256Format and bg256Format are the xterm-256 foreground and background SGR
+// escapes (ESC [ 38;5;n m and ESC [ 48;5;n m). They take the palette index.
+const (
+	fg256Format = "\x1b[38;5;%dm"
+	bg256Format = "\x1b[48;5;%dm"
+)
 
 // clearScreen homes the cursor and clears the terminal so the next frame draws
 // from the top-left without stale cells.
