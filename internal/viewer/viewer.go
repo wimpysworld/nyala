@@ -461,7 +461,11 @@ func Run(path string, tty *os.File, colourFlag string) error {
 		return err
 	}
 
-	keys := readKeys(tty)
+	// done stops the key-reader goroutine when Run returns, so a goroutine
+	// blocked on a send after the consumer stops selecting cannot leak.
+	done := make(chan struct{})
+	defer close(done)
+	keys := readKeys(tty, done)
 	for {
 		select {
 		case <-winch:
@@ -602,16 +606,24 @@ const (
 
 // readKeys reads single bytes from r and sends them on the returned channel,
 // closing it on EOF or read error. It runs in its own goroutine so Run can
-// select between keys and resize signals.
-func readKeys(r io.Reader) <-chan byte {
-	out := make(chan byte)
+// select between keys and resize signals. The returned channel is buffered size
+// 1, and each send selects on done, so a send cannot block forever once the
+// consumer stops: the goroutine exits when done closes or on read EOF/error. A
+// blocking raw-fd Read may keep the goroutine parked until the next byte
+// arrives, after which the done select returns; this is not instant teardown.
+func readKeys(r io.Reader, done <-chan struct{}) <-chan byte {
+	out := make(chan byte, 1)
 	go func() {
 		defer close(out)
 		buf := make([]byte, 1)
 		for {
 			n, err := r.Read(buf)
 			if n > 0 {
-				out <- buf[0]
+				select {
+				case out <- buf[0]:
+				case <-done:
+					return
+				}
 			}
 			if err != nil {
 				return

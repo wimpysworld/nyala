@@ -102,3 +102,27 @@ func TestGateNilBaselineSeeds(t *testing.T) {
 		t.Fatalf("nil baseline returned %d breaches, want 0", len(breaches))
 	}
 }
+
+// TestValidateGatedCompleteDefaults checks the committed default thresholds pass
+// the gate-completeness check, so the guard never fails against good data.
+func TestValidateGatedCompleteDefaults(t *testing.T) {
+	if err := DefaultThresholds().validateGated(); err != nil {
+		t.Fatalf("DefaultThresholds().validateGated() = %v, want nil", err)
+	}
+}
+
+// TestValidateGatedMissingMetricErrors checks a thresholds set missing one gated
+// metric fails loud, so a dropped or typo'd JSON key cannot silently disable a
+// gate.
+func TestValidateGatedMissingMetricErrors(t *testing.T) {
+	for _, drop := range requiredGatedMetrics() {
+		t.Run(string(drop), func(t *testing.T) {
+			th := DefaultThresholds()
+			delete(th.Metrics, string(drop))
+			err := th.validateGated()
+			if err == nil {
+				t.Fatalf("validateGated with %q removed = nil, want error", drop)
+			}
+		})
+	}
+}

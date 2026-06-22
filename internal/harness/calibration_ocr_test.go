@@ -60,7 +60,10 @@ func TestCalibrationOCR(t *testing.T) {
 
 	// Rebuild the metric ranges so the merged file carries both halves.
 	rast := newRasteriser(t)
-	cal := MeasureCalibration(rast, loadCalibInputs(t), logProgress(t))
+	cal, err := MeasureCalibration(rast, loadCalibInputs(t), logProgress(t))
+	if err != nil {
+		t.Fatalf("MeasureCalibration: %v", err)
+	}
 	cal.OCRBuilt = true
 	cal.CERBound = ladderCERBound
 	cal.Ladder = []CalibCardLadder{{

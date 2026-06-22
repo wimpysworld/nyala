@@ -225,22 +225,28 @@ type CalibInput struct {
 // per-card records and the corpus-wide ranges. The OCR ladder is left empty; the
 // tagged path fills it. rast rasterises the block grid to the Route A pixel
 // geometry the scores compare in. progress streams a line before each card is
-// measured and before the sixel noise floor; it may be nil. Channel order is
-// RGBA.
-func MeasureCalibration(rast *capture.Rasteriser, inputs []CalibInput, progress Progress) Calibration {
+// measured and before the sixel noise floor; it may be nil. It returns an error
+// when the sixel noise floor cannot be measured (every round trip for a card
+// failed), so a broken sixel encoder surfaces rather than reporting a perfect
+// floor. Channel order is RGBA.
+func MeasureCalibration(rast *capture.Rasteriser, inputs []CalibInput, progress Progress) (Calibration, error) {
 	cards := make([]CalibCard, 0, len(inputs))
 	for i, in := range inputs {
 		progress.report("calibration: measuring card %d/%d (%s)", i+1, len(inputs), in.Card)
 		cards = append(cards, measureCard(rast, in))
 	}
 	progress.report("calibration: measuring sixel PSNR noise floor over %d cards", len(inputs))
+	floor, err := measureSixelPSNRNoiseFloor(inputs)
+	if err != nil {
+		return Calibration{}, err
+	}
 	return Calibration{
 		SchemaVersion:       SchemaVersion,
 		Grid:                Viewport{Cols: CalibCols, Rows: CalibRows},
 		Cards:               cards,
 		Ranges:              rangesOf(cards),
-		SixelPSNRNoiseFloor: measureSixelPSNRNoiseFloor(inputs),
-	}
+		SixelPSNRNoiseFloor: floor,
+	}, nil
 }
 
 // measureSixelPSNRNoiseFloor measures the sixel backend's intrinsic PSNR jitter:
@@ -252,19 +258,24 @@ func MeasureCalibration(rast *capture.Rasteriser, inputs []CalibInput, progress 
 // maximum standard deviation is the band-driving number: the sixel PSNR threshold
 // sits well above it. The result is quantised to sixelNoiseFloorDP decimals so
 // the committed calibration file is byte-stable across runs despite the encoder
-// jitter. Channel order is RGBA.
-func measureSixelPSNRNoiseFloor(inputs []CalibInput) float64 {
+// jitter. It returns an error when any card's round trips all fail, so a broken
+// sixel encoder surfaces rather than reporting a perfect zero floor. Channel
+// order is RGBA.
+func measureSixelPSNRNoiseFloor(inputs []CalibInput) (float64, error) {
 	pxW, pxH := Viewport{Cols: CalibCols, Rows: CalibRows}.PixelSize()
 	var worst float64
 	for _, in := range inputs {
 		reference := metrics.Downscale(in.Src, pxW, pxH)
-		samples := collectSixelPSNRs(reference)
+		samples, err := collectSixelPSNRs(reference)
+		if err != nil {
+			return 0, fmt.Errorf("harness: sixel PSNR noise floor for %s: %w", in.Card, err)
+		}
 		if sd := stdDev(samples); sd > worst {
 			worst = sd
 		}
 	}
 	q := math.Pow(10, sixelNoiseFloorDP)
-	return math.Round(worst*q) / q
+	return math.Round(worst*q) / q, nil
 }
 
 // collectSixelPSNRs runs sixelNoiseFloorRuns sixel round trips for one reference
@@ -273,14 +284,16 @@ func measureSixelPSNRNoiseFloor(inputs []CalibInput) float64 {
 // only pure functions, so the runs are independent and goroutine-safe. The order
 // the results land in does not matter: the caller reduces them with a standard
 // deviation, which is order-independent, so the parallel result matches the
-// serial one to the bit.
-func collectSixelPSNRs(reference *image.RGBA) []float64 {
+// serial one to the bit. It returns an error when every run failed, so a fully
+// broken sixel encoder surfaces rather than yielding a clean empty slice that
+// computes a perfect zero floor.
+func collectSixelPSNRs(reference *image.RGBA) ([]float64, error) {
 	workers := runtime.NumCPU()
 	if workers > sixelNoiseFloorRuns {
 		workers = sixelNoiseFloorRuns
 	}
 	psnrs := make([]float64, sixelNoiseFloorRuns)
-	oks := make([]bool, sixelNoiseFloorRuns)
+	errs := make([]error, sixelNoiseFloorRuns)
 	jobs := make(chan int)
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
@@ -288,23 +301,31 @@ func collectSixelPSNRs(reference *image.RGBA) []float64 {
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
-				psnrs[i], oks[i] = sixelRoundTripPSNR(reference)
+				psnrs[i], errs[i] = sixelRoundTripPSNR(reference)
 			}
 		}()
 	}
-	for i := 0; i < sixelNoiseFloorRuns; i++ {
+	for i := range sixelNoiseFloorRuns {
 		jobs <- i
 	}
 	close(jobs)
 	wg.Wait()
 
 	samples := make([]float64, 0, sixelNoiseFloorRuns)
-	for i, ok := range oks {
-		if ok {
+	var firstErr error
+	for i, err := range errs {
+		if err == nil {
 			samples = append(samples, psnrs[i])
+			continue
+		}
+		if firstErr == nil {
+			firstErr = err
 		}
 	}
-	return samples
+	if len(samples) == 0 {
+		return nil, fmt.Errorf("harness: every sixel round trip failed: %w", firstErr)
+	}
+	return samples, nil
 }
 
 // stdDev returns the population standard deviation of xs, or zero for fewer than
@@ -327,23 +348,24 @@ func stdDev(xs []float64) float64 {
 }
 
 // sixelRoundTripPSNR encodes a reference through the sixel backend, decodes it
-// back, and returns the PSNR of the decoded render against the reference. The
-// second return is false when the encode or decode fails, so a failed run does
-// not skew the jitter spread. Channel order is RGBA.
-func sixelRoundTripPSNR(reference *image.RGBA) (float64, bool) {
+// back, and returns the PSNR of the decoded render against the reference. It
+// returns a wrapped error when the backend is unavailable or the encode or
+// decode fails, so a failed run surfaces rather than skewing the jitter spread
+// with a silent zero. Channel order is RGBA.
+func sixelRoundTripPSNR(reference *image.RGBA) (float64, error) {
 	g, ok := graphicsBackendFor(ModeSixel)
 	if !ok {
-		return 0, false
+		return 0, fmt.Errorf("harness: no sixel backend for %s", ModeSixel)
 	}
 	img, err := g.roundTrip(reference)
 	if err != nil {
-		return 0, false
+		return 0, fmt.Errorf("harness: sixel round trip: %w", err)
 	}
 	// Score only PSNR here, not the full metric set. This loop runs many sixel
 	// round trips per card to measure the encoder's jitter floor, and PSNR is the
 	// one metric it reads; computing SSIM, MS-SSIM, and CIEDE2000 per iteration
 	// dominated the calibration run for no use. metrics.PSNR is the same value.
-	return metrics.PSNR(img, reference), true
+	return metrics.PSNR(img, reference), nil
 }
 
 // measureCard block-renders one card at the pinned grid and scores it absolute,
