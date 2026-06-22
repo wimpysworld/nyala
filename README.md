@@ -29,9 +29,9 @@ Three rendering backends sit behind one `Renderer` seam. Swapping backend change
 | **Sixel** | Sixel graphics | Higher | Higher-fidelity bitmap than blocks, for terminals that speak Sixel. |
 | **Kitty** | Kitty graphics | Highest | Lossless RGBA, the sharpest path, for terminals that speak the Kitty protocol. |
 
-Kitty is the reason to run Nyala on a capable terminal: lossless RGBA, the sharpest path. Sixel is the next step down, a high-fidelity bitmap for terminals that speak it. Block is the guarantee Nyala works on any TTY, down to a bare Linux console under KMSCON with no graphics protocol. Nyala detects what the terminal supports and picks the highest-fidelity backend automatically: Kitty, then Sixel, then Block. Press Tab to cycle the supported backends, or pass `--all-renderers` to force all three into the cycle and skip detection.
+Kitty is the reason to run Nyala on a capable terminal: lossless RGBA, the sharpest path. Sixel is the next step down, a high-fidelity bitmap for terminals that speak it. Block is the guarantee Nyala works on any TTY, down to a bare Linux console under KMSCON with no graphics protocol. Nyala detects what the terminal supports and picks the highest-fidelity backend automatically: Kitty, then Sixel, then Block. Press Tab to cycle the supported backends.
 
-A measurement harness scores each render for quality, cost, and legibility. Run it with `nyala --diagnostics`.
+A measurement harness scores each render for quality, cost, and legibility. Run it with `just diagnostics`.
 
 ## Install
 

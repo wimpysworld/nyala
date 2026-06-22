@@ -29,10 +29,13 @@ package harness
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"image"
 	"io"
 	"math"
 	"os"
+	"runtime"
+	"sync"
 
 	"github.com/wimpysworld/nyala/internal/capture"
 	"github.com/wimpysworld/nyala/internal/metrics"
@@ -41,6 +44,20 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/kitty"
 	"github.com/wimpysworld/nyala/internal/render/sixel"
 )
+
+// Progress is an optional callback the diagnostics passes use to stream a line
+// of progress before each long step. It is nil by default, so the library stays
+// silent; the diagnostics tests pass a callback that logs through the test. A
+// nil callback is a no-op, so callers never need to guard it.
+type Progress func(string)
+
+// report sends a formatted line to a Progress callback, or does nothing when the
+// callback is nil. It keeps the call sites free of nil checks.
+func (p Progress) report(format string, args ...any) {
+	if p != nil {
+		p(fmt.Sprintf(format, args...))
+	}
+}
 
 // sixelNoiseFloorRuns is how many times the calibration encodes and decodes each
 // card through the sixel backend to measure the PSNR jitter. The lossy encoder
@@ -207,12 +224,16 @@ type CalibInput struct {
 // the absolute and relative scores plus the intrinsic-noise floor, returning the
 // per-card records and the corpus-wide ranges. The OCR ladder is left empty; the
 // tagged path fills it. rast rasterises the block grid to the Route A pixel
-// geometry the scores compare in. Channel order is RGBA.
-func MeasureCalibration(rast *capture.Rasteriser, inputs []CalibInput) Calibration {
+// geometry the scores compare in. progress streams a line before each card is
+// measured and before the sixel noise floor; it may be nil. Channel order is
+// RGBA.
+func MeasureCalibration(rast *capture.Rasteriser, inputs []CalibInput, progress Progress) Calibration {
 	cards := make([]CalibCard, 0, len(inputs))
-	for _, in := range inputs {
+	for i, in := range inputs {
+		progress.report("calibration: measuring card %d/%d (%s)", i+1, len(inputs), in.Card)
 		cards = append(cards, measureCard(rast, in))
 	}
+	progress.report("calibration: measuring sixel PSNR noise floor over %d cards", len(inputs))
 	return Calibration{
 		SchemaVersion:       SchemaVersion,
 		Grid:                Viewport{Cols: CalibCols, Rows: CalibRows},
@@ -237,18 +258,53 @@ func measureSixelPSNRNoiseFloor(inputs []CalibInput) float64 {
 	var worst float64
 	for _, in := range inputs {
 		reference := metrics.Downscale(in.Src, pxW, pxH)
-		samples := make([]float64, 0, sixelNoiseFloorRuns)
-		for i := 0; i < sixelNoiseFloorRuns; i++ {
-			if p, ok := sixelRoundTripPSNR(reference); ok {
-				samples = append(samples, p)
-			}
-		}
+		samples := collectSixelPSNRs(reference)
 		if sd := stdDev(samples); sd > worst {
 			worst = sd
 		}
 	}
 	q := math.Pow(10, sixelNoiseFloorDP)
 	return math.Round(worst*q) / q
+}
+
+// collectSixelPSNRs runs sixelNoiseFloorRuns sixel round trips for one reference
+// across a bounded worker pool sized to runtime.NumCPU(), and returns the PSNRs
+// of the successful runs. Each run builds its own renderer and buffer and calls
+// only pure functions, so the runs are independent and goroutine-safe. The order
+// the results land in does not matter: the caller reduces them with a standard
+// deviation, which is order-independent, so the parallel result matches the
+// serial one to the bit.
+func collectSixelPSNRs(reference *image.RGBA) []float64 {
+	workers := runtime.NumCPU()
+	if workers > sixelNoiseFloorRuns {
+		workers = sixelNoiseFloorRuns
+	}
+	psnrs := make([]float64, sixelNoiseFloorRuns)
+	oks := make([]bool, sixelNoiseFloorRuns)
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				psnrs[i], oks[i] = sixelRoundTripPSNR(reference)
+			}
+		}()
+	}
+	for i := 0; i < sixelNoiseFloorRuns; i++ {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+
+	samples := make([]float64, 0, sixelNoiseFloorRuns)
+	for i, ok := range oks {
+		if ok {
+			samples = append(samples, psnrs[i])
+		}
+	}
+	return samples
 }
 
 // stdDev returns the population standard deviation of xs, or zero for fewer than
@@ -284,7 +340,11 @@ func sixelRoundTripPSNR(reference *image.RGBA) (float64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	return metrics.ScorePair(img, reference).PSNR, true
+	// Score only PSNR here, not the full metric set. This loop runs many sixel
+	// round trips per card to measure the encoder's jitter floor, and PSNR is the
+	// one metric it reads; computing SSIM, MS-SSIM, and CIEDE2000 per iteration
+	// dominated the calibration run for no use. metrics.PSNR is the same value.
+	return metrics.PSNR(img, reference), true
 }
 
 // measureCard block-renders one card at the pinned grid and scores it absolute,
@@ -446,10 +506,33 @@ func MarshalCalibration(c Calibration) ([]byte, error) {
 	return append(b, '\n'), nil
 }
 
-// CompareCalibration compares the marshalled calibration against the committed
-// file at path. It returns ok true when they match byte for byte. When update is
-// true it writes the bytes only if they differ (write-if-changed) and reports ok
-// true once the file matches. A missing file under update is written.
+// calibRelEps is the relative tolerance the calibration pass/fail comparison
+// allows on each numeric metric: the measured value may differ from the
+// committed value by this fraction of the committed magnitude. It absorbs the
+// sub-ULP and cross-platform float drift the deterministic block path can show
+// (different float rounding, FMA contraction, library minor versions) while
+// staying far below a real regression. A 1e-6 relative band on an SSIM near 0.8
+// is about 8e-7, so an SSIM regression of 0.01 fails; on a PSNR near 24 dB it is
+// about 2.4e-5 dB, so a PSNR regression of 1 dB fails.
+const calibRelEps = 1e-6
+
+// calibAbsEps is the absolute tolerance floor the calibration pass/fail
+// comparison adds to the relative band. It catches the case where the committed
+// value is zero or tiny, where a relative band collapses to nothing: the
+// deterministic noise-floor fields are exactly zero, and the quantised sixel
+// noise floor sits on a one-decimal grid, so a true zero stays zero and the
+// quantised value cannot drift within this floor. It is far below any metric
+// step a real regression would move.
+const calibAbsEps = 1e-9
+
+// CompareCalibration compares the measured calibration against the committed
+// file at path. The pass/fail decision compares each numeric metric field within
+// a tolerance (calibRelEps relative, calibAbsEps absolute floor), so sub-ULP and
+// cross-platform float drift passes while a real metric regression fails. The
+// stored values are never tolerated: when update is true it rewrites the file
+// only if the canonical bytes differ (write-if-changed) and reports ok true once
+// written. A missing file under update is written. ok reflects the tolerance
+// comparison, not a byte match.
 func CompareCalibration(path string, c Calibration, update bool) (ok bool, wrote bool, err error) {
 	want, err := MarshalCalibration(c)
 	if err != nil {
@@ -458,8 +541,23 @@ func CompareCalibration(path string, c Calibration, update bool) (ok bool, wrote
 	got, readErr := os.ReadFile(path)
 	switch {
 	case readErr == nil:
-		if bytes.Equal(got, want) {
-			return true, false, nil
+		var committed Calibration
+		if jErr := json.Unmarshal(got, &committed); jErr != nil {
+			return false, false, fmt.Errorf("harness: decode calibration %s: %w", path, jErr)
+		}
+		if calibrationsClose(committed, c) {
+			// Within tolerance: rewrite only if the canonical bytes drifted, so a
+			// real float wobble does not churn the committed file.
+			if bytes.Equal(got, want) {
+				return true, false, nil
+			}
+			if !update {
+				return true, false, nil
+			}
+			if err := os.WriteFile(path, want, 0o644); err != nil {
+				return false, false, err
+			}
+			return true, true, nil
 		}
 	case os.IsNotExist(readErr):
 		// Missing file: a match is impossible; fall through to update logic.
@@ -473,4 +571,119 @@ func CompareCalibration(path string, c Calibration, update bool) (ok bool, wrote
 		return false, false, err
 	}
 	return true, true, nil
+}
+
+// calibrationsClose reports whether every numeric metric field of a and b sits
+// within the calibration tolerance, and the structural fields (schema, grid,
+// card and ladder shape, OCR flags) match exactly. It governs only pass/fail; it
+// never changes the stored values.
+func calibrationsClose(a, b Calibration) bool {
+	if a.SchemaVersion != b.SchemaVersion || a.Grid != b.Grid {
+		return false
+	}
+	if a.OCRBuilt != b.OCRBuilt || !floatClose(a.CERBound, b.CERBound) {
+		return false
+	}
+	if !floatClose(a.SixelPSNRNoiseFloor, b.SixelPSNRNoiseFloor) {
+		return false
+	}
+	if len(a.Cards) != len(b.Cards) {
+		return false
+	}
+	for i := range a.Cards {
+		if !calibCardClose(a.Cards[i], b.Cards[i]) {
+			return false
+		}
+	}
+	if !calibRangesClose(a.Ranges, b.Ranges) {
+		return false
+	}
+	return calibLaddersClose(a.Ladder, b.Ladder)
+}
+
+// calibCardClose reports whether two cards match: the same source filename, the
+// same byte costs, and every metric set within tolerance.
+func calibCardClose(a, b CalibCard) bool {
+	return a.Card == b.Card &&
+		a.Bytes == b.Bytes &&
+		metricSetClose(a.Absolute, b.Absolute) &&
+		metricSetClose(a.Relative, b.Relative) &&
+		metricSetClose(a.NoiseFloor, b.NoiseFloor)
+}
+
+// metricSetClose reports whether every field of two metric sets sits within the
+// calibration tolerance.
+func metricSetClose(a, b CalibMetricSet) bool {
+	return floatClose(a.SSIM, b.SSIM) &&
+		floatClose(a.MSSSIM, b.MSSSIM) &&
+		floatClose(a.PSNR, b.PSNR) &&
+		floatClose(a.DeltaEMean, b.DeltaEMean) &&
+		floatClose(a.DeltaEP95, b.DeltaEP95) &&
+		floatClose(a.HistDivergence, b.HistDivergence)
+}
+
+// calibRangesClose reports whether every corpus range bound sits within
+// tolerance and the integer byte range matches exactly.
+func calibRangesClose(a, b CalibRanges) bool {
+	return rangeClose(a.SSIM, b.SSIM) &&
+		rangeClose(a.MSSSIM, b.MSSSIM) &&
+		rangeClose(a.PSNR, b.PSNR) &&
+		rangeClose(a.DeltaEMean, b.DeltaEMean) &&
+		rangeClose(a.DeltaEP95, b.DeltaEP95) &&
+		rangeClose(a.HistDivergence, b.HistDivergence) &&
+		a.BytesPerFrame == b.BytesPerFrame
+}
+
+// rangeClose reports whether both bounds of two ranges sit within tolerance.
+func rangeClose(a, b CalibRange) bool {
+	return floatClose(a.Min, b.Min) && floatClose(a.Max, b.Max)
+}
+
+// calibLaddersClose reports whether two OCR ladders match: the same shape, the
+// same card labels and legibility flags, the same minimum legible size, and CER
+// and WER within tolerance. The ladder is carried forward verbatim from the
+// committed file in the default build, so this is an identity check there; it
+// guards the tagged path where the CER is freshly measured.
+func calibLaddersClose(a, b []CalibCardLadder) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Card != b[i].Card || !intPtrEqual(a[i].MinLegiblePx, b[i].MinLegiblePx) {
+			return false
+		}
+		if len(a[i].Rungs) != len(b[i].Rungs) {
+			return false
+		}
+		for j := range a[i].Rungs {
+			ra, rb := a[i].Rungs[j], b[i].Rungs[j]
+			if ra.SizePx != rb.SizePx || ra.Legible != rb.Legible ||
+				!floatClose(ra.CER, rb.CER) || !floatClose(ra.WER, rb.WER) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// intPtrEqual reports whether two optional int pointers hold the same value or
+// are both nil.
+func intPtrEqual(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// floatClose reports whether a and b sit within the calibration tolerance: an
+// absolute floor of calibAbsEps plus a relative band of calibRelEps scaled to
+// the larger magnitude. The combined band passes float drift yet fails a real
+// metric regression.
+func floatClose(a, b float64) bool {
+	diff := math.Abs(a - b)
+	if diff <= calibAbsEps {
+		return true
+	}
+	scale := math.Max(math.Abs(a), math.Abs(b))
+	return diff <= calibRelEps*scale
 }

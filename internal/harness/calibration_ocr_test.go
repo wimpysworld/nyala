@@ -139,7 +139,7 @@ func TestCalibrationOCR(t *testing.T) {
 
 	// Rebuild the metric ranges so the merged file carries both halves.
 	rast := newRasteriser(t)
-	cal := MeasureCalibration(rast, loadCalibInputs(t))
+	cal := MeasureCalibration(rast, loadCalibInputs(t), logProgress(t))
 	cal.OCRBuilt = true
 	cal.CERBound = calibCERBound
 	cal.Ladder = []CalibCardLadder{{

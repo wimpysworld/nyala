@@ -27,7 +27,7 @@ In scope, all delivered:
 - Cycle backends at runtime by hotkey.
 - Fit the render to the terminal and re-fit on resize with `golang.org/x/image/draw`.
 - Closed-form RGB to xterm-256 plus truecolour SGR passthrough.
-- The `--diagnostics` corpus sweep: capture, metrics, the `gosseract` OCR baseline, and the artefacts, at a fixed grid.
+- The diagnostics corpus sweep: capture, metrics, the `gosseract` OCR baseline, and the artefacts, at a fixed grid. (Then run via `nyala --diagnostics`; the sweep has since moved to a build-tagged test, run via `just diagnostics`.)
 
 Out of scope, deferred to later stages:
 
@@ -184,7 +184,7 @@ Sixel support comes from the DA1 attribute list (the element exactly `"4"`, matc
 
 Best-fit scaling resolves the cell pixel size in order: `TIOCGWINSZ` ioctl, then `CSI 16t` (direct), then `14t` / `18t`, else defaults. Graphics scale to the real cell pixel size so one source pixel maps to the real cell geometry. `State.SetEnabled` configures the `Tab` cycle, and `CycleBackend` steps only enabled backends.
 
-Under `tmux` or `screen` (`TMUX` or `STY` set) the viewer offers block only, since Stage 0 does not do DCS passthrough. `--all-renderers` overrides detection and forces all backends.
+Under `tmux` or `screen` (`TMUX` or `STY` set) the viewer offers block only, since Stage 0 does not do DCS passthrough. The viewer always runs automatic detection; the Tab cycle steps only the detected-supported backends.
 
 ## Work completed after the initial build
 
@@ -195,7 +195,7 @@ The base commit `6f42563` delivered the full Stage 0 spine: the seam, all three 
 - `ee241c5` fix(render): CRLF for cursor positioning with auto-wrap disabled (interlacing fix). Root cause: with auto-wrap off in raw mode, a bare `LF` advanced the row but left the cursor in the same column, so rows interlaced. Fix: each row now ends with an SGR reset plus `\r\n`; `enterFullScreen` and `exitFullScreen` disable auto-wrap and hide the cursor on entry, restoring both on exit. Tests verify CRLF per row; calibration byte counts updated.
 - `670f766` feat(kitty): large image transmission via chunked payload (black-screen fix). Root cause: the payload was transmitted but never displayed, and oversized payloads exceeded the single-APC chunk limit. Fix: use action `TransmitAndPut` (`a=T`) so the terminal loads and shows the image; set `Quite 2` (`q=2`) to suppress OK and error replies; `writeChunks` splits payloads over `kitty.MaxChunkSize` across APC frames (first carries the options plus `m=1`, middle frames `m=1`, final `m=0`); the decoder `reassembleKittyFrames` concatenates them back into one image; the viewer writes `kittyDeleteAll` (`\x1b_Ga=d,d=A\x1b\`) before each Kitty redraw, because `clearScreen` erases text but not Kitty images. Tests cover small, large, and round-trip; calibration adjusted.
 - `2bc6caf` fix(render): correct quadrant block binarisation and fg/bg assignment (inversion fix). Root cause: a per-mask switch assigned some bright and dark colours backwards. Fix: rewrote `quadrantGlyphs` to emit all 16 quadrant blocks keyed by the luma mask, and replaced the colour switch with one rule that partitions sub-cells into bright and dark by the same mask. Added `avgRGBA`. Tests `TestComposeQuadrantNotInverted` and `TestComposeQuadrantTwoBright`. Result: block SSIM rose to 0.66 to 0.70, `deltaE2000Mean` halved, Sixel unchanged. Regenerated all four golden archives, `baseline.json`, `calibration.json`; updated the `oracle.go` comment.
-- `d4d44df` feat(viewer): detect terminal graphics capabilities and add best-fit scaling. Added the DA1-fenced handshake that probes Kitty and cell sizes, parses Sixel and Kitty support, resolves the real cell pixel size, and scales graphics to it. Falls back to block under `tmux` or `screen`; `--all-renderers` forces all backends. Rationale: an early, conservative detector improves the default experience before the full Stage 1 work.
+- `d4d44df` feat(viewer): detect terminal graphics capabilities and add best-fit scaling. Added the DA1-fenced handshake that probes Kitty and cell sizes, parses Sixel and Kitty support, resolves the real cell pixel size, and scales graphics to it. Falls back to block under `tmux` or `screen`; the then-current `--all-renderers` flag forced all backends (since removed; the viewer now always auto-detects). Rationale: an early, conservative detector improves the default experience before the full Stage 1 work.
 - `1340b1b` chore(harness): calibrate OCR metrics and update `vendorHash` (HEAD). Set `ocrBuilt` true, `cerBound` 0.15, the ladder across 8 to 28 px, and `minLegiblePx` 10 (8 px illegible at CER 0.23 / WER 0.67; 10 px and up legible; 14 px a minor CER 0.14). Bumped `flake.nix` `vendorHash` to `sha256-OMak9QNVkpoXNaKV6UAb/MBSaP8aayx2xNoxatcPl8M=`.
 
 ## Decisions recorded with rationale
@@ -203,7 +203,7 @@ The base commit `6f42563` delivered the full Stage 0 spine: the seam, all three 
 Cross-cutting decisions, with the reasoning kept short:
 
 - testdata layout: fixtures live in `testdata/`, goldens in `testdata/golden/*.txtar`, with `baseline.json` and `thresholds.json` committed. Small JSON and text goldens diff cleanly and stay stable across font and Chromium versions; pixel goldens bloat git and break across versions.
-- `--diagnostics` single binary: one `nyala` binary runs both the viewer and the sweep, gated by the flag, so there is no parallel CLI and one toolchain ships.
+- Single binary for the viewer and the sweep: in Stage 0 one `nyala` binary ran both, gated by `--diagnostics`, so there was no parallel CLI and one toolchain shipped. (The sweep has since moved to a build-tagged harness test, run via `just diagnostics`; the binary is now a viewer only.)
 - charmbracelet v2 stack plus the Bubble Tea coexistence check: `ansi/sixel`, `ansi/kitty`, and `x/vt` supply the backends and the oracle; a light-touch Bubble Tea v2 `WithoutRenderer` spike confirms the bitmap survives the cell renderer, de-risking Stage 4 early.
 - Port SSIM and MS-SSIM from the scikit-image reference rather than vendoring fennec, because fennec has an 8x8 window and an off-centre kernel bug; the port is validated against scikit-image, ImageMagick, and `kornelski/dssim`.
 - go-colorful dE scaling: `Lab` L and `DistanceCIEDE2000` are 0..1, so the code multiplies by 100, with a Sharma-table golden (skipping the two `L=50, a=2.5` rows go-colorful misses).

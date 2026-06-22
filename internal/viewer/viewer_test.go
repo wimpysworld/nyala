@@ -415,7 +415,7 @@ func TestConfigureBackendsSkipsHandshakeUnderMux(t *testing.T) {
 
 	tty := newTempTTY(t)
 	st := NewState(80, 24, 64, 64)
-	configureBackends(&st, tty, 80, 24, false, "auto")
+	configureBackends(&st, tty, 80, 24, "auto")
 
 	if len(st.Enabled) != 1 || st.Enabled[0] != BackendBlock {
 		t.Fatalf("enabled = %v, want [BackendBlock]", st.Enabled)
@@ -434,7 +434,7 @@ func TestConfigureBackendsRunsHandshakeWithoutMux(t *testing.T) {
 
 	tty := newTempTTY(t)
 	st := NewState(80, 24, 64, 64)
-	configureBackends(&st, tty, 80, 24, false, "auto")
+	configureBackends(&st, tty, 80, 24, "auto")
 
 	if n := ttyByteCount(t, tty); n == 0 {
 		t.Fatalf("handshake wrote no bytes without mux; probeTerminal should run")

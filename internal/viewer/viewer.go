@@ -384,13 +384,12 @@ const exitFullScreen = "\x1b[?7h\x1b[?25h"
 // Run loads the PNG at path and runs the interactive viewer on the given TTY
 // until the user quits. It puts the terminal into raw mode, detects which
 // backends the terminal supports, draws on resize and on each redraw hotkey, and
-// restores the terminal on exit. forceAllBackends skips detection and enables
-// every backend for side-by-side testing. It returns an error only on a setup or
-// I/O failure; a clean quit returns nil. Run is the live wiring around State; the
+// restores the terminal on exit. It returns an error only on a setup or I/O
+// failure; a clean quit returns nil. Run is the live wiring around State; the
 // state machine itself is tested without it. colourFlag is the --color intent
 // (auto, truecolor, 256, none); configureBackends resolves it against NO_COLOR
 // and detection.
-func Run(path string, tty *os.File, forceAllBackends bool, colourFlag string) error {
+func Run(path string, tty *os.File, colourFlag string) error {
 	src, err := LoadPNG(path)
 	if err != nil {
 		return err
@@ -417,7 +416,7 @@ func Run(path string, tty *os.File, forceAllBackends bool, colourFlag string) er
 	// Detection runs in raw mode but before the full-screen switch, the first
 	// draw, and the key reader, so the handshake replies are not consumed by the
 	// key goroutine.
-	configureBackends(&st, tty, cols, rows, forceAllBackends, colourFlag)
+	configureBackends(&st, tty, cols, rows, colourFlag)
 
 	if _, err := io.WriteString(tty, enterFullScreen); err != nil {
 		return err
@@ -468,14 +467,13 @@ func Run(path string, tty *os.File, forceAllBackends bool, colourFlag string) er
 }
 
 // configureBackends decides which backends the cycle offers and resolves the
-// real cell pixel size, then writes both into st. With forceAllBackends it
-// enables every backend and keeps the winsize cell size. Behind a multiplexer
-// (TMUX, ZELLIJ, herdr, or STY set) it offers block only, because Stage 0 has no
+// real cell pixel size, then writes both into st. Behind a multiplexer (TMUX,
+// ZELLIJ, herdr, or STY set) it offers block only, because Stage 0 has no
 // passthrough. Otherwise it runs one terminal handshake and offers a graphics
 // backend only when the terminal confirms it. The colour mode resolves first, on
-// every path, because it is multiplexer-agnostic and orthogonal to backend
-// forcing, so it must not strand at the NewState default behind an early return.
-func configureBackends(st *State, tty *os.File, cols, rows int, forceAllBackends bool, colourFlag string) {
+// every path, because it is multiplexer-agnostic, so it must not strand at the
+// NewState default behind an early return.
+func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag string) {
 	detected := detectColour(os.Environ(), cterm.IsTerminal(tty.Fd()))
 	st.Colour = resolveColour(colourFlag, os.Environ(), detected)
 
@@ -483,11 +481,6 @@ func configureBackends(st *State, tty *os.File, cols, rows int, forceAllBackends
 	if winOK {
 		st.CellPxX = winX
 		st.CellPxY = winY
-	}
-
-	if forceAllBackends {
-		st.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
-		return
 	}
 
 	if multiplexed() {

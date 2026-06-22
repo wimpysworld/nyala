@@ -121,7 +121,8 @@ func (b Breach) String() string {
 // and the written file paths. A non-empty Breaches slice means the run regressed;
 // the caller exits non-zero on it. baseline and thresholds gate the run; a nil
 // baseline skips the gate and reports no breaches, which seeds a first baseline.
-func RunSweep(rast *capture.Rasteriser, cfg SweepConfig, inputs []SweepInput, baseline *Baseline, thresholds Thresholds) (SweepResult, error) {
+// progress streams a line before each (page, mode) is scored; it may be nil.
+func RunSweep(rast *capture.Rasteriser, cfg SweepConfig, inputs []SweepInput, baseline *Baseline, thresholds Thresholds, progress Progress) (SweepResult, error) {
 	if err := os.MkdirAll(cfg.OutDir, 0o755); err != nil {
 		return SweepResult{}, err
 	}
@@ -129,6 +130,7 @@ func RunSweep(rast *capture.Rasteriser, cfg SweepConfig, inputs []SweepInput, ba
 	reports := make([]Report, 0, len(inputs)*len(SweepModes))
 	for _, in := range inputs {
 		for _, mode := range SweepModes {
+			progress.report("sweep: page %s mode %s", in.Page, mode)
 			rep, err := runOne(rast, cfg, in, mode)
 			if err != nil {
 				return SweepResult{}, fmt.Errorf("sweep %s/%s: %w", in.Page, mode, err)
