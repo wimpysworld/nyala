@@ -38,8 +38,8 @@ type GoldenCell struct {
 func EncodeGrid(page string, g block.Grid, flags []bool) []byte {
 	var b strings.Builder
 	fmt.Fprintf(&b, "cols %d rows %d\n", g.Cols, g.Rows)
-	for row := 0; row < g.Rows; row++ {
-		for col := 0; col < g.Cols; col++ {
+	for row := range g.Rows {
+		for col := range g.Cols {
 			c := g.At(col, row)
 			text := false
 			if i := row*g.Cols + col; flags != nil && i < len(flags) {

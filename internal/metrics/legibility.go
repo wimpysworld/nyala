@@ -182,8 +182,7 @@ func PixelContrast(img *image.RGBA) float64 {
 // lumaByte returns the BT.601 luma of an 8-bit RGB triple, rounded to a byte. It
 // feeds the Otsu histogram for the pixel-derived contrast split.
 func lumaByte(r, g, b uint8) uint8 {
-	y := 0.299*float64(r) + 0.587*float64(g) + 0.114*float64(b)
-	return uint8(y + 0.5)
+	return uint8(lumaBT601(r, g, b) + 0.5)
 }
 
 // meanByte returns sum/count rounded and clamped to an 8-bit value.

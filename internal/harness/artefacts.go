@@ -103,7 +103,7 @@ func Emit(dir string, in ArtefactInput) (ArtefactSet, error) {
 	if rb.Dx() != gb.Dx() || rb.Dy() != gb.Dy() {
 		return ArtefactSet{}, fmt.Errorf("harness: reference %v and render %v dimensions differ", rb.Size(), gb.Size())
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, dirMode); err != nil {
 		return ArtefactSet{}, err
 	}
 
@@ -378,7 +378,7 @@ func normChannelHist(img *image.RGBA) (r, g, b []float64) {
 		}
 	}
 	inv := 1.0 / float64(n)
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		r[i] *= inv
 		g[i] *= inv
 		b[i] *= inv
@@ -387,7 +387,10 @@ func normChannelHist(img *image.RGBA) (r, g, b []float64) {
 }
 
 // writePNG encodes img to path as a timestamp-free PNG through
-// capture.EncodePNG, so the file is byte-identical for identical inputs.
+// capture.EncodePNG, so the file is byte-identical for identical inputs. The
+// write is non-atomic: it writes straight to the target, which is acceptable for
+// the gitignored testdata artefacts and not a pattern to copy where a partial
+// write would corrupt durable state.
 func writePNG(path string, img image.Image) error {
 	f, err := os.Create(path)
 	if err != nil {

@@ -116,8 +116,9 @@ func (r *Rasteriser) drawCell(img *image.RGBA, col, row int, c block.Cell) {
 	d.DrawString(string(c.Glyph))
 }
 
-// faceFor returns the face that covers r, preferring the primary. It returns nil
-// when neither font covers r, so drawCell leaves the cell as its background.
+// faceFor returns the face that covers glyph, preferring the primary. It returns
+// nil when neither font covers glyph, so drawCell leaves the cell as its
+// background.
 func (r *Rasteriser) faceFor(glyph rune) xfont.Face {
 	f, _, ok := r.atlas.Resolve(glyph)
 	if !ok {

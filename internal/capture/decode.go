@@ -121,8 +121,7 @@ func reassembleKittyFrames(s string) (optsText, b64 string, err error) {
 		}
 		bodies.WriteString(frameBody)
 
-		more := strings.Contains(frameControl, "m=1")
-		if !more {
+		if !frameHasMore(frameControl) {
 			break
 		}
 	}
@@ -130,6 +129,19 @@ func reassembleKittyFrames(s string) (optsText, b64 string, err error) {
 		return "", "", errors.New("capture: kitty payload missing APC envelope ESC _ G ... ESC backslash")
 	}
 	return first, bodies.String(), nil
+}
+
+// frameHasMore reports whether a Kitty frame's control section marks more
+// frames following: true only when a comma-separated field equals exactly m=1.
+// A field m=0 or no m= field means this frame is terminal. The exact key match
+// avoids a substring scan matching m= inside an unrelated field value.
+func frameHasMore(control string) bool {
+	for _, field := range strings.Split(control, ",") {
+		if field == "m=1" {
+			return true
+		}
+	}
+	return false
 }
 
 // toRGBA returns img as an *image.RGBA. If img already is one it is returned

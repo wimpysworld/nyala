@@ -42,6 +42,10 @@ const ladderCERBound = 0.15
 // pixels. The sweep and the calibration share it so the spec geometry lines up.
 const ladderRowH = 48
 
+// opaqueWhite is the byte value for a fully opaque white RGBA channel, the
+// ground the ladder images fill before drawing dark text.
+const opaqueWhite = 0xFF
+
 // ocrScores renders the synthetic ladder, round-trips it through the named mode's
 // capture path, OCRs each rung, and returns the corpus CER and WER plus the
 // minimum legible size. The captured render of the page is not used: the page
@@ -140,7 +144,7 @@ func buildLadder(sizes []int) (*image.RGBA, error) {
 	}
 	out := image.NewRGBA(image.Rect(0, 0, maxW+8, ladderRowH*len(sizes)))
 	for i := range out.Pix {
-		out.Pix[i] = 255 // opaque white ground
+		out.Pix[i] = opaqueWhite // opaque white ground
 	}
 	for i, img := range lines {
 		dy := i*ladderRowH + (ladderRowH-img.Bounds().Dy())/2
@@ -177,7 +181,7 @@ func buildLadderLine(s string, capPx int) (*image.RGBA, error) {
 	h := int(size*1.4) + 8
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	for i := range img.Pix {
-		img.Pix[i] = 255 // opaque white ground
+		img.Pix[i] = opaqueWhite // opaque white ground
 	}
 	d := font.Drawer{
 		Dst:  img,
