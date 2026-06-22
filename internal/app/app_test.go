@@ -71,9 +71,3 @@ func TestParseColorInvalid(t *testing.T) {
 		t.Errorf("--color bogus: want a parse error, got nil")
 	}
 }
-
-func TestMessage(t *testing.T) {
-	if Message() == "" {
-		t.Errorf("Message() is empty")
-	}
-}

@@ -288,6 +288,19 @@ func captureKitty(reference *image.RGBA) (*image.RGBA, metrics.FramePerf, error)
 	return img, perf, nil
 }
 
+// sixelRoundTrip encodes img through the sixel backend and decodes it back,
+// returning the round-tripped render. It is the no-cost path the callers that do
+// not measure byte cost share; captureSixel keeps its own counting writer.
+// Channel order is RGBA.
+func sixelRoundTrip(img *image.RGBA) (*image.RGBA, error) {
+	var r sixel.Renderer
+	var buf bytes.Buffer
+	if err := r.Render(render.Frame{Img: img}, &buf); err != nil {
+		return nil, err
+	}
+	return capture.DecodeSixel(buf.Bytes())
+}
+
 // scoreQuality scores one render against the reference and fills the report
 // Quality block. Sharpness (Laplacian variance on the decoded render) is reported
 // for all three modes. WCAG contrast is the owned cell-grid contrast for block;

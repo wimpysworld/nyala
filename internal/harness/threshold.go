@@ -231,7 +231,7 @@ func gateOne(r Report, base BaselineMetrics, t Thresholds) []Breach {
 		if !ok {
 			return
 		}
-		if br, breached := evalBand(r.Page, r.Mode, metric, *baseline, *measured, th, 0); breached {
+		if br, breached := evalBand(r.Page, r.Mode, metric, *baseline, *measured, th); breached {
 			out = append(out, br)
 		}
 	}
@@ -247,7 +247,7 @@ func gateOne(r Report, base BaselineMetrics, t Thresholds) []Breach {
 		// The byte band is relative: a fraction of the baseline frame size,
 		// since payload sizes span orders of magnitude across the backends.
 		effBand := th.Band * baseline
-		if br, breached := evalBand(r.Page, r.Mode, bytesPerFrameMetric, baseline, measured, MetricThreshold{Band: effBand, HigherIsBetter: th.HigherIsBetter}, th.Band); breached {
+		if br, breached := evalBand(r.Page, r.Mode, bytesPerFrameMetric, baseline, measured, MetricThreshold{Band: effBand, HigherIsBetter: th.HigherIsBetter}); breached {
 			out = append(out, br)
 		}
 	}
@@ -258,15 +258,11 @@ func gateOne(r Report, base BaselineMetrics, t Thresholds) []Breach {
 // metric (HigherIsBetter) the regression is a drop, so it breaches when the
 // measured value falls more than Band below the baseline. For a cost metric it
 // breaches when the measured value rises more than Band above the baseline. A
-// move the good way, or within the band, passes. reportBand is the band recorded
-// in the breach (the relative fraction for bytesPerFrame, else the absolute
-// band).
-func evalBand(page, mode, metric string, baseline, measured float64, th MetricThreshold, reportBand float64) (Breach, bool) {
+// move the good way, or within the band, passes. The recorded band is th.Band,
+// the same band the gate compares against, so the breach's delta and band carry
+// the same units.
+func evalBand(page, mode, metric string, baseline, measured float64, th MetricThreshold) (Breach, bool) {
 	delta := measured - baseline
-	band := reportBand
-	if band == 0 {
-		band = th.Band
-	}
 	var breached bool
 	if th.HigherIsBetter {
 		// Regression is a drop: measured below baseline by more than the band.
@@ -285,7 +281,7 @@ func evalBand(page, mode, metric string, baseline, measured float64, th MetricTh
 		Baseline: baseline,
 		Measured: measured,
 		Delta:    delta,
-		Band:     band,
+		Band:     th.Band,
 	}, true
 }
 

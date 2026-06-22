@@ -247,7 +247,9 @@ func (s *State) RenderFrame(src *image.RGBA, w io.Writer) error {
 // FitGrid recomputes the fit-and-letterbox placement from the State dimensions,
 // so the image stays centred without a passed-in Fit.
 func (s *State) renderBlock(src *image.RGBA, w io.Writer) error {
-	br := block.Renderer{Cols: s.Cols, Rows: s.Rows, Scheme: s.Scheme}
+	// Renderer() is the single construction site for the active backend; for the
+	// block backend it returns *block.Renderer carrying the current scheme.
+	br := s.Renderer().(*block.Renderer)
 	grid := br.FitGrid(s.ImgW, s.ImgH, func(cols, rows int) block.Grid {
 		pxW, pxH := schemePixels(s.Scheme, cols, rows)
 		sub := metrics.Downscale(src, pxW, pxH)

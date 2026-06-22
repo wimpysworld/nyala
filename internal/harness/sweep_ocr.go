@@ -29,21 +29,20 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/block"
 	rfont "github.com/wimpysworld/nyala/internal/render/font"
 	"github.com/wimpysworld/nyala/internal/render/kitty"
-	"github.com/wimpysworld/nyala/internal/render/sixel"
 )
 
 // errNoGlyph reports the embedded font atlas lacks the probe glyph, so the OCR
 // ladder cannot build a face.
 var errNoGlyph = errors.New("harness: font atlas has no glyph for probe")
 
-// sweepCERBound is the CER bound the sweep ladder marks legibility at. It matches
-// the calibration ladder bound (calibCERBound), so the sweep's minimum legible
-// size is comparable to the calibration record.
-const sweepCERBound = 0.15
+// ladderCERBound is the CER bound the synthetic ladder marks legibility at. The
+// sweep and the calibration share it, so the sweep's minimum legible size is
+// comparable to the calibration record.
+const ladderCERBound = 0.15
 
-// sweepLadderRowH is the per-rung row height of the rendered ladder, in source
-// pixels. It matches the calibration ladder so the spec geometry lines up.
-const sweepLadderRowH = 48
+// ladderRowH is the per-rung row height of the rendered ladder, in source
+// pixels. The sweep and the calibration share it so the spec geometry lines up.
+const ladderRowH = 48
 
 // ocrScores renders the synthetic ladder, round-trips it through the named mode's
 // capture path, OCRs each rung, and returns the corpus CER and WER plus the
@@ -59,7 +58,7 @@ func ocrScores(rast *capture.Rasteriser, mode string, _ *image.RGBA) (cer, wer *
 	defer eng.Close()
 
 	sizes := ocr.LadderSizes
-	ladder, err := renderSweepLadder(sizes)
+	ladder, err := buildLadder(sizes)
 	if err != nil {
 		return nil, nil, nil
 	}
@@ -68,8 +67,8 @@ func ocrScores(rast *capture.Rasteriser, mode string, _ *image.RGBA) (cer, wer *
 		return nil, nil, nil
 	}
 
-	spec := ocr.Spec{Sizes: sizes, RowHeight: sweepLadderRowH}
-	results, err := ocr.Ladder(roundTripped, spec, eng, sweepCERBound)
+	spec := ocr.Spec{Sizes: sizes, RowHeight: ladderRowH}
+	results, err := ocr.Ladder(roundTripped, spec, eng, ladderCERBound)
 	if err != nil {
 		return nil, nil, nil
 	}
@@ -102,12 +101,26 @@ func roundTripLadder(rast *capture.Rasteriser, mode string, ladder *image.RGBA) 
 	case "block":
 		return roundTripBlockLadder(rast, ladder), nil
 	case "sixel":
-		return roundTripSixelLadder(ladder)
+		return sixelRoundTrip(ladder)
 	case "kitty":
-		return roundTripKittyLadder(ladder)
+		return kittyRoundTrip(ladder)
 	default:
 		return ladder, nil
 	}
+}
+
+// kittyRoundTrip encodes img through the kitty backend and decodes it back,
+// returning the round-tripped render. Kitty is lossless, so the decoded image
+// equals img up to channel layout. The OCR ladder path is its only caller;
+// captureKitty keeps its own counting writer for the cost-measuring path.
+// Channel order is RGBA.
+func kittyRoundTrip(img *image.RGBA) (*image.RGBA, error) {
+	var r kitty.Renderer
+	var buf bytes.Buffer
+	if err := r.Render(render.Frame{Img: img}, &buf); err != nil {
+		return nil, err
+	}
+	return capture.DecodeKitty(buf.Bytes())
 }
 
 // roundTripBlockLadder composes the ladder onto a block grid sized to the ladder
@@ -128,35 +141,14 @@ func roundTripBlockLadder(rast *capture.Rasteriser, ladder *image.RGBA) *image.R
 	return rast.Rasterise(grid)
 }
 
-// roundTripSixelLadder encodes the ladder as Sixel and decodes it back.
-func roundTripSixelLadder(ladder *image.RGBA) (*image.RGBA, error) {
-	var r sixel.Renderer
-	var buf bytes.Buffer
-	if err := r.Render(render.Frame{Img: ladder}, &buf); err != nil {
-		return nil, err
-	}
-	return capture.DecodeSixel(buf.Bytes())
-}
-
-// roundTripKittyLadder encodes the ladder as Kitty and decodes it back. Kitty is
-// lossless, so the decoded image equals the ladder up to channel layout.
-func roundTripKittyLadder(ladder *image.RGBA) (*image.RGBA, error) {
-	var r kitty.Renderer
-	var buf bytes.Buffer
-	if err := r.Render(render.Frame{Img: ladder}, &buf); err != nil {
-		return nil, err
-	}
-	return capture.DecodeKitty(buf.Bytes())
-}
-
-// renderSweepLadder stacks one "Text Size NNpx" line per size into a tall
-// left-column ladder image, the synthetic image the OCR pass round-trips. It
-// mirrors the calibration ladder geometry so the two measurements line up.
-func renderSweepLadder(sizes []int) (*image.RGBA, error) {
+// buildLadder stacks one "Text Size NNpx" line per size into a tall left-column
+// ladder image, the synthetic image the OCR pass round-trips. The sweep and the
+// calibration both build it, so the two measurements line up.
+func buildLadder(sizes []int) (*image.RGBA, error) {
 	maxW := 0
 	lines := make([]*image.RGBA, len(sizes))
 	for i, sz := range sizes {
-		img, err := renderSweepLine(ocr.LadderText(sz), sz)
+		img, err := buildLadderLine(ocr.LadderText(sz), sz)
 		if err != nil {
 			return nil, err
 		}
@@ -165,14 +157,14 @@ func renderSweepLadder(sizes []int) (*image.RGBA, error) {
 			maxW = img.Bounds().Dx()
 		}
 	}
-	out := image.NewRGBA(image.Rect(0, 0, maxW+8, sweepLadderRowH*len(sizes)))
+	out := image.NewRGBA(image.Rect(0, 0, maxW+8, ladderRowH*len(sizes)))
 	for i := range out.Pix {
 		out.Pix[i] = 255 // opaque white ground
 	}
 	for i, img := range lines {
-		dy := i*sweepLadderRowH + (sweepLadderRowH-img.Bounds().Dy())/2
-		if dy < i*sweepLadderRowH {
-			dy = i * sweepLadderRowH
+		dy := i*ladderRowH + (ladderRowH-img.Bounds().Dy())/2
+		if dy < i*ladderRowH {
+			dy = i * ladderRowH
 		}
 		r := image.Rect(4, dy, 4+img.Bounds().Dx(), dy+img.Bounds().Dy())
 		draw.Draw(out, r, img, img.Bounds().Min, draw.Over)
@@ -180,9 +172,10 @@ func renderSweepLadder(sizes []int) (*image.RGBA, error) {
 	return out, nil
 }
 
-// renderSweepLine draws s as dark text on a light ground at the given pixel cap
-// height using the embedded FiraCode Nerd Font Mono face, matching the calibration line render.
-func renderSweepLine(s string, capPx int) (*image.RGBA, error) {
+// buildLadderLine draws s as dark text on a light ground at the given pixel cap
+// height using the embedded FiraCode Nerd Font Mono face. The sweep and the
+// calibration share it so their ladders match in geometry.
+func buildLadderLine(s string, capPx int) (*image.RGBA, error) {
 	a, err := rfont.Load()
 	if err != nil {
 		return nil, err

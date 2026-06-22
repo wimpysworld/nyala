@@ -14,92 +14,10 @@
 package harness
 
 import (
-	"image"
-	"image/color"
-	"image/draw"
 	"testing"
 
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/math/fixed"
-
 	"github.com/wimpysworld/nyala/internal/ocr"
-	rfont "github.com/wimpysworld/nyala/internal/render/font"
 )
-
-// calibCERBound is the CER bound the calibration ladder marks legibility at. It
-// matches the bound the OCR ladder test uses, so the recorded minimum legible
-// size is comparable.
-const calibCERBound = 0.15
-
-// calibLadderRowH is the per-rung row height in the rendered calibration ladder,
-// in source pixels. It is tall enough to hold the largest rung with margin.
-const calibLadderRowH = 48
-
-// renderCalibLine draws s as dark text on a light ground at the given pixel cap
-// height using the embedded FiraCode Nerd Font Mono face, mirroring the OCR package's render
-// helper so the calibration ladder matches the ladder test's geometry.
-func renderCalibLine(t *testing.T, s string, capPx int) *image.RGBA {
-	t.Helper()
-	a, err := rfont.Load()
-	if err != nil {
-		t.Fatalf("font atlas load: %v", err)
-	}
-	fnt, _, ok := a.Resolve('A')
-	if !ok {
-		t.Fatalf("font atlas has no glyph for 'A'")
-	}
-	size := float64(capPx) / 0.7
-	face, err := opentype.NewFace(fnt, &opentype.FaceOptions{Size: size, DPI: 72})
-	if err != nil {
-		t.Fatalf("new face: %v", err)
-	}
-	defer face.Close()
-
-	adv := font.MeasureString(face, s)
-	w := adv.Ceil() + 8
-	h := int(size*1.4) + 8
-	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for i := range img.Pix {
-		img.Pix[i] = 255 // opaque white ground
-	}
-	d := font.Drawer{
-		Dst:  img,
-		Src:  image.NewUniform(color.RGBA{A: 255}),
-		Face: face,
-		Dot:  fixed.P(4, int(size)),
-	}
-	d.DrawString(s)
-	return img
-}
-
-// renderCalibLadder stacks one "Text Size NNpx" line per size into a tall
-// left-column ladder image, returning the composite for the OCR pass.
-func renderCalibLadder(t *testing.T, sizes []int) *image.RGBA {
-	t.Helper()
-	maxW := 0
-	lines := make([]*image.RGBA, len(sizes))
-	for i, sz := range sizes {
-		img := renderCalibLine(t, ocr.LadderText(sz), sz)
-		lines[i] = img
-		if img.Bounds().Dx() > maxW {
-			maxW = img.Bounds().Dx()
-		}
-	}
-	out := image.NewRGBA(image.Rect(0, 0, maxW+8, calibLadderRowH*len(sizes)))
-	for i := range out.Pix {
-		out.Pix[i] = 255 // opaque white ground
-	}
-	for i, img := range lines {
-		dy := i*calibLadderRowH + (calibLadderRowH-img.Bounds().Dy())/2
-		if dy < i*calibLadderRowH {
-			dy = i * calibLadderRowH
-		}
-		r := image.Rect(4, dy, 4+img.Bounds().Dx(), dy+img.Bounds().Dy())
-		draw.Draw(out, r, img, img.Bounds().Min, draw.Over)
-	}
-	return out
-}
 
 // TestCalibrationOCR measures the gosseract CER per ladder size and merges the
 // ladder into the committed calibration file. It skips when Tesseract is absent.
@@ -113,10 +31,13 @@ func TestCalibrationOCR(t *testing.T) {
 	defer eng.Close()
 
 	sizes := ocr.LadderSizes
-	src := renderCalibLadder(t, sizes)
-	spec := ocr.Spec{Sizes: sizes, RowHeight: calibLadderRowH}
+	src, err := buildLadder(sizes)
+	if err != nil {
+		t.Fatalf("buildLadder: %v", err)
+	}
+	spec := ocr.Spec{Sizes: sizes, RowHeight: ladderRowH}
 
-	results, err := ocr.Ladder(src, spec, eng, calibCERBound)
+	results, err := ocr.Ladder(src, spec, eng, ladderCERBound)
 	if err != nil {
 		t.Fatalf("Ladder: %v", err)
 	}
@@ -141,7 +62,7 @@ func TestCalibrationOCR(t *testing.T) {
 	rast := newRasteriser(t)
 	cal := MeasureCalibration(rast, loadCalibInputs(t), logProgress(t))
 	cal.OCRBuilt = true
-	cal.CERBound = calibCERBound
+	cal.CERBound = ladderCERBound
 	cal.Ladder = []CalibCardLadder{{
 		Card:         "synthetic-ladder",
 		Rungs:        rungs,

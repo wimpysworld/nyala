@@ -42,7 +42,6 @@ import (
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 	"github.com/wimpysworld/nyala/internal/render/kitty"
-	"github.com/wimpysworld/nyala/internal/render/sixel"
 )
 
 // Progress is an optional callback the diagnostics passes use to stream a line
@@ -332,12 +331,7 @@ func stdDev(xs []float64) float64 {
 // second return is false when the encode or decode fails, so a failed run does
 // not skew the jitter spread. Channel order is RGBA.
 func sixelRoundTripPSNR(reference *image.RGBA) (float64, bool) {
-	var r sixel.Renderer
-	var buf bytes.Buffer
-	if err := r.Render(render.Frame{Img: reference}, &buf); err != nil {
-		return 0, false
-	}
-	img, err := capture.DecodeSixel(buf.Bytes())
+	img, err := sixelRoundTrip(reference)
 	if err != nil {
 		return 0, false
 	}
@@ -354,8 +348,9 @@ func measureCard(rast *capture.Rasteriser, in CalibInput) CalibCard {
 	// Downscale the source so each cell maps to a 2x4 block, the geometry the
 	// block compositor and the oracle both read.
 	composeSrc := metrics.Downscale(in.Src, CalibCols*2, CalibRows*4)
-	render1 := renderBlock(rast, composeSrc)
-	render2 := renderBlock(rast, composeSrc)
+	br := block.Renderer{Cols: CalibCols, Rows: CalibRows}
+	render1 := renderBlock(rast, br, composeSrc)
+	render2 := renderBlock(rast, br, composeSrc)
 
 	scores := metrics.Score(rast, render1, composeSrc, CalibCols, CalibRows)
 	// Intrinsic-noise floor: score a second identical render against the first.
@@ -367,7 +362,7 @@ func measureCard(rast *capture.Rasteriser, in CalibInput) CalibCard {
 		Absolute:   toCalibSet(scores.Absolute),
 		Relative:   toCalibSet(scores.Relative),
 		NoiseFloor: noiseFloorOf(noise),
-		Bytes:      measureBytes(composeSrc),
+		Bytes:      measureBytes(br, composeSrc),
 	}
 }
 
@@ -375,8 +370,7 @@ func measureCard(rast *capture.Rasteriser, in CalibInput) CalibCard {
 // frame byte cost. The block byte cost is the cell-grid encoder output; the
 // sixel and kitty costs are the wire payload sizes. It is the data the
 // bytesPerFrame threshold band traces to.
-func measureBytes(composeSrc *image.RGBA) CalibByteCost {
-	br := block.Renderer{Cols: CalibCols, Rows: CalibRows}
+func measureBytes(br block.Renderer, composeSrc *image.RGBA) CalibByteCost {
 	return CalibByteCost{
 		Block: encodeBytes(func(w io.Writer) error { return br.Render(render.Frame{Img: composeSrc}, w) }),
 		Kitty: encodeBytes(func(w io.Writer) error { var r kitty.Renderer; return r.Render(render.Frame{Img: composeSrc}, w) }),
@@ -394,10 +388,9 @@ func encodeBytes(encode func(io.Writer) error) int {
 	return int(cw.N)
 }
 
-// renderBlock composes the downscaled source onto the pinned block grid and
-// rasterises it to the Route A pixel geometry.
-func renderBlock(rast *capture.Rasteriser, composeSrc *image.RGBA) *image.RGBA {
-	br := block.Renderer{Cols: CalibCols, Rows: CalibRows}
+// renderBlock composes the downscaled source onto the given block renderer's
+// grid and rasterises it to the Route A pixel geometry.
+func renderBlock(rast *capture.Rasteriser, br block.Renderer, composeSrc *image.RGBA) *image.RGBA {
 	grid := br.Compose(render.Frame{Img: composeSrc})
 	return rast.Rasterise(grid)
 }
@@ -420,16 +413,13 @@ func toCalibSet(m metrics.MetricSet) CalibMetricSet {
 // the error metrics it is the value itself. A deterministic render yields all
 // zeros.
 func noiseFloorOf(m metrics.MetricSet) CalibMetricSet {
-	psnrGap := 0.0
-	if m.PSNR != metrics.PSNRInfinite && !math.IsInf(m.PSNR, 1) {
-		// Any finite PSNR on identical renders means per-run jitter; record how
-		// far it falls short of the lossless sentinel as a positive spread.
-		psnrGap = math.MaxFloat64 - m.PSNR
-	}
 	return CalibMetricSet{
-		SSIM:           1 - m.SSIM,
-		MSSSIM:         1 - m.MSSSIM,
-		PSNR:           psnrGap,
+		SSIM:   1 - m.SSIM,
+		MSSSIM: 1 - m.MSSSIM,
+		// PSNR is always 0 here: the block render path is deterministic, so
+		// identical renders score the lossless sentinel. Any real per-run jitter
+		// already shows in a non-zero SSIM, MS-SSIM, or dE field above.
+		PSNR:           0,
 		DeltaEMean:     m.DeltaEMean,
 		DeltaEP95:      m.DeltaEP95,
 		HistDivergence: 1 - m.HistIntersection,

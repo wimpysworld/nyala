@@ -10,7 +10,6 @@
 package capture
 
 import (
-	"bytes"
 	"fmt"
 	"image"
 	"image/color"
@@ -150,15 +149,4 @@ func (c clip) Set(x, y int, col color.Color) {
 func EncodePNG(w io.Writer, img image.Image) error {
 	enc := png.Encoder{CompressionLevel: png.DefaultCompression}
 	return enc.Encode(w, img)
-}
-
-// EncodePNGBytes encodes img to a timestamp-free PNG and returns the bytes. It is
-// a convenience over EncodePNG for callers that need the raw bytes, such as a
-// determinism check.
-func EncodePNGBytes(img image.Image) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := EncodePNG(&buf, img); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }

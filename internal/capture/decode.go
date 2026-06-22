@@ -95,7 +95,7 @@ func DecodeKitty(payload []byte) (*image.RGBA, error) {
 // whose control carries m=1 has more frames following; reassembly stops at the
 // first frame without m=1, including a lone frame with no m= key (the
 // small-image path), so the single-frame envelope decodes as a single frame.
-func reassembleKittyFrames(s string) (control, body string, err error) {
+func reassembleKittyFrames(s string) (optsText, b64 string, err error) {
 	var first string
 	var bodies strings.Builder
 	seen := false

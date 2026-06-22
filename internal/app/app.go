@@ -14,11 +14,9 @@ import (
 	"github.com/wimpysworld/nyala/internal/viewer"
 )
 
-// Message returns the Nyala welcome line shown when the binary runs with no
-// viewer target.
-func Message() string {
-	return "Welcome to Nyala."
-}
+// welcome is the Nyala welcome line printed when the binary runs with no viewer
+// target.
+const welcome = "Welcome to Nyala."
 
 // CLI is the parsed Nyala command line. cmd/nyala binds it to kong; the fields
 // carry the colour mode and the optional viewer target. With no positional image
@@ -36,7 +34,7 @@ type CLI struct {
 // image, which detects terminal capabilities and resolves the colour mode.
 func Run(cli CLI, tty *os.File) error {
 	if cli.Image == "" {
-		fmt.Println(Message())
+		fmt.Println(welcome)
 		return nil
 	}
 	return viewer.Run(cli.Image, tty, cli.Color)

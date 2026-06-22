@@ -222,8 +222,7 @@ func linearMeanColours(q [4]color.RGBA, mask int, wantForeground bool) color.RGB
 		if set != wantForeground {
 			continue
 		}
-		cf := colorful.Color{R: float64(c.R) / 255, G: float64(c.G) / 255, B: float64(c.B) / 255}
-		r, g, b := cf.LinearRgb()
+		r, g, b := linearRGB(c)
 		rl += r
 		gl += g
 		bl += b
@@ -232,8 +231,7 @@ func linearMeanColours(q [4]color.RGBA, mask int, wantForeground bool) color.RGB
 	if n == 0 {
 		// Empty set: fall back to the mean of all four sub-cells.
 		for _, c := range q {
-			cf := colorful.Color{R: float64(c.R) / 255, G: float64(c.G) / 255, B: float64(c.B) / 255}
-			r, g, b := cf.LinearRgb()
+			r, g, b := linearRGB(c)
 			rl += r
 			gl += g
 			bl += b
@@ -241,6 +239,14 @@ func linearMeanColours(q [4]color.RGBA, mask int, wantForeground bool) color.RGB
 		}
 	}
 	return linearToRGBA(rl/float64(n), gl/float64(n), bl/float64(n))
+}
+
+// linearRGB converts an 8-bit sRGB RGBA colour to its linear-RGB triple via
+// go-colorful, so per-set means stay correct in light rather than in the
+// non-linear sRGB encoding. The alpha channel is ignored. Channel order is RGBA.
+func linearRGB(c color.RGBA) (r, g, b float64) {
+	cf := colorful.Color{R: float64(c.R) / 255, G: float64(c.G) / 255, B: float64(c.B) / 255}
+	return cf.LinearRgb()
 }
 
 // linearMeanBlock averages a w x h source region anchored at (x0, y0) in linear
@@ -254,8 +260,7 @@ func linearMeanBlock(img *image.RGBA, x0, y0, w, h int) color.RGBA {
 	for dy := 0; dy < h; dy++ {
 		for dx := 0; dx < w; dx++ {
 			r, g, b := srcPixel(img, x0+dx, y0+dy)
-			cf := colorful.Color{R: float64(r) / 255, G: float64(g) / 255, B: float64(b) / 255}
-			lr, lg, lb := cf.LinearRgb()
+			lr, lg, lb := linearRGB(color.RGBA{R: r, G: g, B: b, A: 0xff})
 			rl += lr
 			gl += lg
 			bl += lb
@@ -287,7 +292,7 @@ func clamp01(v float64) float64 {
 // in 0..255. It matches the luma the block compositor splits on, so the oracle
 // and the real renderer divide a cell the same way. Channel order is RGBA.
 func luma601(c color.RGBA) float64 {
-	return 0.299*float64(c.R) + 0.587*float64(c.G) + 0.114*float64(c.B)
+	return lumaBT601(c.R, c.G, c.B)
 }
 
 // srcPixel reads the R, G, B channels at (x, y). Pixels outside the image or a
