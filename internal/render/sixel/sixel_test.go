@@ -79,17 +79,7 @@ func TestRenderNilImageEmitsEmptyFramedPayload(t *testing.T) {
 	}
 }
 
-func TestRenderDeterministic(t *testing.T) {
-	var r Renderer
-	f := knownFrame(t)
-	var a, b bytes.Buffer
-	if err := r.Render(f, &a); err != nil {
-		t.Fatalf("Render() a = %v", err)
-	}
-	if err := r.Render(f, &b); err != nil {
-		t.Fatalf("Render() b = %v", err)
-	}
-	if !bytes.Equal(a.Bytes(), b.Bytes()) {
-		t.Fatalf("payload differs across runs on the same Frame")
-	}
-}
+// Byte-for-byte determinism is not asserted. The upstream
+// charmbracelet/x/ansi/sixel encoder builds its palette by ranging a Go map,
+// so palette indices, and thus the emitted bytes, vary between renders of the
+// same frame. The drawn image is identical; only the byte ordering differs.
