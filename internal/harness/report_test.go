@@ -262,7 +262,7 @@ func assertKeys(t *testing.T, prefix string, want, got map[string]any) {
 	}
 }
 
-// keyNames returns the sorted-irrelevant list of keys for error messages.
+// keyNames returns the keys for error messages, in no particular order.
 func keyNames(m map[string]any) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

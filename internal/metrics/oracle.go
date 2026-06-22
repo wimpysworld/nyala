@@ -42,6 +42,7 @@
 // scores worse than the no-shift case.
 //
 // Channel order is RGBA throughout.
+
 package metrics
 
 import (

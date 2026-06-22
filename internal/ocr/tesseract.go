@@ -3,7 +3,7 @@
 // This file holds the cgo gosseract engine. It builds only under the "ocr" build
 // tag, so the default build and the shipped nyala binary stay cgo-free. The Nix
 // dev shell provisions libtesseract and leptonica for the tagged test build (see
-// flake.nix, task 8.4). The OCR test skips when the engine is absent.
+// flake.nix). The OCR test skips when the engine is absent.
 package ocr
 
 import (

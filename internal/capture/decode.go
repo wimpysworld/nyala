@@ -91,9 +91,10 @@ func DecodeKitty(payload []byte) (*image.RGBA, error) {
 // reassembleKittyFrames scans s for consecutive Kitty graphics frames and
 // returns the first frame's control section and the concatenated base64 bodies.
 // Each frame runs from the ESC _ G introducer to the ESC backslash terminator,
-// with the control section before the first ';' and the body after it. It stops
-// after the frame whose control carries m=0, or after a single frame with no m=
-// key (the small-image path), so the single-frame envelope decodes as before.
+// with the control section before the first ';' and the body after it. A frame
+// whose control carries m=1 has more frames following; reassembly stops at the
+// first frame without m=1, including a lone frame with no m= key (the
+// small-image path), so the single-frame envelope decodes as a single frame.
 func reassembleKittyFrames(s string) (control, body string, err error) {
 	var first string
 	var bodies strings.Builder

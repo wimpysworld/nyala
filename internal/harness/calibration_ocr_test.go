@@ -8,9 +8,9 @@
 // the engine is absent, so the tagged run stays green without Tesseract.
 //
 // The CER per size is measured on a rendered ladder, the same path the OCR
-// ladder test (task 6.2) exercises. The card label records the ladder's
-// provenance; gosseract reads the rendered glyph image, so the CER does not vary
-// by display backend.
+// ladder test exercises. The card label records the ladder's provenance;
+// gosseract reads the rendered glyph image, so the CER does not vary by display
+// backend.
 package harness
 
 import (
@@ -28,8 +28,8 @@ import (
 )
 
 // calibCERBound is the CER bound the calibration ladder marks legibility at. It
-// matches the bound the OCR ladder test (task 6.2) uses, so the recorded
-// minimum legible size is comparable.
+// matches the bound the OCR ladder test uses, so the recorded minimum legible
+// size is comparable.
 const calibCERBound = 0.15
 
 // calibLadderRowH is the per-rung row height in the rendered calibration ladder,

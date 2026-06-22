@@ -1,6 +1,5 @@
 // Calibration measures the real metric ranges Nyala's block renderer reaches on
-// the committed test cards, so task 7.6 sets thresholds from data instead of
-// guesses.
+// the committed test cards, so the thresholds come from data instead of guesses.
 //
 // It block-renders each of the three test cards at the pinned 120x40 grid,
 // scores the render against the downscaled input (absolute) and against the
@@ -116,7 +115,7 @@ type CalibByteCost struct {
 }
 
 // CalibRange is the observed min and max of one metric across all measured
-// cards, the corpus-wide span task 7.6 bands its thresholds within.
+// cards, the corpus-wide span the thresholds band within.
 type CalibRange struct {
 	Min float64 `json:"min"`
 	Max float64 `json:"max"`
@@ -165,7 +164,8 @@ type CalibCardLadder struct {
 
 // Calibration is the committed calibration record: the per-card scores, the
 // corpus-wide metric ranges, the intrinsic-noise floor, and the OCR CER ladder.
-// Task 7.6 turns these numbers into thresholds banded above the noise floor.
+// DefaultThresholds turns these numbers into thresholds banded above the noise
+// floor.
 type Calibration struct {
 	// SchemaVersion pins the calibration file shape; bump on a breaking change.
 	SchemaVersion int `json:"schemaVersion"`
