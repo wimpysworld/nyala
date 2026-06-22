@@ -15,13 +15,15 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/sixel"
 )
 
-// TestCycleBackendOrder asserts Tab steps block -> sixel -> kitty -> block.
+// TestCycleBackendOrder asserts the default cycle is best-first kitty -> sixel ->
+// block: the initial active backend is kitty and Tab steps down, wrapping.
 func TestCycleBackendOrder(t *testing.T) {
 	s := NewState(120, 40, 64, 64)
-	if s.Backend != BackendBlock {
-		t.Fatalf("initial backend = %d, want BackendBlock", s.Backend)
+	s.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
+	if s.Backend != BackendKitty {
+		t.Fatalf("initial backend = %d, want BackendKitty", s.Backend)
 	}
-	want := []Backend{BackendSixel, BackendKitty, BackendBlock}
+	want := []Backend{BackendSixel, BackendBlock, BackendKitty}
 	for i, w := range want {
 		if got := s.CycleBackend(); got != w {
 			t.Fatalf("cycle %d: got %d, want %d", i, got, w)
@@ -30,14 +32,15 @@ func TestCycleBackendOrder(t *testing.T) {
 }
 
 // TestCycleBackendSkipsDisabled asserts CycleBackend steps only through the
-// enabled set: with sixel disabled it goes block -> kitty -> block.
+// enabled set. With sixel disabled, configureBackends orders it kitty -> block,
+// so the initial active backend is kitty and Tab steps block -> kitty.
 func TestCycleBackendSkipsDisabled(t *testing.T) {
 	s := NewState(120, 40, 64, 64)
-	s.SetEnabled([]Backend{BackendBlock, BackendKitty})
-	if s.Backend != BackendBlock {
-		t.Fatalf("after SetEnabled, backend = %d, want BackendBlock", s.Backend)
+	s.SetEnabled([]Backend{BackendKitty, BackendBlock})
+	if s.Backend != BackendKitty {
+		t.Fatalf("after SetEnabled, backend = %d, want BackendKitty", s.Backend)
 	}
-	want := []Backend{BackendKitty, BackendBlock, BackendKitty}
+	want := []Backend{BackendBlock, BackendKitty, BackendBlock}
 	for i, w := range want {
 		if got := s.CycleBackend(); got != w {
 			t.Fatalf("cycle %d: got %d, want %d", i, got, w)
@@ -57,12 +60,16 @@ func TestCycleBackendBlockOnly(t *testing.T) {
 	}
 }
 
-// TestCycleBackendAllThree asserts CycleBackend steps the full set block -> sixel
-// -> kitty -> block, the same as the default cycle.
+// TestCycleBackendAllThree asserts CycleBackend steps the full best-first set
+// kitty -> sixel -> block, wrapping, the same as the default cycle. The initial
+// active backend is the kitty ceiling.
 func TestCycleBackendAllThree(t *testing.T) {
 	s := NewState(120, 40, 64, 64)
-	s.SetEnabled([]Backend{BackendBlock, BackendSixel, BackendKitty})
-	want := []Backend{BackendSixel, BackendKitty, BackendBlock}
+	s.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
+	if s.Backend != BackendKitty {
+		t.Fatalf("after SetEnabled, backend = %d, want BackendKitty", s.Backend)
+	}
+	want := []Backend{BackendSixel, BackendBlock, BackendKitty}
 	for i, w := range want {
 		if got := s.CycleBackend(); got != w {
 			t.Fatalf("cycle %d: got %d, want %d", i, got, w)
@@ -70,19 +77,48 @@ func TestCycleBackendAllThree(t *testing.T) {
 	}
 }
 
+// TestSetEnabledNominatesCeiling asserts SetEnabled nominates the best available
+// backend: enabled[0] is the active backend and block sits last as the floor. It
+// pins the orderings configureBackends builds for each detected set.
+func TestSetEnabledNominatesCeiling(t *testing.T) {
+	cases := []struct {
+		name       string
+		enabled    []Backend
+		wantActive Backend
+		wantLast   Backend
+	}{
+		{"kitty and sixel", []Backend{BackendKitty, BackendSixel, BackendBlock}, BackendKitty, BackendBlock},
+		{"kitty only", []Backend{BackendKitty, BackendBlock}, BackendKitty, BackendBlock},
+		{"sixel only", []Backend{BackendSixel, BackendBlock}, BackendSixel, BackendBlock},
+		{"block only", []Backend{BackendBlock}, BackendBlock, BackendBlock},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := NewState(120, 40, 64, 64)
+			s.SetEnabled(c.enabled)
+			if s.Backend != c.wantActive {
+				t.Fatalf("active backend = %d, want %d", s.Backend, c.wantActive)
+			}
+			if last := s.Enabled[len(s.Enabled)-1]; last != c.wantLast {
+				t.Fatalf("last enabled = %d, want %d (block floor)", last, c.wantLast)
+			}
+		})
+	}
+}
+
 // TestTogglesApplyOnBlockWithSubset asserts the scheme and colour toggles still
 // act on block when the cycle omits sixel.
 func TestTogglesApplyOnBlockWithSubset(t *testing.T) {
 	s := NewState(120, 40, 64, 64)
-	s.SetEnabled([]Backend{BackendBlock, BackendKitty})
+	s.SetEnabled([]Backend{BackendKitty, BackendBlock})
 	if got := s.ToggleScheme(); got != block.SchemeHalfBlock {
 		t.Fatalf("scheme toggle = %d, want SchemeHalfBlock", got)
 	}
 	if got := s.ToggleColour(); got != ColourXTerm256 {
 		t.Fatalf("colour toggle = %d, want ColourXTerm256", got)
 	}
-	s.CycleBackend() // kitty
 	s.CycleBackend() // block
+	s.CycleBackend() // kitty
 	if s.Scheme != block.SchemeHalfBlock || s.Colour != ColourXTerm256 {
 		t.Fatalf("toggles lost after cycle: scheme=%d colour=%d", s.Scheme, s.Colour)
 	}
@@ -123,8 +159,8 @@ func TestTogglesSurviveBackendCycle(t *testing.T) {
 	s := NewState(120, 40, 64, 64)
 	s.ToggleScheme()
 	s.ToggleColour()
-	s.CycleBackend() // sixel
 	s.CycleBackend() // kitty
+	s.CycleBackend() // sixel
 	s.CycleBackend() // block
 	if s.Scheme != block.SchemeHalfBlock {
 		t.Fatalf("scheme after cycle = %d, want SchemeHalfBlock", s.Scheme)
@@ -203,6 +239,10 @@ func TestRendererConcreteTypes(t *testing.T) {
 // redraw, 'q' and Ctrl-C quit, and an unknown key is a no-op.
 func TestHandleKey(t *testing.T) {
 	s := NewState(120, 40, 64, 64)
+	s.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
+	if s.Backend != BackendKitty {
+		t.Fatalf("initial backend = %d, want BackendKitty", s.Backend)
+	}
 
 	if act := s.HandleKey(keyTab); !act.Redraw || act.Quit {
 		t.Fatalf("Tab action = %+v, want redraw", act)

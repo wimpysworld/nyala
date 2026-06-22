@@ -34,12 +34,13 @@ import (
 )
 
 // Backend identifies one render backend in the cycle order. The Tab hotkey
-// advances it block -> sixel -> kitty -> block.
+// advances through the enabled backends and wraps; configureBackends orders them
+// highest-fidelity first (kitty, then sixel) with block last as the floor.
 type Backend int
 
 const (
 	// BackendBlock is the owned-grid block-cell renderer; it honours the glyph
-	// scheme and colour toggles. It is the first backend in the cycle.
+	// scheme and colour toggles. It is the floor backend, placed last in the cycle.
 	BackendBlock Backend = iota
 	// BackendSixel is the Sixel graphics backend. It ignores the scheme and
 	// colour toggles, which apply only to the block backend.
@@ -67,8 +68,9 @@ const (
 // every hotkey method mutates only this struct, so the machine is exercised in a
 // unit test without a live terminal. Cols and Rows are the terminal size in
 // cells; ImgW and ImgH are the loaded image's pixel dimensions. Enabled lists the
-// backends the Tab cycle steps through, in cycle order; CellPxX and CellPxY are
-// the real terminal cell pixel size used to scale the graphics backends.
+// backends the Tab cycle steps through, in cycle order, highest-fidelity first
+// with block last; CellPxX and CellPxY are the real terminal cell pixel size used
+// to scale the graphics backends.
 type State struct {
 	Backend Backend      // active backend in the cycle
 	Scheme  block.Scheme // block glyph scheme; applies only to the block backend
@@ -82,10 +84,11 @@ type State struct {
 	CellPxY int          // terminal cell height in pixels for graphics scaling
 }
 
-// NewState builds the initial state: the block backend, the quadrant scheme,
-// truecolour, sized to a cols x rows terminal showing an imgW x imgH image. The
-// cycle holds every backend and the cell pixel size is the Route A default; Run
-// narrows the cycle and sets the real cell size after the terminal handshake.
+// NewState builds the initial state: block as the safe pre-detection backend, the
+// quadrant scheme, truecolour, sized to a cols x rows terminal showing an imgW x
+// imgH image. The cycle holds every backend highest-fidelity first and the cell
+// pixel size is the Route A default; configureBackends narrows the cycle, nominates
+// the best available backend, and sets the real cell size after the handshake.
 func NewState(cols, rows, imgW, imgH int) State {
 	return State{
 		Backend: BackendBlock,
@@ -95,15 +98,16 @@ func NewState(cols, rows, imgW, imgH int) State {
 		Rows:    rows,
 		ImgW:    imgW,
 		ImgH:    imgH,
-		Enabled: []Backend{BackendBlock, BackendSixel, BackendKitty},
+		Enabled: []Backend{BackendKitty, BackendSixel, BackendBlock},
 		CellPxX: capture.CellPxW,
 		CellPxY: capture.CellPxH,
 	}
 }
 
-// SetEnabled records the backends the Tab cycle steps through, in cycle order. It
-// keeps block first when block is present and resets the active backend to the
-// first enabled backend, so the cycle never rests on a disabled backend.
+// SetEnabled records the backends the Tab cycle steps through, in cycle order,
+// and resets the active backend to the first enabled backend. Callers order the
+// slice highest-fidelity first and place block last as the floor, so enabled[0]
+// is the best available backend and the cycle never rests on a disabled one.
 func (s *State) SetEnabled(enabled []Backend) {
 	if len(enabled) == 0 {
 		enabled = []Backend{BackendBlock}
@@ -482,7 +486,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, forceAllBackends
 	}
 
 	if forceAllBackends {
-		st.SetEnabled([]Backend{BackendBlock, BackendSixel, BackendKitty})
+		st.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
 		return
 	}
 
@@ -497,13 +501,14 @@ func configureBackends(st *State, tty *os.File, cols, rows int, forceAllBackends
 		st.CellPxY = res.CellPxY
 	}
 
-	enabled := []Backend{BackendBlock}
-	if res.Sixel {
-		enabled = append(enabled, BackendSixel)
-	}
+	enabled := []Backend{}
 	if res.Kitty {
 		enabled = append(enabled, BackendKitty)
 	}
+	if res.Sixel {
+		enabled = append(enabled, BackendSixel)
+	}
+	enabled = append(enabled, BackendBlock)
 	st.SetEnabled(enabled)
 }
 
