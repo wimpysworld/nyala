@@ -12,7 +12,7 @@ A browser for the terminal: a TTY web browser driving headless Chromium via the 
 - `internal/harness` - the diagnostics sweep, golden archives, and thresholds.
 - `internal/viewer` - renders a PNG to the tty.
 - `docs/OVERVIEW.md` - architecture and design decisions.
-- `docs/STAGE-0.md`, `docs/STAGE-0-PROPOSAL.md`, `docs/STAGE-0-PLAN.md` - Stage 0 contract, spec, and task plan.
+- `docs/STAGE-0.md`, `docs/STAGE-1.md` - durable records of the completed Stage 0 and Stage 1 work.
 
 Module path is `github.com/wimpysworld/nyala`. Go 1.26.
 

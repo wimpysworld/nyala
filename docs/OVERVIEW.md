@@ -7,6 +7,14 @@ successor to browsh, built in Go, driving headless Chromium via the Chrome
 DevTools Protocol (CDP). Targets a fully terminal-native experience, including on
 a bare Linux console via KMSCON.
 
+Stage 0 and Stage 1 are built. Three swappable rendering backends sit behind one
+`Renderer` seam (quadrant or half-block, Sixel, Kitty), with a measurement harness
+and automatic capability plus colour detection that nominate the best backend and
+colour depth per terminal. See [`STAGE-0.md`](./STAGE-0.md) and
+[`STAGE-1.md`](./STAGE-1.md). The browser pipeline and the crisp text overlay are
+the remaining design goal; the rest of this document is the target architecture and
+the research behind the unbuilt stages.
+
 ## Goals
 
 - Render modern web pages (HTML5, CSS, JS) to a terminal using truecolour
@@ -22,9 +30,14 @@ a bare Linux console via KMSCON.
 ## Non-Goals (initial)
 
 - Bundling the browser engine (nice-to-have, not required)
-- Bitmap graphics protocols (Sixel/Kitty) - target terminals (KMSCON) lack them
 - Browser-extension support
 - Feature parity with a desktop browser
+
+One initial non-goal was dropped. Bitmap graphics protocols were first ruled out
+because the primary target, KMSCON, speaks neither Sixel nor Kitty. Stage 0 instead
+built Sixel and Kitty as emulator-only enhancements above the mandatory block floor,
+and Stage 1 detects and nominates them per terminal. KMSCON still lacks both, so the
+quadrant or half-block backend stays the permanent floor.
 
 ## Target Environment
 
@@ -35,7 +48,7 @@ a bare Linux console via KMSCON.
   `COLORTERM` is a trusted positive signal; its absence is never read as "no
   truecolour". No DCS query/response is used. KMSCON now sets `COLORTERM=kmscon`
   or `truecolor`, and the DCS round-trip is a no-op on KMSCON's libtsm. See
-  `docs/STAGE-1-OVERVIEW.md` for the evidence.
+  `docs/STAGE-1.md` for the evidence.
 
 ## Architecture (key decision)
 
@@ -63,8 +76,10 @@ type Engine interface {
 ### Rendering pipeline (engine-agnostic)
 
 1. Receive bitmap frames + a positioned text layer from the active `Engine`.
-2. Downsample bitmap to terminal resolution; render with half-block characters
-   (`▄`): background = top pixel, foreground = bottom pixel (two square pixels/cell).
+2. Downsample bitmap to terminal resolution; render block cells, quadrant (2x2) by
+   default with half-block (`▄`) as the floor (the half-block cell sets background =
+   top pixel, foreground = bottom pixel, two square pixels per cell). On graphics
+   terminals the Sixel or Kitty backend renders the same bitmap instead.
 3. Composite the text layer over the bitmap so glyphs render as real Unicode where
    text exists, bitmap elsewhere. This is the primary quality differentiator.
 4. Diff against the previous frame; emit only changed cells.
@@ -157,8 +172,8 @@ chromedp.ListenTarget(ctx, func(ev interface{}) {
 | Sixel encode | `charmbracelet/x/ansi/sixel` | Fastest Go encoder; same stack as Bubble Tea v2 |
 | Kitty graphics | `charmbracelet/x/ansi/kitty` | Full protocol; unicode-placeholder support |
 | Image quantisation | `ericpauley/go-quantize` + `makeworld/dither` (paletted Sixel only) | Cache palettes across frames; ordered/Bayer dither for speed |
-| Colour degradation | Direct truecolour SGR (default); hardcoded RGB→xterm-256 formula (Carbonyl) fallback | Truecolour passthrough where present; closed-form per pixel (6x6x6 cube + 24-step grey ramp) otherwise; `colorprofile`/`termenv` for detection only, with a `COLORTERM=kmscon` override |
-| Capability detect | Layered runtime probe (env hints + DA1 + APC `a=q` on `/dev/tty`) | Truecolour via `colorprofile`/`RequestCapability`; never trust `$TERM` |
+| Colour degradation | Direct truecolour SGR (default); hardcoded RGB→xterm-256 formula (Carbonyl) fallback | Truecolour passthrough where present; closed-form per pixel (6x6x6 cube + 24-step grey ramp) otherwise. Stage 1 detects colour from env plus terminfo via `colorprofile.Detect`; a present `COLORTERM` (`kmscon`, `truecolor`, `24bit`) is a trusted positive that short-circuits to truecolour; no DCS round-trip. See `docs/STAGE-1.md` |
+| Capability detect | DA1-fenced startup handshake on the tty (Kitty `a=q`, Sixel via DA1, cell pixel size via `CSI 16t`/`14t`/`18t`), failing closed to block in 200 ms | Built in Stage 1, with the colour detector above; never trust `$TERM`. See `docs/STAGE-1.md` |
 | Config | TBD (e.g. `koanf`/TOML) | architecture phase |
 
 ## Open Questions (for the architecture phase)
@@ -380,25 +395,25 @@ enhancements gated behind capability detection.
 | Half-block fallback | Custom (ref `x/mosaic`) | 6/10 | Mandatory KMSCON floor; composable cell grid for text overlay |
 | Resize/composite | `golang.org/x/image/draw` | 9/10 | In-place scale into a reused buffer; stdlib-grade |
 | Quantise/dither | `go-quantize` + `dither` | 7-8/10 | Paletted Sixel only; cache palettes across frames |
-| Colour detect | `colorprofile` (+ hardcoded RGB→256) | 8/10 | DCS-backed truecolour; closed-form formula per pixel |
-| Capability detect | Layered probe (Bubble Tea + `x/ansi` + `x/term`) | 9/10 | Env hints then DA1/APC probes; never trust `$TERM` |
+| Colour detect | `colorprofile` (+ hardcoded RGB→256) | 8/10 | Env plus terminfo via `colorprofile.Detect`; trusted `COLORTERM`; closed-form formula per pixel. Built in Stage 1 |
+| Capability detect | DA1-fenced tty handshake (`x/ansi` + `x/term`) | 9/10 | Kitty `a=q`, Sixel via DA1, cell size via `CSI 16t`/`14t`/`18t`; fails closed to block; never trust `$TERM`. Built in Stage 1 |
 | Viewport substrate alt | vaxis | 8/10 | Runner-up if Charm graphics coexistence proves intractable |
 
 ### Open Questions (TUI research)
 
 - Can the Bubble Tea v2 diff renderer be told to leave a reserved viewport region untouched, or must Nyala run `WithoutRenderer` and composite everything by hand? Does the diff ever emit cursor moves or clears into a "blank" region and corrupt graphics? Spike needed.
 - What real throughput does the ultraviolet renderer sustain when a large region changes every frame at the 120 FPS cap, versus bypassing it? Benchmark against KMSCON.
-- Does KMSCON honour synchronized output (mode 2026) and mode 2027, and tolerate the renderer's cursor-positioning sequences without artefacts? Confirm it advertises truecolour via DCS/XTGETTCAP, not only `COLORTERM`.
+- Does KMSCON honour synchronized output (mode 2026) and mode 2027, and tolerate the renderer's cursor-positioning sequences without artefacts? (Resolved in Stage 1 (see `docs/STAGE-1.md`): the truecolour half is closed. Nyala detects colour from env plus terminfo and trusts a present `COLORTERM`; it advertises no DCS/XTGETTCAP round-trip. The mode 2026/2027 question stays open.)
 - On graphics-capable emulators, after writing a Kitty/Sixel image, where does the cursor land, and can Nyala reposition so the next diff does not smear the image? Issue #163 reports cursor-after-image inconsistencies.
 - Per-frame Kitty strategy: one fixed image ID with transmit-and-display, or ping-pong double-buffering with explicit deletes? Which avoids tearing on kitty, ghostty, wezterm? Can you keep a persistent image and only re-place (cheap), or must you re-transmit each frame?
 - Best local transmission medium: direct base64 RGBA, zlib RGBA, PNG, or POSIX shared memory? Measure CPU vs bytes for a full-viewport 30/60 FPS stream.
 - Confirm which Kitty placement modes render on current wezterm and ghostty; unicode placeholders are unsupported in several terminals.
-- Cell pixel geometry: query CSI 16t for cell width/height to map the CDP pixel viewport to cells without distortion. Define the fallback when terminals omit it (per-terminal defaults).
+- Cell pixel geometry: query CSI 16t for cell width/height to map the CDP pixel viewport to cells without distortion. Define the fallback when terminals omit it (per-terminal defaults). (Resolved in Stage 1 (see `docs/STAGE-1.md`): resolve via `TIOCGWINSZ`, then `CSI 16t`, then `14t`/`18t`, else default to 8x16 px (aspect 1:2), with a winsize sanity bound rejecting derived cell px outside ~4..32 wide or 8..64 tall.)
 - Will Nyala drive the screencast viewport to terminal resolution (Carbonyl LoDPI) so downsampling is cheap, or downsample full-resolution frames every frame? This decides how much the resize/quantise libraries matter.
 - For a constantly-changing viewport, is per-frame full-screen Sixel/Kitty bandwidth acceptable, or does Nyala need damage-rectangle partial updates? Encoders blit whole images; partial-update logic is Nyala's to build.
 - Does a fixed/stable palette (skipping per-frame median-cut) give acceptable quality for arbitrary web pages, or will photo banding force per-frame quantisation? Determines whether rasterm's paletted-only model is an asset.
 - Sixel lacks a Kitty-style ID and scrolls with text; it needs its own placement/erase discipline and tearing test. There is no TUIOS-style Sixel reference to copy.
-- Truecolour over SSH/Docker is unreliable via `COLORTERM`. Will Nyala implement Carbonyl's DCS background-colour round-trip handshake, and does it interact cleanly with Bubble Tea v2 setup?
+- Truecolour over SSH/Docker is unreliable via `COLORTERM`. Will Nyala implement Carbonyl's DCS background-colour round-trip handshake, and does it interact cleanly with Bubble Tea v2 setup? (Resolved in Stage 1 (see `docs/STAGE-1.md`): no. The DCS round-trip is dropped and not planned. Nyala detects colour from env plus terminfo via `colorprofile.Detect`, and treats a present `COLORTERM` as a trusted positive.)
 - tmux/SSH: Kitty and Sixel need DCS passthrough inside tmux and AcceptEnv over SSH. Target these or document as unsupported?
 - Is ultraviolet (0.x, ~357 stars) stable enough to depend on transitively for a long-lived project? Is Charm's promised first-class Bubble Tea image support on a timeline Nyala could wait for?
 - Bus-factor risk: is depending on vaxis (single maintainer, sr.ht, 0.x) acceptable, and is vendoring or a maintained fork an acceptable mitigation?
@@ -486,9 +501,11 @@ Techniques:
 - **Crisp text overlay**: each cell carries an optional grapheme that overrides the
   block; bg from the bitmap under the glyph, fg from the text colour. Nyala feeds this
   from the CDP text layer, so no Skia or Mojo fork is needed.
-- **Truecolour via DCS query (not COLORTERM)**: set an RGB background, send a DCS
-  query, and enable truecolour only if the terminal echoes the stored SGR. Correct on
-  KMSCON, tmux, and SSH where COLORTERM is absent.
+- **Truecolour via DCS query (not COLORTERM)**: Carbonyl sets an RGB background, sends
+  a DCS query, and enables truecolour only if the terminal echoes the stored SGR.
+  Nyala diverged: it detects colour from env plus terminfo and trusts a present
+  `COLORTERM`, with no DCS round-trip. The probe is a no-op on KMSCON's libtsm and
+  `COLORTERM` now covers the targets (see `docs/STAGE-1.md`).
 - **LoDPI / forced monospace (do NOT port)**: a Chromium fork hack. Nyala gets the
   equivalent by sizing the CDP viewport to the cell grid; the separate text layer
   removes the need for forced-monospace layout.
@@ -611,8 +628,10 @@ Techniques:
   computations per pixel. A drop-in if 256-colour fidelity matters.
 - **KMSCON-aware detection**: KMSCON sets `TERM=linux` and `COLORTERM=kmscon`, and its
   truecolour landed in libtsm on 2025-11-28. Off-the-shelf detectors map `TERM=linux`
-  to 16 colours and ignore `COLORTERM=kmscon`, so Nyala must special-case it, then
-  confirm with the DCS round-trip probe.
+  to 16 colours and ignore `COLORTERM=kmscon`. Stage 1 special-cases it: a present
+  `COLORTERM` in `{kmscon, truecolor, 24bit}` is a trusted positive that short-circuits
+  to truecolour. No DCS round-trip is used; on KMSCON's libtsm it is a no-op and would
+  give a false negative (see `docs/STAGE-1.md`).
 - **Optional ordered Bayer dither (256 path only)**: stateless per pixel and
   frame-stable, unlike Floyd-Steinberg which flickers on motion. Off by default.
 
@@ -634,7 +653,8 @@ Techniques:
 
 Verdict: own a tiny closed-form RGB to xterm-256 converter for the per-pixel loop;
 emit direct truecolour SGR where supported; use colorprofile for detection and chrome
-only, with a KMSCON override plus the DCS probe; keep dither off by default.
+only, with a trusted `COLORTERM` positive and no DCS probe (Stage 1 dropped the
+round-trip, see `docs/STAGE-1.md`); keep dither off by default.
 
 ### Frame diffing and minimal output
 
@@ -741,8 +761,9 @@ End-to-end, in order. Each step names the pick and its score.
    and font prove Unicode 16. Default scheme: quadrant, falling back to half-block.
 3. **Colour conversion**: custom closed-form converter (9/10), ported from Carbonyl
    `xterm.rs`. Default: emit direct truecolour SGR where present; closed-form xterm-256
-   (6x6x6 cube + 24-step grey ramp) as the fallback. Detect with `colorprofile` (7/10)
-   plus a KMSCON override and the DCS round-trip probe.
+   (6x6x6 cube + 24-step grey ramp) as the fallback. Stage 1 detects with `colorprofile`
+   (7/10) over env plus terminfo, trusting a present `COLORTERM`; no DCS round-trip (see
+   `docs/STAGE-1.md`).
 4. **Text overlay**: custom combined cell grid (9/10) on Browsh's indexed-grid model.
    A grapheme overrides the block; fg = glyph colour, bg = averaged bitmap behind it.
    `rivo/uniseg` + `mattn/go-runewidth` (9/10) measure grapheme width and index.
@@ -775,7 +796,10 @@ tests.
 - KMSCON truecolour landed in libtsm on 2025-11-28. What is the real install base of
   truecolour-capable KMSCON in mid-2026, and does KMSCON answer the OSC 11 / DCS colour
   query fast enough to rely on, or must Nyala trust `COLORTERM=kmscon`? Needs a bare-TTY
-  test.
+  test. (Resolved in Stage 1 (see `docs/STAGE-1.md`): trust `COLORTERM=kmscon`. The DCS
+  round-trip is a no-op on KMSCON's libtsm, so Nyala detects from env plus terminfo and
+  treats a present `COLORTERM` as a trusted positive; no live colour query is sent. The
+  install-base question stays open.)
 - Carbonyl's single-threshold grey-vs-cube branch versus tmux's nearest-of-two: is the
   accuracy gap visible at half-block resolution on real pages, and is the extra distance
   computation per pixel affordable at target FPS?
@@ -786,6 +810,9 @@ tests.
   quality risk for the text layer.
 - Sub-cell alignment: floor versus round on `px/cellW`, and how to get a stable
   cellW/cellH (CSI 16t with a per-terminal/KMSCON fallback) so text does not drift.
+  Resolved in Stage 1 (see `docs/STAGE-1.md`): the stable cellW/cellH half resolves via
+  `TIOCGWINSZ`, then `CSI 16t`, then `14t`/`18t`, else 8x16 px (1:2), with a sanity bound.
+  The floor-versus-round rounding rule stays open for the Stage 2 overlay.
 - Is bg = average-of-bitmap good enough for contrast, or does Nyala need the
   luma-distance nudge (or sampling the DOM element's own background) for thin glyphs on
   busy backgrounds?
@@ -795,7 +822,9 @@ tests.
   synchronized frame per tick, or can they bracket independently without tearing at the
   seam?
 - Does Bubble Tea v2 forward or swallow the DCS truecolour reply? Nyala must read that
-  one reply itself; verify a raw/unhandled-sequence hook exists.
+  one reply itself; verify a raw/unhandled-sequence hook exists. (Resolved in Stage 1
+  (see `docs/STAGE-1.md`): moot. Nyala sends no DCS truecolour reply; colour comes from
+  env plus terminfo, so there is no reply to forward or swallow.)
 - Does REP (`\x1b[<n>b`) for flat-colour runs shrink output on KMSCON, foot, and basic
   emulators, or add parser risk for little gain? Measure.
 - Wide glyph at the viewport right edge or a damage-rect boundary: drop, space-fill, or
@@ -810,24 +839,26 @@ behind one `Frame` (RGBA bitmap + optional positioned text runs) and one `Render
 interface, with three implementations (quadrant/half-block, Sixel, Kitty). Feed it a
 static image first; add the live Chromium screencast later. Each stage kills one risk.
 
-| Stage | What it does | Risk it kills |
-|---|---|---|
-| 0 | Load a PNG, render it via all three backends, hotkey to cycle them | The three output paths work and are swappable behind one seam |
-| 1 | Capability probe picks the default backend; manual override stays | Detection is correct on the real target terminals |
-| 2 | Composite hardcoded glyph runs over the bitmap | The crisp-text overlay, the gold-standard differentiator |
-| 3 | Replace the PNG with a chromedp screencast loop | The frame ack-pump loop and real FPS |
-| 4 | Run under Bubble Tea v2 with a URL bar and a viewport region | Coexistence: the chrome renderer does not clobber graphics |
+| Stage | What it does | Risk it kills | Status |
+|---|---|---|---|
+| 0 | Load a PNG, render it via all three backends, hotkey to cycle them | The three output paths work and are swappable behind one seam | Built; see [`STAGE-0.md`](./STAGE-0.md) |
+| 1 | Capability probe picks the default backend; manual override stays | Detection is correct on the real target terminals | Built; see [`STAGE-1.md`](./STAGE-1.md) |
+| 2 | Composite hardcoded glyph runs over the bitmap | The crisp-text overlay, the gold-standard differentiator | Remaining |
+| 3 | Replace the PNG with a chromedp screencast loop | The frame ack-pump loop and real FPS | Remaining |
+| 4 | Run under Bubble Tea v2 with a URL bar and a viewport region | Coexistence: the chrome renderer does not clobber graphics | Remaining |
 
 Pass/fail for the PoC: on a no-graphics terminal (KMSCON), the quadrant plus text-overlay
 path renders a real webpage with images as blocks and text as crisp glyphs; on foot and
 kitty the same `Frame` renders via Sixel and Kitty with no change above the `Renderer`
 seam. Measure correctness (golden frame), bytes per frame, and FPS on each target.
 
-Stage 0 is the image-based harness, and it is built. The record of the work done and the decisions made is in [`STAGE-0.md`](./STAGE-0.md).
+Stage 0 is the image-based harness, and it is built. The record of the work done and the decisions made is in [`STAGE-0.md`](./STAGE-0.md). Stage 1 is the capability and colour detection, and it is built; its record is in [`STAGE-1.md`](./STAGE-1.md). Stages 2 to 4 remain.
 
 ## Prior Art (reference, not dependencies)
 
 - **Carbonyl** (Chromium fork, Rust): the quality benchmark. Steal its half-block
-  rendering, RGB→xterm-256 conversion, and DCS truecolour-detection techniques.
+  rendering and RGB→xterm-256 conversion. Nyala diverged on truecolour detection:
+  env plus terminfo with a trusted `COLORTERM`, not Carbonyl's DCS round-trip (see
+  `docs/STAGE-1.md`).
 - **browsh** (Firefox + Marionette, Go): the thing we're improving on. Stagnant;
   its weakness is the Firefox dependency and fuzzy text.

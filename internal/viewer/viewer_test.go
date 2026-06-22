@@ -541,7 +541,7 @@ func TestCellPxInBounds(t *testing.T) {
 
 // TestDeriveCellPixels exercises the pure core of winsizeCellPixels with
 // synthetic winsize fields the live ioctl cannot supply. It pins the named
-// 32000x0 bogus report (STAGE-1-PROPOSAL.md criterion 9): Ypixel 0 trips the
+// 32000x0 bogus report (see docs/STAGE-1.md): Ypixel 0 trips the
 // zero-guard, so it resolves to ok=false before any division. It also pins a
 // healthy report and a derived cell px outside the sanity window.
 func TestDeriveCellPixels(t *testing.T) {
