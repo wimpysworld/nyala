@@ -1,0 +1,8 @@
+# Blacksmith hosted runners use custom labels that actionlint does not know.
+# Declare them so the runner-label check passes.
+self-hosted-runner:
+  labels:
+    - blacksmith-2vcpu-ubuntu-2404
+    - blacksmith-4vcpu-ubuntu-2404
+    - blacksmith-4vcpu-ubuntu-2404-arm
+    - blacksmith-6vcpu-macos-latest
