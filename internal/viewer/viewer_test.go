@@ -404,10 +404,12 @@ func TestRenderFrameNoFit(t *testing.T) {
 	}
 }
 
-// TestWriteGridRowsEndCRLF asserts writeGrid terminates every row with CRLF, not
-// a bare LF. With auto-wrap off in raw mode, the carriage return is needed to
-// return the cursor to column 0 each row; a bare LF leaves it interlaced.
-func TestWriteGridRowsEndCRLF(t *testing.T) {
+// TestWriteGridRowsJoinedByCRLF asserts writeGrid joins rows with CRLF, not a
+// bare LF, and emits no trailing newline after the last row. With auto-wrap off
+// in raw mode, the carriage return is needed to return the cursor to column 0
+// each row; a bare LF leaves it interlaced. A trailing newline on a full-height
+// grid scrolls the top row off the terminal.
+func TestWriteGridRowsJoinedByCRLF(t *testing.T) {
 	g := block.Grid{Cols: 2, Rows: 2, Cells: make([]block.Cell, 4)}
 	for i := range g.Cells {
 		g.Cells[i] = block.Cell{Glyph: ' ', FG: color.RGBA{A: 0xff}, BG: color.RGBA{A: 0xff}}
@@ -417,13 +419,16 @@ func TestWriteGridRowsEndCRLF(t *testing.T) {
 		t.Fatalf("writeGrid: %v", err)
 	}
 	out := buf.String()
-	if got := strings.Count(out, "\n"); got != g.Rows {
-		t.Fatalf("line feed count = %d, want %d (one per row)", got, g.Rows)
+	if got := strings.Count(out, "\n"); got != g.Rows-1 {
+		t.Fatalf("line feed count = %d, want %d (one between each row)", got, g.Rows-1)
 	}
 	for i := 0; i < len(out); i++ {
 		if out[i] == '\n' && (i == 0 || out[i-1] != '\r') {
 			t.Fatalf("line feed at byte %d not preceded by carriage return", i)
 		}
+	}
+	if strings.HasSuffix(out, "\n") {
+		t.Fatalf("output ends with a newline; a full-height grid would scroll the top row off")
 	}
 }
 
@@ -534,8 +539,9 @@ func ttyByteCount(t *testing.T, f *os.File) int64 {
 }
 
 // TestWriteGridMonoNoSGR asserts writeGrid in ColourMono emits each cell's glyph
-// with no fg SGR (\x1b[38;) and no bg SGR (\x1b[48;), and one reset-plus-CRLF
-// (\x1b[0m\r\n) per row. A leaked fg/bg sequence fails the test.
+// with no fg SGR (\x1b[38;) and no bg SGR (\x1b[48;), an SGR reset (\x1b[0m) per
+// row, and a reset-plus-CRLF (\x1b[0m\r\n) between rows (rows-1, none trailing).
+// A leaked fg/bg sequence fails the test.
 func TestWriteGridMonoNoSGR(t *testing.T) {
 	g := block.Grid{Cols: 3, Rows: 2, Cells: make([]block.Cell, 6)}
 	for i := range g.Cells {
@@ -552,8 +558,11 @@ func TestWriteGridMonoNoSGR(t *testing.T) {
 	if strings.Contains(out, "\x1b[48;") {
 		t.Fatalf("mono output leaked background SGR (\\x1b[48;)")
 	}
-	if got := strings.Count(out, "\x1b[0m\r\n"); got != g.Rows {
-		t.Fatalf("reset-CRLF count = %d, want %d (one per row)", got, g.Rows)
+	if got := strings.Count(out, "\x1b[0m"); got != g.Rows {
+		t.Fatalf("reset count = %d, want %d (one per row)", got, g.Rows)
+	}
+	if got := strings.Count(out, "\x1b[0m\r\n"); got != g.Rows-1 {
+		t.Fatalf("reset-CRLF count = %d, want %d (one between each row)", got, g.Rows-1)
 	}
 }
 
