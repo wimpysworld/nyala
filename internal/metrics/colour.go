@@ -40,10 +40,8 @@ type CIEDE2000Stats struct {
 // pair contributes one dE; identical images yield a zero Mean and P95. Channel
 // order is RGBA and the alpha channel is ignored.
 func CIEDE2000(a, b *image.RGBA) CIEDE2000Stats {
+	requireEqualDims(a, b, "CIEDE2000")
 	ba, bb := a.Bounds(), b.Bounds()
-	if ba.Dx() != bb.Dx() || ba.Dy() != bb.Dy() {
-		panic("metrics: CIEDE2000 requires equal dimensions")
-	}
 	w, h := ba.Dx(), ba.Dy()
 	n := w * h
 	if n == 0 {
@@ -127,10 +125,8 @@ type HistogramStats struct {
 // yield Intersection 1, EMD 0, and ChiSquare 0. Channel order is RGBA and the
 // alpha channel is ignored.
 func Histogram(a, b *image.RGBA) HistogramStats {
-	ba, bb := a.Bounds(), b.Bounds()
-	if ba.Dx() != bb.Dx() || ba.Dy() != bb.Dy() {
-		panic("metrics: Histogram requires equal dimensions")
-	}
+	requireEqualDims(a, b, "Histogram")
+	ba := a.Bounds()
 	if ba.Dx()*ba.Dy() == 0 {
 		return HistogramStats{}
 	}
@@ -156,7 +152,7 @@ func Histogram(a, b *image.RGBA) HistogramStats {
 func histIntersection(p, q []float64) float64 {
 	var sum float64
 	for i := range p {
-		sum += math.Min(p[i], q[i])
+		sum += min(p[i], q[i])
 	}
 	return sum
 }

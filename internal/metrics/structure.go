@@ -16,6 +16,25 @@ const PSNRInfinite = math.MaxFloat64
 // paper's default for inputs scaled to 0..255.
 const gmsdConstant = 0.0026
 
+// requireEqualDims panics when a and b differ in width or height. name is the
+// calling metric, so the message reads "metrics: <name> requires equal
+// dimensions", matching the per-metric guards it replaces. Channel order is
+// RGBA.
+func requireEqualDims(a, b *image.RGBA, name string) {
+	ba, bb := a.Bounds(), b.Bounds()
+	if ba.Dx() != bb.Dx() || ba.Dy() != bb.Dy() {
+		panic("metrics: " + name + " requires equal dimensions")
+	}
+}
+
+// lumaBT601 returns the BT.601 luma of an 8-bit RGB triple (0.299 R, 0.587 G,
+// 0.114 B) in 0..255. It is the single definition of the coefficients the luma
+// plane and the oracle both split on, so they divide a cell the same way. The
+// body is small enough for the compiler to inline in the per-pixel loop.
+func lumaBT601(r, g, b uint8) float64 {
+	return 0.299*float64(r) + 0.587*float64(g) + 0.114*float64(b)
+}
+
 // luma converts an *image.RGBA to a width*height grey plane using the BT.601
 // coefficients (0.299 R, 0.587 G, 0.114 B). The result holds one float64 per
 // pixel in row-major order, each in 0..255. Channel order is RGBA.
@@ -26,7 +45,7 @@ func luma(img *image.RGBA) (plane []float64, w, h int) {
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			c := img.RGBAAt(b.Min.X+x, b.Min.Y+y)
-			plane[y*w+x] = 0.299*float64(c.R) + 0.587*float64(c.G) + 0.114*float64(c.B)
+			plane[y*w+x] = lumaBT601(c.R, c.G, c.B)
 		}
 	}
 	return plane, w, h
@@ -36,11 +55,9 @@ func luma(img *image.RGBA) (plane []float64, w, h int) {
 // images must share dimensions. Identical images return 0. Channel order is
 // RGBA.
 func MSE(a, b *image.RGBA) float64 {
-	pa, wa, ha := luma(a)
-	pb, wb, hb := luma(b)
-	if wa != wb || ha != hb {
-		panic("metrics: MSE requires equal dimensions")
-	}
+	requireEqualDims(a, b, "MSE")
+	pa, _, _ := luma(a)
+	pb, _, _ := luma(b)
 	var sum float64
 	for i := range pa {
 		d := pa[i] - pb[i]
@@ -70,11 +87,9 @@ func PSNR(a, b *image.RGBA) float64 {
 // standard deviation of that map. Lower is better; identical images return 0.
 // The images must share dimensions. Channel order is RGBA.
 func GMSD(a, b *image.RGBA) float64 {
+	requireEqualDims(a, b, "GMSD")
 	pa, wa, ha := luma(a)
 	pb, wb, hb := luma(b)
-	if wa != wb || ha != hb {
-		panic("metrics: GMSD requires equal dimensions")
-	}
 	ga := prewittMagnitude(pa, wa, ha)
 	gb := prewittMagnitude(pb, wb, hb)
 	n := len(ga)
@@ -125,11 +140,9 @@ const (
 // identical images return 1.0. The images must share dimensions and each side
 // must be at least ssimWinSize. Channel order is RGBA.
 func SSIM(a, b *image.RGBA) float64 {
+	requireEqualDims(a, b, "SSIM")
 	pa, wa, ha := luma(a)
-	pb, wb, hb := luma(b)
-	if wa != wb || ha != hb {
-		panic("metrics: SSIM requires equal dimensions")
-	}
+	pb, _, _ := luma(b)
 	if wa < ssimWinSize || ha < ssimWinSize {
 		panic("metrics: SSIM requires each side to be at least the window size")
 	}
@@ -221,11 +234,9 @@ var msssimWeights = []float64{0.0448, 0.2856, 0.3001, 0.2363, 0.1333}
 // images must share dimensions and each side must be at least ssimWinSize.
 // Channel order is RGBA.
 func MSSSIM(a, b *image.RGBA) (value float64, scales int) {
+	requireEqualDims(a, b, "MSSSIM")
 	pa, wa, ha := luma(a)
-	pb, wb, hb := luma(b)
-	if wa != wb || ha != hb {
-		panic("metrics: MSSSIM requires equal dimensions")
-	}
+	pb, _, _ := luma(b)
 	if wa < ssimWinSize || ha < ssimWinSize {
 		panic("metrics: MSSSIM requires each side to be at least the window size")
 	}

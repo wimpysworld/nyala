@@ -295,9 +295,9 @@ func binarizeQuadrant(x, y, z, w color.RGBA) (glyph rune, fg, bg color.RGBA) {
 	c := luma(z)
 	d := luma(w)
 
-	min := minF(minF(a, b), minF(c, d))
-	max := maxF(maxF(a, b), maxF(c, d))
-	mid := min + (max-min)/2.0
+	lo := min(min(a, b), min(c, d))
+	hi := max(max(a, b), max(c, d))
+	mid := lo + (hi-lo)/2.0
 
 	mask := boolBit(a > mid)<<3 | boolBit(b > mid)<<2 | boolBit(c > mid)<<1 | boolBit(d > mid)
 
@@ -364,18 +364,4 @@ func boolBit(v bool) int {
 		return 1
 	}
 	return 0
-}
-
-func minF(a, b float64) float64 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxF(a, b float64) float64 {
-	if a > b {
-		return a
-	}
-	return b
 }

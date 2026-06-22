@@ -165,7 +165,7 @@ func diffImage(reference, render *image.RGBA) (*image.RGBA, error) {
 	if err != nil {
 		return nil, fmt.Errorf("harness: pixelmatch diff: %w", err)
 	}
-	return nrgbaToRGBA(out), nil
+	return drawImageRGBA(out), nil
 }
 
 // compositeImage lays the reference, render, and diff side by side with a thin
@@ -417,19 +417,6 @@ func drawImageRGBA(img image.Image) *image.RGBA {
 	for y := b.Min.Y; y < b.Max.Y; y++ {
 		for x := b.Min.X; x < b.Max.X; x++ {
 			out.Set(x-b.Min.X, y-b.Min.Y, img.At(x, y))
-		}
-	}
-	return out
-}
-
-// nrgbaToRGBA copies an *image.NRGBA (pixelmatch's output type) into a fresh
-// *image.RGBA so the rest of the pipeline sees one channel order.
-func nrgbaToRGBA(src *image.NRGBA) *image.RGBA {
-	b := src.Bounds()
-	out := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			out.Set(x-b.Min.X, y-b.Min.Y, src.At(x, y))
 		}
 	}
 	return out

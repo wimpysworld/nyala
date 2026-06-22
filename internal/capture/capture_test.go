@@ -2,11 +2,23 @@ package capture
 
 import (
 	"bytes"
+	"image"
 	"image/color"
 	"testing"
 
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
+
+// encodePNGBytes encodes img to a timestamp-free PNG and returns the bytes. It
+// wraps EncodePNG for the determinism check, the only caller that needs the raw
+// bytes.
+func encodePNGBytes(img image.Image) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := EncodePNG(&buf, img); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
 
 // gridFixture builds a small deterministic grid: every cell holds the same
 // glyph, foreground, and background. It is the input for the determinism and
@@ -60,11 +72,11 @@ func TestRasteriseDeterministicPNG(t *testing.T) {
 		t.Fatalf("NewRasteriser: %v", err)
 	}
 	g := gridFixture()
-	a, err := EncodePNGBytes(r.Rasterise(g))
+	a, err := encodePNGBytes(r.Rasterise(g))
 	if err != nil {
 		t.Fatalf("encode a: %v", err)
 	}
-	b, err := EncodePNGBytes(r.Rasterise(g))
+	b, err := encodePNGBytes(r.Rasterise(g))
 	if err != nil {
 		t.Fatalf("encode b: %v", err)
 	}
