@@ -89,12 +89,12 @@ func TestParseCellPixels(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			x, y, ok := parseCellPixels([]byte(c.buf), c.cols, c.rows)
+			px, ok := parseCellPixels([]byte(c.buf), c.cols, c.rows)
 			if ok != c.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, c.wantOK)
 			}
-			if ok && (x != c.wantX || y != c.wantY) {
-				t.Fatalf("cell px = %dx%d, want %dx%d", x, y, c.wantX, c.wantY)
+			if ok && (px.W != c.wantX || px.H != c.wantY) {
+				t.Fatalf("cell px = %dx%d, want %dx%d", px.W, px.H, c.wantX, c.wantY)
 			}
 		})
 	}

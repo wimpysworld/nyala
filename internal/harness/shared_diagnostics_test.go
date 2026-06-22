@@ -48,7 +48,11 @@ func sharedSweep(t *testing.T) (*SweepResult, string) {
 		if err != nil {
 			t.Fatalf("LoadBaseline: %v", err)
 		}
-		res, err := RunSweep(rast, sweepConfig(dir), loadSweepInputs(t), baseline, thresholds, logProgress(t))
+		res, err := RunSweep(rast, sweepConfig(dir), loadSweepInputs(t), GateConfig{
+			Baseline:   baseline,
+			Thresholds: thresholds,
+			Progress:   logProgress(t),
+		})
 		if err != nil {
 			t.Fatalf("RunSweep: %v", err)
 		}

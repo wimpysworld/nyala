@@ -576,13 +576,13 @@ func TestCellPxDefaultWhenGeometryAbsent(t *testing.T) {
 		t.Fatalf("capture default = %dx%d, want 8x16 (docs/STAGE-0.md:84)", capture.CellPxW, capture.CellPxH)
 	}
 	st := NewState(80, 24, 64, 64)
-	if st.CellPxX != 8 || st.CellPxY != 16 {
-		t.Fatalf("default cell px = %dx%d, want 8x16", st.CellPxX, st.CellPxY)
+	if st.W != 8 || st.H != 16 {
+		t.Fatalf("default cell px = %dx%d, want 8x16", st.W, st.H)
 	}
 }
 
 // TestCellPxInBounds exercises the real winsize sanity window. winsizeCellPixels
-// reads a live ioctl, so the bound is split into the pure cellPxInBounds, which
+// reads a live ioctl, so the bound is split into the pure cellPx.inBounds, which
 // this table drives directly with the boundary values. That puts the real
 // comparison operators under test: flipping a < to <= at an edge fails a case
 // here. A derived cell px is accepted only when 4..32 wide and 8..64 tall.
@@ -609,8 +609,8 @@ func TestCellPxInBounds(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := cellPxInBounds(c.pxX, c.pxY); got != c.want {
-				t.Fatalf("cellPxInBounds(%d, %d) = %v, want %v", c.pxX, c.pxY, got, c.want)
+			if got := (cellPx{W: c.pxX, H: c.pxY}).inBounds(); got != c.want {
+				t.Fatalf("cellPx{%d, %d}.inBounds() = %v, want %v", c.pxX, c.pxY, got, c.want)
 			}
 		})
 	}
@@ -637,13 +637,13 @@ func TestDeriveCellPixels(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			x, y, ok := deriveCellPixels(c.xpixel, c.ypixel, c.col, c.row)
+			px, ok := deriveCellPixels(c.xpixel, c.ypixel, c.col, c.row)
 			if ok != c.wantOK {
 				t.Fatalf("deriveCellPixels(%d,%d,%d,%d) ok = %v, want %v",
 					c.xpixel, c.ypixel, c.col, c.row, ok, c.wantOK)
 			}
-			if ok && (x != c.wantX || y != c.wantY) {
-				t.Fatalf("cell px = %dx%d, want %dx%d", x, y, c.wantX, c.wantY)
+			if ok && (px.W != c.wantX || px.H != c.wantY) {
+				t.Fatalf("cell px = %dx%d, want %dx%d", px.W, px.H, c.wantX, c.wantY)
 			}
 		})
 	}
@@ -654,7 +654,7 @@ func TestDeriveCellPixels(t *testing.T) {
 // winsizeCellPixels returns ok=false before the pure core runs.
 func TestWinsizeCellPixelsNonTTY(t *testing.T) {
 	tty := newTempTTY(t)
-	if _, _, ok := winsizeCellPixels(tty.Fd(), 80, 24); ok {
+	if _, ok := winsizeCellPixels(tty.Fd(), 80, 24); ok {
 		t.Fatalf("winsizeCellPixels on a non-tty returned ok=true, want false")
 	}
 }

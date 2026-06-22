@@ -46,9 +46,25 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/sixel"
 )
 
+// Mode identifies one render backend the sweep runs. It is a string-kinded type
+// so backend identity is compiler-checked at every switch and parameter, while
+// the wire form (report.Mode, baseline mode, CSV cell) stays the same string.
+type Mode string
+
+// The three backends the sweep runs, in report order.
+const (
+	// ModeBlock is the owned-grid block-cell backend; it owns a cell grid and a
+	// quant-error map.
+	ModeBlock Mode = "block"
+	// ModeSixel is the Sixel graphics backend; it owns no grid.
+	ModeSixel Mode = "sixel"
+	// ModeKitty is the Kitty graphics backend; it owns no grid.
+	ModeKitty Mode = "kitty"
+)
+
 // SweepModes lists the three backends the sweep runs, in report order. The block
 // mode owns a cell grid and a quant-error map; sixel and kitty do not.
-var SweepModes = []string{"block", "sixel", "kitty"}
+var SweepModes = []Mode{ModeBlock, ModeSixel, ModeKitty}
 
 // Output filenames the sweep writes into the run directory, alongside the
 // per-(page, mode) artefact subdirectories.
@@ -72,8 +88,9 @@ type SweepInput struct {
 // SweepConfig is the fixed configuration for one sweep run: the pinned grid, the
 // output directory, and the commit the renders came from.
 type SweepConfig struct {
-	// Cols and Rows are the cell grid the sweep renders at. Stage 0 pins 120x40.
-	Cols, Rows int
+	// Viewport is the cell grid the sweep renders at. Stage 0 pins 120x40. It
+	// carries the cell-to-pixel and compose-extent geometry the sweep needs.
+	Viewport
 	// OutDir is the directory the report files and the per-(page, mode) artefact
 	// subdirectories are written into. It is created if missing.
 	OutDir string
@@ -115,14 +132,27 @@ func (b Breach) String() string {
 		b.Page, b.Mode, b.Metric, b.Measured, b.Baseline, b.Delta, b.Band)
 }
 
+// GateConfig carries what RunSweep gates and reports with, folding the three
+// loosely related controls into one named struct so each carries its nil-meaning
+// at the field rather than at a positional argument.
+type GateConfig struct {
+	// Baseline is the committed snapshot the run gates against. A nil Baseline
+	// skips the gate and reports no breaches, which seeds a first baseline.
+	Baseline *Baseline
+	// Thresholds are the per-metric regression bands the gate applies.
+	Thresholds Thresholds
+	// Progress streams a line before each (page, mode) is scored. A nil Progress
+	// is a silent no-op.
+	Progress Progress
+}
+
 // RunSweep runs the corpus across the three backends, scores each render, emits
 // the report files and the artefact PNGs, and gates on the baseline and the
 // thresholds. It returns the per-(page, mode) reports, any threshold breaches,
 // and the written file paths. A non-empty Breaches slice means the run regressed;
-// the caller exits non-zero on it. baseline and thresholds gate the run; a nil
-// baseline skips the gate and reports no breaches, which seeds a first baseline.
-// progress streams a line before each (page, mode) is scored; it may be nil.
-func RunSweep(rast *capture.Rasteriser, cfg SweepConfig, inputs []SweepInput, baseline *Baseline, thresholds Thresholds, progress Progress) (SweepResult, error) {
+// the caller exits non-zero on it. The gate config carries the baseline, the
+// thresholds, and the progress callback; each documents its own nil meaning.
+func RunSweep(rast *capture.Rasteriser, cfg SweepConfig, inputs []SweepInput, gc GateConfig) (SweepResult, error) {
 	if err := os.MkdirAll(cfg.OutDir, 0o755); err != nil {
 		return SweepResult{}, err
 	}
@@ -130,7 +160,7 @@ func RunSweep(rast *capture.Rasteriser, cfg SweepConfig, inputs []SweepInput, ba
 	reports := make([]Report, 0, len(inputs)*len(SweepModes))
 	for _, in := range inputs {
 		for _, mode := range SweepModes {
-			progress.report("sweep: page %s mode %s", in.Page, mode)
+			gc.Progress.report("sweep: page %s mode %s", in.Page, mode)
 			rep, err := runOne(rast, cfg, in, mode)
 			if err != nil {
 				return SweepResult{}, fmt.Errorf("sweep %s/%s: %w", in.Page, mode, err)
@@ -139,7 +169,7 @@ func RunSweep(rast *capture.Rasteriser, cfg SweepConfig, inputs []SweepInput, ba
 		}
 	}
 
-	breaches := gate(reports, baseline, thresholds)
+	breaches := gate(reports, gc.Baseline, gc.Thresholds)
 	for i := range reports {
 		reports[i].Pass = !pageModeBreached(breaches, reports[i].Page, reports[i].Mode)
 	}
@@ -160,15 +190,15 @@ func RunSweep(rast *capture.Rasteriser, cfg SweepConfig, inputs []SweepInput, ba
 // runOne renders one (page, mode), captures it back to an image, scores quality
 // and cost, emits the artefacts, and builds the report record. Pass is left
 // false; the gate sets it.
-func runOne(rast *capture.Rasteriser, cfg SweepConfig, in SweepInput, mode string) (Report, error) {
-	pxW, pxH := cfg.Cols*capture.CellPxW, cfg.Rows*capture.CellPxH
+func runOne(rast *capture.Rasteriser, cfg SweepConfig, in SweepInput, mode Mode) (Report, error) {
+	pxW, pxH := cfg.PixelSize()
 	reference := metrics.Downscale(in.Src, pxW, pxH)
 
 	rep := Report{
 		SchemaVersion: SchemaVersion,
 		Page:          in.Page,
-		Mode:          mode,
-		Viewport:      Viewport{Cols: cfg.Cols, Rows: cfg.Rows},
+		Mode:          string(mode),
+		Viewport:      cfg.Viewport,
 		NyalaCommit:   cfg.NyalaCommit,
 	}
 
@@ -179,14 +209,11 @@ func runOne(rast *capture.Rasteriser, cfg SweepConfig, in SweepInput, mode strin
 		perf      metrics.FramePerf
 		err       error
 	)
-	switch mode {
-	case "block":
+	if mode == ModeBlock {
 		renderImg, grid, ideal, perf, err = captureBlock(rast, cfg, in.Src)
-	case "sixel":
-		renderImg, perf, err = captureSixel(reference)
-	case "kitty":
-		renderImg, perf, err = captureKitty(reference)
-	default:
+	} else if g, ok := graphicsBackendFor(mode); ok {
+		renderImg, perf, err = g.capture(reference)
+	} else {
 		return Report{}, fmt.Errorf("unknown mode %q", mode)
 	}
 	if err != nil {
@@ -198,7 +225,8 @@ func runOne(rast *capture.Rasteriser, cfg SweepConfig, in SweepInput, mode strin
 	// the ideal grid; for sixel and kitty, build it from the same downscaled
 	// source so every mode scores against the one ceiling. Channel order is RGBA.
 	if ideal == nil {
-		composeSrc := metrics.Downscale(in.Src, cfg.Cols*2, cfg.Rows*4)
+		cw, ch := cfg.ComposeSize()
+		composeSrc := metrics.Downscale(in.Src, cw, ch)
 		ig := metrics.IdealGrid(composeSrc, cfg.Cols, cfg.Rows)
 		ideal = &ig
 	}
@@ -209,12 +237,12 @@ func runOne(rast *capture.Rasteriser, cfg SweepConfig, in SweepInput, mode strin
 	rep.Perf = toPerf(perf)
 	rep.CellStats = cellStats(cfg, grid)
 
-	art, err := Emit(filepath.Join(cfg.OutDir, in.Page, mode), ArtefactInput{
+	art, err := Emit(filepath.Join(cfg.OutDir, in.Page, string(mode)), ArtefactInput{
 		Reference: reference,
 		Render:    renderImg,
 		Grid:      grid,
 		Ideal:     ideal,
-		Mode:      mode,
+		Mode:      string(mode),
 	})
 	if err != nil {
 		return Report{}, err
@@ -228,7 +256,8 @@ func runOne(rast *capture.Rasteriser, cfg SweepConfig, in SweepInput, mode strin
 // the render image, the owned grid, the ideal grid for the quant-error map, and
 // the captured cost.
 func captureBlock(rast *capture.Rasteriser, cfg SweepConfig, src *image.RGBA) (*image.RGBA, *block.Grid, *block.Grid, metrics.FramePerf, error) {
-	composeSrc := metrics.Downscale(src, cfg.Cols*2, cfg.Rows*4)
+	cw0, ch0 := cfg.ComposeSize()
+	composeSrc := metrics.Downscale(src, cw0, ch0)
 	br := block.Renderer{Cols: cfg.Cols, Rows: cfg.Rows}
 
 	var grid block.Grid
@@ -246,59 +275,79 @@ func captureBlock(rast *capture.Rasteriser, cfg SweepConfig, src *image.RGBA) (*
 	return renderImg, &grid, &ideal, perf, nil
 }
 
-// captureSixel encodes the reference image as a Sixel payload, decodes it back,
-// and measures the encode cost. The decoded image is the scored render, so the
-// score reflects the round trip, not the encoder input.
-func captureSixel(reference *image.RGBA) (*image.RGBA, metrics.FramePerf, error) {
-	var r sixel.Renderer
-	var buf bytes.Buffer
-	cw := metrics.NewCountingWriter(&buf)
-	perf, err := metrics.CaptureFrame(
-		cw, nil,
-		func() error { return r.Render(render.Frame{Img: reference}, cw) },
-	)
-	if err != nil {
-		return nil, metrics.FramePerf{}, err
-	}
-	img, err := capture.DecodeSixel(buf.Bytes())
-	if err != nil {
-		return nil, metrics.FramePerf{}, err
-	}
-	return img, perf, nil
-}
-
-// captureKitty encodes the reference image as a Kitty payload, decodes it back,
-// and measures the encode cost. Kitty is lossless, so the decoded image equals
-// the reference up to channel layout.
-func captureKitty(reference *image.RGBA) (*image.RGBA, metrics.FramePerf, error) {
-	var r kitty.Renderer
-	var buf bytes.Buffer
-	cw := metrics.NewCountingWriter(&buf)
-	perf, err := metrics.CaptureFrame(
-		cw, nil,
-		func() error { return r.Render(render.Frame{Img: reference}, cw) },
-	)
-	if err != nil {
-		return nil, metrics.FramePerf{}, err
-	}
-	img, err := capture.DecodeKitty(buf.Bytes())
-	if err != nil {
-		return nil, metrics.FramePerf{}, err
-	}
-	return img, perf, nil
-}
-
-// sixelRoundTrip encodes img through the sixel backend and decodes it back,
-// returning the round-tripped render. It is the no-cost path the callers that do
-// not measure byte cost share; captureSixel keeps its own counting writer.
+// graphicsBackend is one gridless backend's round-trip: encode a frame to a wire
+// payload, then decode it back. The sixel and kitty arms differ only in these two
+// functions, so one descriptor and the shared capture and roundTrip methods below
+// fold the four near-identical per-backend functions into one pipeline each.
 // Channel order is RGBA.
-func sixelRoundTrip(img *image.RGBA) (*image.RGBA, error) {
-	var r sixel.Renderer
+type graphicsBackend struct {
+	// mode is the backend's report mode.
+	mode Mode
+	// render encodes a frame to w. A fresh renderer is built per call, matching the
+	// per-call renderer the sweep used before the fold.
+	render func(img *image.RGBA, w io.Writer) error
+	// decode reads the wire payload back to an image.
+	decode func(payload []byte) (*image.RGBA, error)
+}
+
+// graphicsBackends lists the gridless backends in report order. The block mode
+// owns a grid, so it is not here; runOne handles it separately.
+var graphicsBackends = []graphicsBackend{
+	{
+		mode: ModeSixel,
+		render: func(img *image.RGBA, w io.Writer) error {
+			var r sixel.Renderer
+			return r.Render(render.Frame{Img: img}, w)
+		},
+		decode: capture.DecodeSixel,
+	},
+	{
+		mode: ModeKitty,
+		render: func(img *image.RGBA, w io.Writer) error {
+			var r kitty.Renderer
+			return r.Render(render.Frame{Img: img}, w)
+		},
+		decode: capture.DecodeKitty,
+	},
+}
+
+// graphicsBackendFor returns the gridless backend descriptor for a mode, and
+// whether one exists. The block mode owns a grid, so it has no descriptor.
+func graphicsBackendFor(mode Mode) (graphicsBackend, bool) {
+	for _, b := range graphicsBackends {
+		if b.mode == mode {
+			return b, true
+		}
+	}
+	return graphicsBackend{}, false
+}
+
+// capture encodes reference through the backend, decodes it back, and measures
+// the encode cost. The decoded image is the scored render, so the score reflects
+// the round trip, not the encoder input. Channel order is RGBA.
+func (g graphicsBackend) capture(reference *image.RGBA) (*image.RGBA, metrics.FramePerf, error) {
 	var buf bytes.Buffer
-	if err := r.Render(render.Frame{Img: img}, &buf); err != nil {
+	cw := metrics.NewCountingWriter(&buf)
+	perf, err := metrics.CaptureFrame(cw, nil, func() error { return g.render(reference, cw) })
+	if err != nil {
+		return nil, metrics.FramePerf{}, err
+	}
+	img, err := g.decode(buf.Bytes())
+	if err != nil {
+		return nil, metrics.FramePerf{}, err
+	}
+	return img, perf, nil
+}
+
+// roundTrip encodes img through the backend and decodes it back, returning the
+// round-tripped render. It is the no-cost path the callers that do not measure
+// byte cost share. Channel order is RGBA.
+func (g graphicsBackend) roundTrip(img *image.RGBA) (*image.RGBA, error) {
+	var buf bytes.Buffer
+	if err := g.render(img, &buf); err != nil {
 		return nil, err
 	}
-	return capture.DecodeSixel(buf.Bytes())
+	return g.decode(buf.Bytes())
 }
 
 // scoreQuality scores one render against the reference and fills the report
@@ -307,7 +356,7 @@ func sixelRoundTrip(img *image.RGBA) (*image.RGBA, error) {
 // for sixel and kitty, which own no grid, it is derived from the decoded pixels
 // over the ladder region. OCR scores come from the build-tagged hook: null in the
 // default cgo-free build, measured under the "ocr" tag.
-func scoreQuality(mode string, renderImg, reference *image.RGBA, grid *block.Grid, rast *capture.Rasteriser) Quality {
+func scoreQuality(mode Mode, renderImg, reference *image.RGBA, grid *block.Grid, rast *capture.Rasteriser) Quality {
 	abs := metrics.ScorePair(renderImg, reference)
 	q := Quality{
 		MSSSIM:         f64v(abs.MSSSIM),
@@ -318,11 +367,11 @@ func scoreQuality(mode string, renderImg, reference *image.RGBA, grid *block.Gri
 		HistDivergence: f64v(1 - abs.HistIntersection),
 		Sharpness:      f64v(metrics.LaplacianVariance(renderImg)),
 	}
-	if mode == "block" && grid != nil {
+	if mode == ModeBlock && grid != nil {
 		wc := metrics.WCAGGrid(*grid)
 		q.ContrastMin = f64v(wc.Min)
 	} else {
-		q.ContrastMin = f64v(pixelContrast(renderImg))
+		q.ContrastMin = f64v(metrics.PixelContrast(renderImg))
 	}
 	if cer, wer, minLeg := ocrScores(rast, mode, renderImg); cer != nil || wer != nil || minLeg != nil {
 		q.OCRCER = cer
@@ -350,111 +399,6 @@ func scoreQualityRelative(renderImg, idealImg *image.RGBA) QualityRelative {
 		DeltaE2000P95:  f64v(rel.DeltaEP95),
 		HistDivergence: f64v(1 - rel.HistIntersection),
 	}
-}
-
-// pixelContrast derives a WCAG contrast ratio from the decoded pixels of a
-// gridless render (sixel, kitty). It splits the render's luminance into two
-// clusters by an Otsu threshold, takes each cluster's mean colour as a
-// representative foreground and background, and returns the WCAG contrast of that
-// pair. It is the pixel-derived contrast co-signal the per-mode matrix wants for
-// the gridless modes, where no owned cell grid carries per-cell foreground and
-// background colours. An empty image, or one whose pixels do not split, returns a
-// 1:1 ratio. Channel order is RGBA.
-func pixelContrast(img *image.RGBA) float64 {
-	b := img.Bounds()
-	if b.Empty() {
-		return 1
-	}
-	// Build the 8-bit luminance histogram and find the Otsu split.
-	var hist [256]int
-	var total int
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			c := img.RGBAAt(x, y)
-			hist[lumaByte(c.R, c.G, c.B)]++
-			total++
-		}
-	}
-	if total == 0 {
-		return 1
-	}
-	t := otsuSplit(hist[:], total)
-
-	// Accumulate each cluster's mean colour: below the threshold is the darker
-	// set, at or above is the lighter set.
-	var loR, loG, loB, loN float64
-	var hiR, hiG, hiB, hiN float64
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			c := img.RGBAAt(x, y)
-			if int(lumaByte(c.R, c.G, c.B)) < t {
-				loR, loG, loB, loN = loR+float64(c.R), loG+float64(c.G), loB+float64(c.B), loN+1
-			} else {
-				hiR, hiG, hiB, hiN = hiR+float64(c.R), hiG+float64(c.G), hiB+float64(c.B), hiN+1
-			}
-		}
-	}
-	if loN == 0 || hiN == 0 {
-		return 1
-	}
-	return metrics.WCAGContrast(
-		meanByte(loR, loN), meanByte(loG, loN), meanByte(loB, loN),
-		meanByte(hiR, hiN), meanByte(hiG, hiN), meanByte(hiB, hiN),
-	)
-}
-
-// lumaByte returns the BT.601 luma of an 8-bit RGB triple, rounded to a byte. It
-// feeds the Otsu histogram for the pixel-derived contrast split.
-func lumaByte(r, g, b uint8) uint8 {
-	y := 0.299*float64(r) + 0.587*float64(g) + 0.114*float64(b)
-	return uint8(y + 0.5)
-}
-
-// meanByte returns sum/count rounded and clamped to an 8-bit value.
-func meanByte(sum, count float64) uint8 {
-	v := sum/count + 0.5
-	if v < 0 {
-		return 0
-	}
-	if v > 255 {
-		return 255
-	}
-	return uint8(v)
-}
-
-// otsuSplit returns the Otsu luminance threshold for a 256-bin histogram: the
-// level that maximises the between-class variance, splitting the pixels into a
-// dark and a light cluster. total is the pixel count. It returns 0 when the
-// histogram has no separable mass, which the caller treats as no split.
-func otsuSplit(hist []int, total int) int {
-	var sum float64
-	for i, n := range hist {
-		sum += float64(i) * float64(n)
-	}
-	var sumB, wB float64
-	var best float64
-	bestT := 0
-	for t := 0; t < 256; t++ {
-		wB += float64(hist[t])
-		if wB == 0 {
-			continue
-		}
-		wF := float64(total) - wB
-		if wF == 0 {
-			break
-		}
-		sumB += float64(t) * float64(hist[t])
-		mB := sumB / wB
-		mF := (sum - sumB) / wF
-		between := wB * wF * (mB - mF) * (mB - mF)
-		if between > best {
-			best = between
-			bestT = t
-		}
-	}
-	// The split lands at the level above the best threshold, so the darker set is
-	// strictly below it.
-	return bestT + 1
 }
 
 // cellStats counts the owned grid cells for the block mode; non-block modes own
@@ -638,7 +582,7 @@ func sortReports(reports []Report) {
 // modeOrder returns the SweepModes index of a mode, for stable report ordering.
 func modeOrder(mode string) int {
 	for i, m := range SweepModes {
-		if m == mode {
+		if string(m) == mode {
 			return i
 		}
 	}

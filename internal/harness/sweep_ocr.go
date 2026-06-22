@@ -13,7 +13,6 @@
 package harness
 
 import (
-	"bytes"
 	"errors"
 	"image"
 	"image/color"
@@ -28,7 +27,6 @@ import (
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 	rfont "github.com/wimpysworld/nyala/internal/render/font"
-	"github.com/wimpysworld/nyala/internal/render/kitty"
 )
 
 // errNoGlyph reports the embedded font atlas lacks the probe glyph, so the OCR
@@ -50,7 +48,7 @@ const ladderRowH = 48
 // carries no known truth, so legibility is measured on the synthetic ladder run
 // through the same encode-and-decode path the sweep scores. A missing Tesseract
 // engine or a build error returns null scores. Channel order is RGBA.
-func ocrScores(rast *capture.Rasteriser, mode string, _ *image.RGBA) (cer, wer *float64, minLegiblePx *int) {
+func ocrScores(rast *capture.Rasteriser, mode Mode, _ *image.RGBA) (cer, wer *float64, minLegiblePx *int) {
 	eng, err := ocr.NewEngine()
 	if err != nil {
 		return nil, nil, nil
@@ -96,31 +94,14 @@ func ocrScores(rast *capture.Rasteriser, mode string, _ *image.RGBA) (cer, wer *
 // it back, so the OCR pass reads the true round-tripped render the sweep scores.
 // Block rasterises its owned cell grid through Route A; sixel and kitty encode
 // the image to their wire payload and decode it back.
-func roundTripLadder(rast *capture.Rasteriser, mode string, ladder *image.RGBA) (*image.RGBA, error) {
-	switch mode {
-	case "block":
+func roundTripLadder(rast *capture.Rasteriser, mode Mode, ladder *image.RGBA) (*image.RGBA, error) {
+	if mode == ModeBlock {
 		return roundTripBlockLadder(rast, ladder), nil
-	case "sixel":
-		return sixelRoundTrip(ladder)
-	case "kitty":
-		return kittyRoundTrip(ladder)
-	default:
-		return ladder, nil
 	}
-}
-
-// kittyRoundTrip encodes img through the kitty backend and decodes it back,
-// returning the round-tripped render. Kitty is lossless, so the decoded image
-// equals img up to channel layout. The OCR ladder path is its only caller;
-// captureKitty keeps its own counting writer for the cost-measuring path.
-// Channel order is RGBA.
-func kittyRoundTrip(img *image.RGBA) (*image.RGBA, error) {
-	var r kitty.Renderer
-	var buf bytes.Buffer
-	if err := r.Render(render.Frame{Img: img}, &buf); err != nil {
-		return nil, err
+	if g, ok := graphicsBackendFor(mode); ok {
+		return g.roundTrip(ladder)
 	}
-	return capture.DecodeKitty(buf.Bytes())
+	return ladder, nil
 }
 
 // roundTripBlockLadder composes the ladder onto a block grid sized to the ladder

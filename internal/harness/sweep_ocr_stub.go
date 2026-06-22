@@ -16,6 +16,6 @@ import (
 // ocrScores returns null OCR scores in the default build. The rasteriser, the
 // mode, and the captured render are unused here; the tagged build reads them to
 // run a live OCR ladder. Channel order is RGBA.
-func ocrScores(_ *capture.Rasteriser, _ string, _ *image.RGBA) (cer, wer *float64, minLegiblePx *int) {
+func ocrScores(_ *capture.Rasteriser, _ Mode, _ *image.RGBA) (cer, wer *float64, minLegiblePx *int) {
 	return nil, nil, nil
 }

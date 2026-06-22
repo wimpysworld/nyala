@@ -79,7 +79,7 @@ func loadSweepInputs(t *testing.T) []SweepInput {
 
 // sweepConfig builds the pinned 120x40 sweep config writing into dir.
 func sweepConfig(dir string) SweepConfig {
-	return SweepConfig{Cols: CalibCols, Rows: CalibRows, OutDir: dir, NyalaCommit: "test"}
+	return SweepConfig{Viewport: Viewport{Cols: CalibCols, Rows: CalibRows}, OutDir: dir, NyalaCommit: "test"}
 }
 
 // loadCalibInputs decodes the four calibration test pages into RGBA inputs.
