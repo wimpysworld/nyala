@@ -6,12 +6,18 @@ import (
 	_ "image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
+
+// goldenArch is the architecture the committed golden archives were generated
+// on. Downscale and block compose interpolate in floating point, so the encoded
+// bytes diverge on other architectures; the comparison only holds here.
+const goldenArch = "amd64"
 
 // goldenFixtures lists the five committed pages and their source PNGs under
 // testdata/. Each page has one txtar archive under testdata/golden/.
@@ -78,6 +84,9 @@ func updateGolden() bool {
 // TestGoldenTrack compares each fixture's block grid against its committed
 // txtar archive. Under UPDATE_GOLDEN the archives rewrite (write-if-changed).
 func TestGoldenTrack(t *testing.T) {
+	if runtime.GOARCH != goldenArch {
+		t.Skipf("golden archives are a %s snapshot; skipping byte comparison on %s", goldenArch, runtime.GOARCH)
+	}
 	update := updateGolden()
 	for _, fx := range goldenFixtures {
 		t.Run(fx.page, func(t *testing.T) {

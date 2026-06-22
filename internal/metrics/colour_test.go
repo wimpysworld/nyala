@@ -79,10 +79,12 @@ func TestSharmaGolden(t *testing.T) {
 	}
 }
 
-// TestDeltaE2000Identical asserts identical colours give dE 0.
+// TestDeltaE2000Identical asserts identical colours give dE ~0. The CIEDE2000
+// pipeline rounds differently under arm64 FMA, leaving a sub-1e-12 residue, so
+// allow that epsilon rather than asserting exact zero.
 func TestDeltaE2000Identical(t *testing.T) {
-	if de := DeltaE2000(123, 200, 50, 123, 200, 50); de != 0 {
-		t.Errorf("identical colours: dE = %v, want 0", de)
+	if de := DeltaE2000(123, 200, 50, 123, 200, 50); math.Abs(de) > 1e-12 {
+		t.Errorf("identical colours: dE = %v, want ~0", de)
 	}
 }
 
@@ -105,7 +107,9 @@ func TestDeltaE2000ScalingReference(t *testing.T) {
 	}
 }
 
-// TestCIEDE2000Identical asserts identical images yield zero Mean and P95.
+// TestCIEDE2000Identical asserts identical images yield ~zero Mean and P95. The
+// per-pixel dE carries the same sub-1e-12 arm64 FMA residue as DeltaE2000, so
+// allow that epsilon rather than asserting exact zero.
 func TestCIEDE2000Identical(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 4, 3))
 	for i := range img.Pix {
@@ -114,8 +118,8 @@ func TestCIEDE2000Identical(t *testing.T) {
 	cp := image.NewRGBA(img.Bounds())
 	copy(cp.Pix, img.Pix)
 	stats := CIEDE2000(img, cp)
-	if stats.Mean != 0 || stats.P95 != 0 {
-		t.Errorf("identical images: Mean=%v P95=%v, want 0 0", stats.Mean, stats.P95)
+	if math.Abs(stats.Mean) > 1e-12 || math.Abs(stats.P95) > 1e-12 {
+		t.Errorf("identical images: Mean=%v P95=%v, want ~0 ~0", stats.Mean, stats.P95)
 	}
 }
 
@@ -139,9 +143,11 @@ func TestCIEDE2000ChannelOrder(t *testing.T) {
 	}
 }
 
-// TestCIEDE2000P95 checks the percentile picks the worst pixels. One pixel in
-// twenty differs strongly; the mean stays low while P95 rises toward the
-// outlier.
+// TestCIEDE2000P95 checks the percentile picks the worst pixels. Two pixels in
+// twenty differ strongly, so the 95th-percentile rank lands on the outlier
+// block and P95 equals the outlier dE, while the mean stays an order of
+// magnitude lower. A single outlier would put both Mean and P95 at outlier/20,
+// a tie that rounds either way across architectures.
 func TestCIEDE2000P95(t *testing.T) {
 	w, h := 5, 4 // 20 pixels
 	a := image.NewRGBA(image.Rect(0, 0, w, h))
@@ -150,8 +156,10 @@ func TestCIEDE2000P95(t *testing.T) {
 		a.Pix[i*4+0], a.Pix[i*4+1], a.Pix[i*4+2], a.Pix[i*4+3] = 128, 128, 128, 255
 		b.Pix[i*4+0], b.Pix[i*4+1], b.Pix[i*4+2], b.Pix[i*4+3] = 128, 128, 128, 255
 	}
-	// Make the last pixel strongly different.
-	b.Pix[(w*h-1)*4+0], b.Pix[(w*h-1)*4+1], b.Pix[(w*h-1)*4+2] = 255, 0, 0
+	// Make the last two pixels strongly different.
+	for _, i := range []int{w*h - 2, w*h - 1} {
+		b.Pix[i*4+0], b.Pix[i*4+1], b.Pix[i*4+2] = 255, 0, 0
+	}
 	stats := CIEDE2000(a, b)
 	outlier := DeltaE2000(128, 128, 128, 255, 0, 0)
 	if stats.Mean >= stats.P95 {
