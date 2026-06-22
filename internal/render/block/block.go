@@ -140,8 +140,8 @@ func (br *Renderer) Compose(f render.Frame) Grid {
 
 // composeQuadrant binarises the frame image onto a fresh Cols x Rows quadrant
 // grid. Each cell samples a 2x4 source block; an empty or nil image yields an
-// all-black grid (every quadrant black, so the lower-half-block glyph with black
-// fg and bg).
+// all-black grid (every quadrant black, a flat 0000 mask, so the full-block
+// glyph with black fg and bg).
 func (br *Renderer) composeQuadrant(f render.Frame) Grid {
 	g := Grid{
 		Cols:  br.Cols,

@@ -37,8 +37,8 @@ import (
 var errNoGlyph = errors.New("harness: font atlas has no glyph for probe")
 
 // sweepCERBound is the CER bound the sweep ladder marks legibility at. It matches
-// the calibration ladder bound (calibCERBound, task 6.2), so the sweep's minimum
-// legible size is comparable to the calibration record.
+// the calibration ladder bound (calibCERBound), so the sweep's minimum legible
+// size is comparable to the calibration record.
 const sweepCERBound = 0.15
 
 // sweepLadderRowH is the per-rung row height of the rendered ladder, in source

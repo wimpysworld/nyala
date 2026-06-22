@@ -1,4 +1,4 @@
-// This file is the Stage 0 Bubble Tea coexistence spike (plan task 8.5).
+// This file is the Stage 0 Bubble Tea coexistence spike.
 //
 // It is a check, not the Stage 4 chrome. It hosts the Stage 0 viewer viewport
 // inside a Bubble Tea v2 program started with WithoutRenderer, and confirms the

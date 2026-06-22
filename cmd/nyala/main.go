@@ -9,6 +9,8 @@ import (
 	"github.com/wimpysworld/nyala/internal/app"
 )
 
+// version is overridden at release time via -ldflags -X main.version; it stays
+// "dev" for local builds and feeds kong's {version} template variable.
 var version = "dev"
 
 func main() {

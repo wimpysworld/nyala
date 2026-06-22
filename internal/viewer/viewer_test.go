@@ -491,7 +491,7 @@ func TestWriteGridMonoNoSGR(t *testing.T) {
 
 // TestCellPxDefaultWhenGeometryAbsent asserts that when every geometry report is
 // absent the resolved cell pixel size is the 8x16 default (8 wide, 16 tall). The
-// source of truth is the pinned Route A raster: docs/STAGE-0.md:84 and
+// source of truth is the pinned Route A raster recorded in docs/STAGE-0.md and
 // capture.CellPxW (8) / capture.CellPxH (16). NewState seeds these, and a temp
 // file tty has no winsize and no handshake reply, so the chain rests on them.
 func TestCellPxDefaultWhenGeometryAbsent(t *testing.T) {

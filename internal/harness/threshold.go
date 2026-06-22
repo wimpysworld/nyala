@@ -7,7 +7,7 @@
 // breach for any metric that moved the wrong way past its band: a quality metric
 // breaches on a drop, a cost metric on a rise.
 //
-// The bands are data-driven, set from the task 7.5 calibration
+// The bands are data-driven, set from the committed calibration
 // (testdata/calibration.json), not guessed. That run measured the intrinsic-noise
 // floor on repeated identical block renders: it is exactly zero, because the
 // block render path is deterministic. The global bands therefore sit strictly
@@ -86,7 +86,7 @@ func (t Thresholds) thresholdFor(mode, metric string) (MetricThreshold, bool) {
 	return th, ok
 }
 
-// DefaultThresholds returns the Stage 0 thresholds banded above the task 7.5
+// DefaultThresholds returns the Stage 0 thresholds banded above the committed
 // calibration noise floor.
 //
 // The calibration measured the intrinsic-noise floor on repeated identical block

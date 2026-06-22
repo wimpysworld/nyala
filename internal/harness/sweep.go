@@ -15,7 +15,7 @@
 // true round-tripped render, not the encoder's input. Every render is compared
 // against the reference downscaled to the render's dimensions.
 //
-// Thresholds are data-driven. The bands come from the task 7.5 calibration
+// Thresholds are data-driven. The bands come from the committed calibration
 // (testdata/calibration.json): the intrinsic-noise floor on repeated identical
 // block renders is exactly zero, so every band sits above that floor while
 // staying a small fraction of the observed metric range, so a real regression
