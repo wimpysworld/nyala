@@ -15,10 +15,9 @@ import (
 // probeResult is the outcome of the startup terminal handshake: which graphics
 // backends the terminal supports and the real terminal cell pixel size.
 type probeResult struct {
-	Sixel   bool // the terminal answered DA1 with the sixel attribute (element "4")
-	Kitty   bool // the terminal answered the kitty graphics query
-	CellPxX int  // resolved cell width in pixels
-	CellPxY int  // resolved cell height in pixels
+	Sixel  bool // the terminal answered DA1 with the sixel attribute (element "4")
+	Kitty  bool // the terminal answered the kitty graphics query
+	cellPx      // resolved cell pixel size
 }
 
 // da1Prefix introduces a DA1 reply; da1Terminator ends it. The handshake reads
@@ -57,7 +56,7 @@ func queryBytes() []byte {
 // deadline passes, then parses the buffer with the pure functions below. On any
 // I/O error it returns a zero result, so detection fails closed to block only.
 func probeTerminal(tty *os.File, cols, rows int) probeResult {
-	res := probeResult{CellPxX: capture.CellPxW, CellPxY: capture.CellPxH}
+	res := probeResult{cellPx: cellPx{W: capture.CellPxW, H: capture.CellPxH}}
 
 	if _, err := tty.Write(queryBytes()); err != nil {
 		return res
@@ -68,9 +67,8 @@ func probeTerminal(tty *os.File, cols, rows int) probeResult {
 
 	res.Kitty = parseKittySupport(buf)
 	res.Sixel = parseDA1Sixel(buf)
-	if pxX, pxY, ok := parseCellPixels(buf, cols, rows); ok {
-		res.CellPxX = pxX
-		res.CellPxY = pxY
+	if px, ok := parseCellPixels(buf, cols, rows); ok {
+		res.cellPx = px
 	}
 	return res
 }
@@ -172,9 +170,9 @@ func parseDA1Sixel(buf []byte) bool {
 // passed-in cols and rows. It reports ok=false when no reply yields a positive
 // pair. The CSI t replies order parameters height ; width, the opposite of
 // GetSize.
-func parseCellPixels(buf []byte, cols, rows int) (pxX, pxY int, ok bool) {
+func parseCellPixels(buf []byte, cols, rows int) (cellPx, bool) {
 	if h, w, found := parseCSIt(buf, 6); found && w > 0 && h > 0 {
-		return w, h, true
+		return cellPx{W: w, H: h}, true
 	}
 	if h, w, found := parseCSIt(buf, 4); found && w > 0 && h > 0 {
 		c, r := cols, rows
@@ -182,10 +180,10 @@ func parseCellPixels(buf []byte, cols, rows int) (pxX, pxY int, ok bool) {
 			c, r = cc, rr
 		}
 		if c > 0 && r > 0 {
-			return w / c, h / r, true
+			return cellPx{W: w / c, H: h / r}, true
 		}
 	}
-	return 0, 0, false
+	return cellPx{}, false
 }
 
 // parseCSIt parses a CSI t report "\x1b[<id>;A;Bt" and returns A and B. It scans

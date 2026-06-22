@@ -254,7 +254,7 @@ func MeasureCalibration(rast *capture.Rasteriser, inputs []CalibInput, progress 
 // the committed calibration file is byte-stable across runs despite the encoder
 // jitter. Channel order is RGBA.
 func measureSixelPSNRNoiseFloor(inputs []CalibInput) float64 {
-	pxW, pxH := CalibCols*capture.CellPxW, CalibRows*capture.CellPxH
+	pxW, pxH := Viewport{Cols: CalibCols, Rows: CalibRows}.PixelSize()
 	var worst float64
 	for _, in := range inputs {
 		reference := metrics.Downscale(in.Src, pxW, pxH)
@@ -331,7 +331,11 @@ func stdDev(xs []float64) float64 {
 // second return is false when the encode or decode fails, so a failed run does
 // not skew the jitter spread. Channel order is RGBA.
 func sixelRoundTripPSNR(reference *image.RGBA) (float64, bool) {
-	img, err := sixelRoundTrip(reference)
+	g, ok := graphicsBackendFor(ModeSixel)
+	if !ok {
+		return 0, false
+	}
+	img, err := g.roundTrip(reference)
 	if err != nil {
 		return 0, false
 	}
@@ -347,7 +351,8 @@ func sixelRoundTripPSNR(reference *image.RGBA) (float64, bool) {
 func measureCard(rast *capture.Rasteriser, in CalibInput) CalibCard {
 	// Downscale the source so each cell maps to a 2x4 block, the geometry the
 	// block compositor and the oracle both read.
-	composeSrc := metrics.Downscale(in.Src, CalibCols*2, CalibRows*4)
+	cw, ch := Viewport{Cols: CalibCols, Rows: CalibRows}.ComposeSize()
+	composeSrc := metrics.Downscale(in.Src, cw, ch)
 	br := block.Renderer{Cols: CalibCols, Rows: CalibRows}
 	render1 := renderBlock(rast, br, composeSrc)
 	render2 := renderBlock(rast, br, composeSrc)

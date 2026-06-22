@@ -8,6 +8,8 @@
 // never reads as a real value. Nullable fields are pointers for that reason.
 package harness
 
+import "github.com/wimpysworld/nyala/internal/capture"
+
 // SchemaVersion is the report schema version. Bump it on any breaking change to
 // the JSON shape. Stage 0 pins it to 1.
 const SchemaVersion = 1
@@ -16,6 +18,20 @@ const SchemaVersion = 1
 type Viewport struct {
 	Cols int `json:"cols"`
 	Rows int `json:"rows"`
+}
+
+// PixelSize returns the Route A render extent in pixels: the cell grid scaled by
+// the Route A cell pixel size. It is the geometry the reference image is
+// downscaled to before scoring.
+func (v Viewport) PixelSize() (w, h int) {
+	return v.Cols * capture.CellPxW, v.Rows * capture.CellPxH
+}
+
+// ComposeSize returns the compose extent in pixels: two columns by four rows per
+// cell, the 2x4-per-cell downscale geometry the block compositor and the oracle
+// both read.
+func (v Viewport) ComposeSize() (w, h int) {
+	return v.Cols * 2, v.Rows * 4
 }
 
 // Quality holds the full-reference quality metrics for one render. Every metric

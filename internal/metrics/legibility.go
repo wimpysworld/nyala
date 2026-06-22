@@ -128,6 +128,111 @@ func Crop(img *image.RGBA, rect image.Rectangle) *image.RGBA {
 	return out
 }
 
+// PixelContrast derives a WCAG contrast ratio from the decoded pixels of a
+// gridless render (sixel, kitty). It splits the render's luminance into two
+// clusters by an Otsu threshold, takes each cluster's mean colour as a
+// representative foreground and background, and returns the WCAG contrast of that
+// pair. It is the pixel-derived contrast co-signal the per-mode matrix wants for
+// the gridless modes, where no owned cell grid carries per-cell foreground and
+// background colours. An empty image, or one whose pixels do not split, returns a
+// 1:1 ratio. Channel order is RGBA.
+func PixelContrast(img *image.RGBA) float64 {
+	b := img.Bounds()
+	if b.Empty() {
+		return 1
+	}
+	// Build the 8-bit luminance histogram and find the Otsu split.
+	var hist [256]int
+	var total int
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			c := img.RGBAAt(x, y)
+			hist[lumaByte(c.R, c.G, c.B)]++
+			total++
+		}
+	}
+	if total == 0 {
+		return 1
+	}
+	t := otsuSplit(hist[:], total)
+
+	// Accumulate each cluster's mean colour: below the threshold is the darker
+	// set, at or above is the lighter set.
+	var loR, loG, loB, loN float64
+	var hiR, hiG, hiB, hiN float64
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			c := img.RGBAAt(x, y)
+			if int(lumaByte(c.R, c.G, c.B)) < t {
+				loR, loG, loB, loN = loR+float64(c.R), loG+float64(c.G), loB+float64(c.B), loN+1
+			} else {
+				hiR, hiG, hiB, hiN = hiR+float64(c.R), hiG+float64(c.G), hiB+float64(c.B), hiN+1
+			}
+		}
+	}
+	if loN == 0 || hiN == 0 {
+		return 1
+	}
+	return WCAGContrast(
+		meanByte(loR, loN), meanByte(loG, loN), meanByte(loB, loN),
+		meanByte(hiR, hiN), meanByte(hiG, hiN), meanByte(hiB, hiN),
+	)
+}
+
+// lumaByte returns the BT.601 luma of an 8-bit RGB triple, rounded to a byte. It
+// feeds the Otsu histogram for the pixel-derived contrast split.
+func lumaByte(r, g, b uint8) uint8 {
+	y := 0.299*float64(r) + 0.587*float64(g) + 0.114*float64(b)
+	return uint8(y + 0.5)
+}
+
+// meanByte returns sum/count rounded and clamped to an 8-bit value.
+func meanByte(sum, count float64) uint8 {
+	v := sum/count + 0.5
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return uint8(v)
+}
+
+// otsuSplit returns the Otsu luminance threshold for a 256-bin histogram: the
+// level that maximises the between-class variance, splitting the pixels into a
+// dark and a light cluster. total is the pixel count. It returns 0 when the
+// histogram has no separable mass, which the caller treats as no split.
+func otsuSplit(hist []int, total int) int {
+	var sum float64
+	for i, n := range hist {
+		sum += float64(i) * float64(n)
+	}
+	var sumB, wB float64
+	var best float64
+	bestT := 0
+	for t := 0; t < 256; t++ {
+		wB += float64(hist[t])
+		if wB == 0 {
+			continue
+		}
+		wF := float64(total) - wB
+		if wF == 0 {
+			break
+		}
+		sumB += float64(t) * float64(hist[t])
+		mB := sumB / wB
+		mF := (sum - sumB) / wF
+		between := wB * wF * (mB - mF) * (mB - mF)
+		if between > best {
+			best = between
+			bestT = t
+		}
+	}
+	// The split lands at the level above the best threshold, so the darker set is
+	// strictly below it.
+	return bestT + 1
+}
+
 // variance returns the population variance of values. An empty slice returns 0.
 func variance(values []float64) float64 {
 	n := len(values)

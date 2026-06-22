@@ -1,10 +1,7 @@
 package harness
 
 import (
-	"bytes"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -71,29 +68,7 @@ func EncodeGrid(page string, g block.Grid, flags []bool) []byte {
 // changed), creating parent directories as needed, and reports ok true once the
 // file matches. A missing file under update is treated as changed and written.
 func CompareGolden(path, page string, g block.Grid, flags []bool, update bool) (ok bool, wrote bool, err error) {
-	want := EncodeGrid(page, g, flags)
-	got, readErr := os.ReadFile(path)
-	switch {
-	case readErr == nil:
-		if bytes.Equal(got, want) {
-			return true, false, nil
-		}
-	case os.IsNotExist(readErr):
-		// Missing golden: a match is impossible; fall through to update logic.
-	default:
-		return false, false, readErr
-	}
-
-	if !update {
-		return false, false, nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return false, false, err
-	}
-	if err := os.WriteFile(path, want, 0o644); err != nil {
-		return false, false, err
-	}
-	return true, true, nil
+	return compareFile(path, EncodeGrid(page, g, flags), update)
 }
 
 // glyphField encodes a glyph rune as its uppercase hex code point prefixed with

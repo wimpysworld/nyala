@@ -64,7 +64,7 @@ func TestGateBreachesOnQualityDropAndCostRise(t *testing.T) {
 		if b.Metric == "ssim" {
 			sawQuality = true
 		}
-		if b.Metric == bytesPerFrameMetric {
+		if b.Metric == string(bytesPerFrameMetric) {
 			sawCost = true
 		}
 	}

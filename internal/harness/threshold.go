@@ -38,6 +38,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // MetricThreshold is the regression band for one metric and the direction a
@@ -73,16 +74,43 @@ type Thresholds struct {
 	Modes map[string]map[string]MetricThreshold `json:"modes,omitempty"`
 }
 
+// metricName is a gated-metric identifier. It is a string-kinded type so a
+// metric name is a named constant at every gate site and threshold map key
+// rather than a free-form literal, which closes the fail-open typo risk: a
+// misspelt name no longer silently drops a metric from the gate. The wire form
+// (the thresholds map key, the breach metric field) stays the same string.
+type metricName string
+
+// The six gated metric names, in one place. Their string values are the JSON
+// map keys in testdata/thresholds.json and the report field names the gate
+// reads, so they must not change.
+const (
+	// ssimMetric is the structural similarity index.
+	ssimMetric metricName = "ssim"
+	// msssimMetric is the multiscale structural similarity index.
+	msssimMetric metricName = "msssim"
+	// psnrMetric is the peak signal-to-noise ratio in dB.
+	psnrMetric metricName = "psnr"
+	// deltaE2000MeanMetric is the mean per-pixel CIEDE2000 colour difference.
+	deltaE2000MeanMetric metricName = "deltaE2000Mean"
+	// histDivergenceMetric is one minus the colour-histogram intersection.
+	histDivergenceMetric metricName = "histDivergence"
+	// bytesPerFrameMetric marks the bytesPerFrame band as a relative fraction of
+	// the baseline rather than an absolute count, since frame sizes span orders of
+	// magnitude across the three backends.
+	bytesPerFrameMetric metricName = "bytesPerFrame"
+)
+
 // thresholdFor returns the band for a metric under a given mode: the per-mode
 // override in Modes when present, else the global Metrics band. The second
 // return is false when no band gates the metric for that mode.
-func (t Thresholds) thresholdFor(mode, metric string) (MetricThreshold, bool) {
+func (t Thresholds) thresholdFor(mode string, metric metricName) (MetricThreshold, bool) {
 	if m, ok := t.Modes[mode]; ok {
-		if th, ok := m[metric]; ok {
+		if th, ok := m[string(metric)]; ok {
 			return th, true
 		}
 	}
-	th, ok := t.Metrics[metric]
+	th, ok := t.Metrics[string(metric)]
 	return th, ok
 }
 
@@ -114,29 +142,24 @@ func DefaultThresholds() Thresholds {
 		SchemaVersion: SchemaVersion,
 		Source:        "task 7.5 calibration (testdata/calibration.json); global bands above the zero block noise floor, fractions of the observed corpus ranges; sixel PSNR override above the measured sixelPsnrNoiseFloor",
 		Metrics: map[string]MetricThreshold{
-			"ssim":           {Band: 0.02, HigherIsBetter: true},
-			"msssim":         {Band: 0.02, HigherIsBetter: true},
-			"psnr":           {Band: 0.5, HigherIsBetter: true},
-			"deltaE2000Mean": {Band: 0.5, HigherIsBetter: false},
-			"histDivergence": {Band: 0.05, HigherIsBetter: false},
-			"bytesPerFrame":  {Band: 0.05, HigherIsBetter: false},
+			string(ssimMetric):           {Band: 0.02, HigherIsBetter: true},
+			string(msssimMetric):         {Band: 0.02, HigherIsBetter: true},
+			string(psnrMetric):           {Band: 0.5, HigherIsBetter: true},
+			string(deltaE2000MeanMetric): {Band: 0.5, HigherIsBetter: false},
+			string(histDivergenceMetric): {Band: 0.05, HigherIsBetter: false},
+			string(bytesPerFrameMetric):  {Band: 0.05, HigherIsBetter: false},
 		},
 		Modes: map[string]map[string]MetricThreshold{
 			// Sixel PSNR sits well above the measured sixelPsnrNoiseFloor (about
 			// 0.2 dB standard deviation) from the lossy encoder, covering the
 			// two-sample regenerate-then-verify gap; block and kitty PSNR keep the
 			// tight global band.
-			"sixel": {
-				"psnr": {Band: 1.5, HigherIsBetter: true},
+			string(ModeSixel): {
+				string(psnrMetric): {Band: 1.5, HigherIsBetter: true},
 			},
 		},
 	}
 }
-
-// bytesPerFrameMetric marks the bytesPerFrame band as a relative fraction of the
-// baseline rather than an absolute count, since frame sizes span orders of
-// magnitude across the three backends.
-const bytesPerFrameMetric = "bytesPerFrame"
 
 // BaselineMetrics is one (page, mode) snapshot of the gated metrics. A nil
 // pointer means the metric did not apply to that mode, so the gate skips it.
@@ -200,94 +223,6 @@ func BaselineFromReports(grid Viewport, reports []Report) Baseline {
 	}
 	return Baseline{SchemaVersion: SchemaVersion, Grid: grid, Entries: entries}
 }
-
-// gate compares each report against the baseline under the thresholds and
-// returns every metric that regressed past its band. A nil baseline skips the
-// gate (a first run seeds the baseline rather than failing). A report with no
-// matching baseline entry is skipped, so adding a page never fails the gate.
-func gate(reports []Report, baseline *Baseline, thresholds Thresholds) []Breach {
-	if baseline == nil {
-		return nil
-	}
-	var breaches []Breach
-	for _, r := range reports {
-		base, ok := baseline.lookup(r.Page, r.Mode)
-		if !ok {
-			continue
-		}
-		breaches = append(breaches, gateOne(r, base, thresholds)...)
-	}
-	return breaches
-}
-
-// gateOne checks one report's gated metrics against its baseline entry.
-func gateOne(r Report, base BaselineMetrics, t Thresholds) []Breach {
-	var out []Breach
-	check := func(metric string, measured, baseline *float64) {
-		if measured == nil || baseline == nil {
-			return
-		}
-		th, ok := t.thresholdFor(r.Mode, metric)
-		if !ok {
-			return
-		}
-		if br, breached := evalBand(r.Page, r.Mode, metric, *baseline, *measured, th); breached {
-			out = append(out, br)
-		}
-	}
-	check("ssim", r.Quality.SSIM, base.SSIM)
-	check("msssim", r.Quality.MSSSIM, base.MSSSIM)
-	check("psnr", r.Quality.PSNR, base.PSNR)
-	check("deltaE2000Mean", r.Quality.DeltaE2000Mean, base.DeltaE2000Mean)
-	check("histDivergence", r.Quality.HistDivergence, base.HistDivergence)
-
-	if th, ok := t.thresholdFor(r.Mode, bytesPerFrameMetric); ok && r.Perf.BytesPerFrame != nil && base.BytesPerFrame != nil {
-		measured := float64(*r.Perf.BytesPerFrame)
-		baseline := float64(*base.BytesPerFrame)
-		// The byte band is relative: a fraction of the baseline frame size,
-		// since payload sizes span orders of magnitude across the backends.
-		effBand := th.Band * baseline
-		if br, breached := evalBand(r.Page, r.Mode, bytesPerFrameMetric, baseline, measured, MetricThreshold{Band: effBand, HigherIsBetter: th.HigherIsBetter}); breached {
-			out = append(out, br)
-		}
-	}
-	return out
-}
-
-// evalBand decides whether a single metric breached its band. For a quality
-// metric (HigherIsBetter) the regression is a drop, so it breaches when the
-// measured value falls more than Band below the baseline. For a cost metric it
-// breaches when the measured value rises more than Band above the baseline. A
-// move the good way, or within the band, passes. The recorded band is th.Band,
-// the same band the gate compares against, so the breach's delta and band carry
-// the same units.
-func evalBand(page, mode, metric string, baseline, measured float64, th MetricThreshold) (Breach, bool) {
-	delta := measured - baseline
-	var breached bool
-	if th.HigherIsBetter {
-		// Regression is a drop: measured below baseline by more than the band.
-		breached = baseline-measured > th.Band+gateEps
-	} else {
-		// Regression is a rise: measured above baseline by more than the band.
-		breached = measured-baseline > th.Band+gateEps
-	}
-	if !breached {
-		return Breach{}, false
-	}
-	return Breach{
-		Page:     page,
-		Mode:     mode,
-		Metric:   metric,
-		Baseline: baseline,
-		Measured: measured,
-		Delta:    delta,
-		Band:     th.Band,
-	}, true
-}
-
-// gateEps absorbs floating-point noise at the band edge so a value exactly on
-// the band does not flap between pass and fail across runs.
-const gateEps = 1e-9
 
 // MarshalBaseline encodes a Baseline to deterministic, indented JSON with a
 // trailing newline so the committed file diffs cleanly.
@@ -360,6 +295,9 @@ func compareFile(path string, want []byte, update bool) (ok bool, wrote bool, er
 	}
 	if !update {
 		return false, false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, false, err
 	}
 	if err := os.WriteFile(path, want, 0o644); err != nil {
 		return false, false, err

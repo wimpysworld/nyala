@@ -64,9 +64,9 @@ func TestSweepEmitsAllFiles(t *testing.T) {
 	// Every (page, mode) emits its PNGs; block also emits the quant map.
 	for _, in := range loadSweepInputs(t) {
 		for _, mode := range SweepModes {
-			base := filepath.Join(dir, in.Page, mode)
+			base := filepath.Join(dir, in.Page, string(mode))
 			for _, png := range []string{compositeName, heatmapName, cellMapName, histogramName} {
-				if mode != "block" && png == cellMapName {
+				if mode != ModeBlock && png == cellMapName {
 					// sixel and kitty own no grid, so no cell map.
 					continue
 				}
@@ -76,10 +76,10 @@ func TestSweepEmitsAllFiles(t *testing.T) {
 			}
 			quant := filepath.Join(base, quantMapName)
 			_, qErr := os.Stat(quant)
-			if mode == "block" && qErr != nil {
+			if mode == ModeBlock && qErr != nil {
 				t.Errorf("%s/block missing quant map: %v", in.Page, qErr)
 			}
-			if mode != "block" && qErr == nil {
+			if mode != ModeBlock && qErr == nil {
 				t.Errorf("%s/%s wrote a quant map, want none", in.Page, mode)
 			}
 		}

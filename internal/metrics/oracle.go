@@ -342,6 +342,33 @@ type MetricSet struct {
 	HistIntersection float64
 }
 
+// metricDir records one MetricSet field's optimisation direction together with
+// its accessor and setter, so the per-field "higher-better or lower-better?"
+// fact lives in one place rather than restated in bestOf's min/max calls. It is
+// the single source of truth the best-of-shift reduction reads.
+type metricDir struct {
+	// higherIsBetter is true for a similarity metric (SSIM, MSSSIM, PSNR,
+	// HistIntersection) and false for an error metric (MSE, GMSD, DeltaEMean,
+	// DeltaEP95).
+	higherIsBetter bool
+	// get reads the field from a MetricSet; set writes it into one.
+	get func(MetricSet) float64
+	set func(*MetricSet, float64)
+}
+
+// metricDirs lists every MetricSet field with its direction. bestOf reduces over
+// it, so the direction knowledge cannot drift from this one table.
+var metricDirs = []metricDir{
+	{false, func(m MetricSet) float64 { return m.MSE }, func(m *MetricSet, v float64) { m.MSE = v }},
+	{true, func(m MetricSet) float64 { return m.PSNR }, func(m *MetricSet, v float64) { m.PSNR = v }},
+	{false, func(m MetricSet) float64 { return m.GMSD }, func(m *MetricSet, v float64) { m.GMSD = v }},
+	{true, func(m MetricSet) float64 { return m.SSIM }, func(m *MetricSet, v float64) { m.SSIM = v }},
+	{true, func(m MetricSet) float64 { return m.MSSSIM }, func(m *MetricSet, v float64) { m.MSSSIM = v }},
+	{false, func(m MetricSet) float64 { return m.DeltaEMean }, func(m *MetricSet, v float64) { m.DeltaEMean = v }},
+	{false, func(m MetricSet) float64 { return m.DeltaEP95 }, func(m *MetricSet, v float64) { m.DeltaEP95 = v }},
+	{true, func(m MetricSet) float64 { return m.HistIntersection }, func(m *MetricSet, v float64) { m.HistIntersection = v }},
+}
+
 // ScorePair computes the full MetricSet between a render and a reference of the
 // same dimensions. It is the single scoring path the absolute and relative
 // scores both call, so the two scores stay comparable. Channel order is RGBA.
@@ -441,17 +468,18 @@ func shiftedIdealGrid(src *image.RGBA, cols, rows, shiftX, shiftY int) block.Gri
 }
 
 // bestOf returns the per-metric best of two MetricSets: the smaller value for
-// the error metrics and the larger for the similarity metrics. It lets the
-// shift search keep the best of each metric independently.
+// the error metrics and the larger for the similarity metrics. It reduces over
+// the metricDirs direction table, so the shift search keeps the best of each
+// metric independently and the direction lives in one place.
 func bestOf(a, b MetricSet) MetricSet {
-	return MetricSet{
-		MSE:              min(a.MSE, b.MSE),
-		PSNR:             max(a.PSNR, b.PSNR),
-		GMSD:             min(a.GMSD, b.GMSD),
-		SSIM:             max(a.SSIM, b.SSIM),
-		MSSSIM:           max(a.MSSSIM, b.MSSSIM),
-		DeltaEMean:       min(a.DeltaEMean, b.DeltaEMean),
-		DeltaEP95:        min(a.DeltaEP95, b.DeltaEP95),
-		HistIntersection: max(a.HistIntersection, b.HistIntersection),
+	var out MetricSet
+	for _, d := range metricDirs {
+		av, bv := d.get(a), d.get(b)
+		if d.higherIsBetter {
+			d.set(&out, max(av, bv))
+		} else {
+			d.set(&out, min(av, bv))
+		}
 	}
+	return out
 }

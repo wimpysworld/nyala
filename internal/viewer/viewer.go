@@ -69,7 +69,7 @@ const (
 // unit test without a live terminal. Cols and Rows are the terminal size in
 // cells; ImgW and ImgH are the loaded image's pixel dimensions. Enabled lists the
 // backends the Tab cycle steps through, in cycle order, highest-fidelity first
-// with block last; CellPxX and CellPxY are the real terminal cell pixel size used
+// with block last; the embedded cellPx is the real terminal cell pixel size used
 // to scale the graphics backends.
 type State struct {
 	Backend Backend      // active backend in the cycle
@@ -80,8 +80,7 @@ type State struct {
 	ImgW    int          // loaded image width in pixels
 	ImgH    int          // loaded image height in pixels
 	Enabled []Backend    // backends in the Tab cycle, block first
-	CellPxX int          // terminal cell width in pixels for graphics scaling
-	CellPxY int          // terminal cell height in pixels for graphics scaling
+	cellPx               // terminal cell pixel size for graphics scaling
 }
 
 // NewState builds the initial state: block as the safe pre-detection backend, the
@@ -99,8 +98,7 @@ func NewState(cols, rows, imgW, imgH int) State {
 		ImgW:    imgW,
 		ImgH:    imgH,
 		Enabled: []Backend{BackendKitty, BackendSixel, BackendBlock},
-		CellPxX: capture.CellPxW,
-		CellPxY: capture.CellPxH,
+		cellPx:  cellPx{W: capture.CellPxW, H: capture.CellPxH},
 	}
 }
 
@@ -264,8 +262,8 @@ func (s *State) renderBlock(src *image.RGBA, w io.Writer) error {
 // maps to pixels at the real terminal cell size, filling the letterbox; the image
 // keeps its aspect.
 func (s *State) renderGraphics(src *image.RGBA, fit block.Fit, w io.Writer) error {
-	pxW := fit.FitCols * s.CellPxX
-	pxH := fit.FitRows * s.CellPxY
+	pxW := fit.FitCols * s.W
+	pxH := fit.FitRows * s.H
 	sub := metrics.Downscale(src, pxW, pxH)
 	if s.Backend == BackendKitty {
 		if _, err := io.WriteString(w, kittyDeleteAll); err != nil {
@@ -501,10 +499,9 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag strin
 	detected := detectColour(os.Environ(), cterm.IsTerminal(tty.Fd()))
 	st.Colour = resolveColour(colourFlag, os.Environ(), detected)
 
-	winX, winY, winOK := winsizeCellPixels(tty.Fd(), cols, rows)
+	winPx, winOK := winsizeCellPixels(tty.Fd(), cols, rows)
 	if winOK {
-		st.CellPxX = winX
-		st.CellPxY = winY
+		st.cellPx = winPx
 	}
 
 	if multiplexed() {
@@ -514,8 +511,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag strin
 
 	res := probeTerminal(tty, cols, rows)
 	if !winOK {
-		st.CellPxX = res.CellPxX
-		st.CellPxY = res.CellPxY
+		st.cellPx = res.cellPx
 	}
 
 	enabled := []Backend{}
@@ -550,14 +546,23 @@ func multiplexed() bool {
 	return false
 }
 
+// cellPx is a terminal cell's pixel size: the width and height of one character
+// cell. The two values always travel together (resolve, validate, scale), so the
+// pair carries one type rather than a loose (pxX, pxY) int pair through the
+// resolution chain.
+type cellPx struct {
+	W int // cell width in pixels
+	H int // cell height in pixels
+}
+
 // winsizeCellPixels resolves the cell pixel size from the TIOCGWINSZ ioctl. It
 // returns ok=false when the kernel reports no pixel size, so the caller falls
 // back to the handshake replies. cols and rows are unused here but kept for a
 // symmetric resolution chain with parseCellPixels.
-func winsizeCellPixels(fd uintptr, _, _ int) (pxX, pxY int, ok bool) {
+func winsizeCellPixels(fd uintptr, _, _ int) (cellPx, bool) {
 	ws, err := unix.IoctlGetWinsize(int(fd), unix.TIOCGWINSZ)
 	if err != nil || ws == nil {
-		return 0, 0, false
+		return cellPx{}, false
 	}
 	return deriveCellPixels(int(ws.Xpixel), int(ws.Ypixel), int(ws.Col), int(ws.Row))
 }
@@ -567,25 +572,23 @@ func winsizeCellPixels(fd uintptr, _, _ int) (pxX, pxY int, ok bool) {
 // bound are testable without a live ioctl. It returns ok=false when any field
 // is zero, so a bogus report (for example a 32000x0 winsize, Ypixel 0) falls
 // through, and ok=false when the derived cell px is outside the sane window.
-func deriveCellPixels(xpixel, ypixel, col, row int) (pxX, pxY int, ok bool) {
+func deriveCellPixels(xpixel, ypixel, col, row int) (cellPx, bool) {
 	if xpixel == 0 || ypixel == 0 || col == 0 || row == 0 {
-		return 0, 0, false
+		return cellPx{}, false
 	}
-	pxX = xpixel / col
-	pxY = ypixel / row
-	if !cellPxInBounds(pxX, pxY) {
-		return 0, 0, false
+	c := cellPx{W: xpixel / col, H: ypixel / row}
+	if !c.inBounds() {
+		return cellPx{}, false
 	}
-	return pxX, pxY, true
+	return c, true
 }
 
-// cellPxInBounds reports whether a derived cell pixel size sits inside the
-// winsize sanity window: 4..32 wide and 8..64 tall. A size outside it is a
-// bogus winsize report, so the caller falls through to the handshake or the
-// 8x16 default.
-func cellPxInBounds(pxX, pxY int) bool {
-	return pxX >= winsizeMinCellW && pxX <= winsizeMaxCellW &&
-		pxY >= winsizeMinCellH && pxY <= winsizeMaxCellH
+// inBounds reports whether a derived cell pixel size sits inside the winsize
+// sanity window: 4..32 wide and 8..64 tall. A size outside it is a bogus winsize
+// report, so the caller falls through to the handshake or the 8x16 default.
+func (c cellPx) inBounds() bool {
+	return c.W >= winsizeMinCellW && c.W <= winsizeMaxCellW &&
+		c.H >= winsizeMinCellH && c.H <= winsizeMaxCellH
 }
 
 // winsize cell-px sanity bounds. A derived cell width or height outside this
