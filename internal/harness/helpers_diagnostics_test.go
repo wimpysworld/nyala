@@ -30,13 +30,14 @@ func logProgress(t *testing.T) Progress {
 	}
 }
 
-// sweepCards lists the corpus the sweep runs over: the three test cards and the
-// Linux Matters page, matching the four committed fixtures.
+// sweepCards lists the corpus the sweep runs over: the Linux Matters page and
+// the four test pages, matching the five committed fixtures.
 var sweepCards = []string{
 	"linuxmatters.png",
-	"testcard-01-greyscale.png",
-	"testcard-02-colour.png",
-	"testcard-03-images.png",
+	"testpage-01-grayscale.png",
+	"testpage-02-basic.png",
+	"testpage-03-cmyk.png",
+	"testpage-04-color.png",
 }
 
 // thresholdsPath returns the committed thresholds gate file.
@@ -81,7 +82,7 @@ func sweepConfig(dir string) SweepConfig {
 	return SweepConfig{Cols: CalibCols, Rows: CalibRows, OutDir: dir, NyalaCommit: "test"}
 }
 
-// loadCalibInputs decodes the three calibration cards into RGBA inputs.
+// loadCalibInputs decodes the four calibration test pages into RGBA inputs.
 func loadCalibInputs(t *testing.T) []CalibInput {
 	t.Helper()
 	inputs := make([]CalibInput, 0, len(CalibCards))

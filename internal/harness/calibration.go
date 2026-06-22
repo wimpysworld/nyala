@@ -1,7 +1,7 @@
 // Calibration measures the real metric ranges Nyala's block renderer reaches on
-// the committed test cards, so the thresholds come from data instead of guesses.
+// the committed test pages, so the thresholds come from data instead of guesses.
 //
-// It block-renders each of the three test cards at the pinned 120x40 grid,
+// It block-renders each of the four test pages at the pinned 120x40 grid,
 // scores the render against the downscaled input (absolute) and against the
 // ideal block render (relative), and records SSIM, MS-SSIM, CIEDE2000 mean and
 // p95, and PSNR per card. It also measures the intrinsic-noise floor: the metric
@@ -81,13 +81,14 @@ const (
 	CalibRows = 40
 )
 
-// CalibCards lists the three test cards the calibration measures, in the order
+// CalibCards lists the four test pages the calibration measures, in the order
 // they appear in the committed file. The Linux Matters page is excluded: the
-// calibration measures the cards the SSIM/CER ranges are pinned from.
+// calibration measures the pages the SSIM/CER ranges are pinned from.
 var CalibCards = []string{
-	"testcard-01-greyscale.png",
-	"testcard-02-colour.png",
-	"testcard-03-images.png",
+	"testpage-01-grayscale.png",
+	"testpage-02-basic.png",
+	"testpage-03-cmyk.png",
+	"testpage-04-color.png",
 }
 
 // CalibMetricSet is one card's quality scores, absolute or relative. It mirrors
