@@ -308,20 +308,24 @@ func schemePixels(scheme block.Scheme, cols, rows int) (pxW, pxH int) {
 // in the chosen colour mode. Truecolour emits 24-bit SGR; xterm-256 maps each
 // cell's fg and bg onto the 256-colour palette; monochrome emits the glyph alone
 // with no fg/bg SGR, rendering a 1-bit silhouette on the terminal default fg/bg.
-// Each row ends with an SGR reset and a CRLF. The carriage return returns the
-// cursor to column 0 when auto-wrap is off in raw mode. It mirrors
-// block.Renderer.Render but adds the colour toggle the concrete renderer does not
-// carry.
+// Each row ends with an SGR reset; rows are joined by CRLF with no trailing
+// newline after the last row, so a full-height grid does not scroll the top row
+// off a raw-mode terminal. The carriage return returns the cursor to column 0
+// when auto-wrap is off in raw mode. It adds the colour toggle the concrete
+// block.Renderer.Render does not carry.
 func writeGrid(g block.Grid, mode ColourMode, w io.Writer) error {
 	var sb strings.Builder
 	for row := 0; row < g.Rows; row++ {
+		if row > 0 {
+			sb.WriteString("\r\n")
+		}
 		for col := 0; col < g.Cols; col++ {
 			c := g.At(col, row)
 			sb.WriteString(fgSGR(c.FG, mode))
 			sb.WriteString(bgSGR(c.BG, mode))
 			sb.WriteRune(c.Glyph)
 		}
-		sb.WriteString("\x1b[0m\r\n")
+		sb.WriteString("\x1b[0m")
 	}
 	_, err := io.WriteString(w, sb.String())
 	return err
