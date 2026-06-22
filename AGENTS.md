@@ -47,6 +47,7 @@ Format with gofumpt (`just fmt` uses gofmt; both pass `fmt-check`). Lint config 
 - RGBA byte order everywhere in the render and metrics pipeline. The decoders and image maths assume RGBA, never BGRA. Do not swap channels.
 - OCR uses cgo `gosseract`, guarded behind the `//go:build ocr` tag, so the default build and the shipped binary stay cgo-free. The OCR tests need libtesseract and leptonica from the Nix dev shell: run `nix develop`, then `go test -tags ocr ./internal/ocr/...`.
 - The heavy quality tests (corpus sweep, calibration, golden track) carry the `//go:build diagnostics` tag, so they leave the default `go test ./...` run. Run them via `just diagnostics`; regenerate the golden archives via `just update-golden`. The shared sweep and calibration run once each per tagged run, so adding a tagged test that reuses them adds no extra rasteriser pass.
+- The image maths is 64-bit floating point and rounds differently across architectures (arm64 contracts to FMA, x86-64 does not). Two consequences for tests, which CI runs on `linux/amd64` and `linux/arm64`. First, never assert exact equality on metric output: identical inputs leave a sub-1e-12 residue on arm64, so compare against an epsilon (see `internal/metrics/colour_test.go`). Second, the committed golden archives are an amd64 byte snapshot; the downscale and block compose diverge by a few bytes on arm64, so `TestGoldenTrack` skips when `runtime.GOARCH != "amd64"`. Regenerate the goldens on amd64 only.
 
 ## Commit conventions
 
