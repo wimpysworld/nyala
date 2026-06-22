@@ -5,7 +5,6 @@
 </h1>
 
 <p align="center"><b>A browser for the terminal 🦌</b></p>
-
 <p align="center">Made with 💝 for 🐧🍏</p>
 
 Nyala is a browser for the terminal. The goal: render real web pages - HTML5, CSS, JavaScript - directly to a TTY. It will drive headless Chromium via the Chrome DevTools Protocol and composite a crisp Unicode text layer over a quadrant-block bitmap, so text stays sharp rather than fuzzy. On a modern terminal it renders high-fidelity output through the Kitty graphics protocol or Sixel. And it runs anywhere, down to a bare Linux console under [KMSCON](https://github.com/kmscon/kmscon), with no display server required.
