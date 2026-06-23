@@ -60,18 +60,30 @@ the codebase (rendering, input, TUI, config) is engine-agnostic and reusable.
 type Engine interface {
     Navigate(url string) error
     Resize(cols, rows int)            // logical terminal cell size
-    Frames() <-chan Frame             // RGBA bitmap + damage region
-    TextLayer() <-chan []GlyphRun      // positioned Unicode for crisp text
+    Frames() <-chan Frame             // RGBA bitmap + synced Text
     SendKey(k Key)
     SendMouse(m MouseEvent)
     Close() error
 }
 ```
 
+Stage 3 resolves the text layer to one synced channel. The engine populates `Frame.Text`
+after the frame-sync match, so consumers receive bitmap and crisp text already keyed to
+the same frame, never two cadences to reconcile. A separate text channel may return in
+Stage 4 for link-hint geometry. See `docs/STAGE-3.md`.
+
 - **Engine #1: `ChromiumEngine` (chromedp).** Frames via `Page.startScreencast`;
-  text layer via CDP DOM/accessibility queries. This is the only engine to build now.
-- **Future engines** (e.g. WPE WebKit) implement the same interface. No other code
+  text layer via CDP DOM queries, folded into `Frame.Text` after the sync match. This is
+  the only engine to build now.
+- **Future engines** (e.g. WPE WebKit, CEF) implement the same interface. No other code
   changes. Do not build these yet; the seam keeps the option open.
+- **CEF (gated future engine).** CEF embeds Chromium in-process and hands back BGRA
+  frames from `OnPaint`, with no CDP screencast hop. It is a candidate fallback if the
+  Stage 3 FPS spike shows the CDP screencast cannot hold an acceptable frame rate at
+  LoDPI on the target terminals. It is not the default: it bakes Chromium into the
+  binary (a ~670MB build dependency), needs C/C++ bindings against the pure-Go cgo-free
+  stack, and gives no text geometry, so the crisp-text problem stays. See the Brow6el
+  internals section under "Half-Block Rendering Research" for the worked reference.
 
 ### Rendering pipeline (engine-agnostic)
 
@@ -89,6 +101,9 @@ type Engine interface {
 - **Frame rate**: `startScreencast` streams JPEG/PNG over the CDP socket. Benchmarks
   cite low FPS, but those are full-resolution; at terminal resolution the bitmap is
   tiny, so cost should be far lower. Measure early against KMSCON before optimising.
+  This is the explicit CDP-vs-CEF gate: if the Stage 3 spike shows CDP holds sustained
+  full-viewport FPS at LoDPI on the target terminals, ship CDP; if it fails, open a CEF
+  engine spike behind the existing `Engine` seam.
 - **Crisp text is the make-or-break feature.** Prototype the text-layer compositing
   first; it separates "readable" from "browsh-grade fuzzy".
 - **Dependency**: a compatible Chromium/Chrome must be installed (via chromedp's
@@ -585,6 +600,69 @@ Verdict: port Carbonyl's quadrant compositor and closed-form colour maths as an 
 Nyala package; lean on uniseg and x/ansi from the Charm stack; lock the colour and
 quadrant logic with golden-frame tests because Carbonyl is dormant.
 
+### Brow6el internals
+
+Brow6el is the third reference: a full terminal browser that embeds Chromium directly
+through CEF (Chromium Embedded Framework) rather than driving it over CDP. It renders
+the whole viewport as a Sixel or Kitty image and never composites text or block glyphs.
+It is the closest live example of the CEF-embed path Nyala is weighing against its
+chromedp/CDP design, so the trade-offs below feed that decision.
+
+Techniques:
+
+- **CEF off-screen rendering (the engine contrast)**: brow6el links the CEF library and
+  runs Chromium windowless. CEF calls `OnPaint` with the rendered viewport as a BGRA
+  buffer each frame. Trade-off: no separate browser process to launch or speak CDP to,
+  and the bitmap arrives in-process with no screenshot round-trip, but the binary embeds
+  Chromium and pulls a ~670MB CEF distribution at build time. Nyala's CDP path keeps
+  Chromium as an external process and trades the in-process buffer for a
+  `Page.captureScreenshot` (or `screencast`) hop.
+- **BGRA buffer to image pipeline**: the CEF buffer feeds two paths. Sixel goes BGRA →
+  libsixel → Sixel escapes. Kitty goes BGRA → RGBA → base64 → Kitty escapes. Mind the
+  byte order: like Carbonyl, CEF hands back BGRA, not the RGBA Nyala's pipeline assumes.
+- **Image-only output, no text overlay (the make-or-break gap)**: brow6el emits the
+  page purely as a graphics-protocol image. It has no half-block fallback and no crisp
+  Unicode text layer, so all text is whatever the Sixel or Kitty bitmap shows and reads
+  as fuzzy at terminal scale. This is the exact weakness Nyala's CDP text layer exists
+  to fix; the CEF embed gives no text geometry of its own without extra Chromium plumbing.
+- **Tiled Sixel diffing**: an optional mode redraws only changed screen regions as Sixel
+  tiles to cut flicker and data volume; monolithic mode redraws the whole screen. Kitty
+  always redraws monolithically, with double-buffered image IDs to prevent flicker and
+  the image placed below the text layer (`z=-1`). A per-frame diff worth noting for
+  Nyala's Sixel and Kitty enhancement paths, though Nyala diffs cells, not image tiles.
+- **Cell-grid sizing by zoom, not a Chromium fork**: brow6el auto-detects terminal cell
+  dimensions and sizes the render by a zoom factor (`zoom_level`, DPI-aware `auto`
+  behaviour). It needs no LoDPI/forced-monospace fork because it ships an image, not a
+  cell grid. Nyala sizes the CDP viewport to its grid instead.
+- **Modal vim input and mouse emulation**: STANDARD/INSERT/MOUSE/VISUAL modes,
+  keyboard-driven mouse with a grid-jump overlay, hint-mode link labels, and a CDP-style
+  element inspector. A reference for terminal input mapping, independent of the engine
+  choice.
+
+| Tool | Score (n/10) | Maturity | Maintenance | Suitability |
+|---|---|---|---|---|
+| CEF (Chromium Embedded Framework) | 6 | CEF 148 / Chromium 148 beta pinned | Tracks Chromium; mature upstream | The engine-embed alternative to CDP: in-process BGRA frames, no external browser, but ~670MB build dependency, C/C++ binding, and Chromium baked into the binary |
+| `libsixel` | 7 | Mature; MIT | Maintained | Proven RGBA/BGRA-to-Sixel encoder; relevant only to Nyala's Sixel enhancement path, not the half-block floor |
+| Custom Kitty encoder | 6 | In brow6el; BGRA → RGBA → base64 | Owned by brow6el | Confirms the Kitty pipeline shape; Nyala gets the same from `charmbracelet/x/ansi/kitty` |
+
+- Pros: proves the CEF-embed path end to end; in-process frames skip the CDP screenshot
+  hop; shows a complete terminal input and chrome model to mine.
+- Cons: image-only, so text is fuzzy with no overlay, the gap Nyala must close; C/C++ and
+  a ~670MB CEF build dependency against Nyala's pure-Go chromedp stack; self-described
+  POC quality; no half-block floor, so it needs a Sixel- or Kitty-capable terminal.
+- Sources: `codeberg.org/janantos/brow6el` (`README.md`, `download_cef.sh`),
+  `www.brow6el.dev`, `aur.archlinux.org/packages/brow6el-git`. Licence MIT (project),
+  CEF BSD 3-Clause, libsixel MIT; active, v0.3.4, last source commit 2026-05-20, CI
+  AppImage builds for amd64 and arm64. The exact CEF `OnPaint`/BGRA call sites were not
+  read directly (source tree fetch timed out); the pipeline is taken from the project's
+  own "How It Works" description and is marked accordingly.
+
+Verdict: treat brow6el as the CEF-embed reference point, not a port target. It validates
+that embedding Chromium yields in-process frames with no CDP hop, but it ships fuzzy
+image-only text with no half-block floor, which is the weakness Nyala's CDP text overlay
+removes. Carry its tiled-diff and modal-input ideas forward; carry the CEF-vs-CDP
+trade-off (build weight and language against in-process frames) into the engine decision.
+
 ### Sub-cell glyph density
 
 A cell carries one fg and one bg, so denser glyphs trade colour fidelity for spatial
@@ -982,7 +1060,7 @@ static image first; add the live Chromium screencast later. Each stage kills one
 | 0 | Load a PNG, render it via all three backends, hotkey to cycle them | The three output paths work and are swappable behind one seam | Built; see [`STAGE-0.md`](./STAGE-0.md) |
 | 1 | Capability probe picks the default backend; manual override stays | Detection is correct on the real target terminals | Built; see [`STAGE-1.md`](./STAGE-1.md) |
 | 2 | Composite hardcoded glyph runs over the bitmap | The crisp-text overlay, the gold-standard differentiator | Built; see [`STAGE-2.md`](./STAGE-2.md) |
-| 3 | Replace the PNG with a chromedp screencast loop | The frame ack-pump loop and real FPS | Remaining |
+| 3 | Replace the PNG with a chromedp screencast loop; the binary becomes web-first (`nyala <url>`), dropping the static-PNG viewer | The frame ack-pump loop and real FPS | Remaining |
 | 4 | Run under Bubble Tea v2 with a URL bar and a viewport region | Coexistence: the chrome renderer does not clobber graphics | Remaining |
 
 Pass/fail for the PoC: on a no-graphics terminal (KMSCON), the quadrant plus text-overlay

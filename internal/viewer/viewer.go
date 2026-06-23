@@ -1,26 +1,26 @@
-// Package viewer is the interactive raw-terminal image viewer for Nyala.
+// Package viewer is the interactive raw-terminal frame viewer for Nyala.
 //
-// The viewer loads a PNG, fits it to the terminal, and re-fits on resize. It
-// cycles the render backend (block, sixel, kitty) behind the render.Renderer
-// seam, toggles the block glyph scheme (quadrant, half-block), and toggles the
-// block colour depth (truecolour, xterm-256). Switching backend swaps only the
-// Renderer value; nothing above the seam changes.
+// The viewer draws each frame an Engine pushes, fits it to the terminal, and
+// re-fits on resize. It cycles the render backend (block, sixel, kitty) behind
+// the render.Renderer seam, toggles the block glyph scheme (quadrant,
+// half-block), and toggles the block colour depth (truecolour, xterm-256).
+// Switching backend swaps only the Renderer value; nothing above the seam
+// changes.
 //
 // State holds the whole machine and is pure and testable without a live
 // terminal: every hotkey is a method that mutates State, and Fit and Renderer
-// derive their result from State alone. Run wires State to a raw TTY.
+// derive their result from State alone. Stream wires State to a raw TTY and an
+// Engine's pushed frames.
 package viewer
 
 import (
+	"bufio"
 	"fmt"
 	"image"
 	"image/color"
-	_ "image/png" // register PNG decoder for image.Decode
 	"io"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 
 	cterm "github.com/charmbracelet/x/term"
 	"golang.org/x/sys/unix"
@@ -189,17 +189,44 @@ func (s *State) Renderer() render.Renderer {
 	}
 }
 
+// ScrollKey is a recognised scroll key. The viewer does not track scroll state
+// (the engine owns the offset); it surfaces the pressed scroll key on Action so
+// the push consumer (stream.go) forwards it to engine.SendKey. ScrollNone is the
+// zero value: no scroll key.
+type ScrollKey int
+
+const (
+	// ScrollNone is the zero value: the key is not a scroll key.
+	ScrollNone ScrollKey = iota
+	// ScrollUp is the Up arrow (ESC [ A).
+	ScrollUp
+	// ScrollDown is the Down arrow (ESC [ B).
+	ScrollDown
+	// ScrollRight is the Right arrow (ESC [ C).
+	ScrollRight
+	// ScrollLeft is the Left arrow (ESC [ D).
+	ScrollLeft
+	// ScrollPageUp is the PageUp key (ESC [ 5 ~).
+	ScrollPageUp
+	// ScrollPageDown is the PageDown key (ESC [ 6 ~).
+	ScrollPageDown
+)
+
 // Action is the outcome of feeding one key to the state machine: whether the
-// viewer should redraw and whether it should quit.
+// viewer should redraw, whether it should quit, and any recognised scroll key to
+// forward. Scroll is ScrollNone unless the key was a scroll key.
 type Action struct {
-	Redraw bool // the state changed; the caller should re-render
-	Quit   bool // the user asked to quit
+	Redraw bool      // the state changed; the caller should re-render
+	Quit   bool      // the user asked to quit
+	Scroll ScrollKey // a recognised scroll key to forward, or ScrollNone
 }
 
-// keyQuitCtrlC is the Ctrl-C byte; keyTab is the Tab byte.
+// keyQuitCtrlC is the Ctrl-C byte; keyTab is the Tab byte; keyEsc is the escape
+// byte that opens a CSI sequence.
 const (
 	keyQuitCtrlC = 0x03
 	keyTab       = 0x09
+	keyEsc       = 0x1b
 )
 
 // HandleKey applies one key byte to the state machine and reports the action.
@@ -224,6 +251,40 @@ func (s *State) HandleKey(b byte) Action {
 	}
 }
 
+// HandleScrollKey surfaces a recognised scroll key as an Action for the push
+// consumer to forward to the engine. The viewer holds no scroll state, so it
+// does not redraw or quit; it carries the key on Action.Scroll. ScrollNone is a
+// no-op. It never touches the terminal, so it is unit-tested directly.
+func (s *State) HandleScrollKey(k ScrollKey) Action {
+	if k == ScrollNone {
+		return Action{}
+	}
+	return Action{Scroll: k}
+}
+
+// decodeCSI maps a CSI sequence body (the bytes after ESC [) to a scroll key. It
+// recognises the arrow finals A/B/C/D and the PageUp/PageDown sequences 5~/6~.
+// It returns ScrollNone, false for any other body, so an unrecognised escape
+// sequence is ignored. The reader strips the leading ESC [ before calling it.
+func decodeCSI(body []byte) (ScrollKey, bool) {
+	switch string(body) {
+	case "A":
+		return ScrollUp, true
+	case "B":
+		return ScrollDown, true
+	case "C":
+		return ScrollRight, true
+	case "D":
+		return ScrollLeft, true
+	case "5~":
+		return ScrollPageUp, true
+	case "6~":
+		return ScrollPageDown, true
+	default:
+		return ScrollNone, false
+	}
+}
+
 // RenderFrame fits the source image to the current terminal grid and writes one
 // frame to w with the active backend. The block backend fits onto the owned cell
 // grid and honours the scheme and colour toggles; the graphics backends encode
@@ -235,16 +296,32 @@ func (s *State) RenderFrame(src *image.RGBA, w io.Writer) error {
 		return nil
 	}
 	if s.Backend == BackendBlock {
-		return s.renderBlock(src, w)
+		return s.renderBlock(src, nil, w)
 	}
 	return s.renderGraphics(src, fit, w)
+}
+
+// RenderStreamFrame draws one live screencast frame, folding its crisp DOM-text
+// overlay on the block path. The engine sizes the block capture to the full grid
+// and bins each text run in whole-cell coordinates, so the overlay aligns when
+// the block path composes at the same full grid. The graphics backends carry no
+// overlay, so they draw the bitmap alone via RenderFrame. A nil image is a no-op.
+func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
+	if frame.Img == nil {
+		return nil
+	}
+	if s.Backend == BackendBlock {
+		return s.renderBlock(frame.Img, frame.Text, w)
+	}
+	return s.RenderFrame(frame.Img, w)
 }
 
 // renderBlock composes the source onto the fit-and-letterbox grid and writes it
 // as SGR cells, honouring the colour toggle: truecolour SGR or xterm-256 SGR.
 // FitGrid recomputes the fit-and-letterbox placement from the State dimensions,
-// so the image stays centred without a passed-in Fit.
-func (s *State) renderBlock(src *image.RGBA, w io.Writer) error {
+// so the image stays centred without a passed-in Fit. text is the crisp DOM-text
+// overlay folded onto the composed grid; a nil text draws the bitmap alone.
+func (s *State) renderBlock(src *image.RGBA, text []render.GlyphRun, w io.Writer) error {
 	// One block.Renderer value drives both FitGrid and the inner Compose, so the
 	// grid size and scheme come from a single source.
 	br := block.Renderer{Cols: s.Cols, Rows: s.Rows, Scheme: s.Scheme}
@@ -252,7 +329,7 @@ func (s *State) renderBlock(src *image.RGBA, w io.Writer) error {
 		pxW, pxH := schemePixels(s.Scheme, cols, rows)
 		sub := metrics.Downscale(src, pxW, pxH)
 		inner := block.Renderer{Cols: cols, Rows: rows, Scheme: s.Scheme}
-		return inner.Compose(render.Frame{Img: sub})
+		return inner.Compose(render.Frame{Img: sub, Text: text})
 	})
 	return writeGrid(grid, s.Colour, w)
 }
@@ -262,8 +339,7 @@ func (s *State) renderBlock(src *image.RGBA, w io.Writer) error {
 // maps to pixels at the real terminal cell size, filling the letterbox; the image
 // keeps its aspect.
 func (s *State) renderGraphics(src *image.RGBA, fit block.Fit, w io.Writer) error {
-	pxW := fit.FitCols * s.W
-	pxH := fit.FitRows * s.H
+	pxW, pxH := render.GraphicsCaptureSize(fit.FitCols, fit.FitRows, s.W, s.H)
 	sub := metrics.Downscale(src, pxW, pxH)
 	if s.Backend == BackendKitty {
 		if _, err := io.WriteString(w, kittyDeleteAll); err != nil {
@@ -294,12 +370,10 @@ func cursorPosition(row, col int) string {
 // schemePixels returns the source-pixel extent a cols x rows block grid samples
 // in the given scheme: 2x4 per cell for quadrant, 1x2 per cell for half-block.
 // The compose step needs the source at this extent so each cell maps to its
-// own block of pixels.
+// own block of pixels. It maps the block.Scheme to render.BlockCaptureSize's
+// quadrant bool, the shared helper the engine also calls.
 func schemePixels(scheme block.Scheme, cols, rows int) (pxW, pxH int) {
-	if scheme == block.SchemeHalfBlock {
-		return cols, rows * 2
-	}
-	return cols * 2, rows * 4
+	return render.BlockCaptureSize(scheme == block.SchemeQuadrant, cols, rows)
 }
 
 // writeGrid writes a composed grid to w as SGR cells, one block glyph per cell,
@@ -370,33 +444,6 @@ func bgSGR(c color.RGBA, mode ColourMode) string {
 	}
 }
 
-// LoadPNG decodes the PNG at path into an *image.RGBA in RGBA channel order. A
-// non-RGBA decoded image is converted to RGBA so the render path reads one
-// pixel layout.
-func LoadPNG(path string) (*image.RGBA, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("viewer: open png: %w", err)
-	}
-	defer f.Close()
-
-	img, _, err := image.Decode(f)
-	if err != nil {
-		return nil, fmt.Errorf("viewer: decode png: %w", err)
-	}
-	if rgba, ok := img.(*image.RGBA); ok {
-		return rgba, nil
-	}
-	b := img.Bounds()
-	rgba := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			rgba.Set(x-b.Min.X, y-b.Min.Y, img.At(x, y))
-		}
-	}
-	return rgba, nil
-}
-
 // cupFormat is the CUP escape that moves the cursor to a 1-based row;column
 // (ESC [ row ; col H). cursorPosition fills it with 1-based coordinates.
 const cupFormat = "\x1b[%d;%dH"
@@ -432,95 +479,6 @@ const enterFullScreen = "\x1b[?7l\x1b[?25l"
 // ("\x1b[?25h"). Run writes it during teardown to restore the terminal to its
 // default state before the termios restore.
 const exitFullScreen = "\x1b[?7h\x1b[?25h"
-
-// Run loads the PNG at path and runs the interactive viewer on the given TTY
-// until the user quits. It puts the terminal into raw mode, detects which
-// backends the terminal supports, draws on resize and on each redraw hotkey, and
-// restores the terminal on exit. It returns an error only on a setup or I/O
-// failure; a clean quit returns nil. Run is the live wiring around State; the
-// state machine itself is tested without it. colourFlag is the --color intent
-// (auto, truecolor, 256, none); configureBackends resolves it against NO_COLOR
-// and detection.
-func Run(path string, tty *os.File, colourFlag string) error {
-	src, err := LoadPNG(path)
-	if err != nil {
-		return err
-	}
-
-	fd := tty.Fd()
-	if !cterm.IsTerminal(fd) {
-		return fmt.Errorf("viewer: %s is not a terminal", tty.Name())
-	}
-	cols, rows, err := cterm.GetSize(fd)
-	if err != nil {
-		return fmt.Errorf("viewer: terminal size: %w", err)
-	}
-
-	oldState, err := cterm.MakeRaw(fd)
-	if err != nil {
-		return fmt.Errorf("viewer: raw mode: %w", err)
-	}
-	defer func() { _ = cterm.Restore(fd, oldState) }()
-
-	b := src.Bounds()
-	st := NewState(cols, rows, b.Dx(), b.Dy())
-
-	// Detection runs in raw mode but before the full-screen switch, the first
-	// draw, and the key reader, so the handshake replies are not consumed by the
-	// key goroutine.
-	configureBackends(&st, tty, cols, rows, colourFlag)
-
-	if _, err := io.WriteString(tty, enterFullScreen); err != nil {
-		return err
-	}
-	// Registered after the Restore defer, so LIFO runs it first: re-enable
-	// auto-wrap and show the cursor while still in raw mode, then Restore.
-	defer func() { _, _ = io.WriteString(tty, exitFullScreen) }()
-
-	winch := make(chan os.Signal, 1)
-	signal.Notify(winch, syscall.SIGWINCH)
-	defer signal.Stop(winch)
-
-	draw := func() error {
-		if _, werr := io.WriteString(tty, clearScreen); werr != nil {
-			return werr
-		}
-		return st.RenderFrame(src, tty)
-	}
-	if err := draw(); err != nil {
-		return err
-	}
-
-	// done stops the key-reader goroutine when Run returns, so a goroutine
-	// blocked on a send after the consumer stops selecting cannot leak.
-	done := make(chan struct{})
-	defer close(done)
-	keys := readKeys(tty, done)
-	for {
-		select {
-		case <-winch:
-			if nc, nr, gerr := cterm.GetSize(fd); gerr == nil {
-				st.Resize(nc, nr)
-				if derr := draw(); derr != nil {
-					return derr
-				}
-			}
-		case key, ok := <-keys:
-			if !ok {
-				return nil
-			}
-			act := st.HandleKey(key)
-			if act.Quit {
-				return nil
-			}
-			if act.Redraw {
-				if derr := draw(); derr != nil {
-					return derr
-				}
-			}
-		}
-	}
-}
 
 // configureBackends decides which backends the cycle offers and resolves the
 // real cell pixel size, then writes both into st. Behind a multiplexer (TMUX,
@@ -634,31 +592,80 @@ const (
 	winsizeMaxCellH = 64
 )
 
-// readKeys reads single bytes from r and sends them on the returned channel,
-// closing it on EOF or read error. It runs in its own goroutine so Run can
-// select between keys and resize signals. The returned channel is buffered size
-// 1, and each send selects on done, so a send cannot block forever once the
-// consumer stops: the goroutine exits when done closes or on read EOF/error. A
-// blocking raw-fd Read may keep the goroutine parked until the next byte
-// arrives, after which the done select returns; this is not instant teardown.
-func readKeys(r io.Reader, done <-chan struct{}) <-chan byte {
-	out := make(chan byte, 1)
+// keyEvent is one parsed key from the reader: either a single byte (b, with
+// scroll == ScrollNone) or a recognised scroll key (scroll set, b unused). The
+// reader resolves CSI escape sequences into scroll keys so the consumer handles
+// whole keys, not raw bytes.
+type keyEvent struct {
+	b      byte      // the single key byte when scroll is ScrollNone
+	scroll ScrollKey // the recognised scroll key, or ScrollNone for a byte
+}
+
+// readKeys reads keys from r and sends them on the returned channel, closing it
+// on EOF or read error. It runs in its own goroutine so Run can select between
+// keys and resize signals. A CSI escape sequence (ESC [ ... final) is parsed
+// into a scroll key via decodeCSI; a recognised sequence emits one scroll
+// keyEvent and an unrecognised one is dropped. Every other byte emits a byte
+// keyEvent. The returned channel is buffered size 1, and each send selects on
+// done, so a send cannot block forever once the consumer stops: the goroutine
+// exits when done closes or on read EOF/error. A blocking raw-fd Read may keep
+// the goroutine parked until the next byte arrives, after which the done select
+// returns; this is not instant teardown.
+func readKeys(r io.Reader, done <-chan struct{}) <-chan keyEvent {
+	out := make(chan keyEvent, 1)
 	go func() {
 		defer close(out)
-		buf := make([]byte, 1)
+		br := bufio.NewReader(r)
 		for {
-			n, err := r.Read(buf)
-			if n > 0 {
+			b, err := br.ReadByte()
+			if err != nil {
+				return
+			}
+			ev, emit := nextEvent(br, b)
+			if emit {
 				select {
-				case out <- buf[0]:
+				case out <- ev:
 				case <-done:
 					return
 				}
 			}
-			if err != nil {
-				return
-			}
 		}
 	}()
 	return out
+}
+
+// nextEvent turns one read byte into a keyEvent. A non-escape byte is a byte
+// event. An ESC that opens a CSI sequence (next byte '[') is read to its final
+// byte (0x40..0x7e) and decoded; a recognised sequence is a scroll event, an
+// unrecognised one is dropped (emit false). A bare ESC, or ESC not followed by
+// '[', is passed through as a byte event so it is not swallowed. It reads only
+// the bytes the sequence needs, so it does not block on the next key.
+func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
+	if b != keyEsc {
+		return keyEvent{b: b}, true
+	}
+	next, err := br.ReadByte()
+	if err != nil {
+		return keyEvent{b: b}, true
+	}
+	if next != '[' {
+		_ = br.UnreadByte()
+		return keyEvent{b: b}, true
+	}
+	body := []byte{}
+	for {
+		c, err := br.ReadByte()
+		if err != nil {
+			return keyEvent{}, false
+		}
+		if c >= 0x40 && c <= 0x7e {
+			body = append(body, c)
+			break
+		}
+		body = append(body, c)
+	}
+	if k, ok := decodeCSI(body); ok {
+		return keyEvent{scroll: k}, true
+	}
+	return keyEvent{}, false
 }

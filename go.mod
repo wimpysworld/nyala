@@ -10,6 +10,8 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/charmbracelet/x/vt v0.0.0-20260615092313-b57e5e6d29bb
+	github.com/chromedp/cdproto v0.0.0-20260427013145-5737772c319b
+	github.com/chromedp/chromedp v0.15.1
 	github.com/fogleman/gg v1.3.0
 	github.com/lucasb-eyer/go-colorful v1.4.0
 	github.com/mattn/go-runewidth v0.0.23
@@ -35,8 +37,13 @@ require (
 	github.com/charmbracelet/x/exp/ordered v0.1.0 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
+	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433 // indirect
+	github.com/gobwas/httphead v0.1.0 // indirect
+	github.com/gobwas/pool v0.2.1 // indirect
+	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/soniakeys/quant v1.0.0 // indirect
