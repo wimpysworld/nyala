@@ -937,10 +937,12 @@ tests.
   emulators, or add parser risk for little gain? Resolved: emit REP for flat-colour runs
   of about 4+ identical cells, with a plain repeated-write fallback. On a bare terminal,
   gate on the Stage 1 handshake's `rep` capability probe (terminfo `rep` via XTGETTCAP). On
-  a detected multiplexer the handshake is skipped, so gate by env instead: tmux 3.0+ (added
-  2019), zellij, and herdr all honour REP, so trust it under `TMUX`, `ZELLIJ`, or
-  `HERDR_ENV`; GNU screen does not support REP, so never send it under `STY`, emit literal
-  repeated characters there. KMSCON (libtsm `case 'b'`, maintained with libtsm at
+  a detected multiplexer the handshake is skipped, so gate by env instead. tmux, zellij, and
+  herdr honour REP, so trust it under `TMUX`, `ZELLIJ`, or `HERDR_ENV`. The `TMUX` env var
+  carries no version, so the gate trusts any tmux session. A pre-3.0 tmux (rare, 2019 and
+  earlier) does not honour REP, but it no-ops the sequence and under-fills the row rather than
+  corrupts it, so bare `TMUX` degrades safely and needs no version probe. GNU screen does not
+  support REP, so never send it under `STY`, emit literal repeated characters there. KMSCON (libtsm `case 'b'`, maintained with libtsm at
   github.com/kmscon) and foot both support REP, as do xterm, kitty, alacritty, wezterm,
   ghostty, konsole, vte, Windows Terminal 1.18+, iTerm2, and Terminal.app. A non-supporting
   terminal silently no-ops REP and under-fills the row (it does not corrupt it), so the gate
