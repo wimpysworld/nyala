@@ -23,11 +23,6 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
-const (
-	calibCols = 120
-	calibRows = 40
-)
-
 func main() {
 	for _, fx := range harness.OverlayFixtures {
 		if err := regenerate(fx); err != nil {
@@ -50,7 +45,7 @@ func regenerate(fx harness.OverlayFixture) error {
 	if err != nil {
 		return err
 	}
-	br := block.Renderer{Cols: calibCols, Rows: calibRows}
+	br := block.Renderer{Cols: harness.CalibCols, Rows: harness.CalibRows}
 	g := br.Compose(render.Frame{Img: composeSrc, Text: runs})
 
 	out := make([]render.GlyphRun, len(runs))
@@ -106,7 +101,7 @@ func writeRuns(path, page string, runs []render.GlyphRun) error {
 // 120x40 grid through metrics.Downscale, the exact geometry and filter
 // composeOverlay uses, so the generated colours match the grade harness.
 func downscale(img *image.RGBA) *image.RGBA {
-	return metrics.Downscale(img, calibCols*2, calibRows*4)
+	return metrics.Downscale(img, harness.CalibCols*2, harness.CalibRows*4)
 }
 
 // loadRGBA decodes a PNG into an *image.RGBA.

@@ -434,7 +434,7 @@ func TestWriteGridRowsJoinedByCRLF(t *testing.T) {
 
 // TestWriteGridEmitsText asserts writeGrid prefers a text cell's overlay
 // grapheme over its bitmap glyph in every colour mode, and a Wide trailing cell
-// emits a space.
+// emits nothing.
 func TestWriteGridEmitsText(t *testing.T) {
 	fg := color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
 	bg := color.RGBA{R: 0x10, G: 0x20, B: 0x30, A: 0xff}
@@ -453,6 +453,33 @@ func TestWriteGridEmitsText(t *testing.T) {
 		}
 		if strings.ContainsRune(out, 0x2588) {
 			t.Fatalf("mode %d: output contains the bitmap rune; overlay must win", mode)
+		}
+	}
+}
+
+// TestWriteGridWideTrailingCellEmitsNothing places a width-2 grapheme so its
+// lead cell holds the grapheme and the next cell is the Wide trailing cell. The
+// rendered bytes must contain the grapheme exactly once and the trailing cell
+// must contribute no printable character: the lead cell's wide grapheme already
+// paints both columns, so a space would add a third column and misalign the row.
+func TestWriteGridWideTrailingCellEmitsNothing(t *testing.T) {
+	fg := color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+	bg := color.RGBA{R: 0x10, G: 0x20, B: 0x30, A: 0xff}
+	g := block.Grid{Cols: 2, Rows: 1, Cells: []block.Cell{
+		{Glyph: 0x2588, FG: fg, BG: bg, Text: "世"},
+		{Glyph: 0x2588, FG: fg, BG: bg, Wide: true},
+	}}
+	for _, mode := range []ColourMode{ColourTrue, ColourXTerm256, ColourMono} {
+		var buf bytes.Buffer
+		if err := writeGrid(g, mode, &buf); err != nil {
+			t.Fatalf("writeGrid mode %d: %v", mode, err)
+		}
+		out := buf.String()
+		if got := strings.Count(out, "世"); got != 1 {
+			t.Fatalf("mode %d: grapheme count = %d, want 1", mode, got)
+		}
+		if strings.ContainsRune(out, ' ') {
+			t.Fatalf("mode %d: output %q contains a space; the Wide trailing cell must emit nothing", mode, out)
 		}
 	}
 }

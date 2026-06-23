@@ -159,6 +159,32 @@ func TestComposeBGAverageRGBAOrder(t *testing.T) {
 	}
 }
 
+// TestComposeLeftEdgeClipAdvancesByWidth asserts a run clipped at the left edge
+// advances col by each clipped cluster's display width, so a wide cluster
+// straddling the edge consumes both its columns and the visible remainder lands
+// in the right place. The run starts at Col -1 with a width-2 CJK ideograph
+// followed by ASCII; the wide cluster spans columns -1 and 0 (off-grid), so the
+// first ASCII grapheme must land at column 1, not column 0.
+func TestComposeLeftEdgeClipAdvancesByWidth(t *testing.T) {
+	img := overlaySrc(4, 1, color.RGBA{R: 20, G: 30, B: 40, A: 0xff})
+	br := &Renderer{Cols: 4, Rows: 1}
+	f := render.Frame{Img: img, Text: []render.GlyphRun{
+		{Col: -1, Row: 0, Text: "世AB", FG: color.RGBA{A: 0xff}},
+	}}
+	g := br.Compose(f)
+	// Column 0 is off the visible span of the clipped wide cluster, so it carries
+	// no overlay text.
+	if t0 := g.At(0, 0).Text; t0 != "" {
+		t.Fatalf("col 0 Text = %q, want empty (clipped wide cluster)", t0)
+	}
+	if t1 := g.At(1, 0).Text; t1 != "A" {
+		t.Fatalf("col 1 Text = %q, want A (full-width accounting for the clipped wide cluster)", t1)
+	}
+	if t2 := g.At(2, 0).Text; t2 != "B" {
+		t.Fatalf("col 2 Text = %q, want B", t2)
+	}
+}
+
 // TestComposeRunOutOfBoundsClipped asserts a run starting past the grid edge
 // places nothing and does not panic.
 func TestComposeRunOutOfBoundsClipped(t *testing.T) {
