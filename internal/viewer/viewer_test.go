@@ -1,6 +1,7 @@
 package viewer
 
 import (
+	"bufio"
 	"bytes"
 	"image"
 	"image/color"
@@ -274,6 +275,97 @@ func TestHandleKey(t *testing.T) {
 	}
 	if act := s.HandleKey(keyQuitCtrlC); !act.Quit {
 		t.Fatalf("Ctrl-C action = %+v, want quit", act)
+	}
+}
+
+// TestDecodeCSI asserts the CSI body decoder maps the arrow finals A/B/C/D and
+// the PageUp/PageDown bodies 5~/6~ to their scroll keys, and rejects an
+// unrecognised body (here the Home key, ESC [ H).
+func TestDecodeCSI(t *testing.T) {
+	cases := []struct {
+		body string
+		want ScrollKey
+		ok   bool
+	}{
+		{"A", ScrollUp, true},
+		{"B", ScrollDown, true},
+		{"C", ScrollRight, true},
+		{"D", ScrollLeft, true},
+		{"5~", ScrollPageUp, true},
+		{"6~", ScrollPageDown, true},
+		{"H", ScrollNone, false},
+		{"", ScrollNone, false},
+	}
+	for _, c := range cases {
+		t.Run(c.body, func(t *testing.T) {
+			got, ok := decodeCSI([]byte(c.body))
+			if ok != c.ok || got != c.want {
+				t.Fatalf("decodeCSI(%q) = (%d, %v), want (%d, %v)", c.body, got, ok, c.want, c.ok)
+			}
+		})
+	}
+}
+
+// TestHandleScrollKey asserts a scroll key surfaces on Action.Scroll without a
+// redraw or quit, and that ScrollNone is a no-op.
+func TestHandleScrollKey(t *testing.T) {
+	s := NewState(120, 40, 64, 64)
+	for _, k := range []ScrollKey{ScrollUp, ScrollDown, ScrollLeft, ScrollRight, ScrollPageUp, ScrollPageDown} {
+		act := s.HandleScrollKey(k)
+		if act.Scroll != k || act.Redraw || act.Quit {
+			t.Fatalf("HandleScrollKey(%d) = %+v, want Scroll=%d only", k, act, k)
+		}
+	}
+	if act := s.HandleScrollKey(ScrollNone); act != (Action{}) {
+		t.Fatalf("HandleScrollKey(ScrollNone) = %+v, want zero Action", act)
+	}
+}
+
+// TestNextEventCSI asserts the reader resolves whole CSI escape sequences into
+// scroll events: each arrow and PageUp/PageDown sequence yields one scroll
+// keyEvent, a plain byte yields a byte event, an unrecognised CSI sequence (Home,
+// ESC [ H) is dropped, and a bare ESC passes through as a byte event. It reads
+// from a bufio.Reader the way readKeys does, so it pins the multi-byte parse.
+func TestNextEventCSI(t *testing.T) {
+	cases := []struct {
+		name       string
+		in         string
+		wantScroll ScrollKey
+		wantByte   byte
+		wantEmit   bool
+	}{
+		{"up arrow", "\x1b[A", ScrollUp, 0, true},
+		{"down arrow", "\x1b[B", ScrollDown, 0, true},
+		{"right arrow", "\x1b[C", ScrollRight, 0, true},
+		{"left arrow", "\x1b[D", ScrollLeft, 0, true},
+		{"page up", "\x1b[5~", ScrollPageUp, 0, true},
+		{"page down", "\x1b[6~", ScrollPageDown, 0, true},
+		{"plain byte", "q", ScrollNone, 'q', true},
+		{"tab byte", "\t", ScrollNone, keyTab, true},
+		{"unknown csi dropped", "\x1b[H", ScrollNone, 0, false},
+		{"bare esc passthrough", "\x1bq", ScrollNone, keyEsc, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			br := bufio.NewReader(strings.NewReader(c.in))
+			first, err := br.ReadByte()
+			if err != nil {
+				t.Fatalf("read first byte: %v", err)
+			}
+			ev, emit := nextEvent(br, first)
+			if emit != c.wantEmit {
+				t.Fatalf("nextEvent emit = %v, want %v", emit, c.wantEmit)
+			}
+			if !emit {
+				return
+			}
+			if ev.scroll != c.wantScroll {
+				t.Fatalf("nextEvent scroll = %d, want %d", ev.scroll, c.wantScroll)
+			}
+			if ev.scroll == ScrollNone && ev.b != c.wantByte {
+				t.Fatalf("nextEvent byte = %q, want %q", ev.b, c.wantByte)
+			}
+		})
 	}
 }
 

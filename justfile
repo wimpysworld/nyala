@@ -83,6 +83,10 @@ coverage:
 test:
     @go test ./...
 
+# Run the live engine integration test (needs Chromium; off CI, not in `test`)
+live:
+    @go test -tags live ./internal/engine/
+
 # Tidy Go modules
 tidy:
     @go mod tidy

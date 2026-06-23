@@ -10,7 +10,7 @@
 Nyala is a browser for the terminal. The goal: render real web pages - HTML5, CSS, JavaScript - directly to a TTY. It will drive headless Chromium via the Chrome DevTools Protocol and composite a crisp Unicode text layer over a quadrant-block bitmap, so text stays sharp rather than fuzzy. On a modern terminal it renders high-fidelity output through the Kitty graphics protocol or Sixel. And it runs anywhere, down to a bare Linux console under [KMSCON](https://github.com/kmscon/kmscon), with no display server required.
 
 > [!IMPORTANT]
-> **Early development.** The three rendering backends and the measurement harness are built (Stage 0), along with capability and colour detection (Stage 1) and the crisp text overlay on the block path (Stage 2). They render static images today; the overlay demo is harness-only, so the interactive viewer shows no overlay yet. The browser pipeline is the design goal, not yet wired. See [`docs/OVERVIEW.md`](docs/OVERVIEW.md) for the architecture and progress.
+> **Early development.** The three rendering backends and the measurement harness are built (Stage 0), along with capability and colour detection (Stage 1) and the crisp text overlay on the block path (Stage 2). Stage 3 wires the browser: `nyala <url>` launches headless Chromium, streams a live screencast over the Chrome DevTools Protocol, and renders the page with the crisp text overlay. See [`docs/OVERVIEW.md`](docs/OVERVIEW.md) for the architecture and progress.
 
 ## Why Nyala?
 
@@ -20,7 +20,7 @@ A nyala is a browsing antelope. Yes, that kind of browsing. It makes a fine masc
 
 ## Rendering
 
-Three rendering backends sit behind one `Renderer` seam. Swapping backend changes only the renderer, nothing above it. They render static images today; the browser pipeline comes later.
+Three rendering backends sit behind one `Renderer` seam. Swapping backend changes only the renderer, nothing above it.
 
 | Backend | Protocol | Fidelity | Notes |
 |---|---|---|---|
@@ -55,3 +55,22 @@ docker run --rm ghcr.io/wimpysworld/nyala
 ```yaml
 - uses: wimpysworld/nyala@v0
 ```
+
+## Usage
+
+Open a page:
+
+```bash
+nyala example.com
+```
+
+A bare host gains an `https://` scheme. The `http`, `https`, and `file` schemes are accepted; others are rejected. Nyala launches headless Chromium, streams the live page, and renders it to the TTY. Press Tab to cycle the supported backends.
+
+Nyala needs a Chromium executable at runtime. It resolves the path from `--browser`, then `NYALA_BROWSER`, then `CHROME_PATH`, then a `PATH` lookup. The Nix package ships its own Chromium.
+
+| Flag | Default | Description |
+|---|---|---|
+| `<url>` | required | Page to open. |
+| `--browser` | auto | Path to the Chromium executable to drive. |
+| `--color` | `auto` | Viewer colour mode: `auto`, `truecolor`, `256`, or `none`. |
+| `--version` | | Print the version and exit. |

@@ -1,18 +1,19 @@
 # Nyala
 
-A browser for the terminal: a TTY web browser driving headless Chromium via the Chrome DevTools Protocol. Stages 0 through 2 are built: an image-based rendering proof of concept with three swappable backends and a measurement harness (Stage 0), capability and colour detection (Stage 1), and the crisp text overlay on the block path (Stage 2). The headless-Chromium browser integration is not wired yet. See `docs/OVERVIEW.md` for the target architecture and `docs/STAGE-0.md`, `docs/STAGE-1.md`, and `docs/STAGE-2.md` for each stage's contract, decisions, and measurement.
+A browser for the terminal: a TTY web browser driving headless Chromium via the Chrome DevTools Protocol. Stages 0 through 3 are built: an image-based rendering proof of concept with three swappable backends and a measurement harness (Stage 0), capability and colour detection (Stage 1), the crisp text overlay on the block path (Stage 2), and the live browser integration (Stage 3). `nyala <url>` now launches headless Chromium, streams the screencast, and renders the live page with the crisp text overlay. See `docs/OVERVIEW.md` for the target architecture and `docs/STAGE-0.md`, `docs/STAGE-1.md`, `docs/STAGE-2.md`, and `docs/STAGE-3.md` for each completed stage's contract, decisions, and measurement. The Stage 3 post-build spikes (sustained FPS, sync tolerance) are pending validation.
 
 ## Project structure
 
 - `cmd/nyala` - entrypoint; kong CLI wiring. `app.CLI` holds the flags.
 - `internal/render` - the `Frame`/`Renderer` seam, with backends in `block`, `sixel`, `kitty`, and glyph loading in `font`.
+- `internal/engine` - the `Engine` seam and `ChromiumEngine`: launches headless Chromium, streams the screencast, extracts the DOM text layer over CDP, and emits synced `render.Frame` values.
 - `internal/capture` - rasterises a frame and decodes terminal output back to pixels.
 - `internal/metrics` - image and performance measures over a frame.
 - `internal/ocr` - text legibility scoring (see the OCR gotcha below).
 - `internal/harness` - the diagnostics sweep, golden archives, and thresholds.
-- `internal/viewer` - renders a PNG to the tty.
+- `internal/viewer` - drives the terminal: the `stream.go` push consumer that draws engine frames, plus capability detection and backend cycling.
 - `docs/OVERVIEW.md` - architecture and design decisions.
-- `docs/STAGE-0.md`, `docs/STAGE-1.md`, `docs/STAGE-2.md` - durable records of the completed Stage 0, Stage 1, and Stage 2 work.
+- `docs/STAGE-0.md`, `docs/STAGE-1.md`, `docs/STAGE-2.md`, `docs/STAGE-3.md` - durable records of the completed Stage 0, Stage 1, Stage 2, and Stage 3 work.
 
 Module path is `github.com/wimpysworld/nyala`. Go 1.26.
 
@@ -25,6 +26,7 @@ Tools are pinned by the Nix flake. Enter the dev shell with `nix develop`, or le
 - `just build` - build the `nyala` binary.
 - `just test` - run the fast unit tests, the routine gate. It runs no corpus sweep, no calibration, and no rasteriser-driven full-corpus measurement, so the harness package finishes in seconds.
 - `just diagnostics` - run the heavy quality gate (`go test -tags diagnostics ./internal/harness/`) over the five committed fixtures (`linuxmatters.png` plus the four `testpage-*` pages) at a fixed 120x40 grid; the calibration runs over the four test pages only. It runs one corpus sweep and one calibration, shared across the tagged tests, writes its report JSON/CSV, summary, and artefact PNGs to `testdata/diagnostics/` (gitignored), gates against the committed baseline and thresholds, and runs the calibration, golden, and overlay-grade tracks. The overlay grade hard-gates the overlaid-grid golden and the matcher `CER == 0`, gates the WCAG low-contrast text-cell count against `baseline.json`, and reports the gosseract differentiator. It takes minutes, so run it deliberately, not on every change.
+- `just live` - run the live-browser integration test (`go test -tags live ./internal/engine/`). It launches a real Chromium, so it stays off `just test` and off CI; run it deliberately in the dev shell.
 - `just update-golden` - rerun `TestGoldenTrack` and `TestOverlayGoldenTrack` with `UPDATE_GOLDEN=1` to regenerate the committed bitmap and overlay golden archives.
 - `just overlay` - regenerate the overlay artefact PNGs into `testdata/diagnostics/` (gitignored) for eyeballing, mirroring `just update-golden`.
 - `just kmscon-testcard` - print the KMSCON quadrant test card to the TTY for the owner to eyeball inter-row bleed; manual and owner-verified, off CI.
@@ -36,7 +38,9 @@ Tools are pinned by the Nix flake. Enter the dev shell with `nix develop`, or le
 - `just release-check`, `just release-snapshot` - GoReleaser config check and local snapshot.
 - `just check` - full local gate (tidy-check, fmt-check, lint, test, build, release-check, `nix flake check`, vuln).
 
-The `nyala` binary views the positional PNG. Its flags are `--color` (auto, truecolor, 256, none; default auto) and `--version`. The viewer auto-detects terminal capability (Kitty, then Sixel, then Block) and Tab cycles the supported backends. The diagnostics sweep runs via `just diagnostics`; the golden archives regenerate via `just update-golden`.
+The `nyala` binary opens the positional `<url>`. A bare host gains an `https://` scheme; `http`, `https`, and `file` are accepted, others are rejected. Its flags are `--browser` (path to the Chromium executable to drive), `--color` (auto, truecolor, 256, none; default auto), and `--version`. The viewer auto-detects terminal capability (Kitty, then Sixel, then Block) and Tab cycles the supported backends. The diagnostics sweep runs via `just diagnostics`; the golden archives regenerate via `just update-golden`.
+
+Chromium is a runtime dependency. The Nix dev shell adds it Linux-gated, and the wrapped binary sets `CHROME_PATH` to it. The binary discovers the executable via `--browser`, then `NYALA_BROWSER`, then `CHROME_PATH`, then a `PATH` lookup.
 
 When you change code, `just build`, `just test`, and `just lint` must pass; this is the routine pre-commit gate. `just diagnostics` is the heavier quality gate, run deliberately rather than on every change. `just check` runs the full local gate before considering any change done.
 

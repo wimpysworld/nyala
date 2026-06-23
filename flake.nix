@@ -38,18 +38,25 @@
           pkgs = pkgsFor system;
           buildGoModule = pkgs.buildGoModule.override { go = pkgs.go_1_26; };
           tesseract = tesseractFor system;
+          # Chromium is the Stage 3 runtime browser, Linux-only
+          # (nixpkgs chromium is platforms = lib.platforms.linux). On Darwin
+          # the build proceeds with no Chromium and no wrap.
+          onLinux = pkgs.stdenv.hostPlatform.isLinux;
         in
         buildGoModule {
           pname = "nyala";
           version = "0.0.0";
           src = nixpkgs.lib.cleanSource ./.;
           subPackages = [ "cmd/nyala" ];
-          vendorHash = "sha256-OMak9QNVkpoXNaKV6UAb/MBSaP8aayx2xNoxatcPl8M=";
+          vendorHash = "sha256-O4FQx+r4N4GJZoncNvS0hLmULf6C6LmGYOutfTD8FoA=";
           # The shipped binary is static and cgo-free: the gosseract cgo lives
           # behind the "ocr" tag, off here, and subPackages excludes it. The
           # tesseract inputs only serve the OCR-tagged test build.
           env.CGO_ENABLED = "0";
-          nativeBuildInputs = [ pkgs.pkg-config ];
+          nativeBuildInputs = [
+            pkgs.pkg-config
+          ]
+          ++ pkgs.lib.optionals onLinux [ pkgs.makeWrapper ];
           buildInputs = [
             tesseract
             pkgs.leptonica
@@ -58,6 +65,14 @@
             "-s"
             "-w"
           ];
+
+          # Point the binary at the pinned Chromium so the engine resolves a
+          # browser without a system install. --set-default lets CHROME_PATH in
+          # the environment still override it. Linux only.
+          postFixup = pkgs.lib.optionalString onLinux ''
+            wrapProgram $out/bin/nyala \
+              --set-default CHROME_PATH "${pkgs.chromium}/bin/chromium"
+          '';
 
           meta = {
             description = "A browser for the terminal.";
@@ -76,22 +91,26 @@
         in
         {
           default = pkgs.mkShell {
-            packages = with pkgs; [
-              actionlint
-              cosign
-              gh
-              go_1_26
-              gocyclo
-              golangci-lint
-              goreleaser
-              govulncheck
-              ineffassign
-              just
-              leptonica
-              pkg-config
-              poppler-utils
-              tesseract
-            ];
+            packages =
+              (with pkgs; [
+                actionlint
+                cosign
+                gh
+                go_1_26
+                gocyclo
+                golangci-lint
+                goreleaser
+                govulncheck
+                ineffassign
+                just
+                leptonica
+                pkg-config
+                poppler-utils
+                tesseract
+              ])
+              # Stage 3 runtime browser; Linux-only (nixpkgs chromium is
+              # platforms = lib.platforms.linux).
+              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.chromium ];
 
             # gosseract links libtesseract directly, so the OCR tests need
             # TESSDATA_PREFIX to find the eng and osd traineddata. The tagged
