@@ -1,0 +1,9 @@
+# Overlay run set for the linuxmatters page.
+# Format: col row fgHex text. text runs to end of line.
+# Foreground is chosen per run to contrast with its local background.
+4 2 FFFFFF Text Size 8px
+4 6 FFFFFF Text Size 12px
+4 10 FFFFFF Text Size 16px
+60 4 FFFFFF Text Size 20px
+60 8 FFFFFF Text Size 24px
+60 12 000000 Text Size 28px

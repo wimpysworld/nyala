@@ -76,6 +76,33 @@ func TestCoverageOverBlockGlyphs(t *testing.T) {
 	}
 }
 
+// TestQuadrantSupport asserts the KMSCON fallback selection. The loaded atlas
+// (FiraCode primary covers U+2596..U+259F) reaches the primary tier. An atlas
+// whose primary lacks the quadrant range but whose fallback covers it reaches
+// the Unifont tier. An atlas where neither font covers the range falls to the
+// half-block floor. Each branch is driven through GlyphIndex coverage.
+func TestQuadrantSupport(t *testing.T) {
+	a, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := a.QuadrantSupport(); got != QuadrantPrimary {
+		t.Fatalf("loaded atlas tier = %d, want QuadrantPrimary", got)
+	}
+
+	// Primary missing, Unifont fallback covers the quadrant range.
+	unifontOnly := &Atlas{Primary: nil, Fallback: a.Fallback}
+	if got := unifontOnly.QuadrantSupport(); got != QuadrantUnifont {
+		t.Fatalf("fallback-only atlas tier = %d, want QuadrantUnifont", got)
+	}
+
+	// Neither font covers the quadrant range: the half-block floor applies.
+	none := &Atlas{Primary: nil, Fallback: nil}
+	if got := none.QuadrantSupport(); got != QuadrantHalfBlock {
+		t.Fatalf("uncovered atlas tier = %d, want QuadrantHalfBlock", got)
+	}
+}
+
 func TestCoverageReportsTofu(t *testing.T) {
 	a, err := Load()
 	if err != nil {

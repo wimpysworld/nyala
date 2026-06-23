@@ -20,7 +20,7 @@ In scope, all delivered:
 - A pure `detectColour` over env plus terminfo via `colorprofile.Detect`, with a `kmscon` and truecolour-token override.
 - A third `ColourMono` colour mode: a 1-bit block silhouette on the terminal default.
 - A `--color=auto|truecolor|256|none` flag, with precedence flag > `NO_COLOR` > detection.
-- Focus-multiplexer detection (tmux, zellij, herdr) that gates graphics to block-only and skips the handshake; screen stays a block-only fallback.
+- Focus-multiplexer detection (tmux, zellij, herdr, and GNU screen via `STY`) that gates graphics to block-only and skips the handshake. All four share one path; screen differs only in that it lacks REP and never exports `COLORTERM` or a truecolour terminfo cap, so colour stays conservative there.
 - Geometry hardening: the existing resolution chain, an 8x16 default, and a winsize sanity bound.
 - Backend nomination: the enabled cycle is ordered ceiling-first, so the default active backend is the best the terminal supports.
 
@@ -90,7 +90,7 @@ The `c` hotkey cycles all three modes at runtime: truecolour, then xterm-256, th
 | tmux | `TMUX` set | Sixel needs an `--enable-sixel` build plus a Sixel host plus DA1; Kitty needs DCS passthrough, Unicode placeholders, and `allow-passthrough on` (off by default); native tmux Kitty is unreleased |
 | zellij | `ZELLIJ` present (value `0`; test presence) | zellij advertises Sixel in DA1 unconditionally and swallows Kitty, so a DA1/`a=q` probe is untrustworthy |
 | herdr | `HERDR_ENV=1` with `HERDR_PANE_ID` present | no Sixel; only experimental, off-by-default Kitty that fails for in-pane TUIs |
-| screen | `STY` set | block-only fallback |
+| screen | `STY` set | no DCS passthrough; GNU screen swallows Kitty APC as hardstatus and truncates Sixel DCS at its `MAXSTR` cap. Colour also stays at xterm-256: 5.0.1 exports no `COLORTERM` and no truecolour terminfo |
 
 ⚠️ CAVEAT: a bare `ZELLIJ=0` is a presence signal, not a truth value, so zellij is detected by key presence. herdr needs both `HERDR_ENV=1` and `HERDR_PANE_ID`, so a stray var does not gate graphics off.
 
@@ -128,7 +128,7 @@ Stage 1 landed across three commits.
 - Three colour modes: truecolour, xterm-256, monochrome. Monochrome is a third value of the block colour mode, not a new backend. The toggle lives in the viewer's `writeGrid`/`fgSGR`/`bgSGR`; `block.Renderer.Render` stays truecolour-only.
 - Precedence is flag > `NO_COLOR` (any value, including empty and `0`) > detection. The viewer owns the `NO_COLOR` rule and checks presence directly, beating `colorprofile`'s `strconv.ParseBool` floor.
 - The `--color=truecolor` value is deliberately American to match the `COLORTERM` token; Go identifiers stay British.
-- Focus multiplexers are tmux (`TMUX`), zellij (`ZELLIJ` present), and herdr (`HERDR_ENV=1` with `HERDR_PANE_ID`); screen (`STY`) is a block-only fallback. A detected multiplexer gates graphics to block-only and skips the handshake. Colour stays multiplexer-agnostic.
+- Focus multiplexers are tmux (`TMUX`), zellij (`ZELLIJ` present), herdr (`HERDR_ENV=1` with `HERDR_PANE_ID`), and GNU screen (`STY`). All four take one path: graphics gate to block-only and the handshake is skipped. Colour stays multiplexer-agnostic. screen is not elevated to truecolour-first-class: its truecolour is opt-in (`.screenrc` `truecolor on`), added only in 5.0, and undetectable from `STY` (no version signal). GNU screen 5.0.1 never sets `COLORTERM` (verified: no `COLORTERM` in the source, `screen.c:MakeNewEnv` does not add it), and its terminfo exports `colors#8` or `colors#256` with no `Tc`/`RGB` cap. So a child gets no truecolour signal and `colorprofile.Detect` returns at most ANSI256. screen defaults to xterm-256 unless the user manually exports `COLORTERM` (`setenv COLORTERM truecolor` in `.screenrc`), the one supported override. screen also lacks REP, so REP is never sent under `STY`.
 - Geometry keeps the existing chain, defaults to 8x16 (1:2) when all reports fail, and rejects winsize-derived cell px outside ~4..32 wide or 8..64 tall via a sanity bound, extracted into the pure `deriveCellPixels`/`cellPxInBounds` helpers.
 - Backend nomination orders the `Enabled` slice ceiling-first (Kitty, Sixel, Block), so the default active backend is the best the terminal supports and `Tab` cycles down. Block is always the floor, last.
 

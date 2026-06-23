@@ -432,6 +432,31 @@ func TestWriteGridRowsJoinedByCRLF(t *testing.T) {
 	}
 }
 
+// TestWriteGridEmitsText asserts writeGrid prefers a text cell's overlay
+// grapheme over its bitmap glyph in every colour mode, and a Wide trailing cell
+// emits a space.
+func TestWriteGridEmitsText(t *testing.T) {
+	fg := color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+	bg := color.RGBA{R: 0x10, G: 0x20, B: 0x30, A: 0xff}
+	g := block.Grid{Cols: 2, Rows: 1, Cells: []block.Cell{
+		{Glyph: 0x2588, FG: fg, BG: bg, Text: "Q"},
+		{Glyph: 0x2588, FG: fg, BG: bg, Wide: true},
+	}}
+	for _, mode := range []ColourMode{ColourTrue, ColourXTerm256, ColourMono} {
+		var buf bytes.Buffer
+		if err := writeGrid(g, mode, &buf); err != nil {
+			t.Fatalf("writeGrid mode %d: %v", mode, err)
+		}
+		out := buf.String()
+		if got := strings.Count(out, "Q"); got != 1 {
+			t.Fatalf("mode %d: grapheme count = %d, want 1", mode, got)
+		}
+		if strings.ContainsRune(out, 0x2588) {
+			t.Fatalf("mode %d: output contains the bitmap rune; overlay must win", mode)
+		}
+	}
+}
+
 // muxKeys is every focus-multiplexer env var multiplexed reads. clearMuxEnv
 // unsets all of them for the current test, registering cleanup, so a host-set
 // TMUX or ZELLIJ does not leak into a false-branch case.
@@ -573,7 +598,7 @@ func TestWriteGridMonoNoSGR(t *testing.T) {
 // file tty has no winsize and no handshake reply, so the chain rests on them.
 func TestCellPxDefaultWhenGeometryAbsent(t *testing.T) {
 	if capture.CellPxW != 8 || capture.CellPxH != 16 {
-		t.Fatalf("capture default = %dx%d, want 8x16 (docs/STAGE-0.md:84)", capture.CellPxW, capture.CellPxH)
+		t.Fatalf("capture default = %dx%d, want 8x16 (pinned Route A raster in docs/STAGE-0.md)", capture.CellPxW, capture.CellPxH)
 	}
 	st := NewState(80, 24, 64, 64)
 	if st.W != 8 || st.H != 16 {

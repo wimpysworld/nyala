@@ -200,6 +200,11 @@ type BaselineMetrics struct {
 	DeltaE2000Mean *float64 `json:"deltaE2000Mean"`
 	HistDivergence *float64 `json:"histDivergence"`
 	BytesPerFrame  *int     `json:"bytesPerFrame"`
+	// LowContrastTextCells is the count of overlay text cells whose contrast
+	// falls below the WCAG AA bound. It is nil for every non-overlay row, so the
+	// nil-skip gate leaves those rows alone; only overlay rows carry a non-nil
+	// count. It sits beside the other nilable per-entry pointers.
+	LowContrastTextCells *int `json:"lowContrastTextCells,omitempty"`
 }
 
 // BaselineEntry is one baseline record keyed by page and mode.

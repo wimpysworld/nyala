@@ -321,7 +321,19 @@ func writeGrid(g block.Grid, mode ColourMode, w io.Writer) error {
 			c := g.At(col, row)
 			sb.WriteString(fgSGR(c.FG, mode))
 			sb.WriteString(bgSGR(c.BG, mode))
-			sb.WriteRune(c.Glyph)
+			// Stage 2 feeds the viewer no overlay (the overlay demo is
+			// harness-only), so a Wide or Text cell never reaches here yet; the
+			// branches ready Stage 3. A Wide trailing cell draws its background
+			// and a space; a Text cell draws its overlay grapheme over the
+			// bitmap glyph; otherwise the bitmap glyph wins.
+			switch {
+			case c.Wide:
+				sb.WriteRune(' ')
+			case c.Text != "":
+				sb.WriteString(c.Text)
+			default:
+				sb.WriteRune(c.Glyph)
+			}
 		}
 		sb.WriteString(sgrReset)
 	}

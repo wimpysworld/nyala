@@ -48,11 +48,16 @@ const (
 
 // Cell is one terminal cell on the owned grid. Glyph is the block rune to draw,
 // FG is its foreground colour, and BG is its background colour. The quadrant
-// binarisation fills these from a 2x2 sub-cell of source colours.
+// binarisation fills these from a 2x2 sub-cell of source colours. Text and Wide
+// carry the optional crisp-text overlay: when Text is set the consumers prefer
+// it over Glyph; the zero value (Text == "", Wide == false) is a plain bitmap
+// cell.
 type Cell struct {
 	Glyph rune       // block glyph for this cell
 	FG    color.RGBA // foreground colour
 	BG    color.RGBA // background colour
+	Text  string     // overlay grapheme; "" means a bitmap cell
+	Wide  bool       // trailing cell of a wide (width-2) overlay glyph
 }
 
 // Grid is an owned cols x rows array of cells, stored row-major. It is the
@@ -107,7 +112,14 @@ func (*Renderer) Name() string { return "block" }
 // column 0 when auto-wrap is off in a raw terminal. Output is deterministic: the
 // same Frame yields byte-identical output across runs.
 func (br *Renderer) Render(f render.Frame, w io.Writer) error {
-	grid := br.Compose(f)
+	return br.renderGrid(br.Compose(f), w)
+}
+
+// renderGrid writes an already-composed grid to w as truecolour SGR cells, one
+// glyph per cell, preferring a cell's overlay Text over its bitmap Glyph. It is
+// the shared body of Render, split out so a hand-built grid renders without a
+// compose pass.
+func (br *Renderer) renderGrid(grid Grid, w io.Writer) error {
 	bw := bufio.NewWriter(w)
 	for row := 0; row < grid.Rows; row++ {
 		for col := 0; col < grid.Cols; col++ {
@@ -118,7 +130,7 @@ func (br *Renderer) Render(f render.Frame, w io.Writer) error {
 			if _, err := bw.WriteString(TrueColorBG(c.BG)); err != nil {
 				return err
 			}
-			if _, err := bw.WriteRune(c.Glyph); err != nil {
+			if err := writeCellText(bw, c); err != nil {
 				return err
 			}
 		}
@@ -129,13 +141,35 @@ func (br *Renderer) Render(f render.Frame, w io.Writer) error {
 	return bw.Flush()
 }
 
-// Compose composites the frame image onto a fresh Cols x Rows grid, dispatching
-// on the renderer's Scheme. The result is deterministic for a given Frame.
-func (br *Renderer) Compose(f render.Frame) Grid {
-	if br.Scheme == SchemeHalfBlock {
-		return br.composeHalfBlock(f)
+// writeCellText writes a cell's drawable text to bw: the overlay grapheme when
+// Text is set, otherwise the bitmap glyph rune. A Wide trailing cell holds an
+// empty Text, so it writes a single space over its background, occupying its one
+// column without re-emitting the wide grapheme.
+func writeCellText(bw *bufio.Writer, c *Cell) error {
+	if c.Wide {
+		_, err := bw.WriteRune(' ')
+		return err
 	}
-	return br.composeQuadrant(f)
+	if c.Text != "" {
+		_, err := bw.WriteString(c.Text)
+		return err
+	}
+	_, err := bw.WriteRune(c.Glyph)
+	return err
+}
+
+// Compose composites the frame image onto a fresh Cols x Rows grid, dispatching
+// on the renderer's Scheme, then folds any text overlay onto the grid. The
+// result is deterministic for a given Frame.
+func (br *Renderer) Compose(f render.Frame) Grid {
+	var g Grid
+	if br.Scheme == SchemeHalfBlock {
+		g = br.composeHalfBlock(f)
+	} else {
+		g = br.composeQuadrant(f)
+	}
+	applyOverlay(&g, f, br.Scheme)
+	return g
 }
 
 // composeQuadrant binarises the frame image onto a fresh Cols x Rows quadrant

@@ -1,6 +1,6 @@
 # Nyala
 
-A browser for the terminal: a TTY web browser driving headless Chromium via the Chrome DevTools Protocol. Stage 0 is built: an image-based rendering proof of concept with three swappable backends and a measurement harness. The headless-Chromium browser integration is not wired yet. See `docs/OVERVIEW.md` for the target architecture and `docs/STAGE-0.md` for the Stage 0 contract, decisions, and measurement.
+A browser for the terminal: a TTY web browser driving headless Chromium via the Chrome DevTools Protocol. Stages 0 through 2 are built: an image-based rendering proof of concept with three swappable backends and a measurement harness (Stage 0), capability and colour detection (Stage 1), and the crisp text overlay on the block path (Stage 2). The headless-Chromium browser integration is not wired yet. See `docs/OVERVIEW.md` for the target architecture and `docs/STAGE-0.md`, `docs/STAGE-1.md`, and `docs/STAGE-2.md` for each stage's contract, decisions, and measurement.
 
 ## Project structure
 
@@ -12,7 +12,7 @@ A browser for the terminal: a TTY web browser driving headless Chromium via the 
 - `internal/harness` - the diagnostics sweep, golden archives, and thresholds.
 - `internal/viewer` - renders a PNG to the tty.
 - `docs/OVERVIEW.md` - architecture and design decisions.
-- `docs/STAGE-0.md`, `docs/STAGE-1.md` - durable records of the completed Stage 0 and Stage 1 work.
+- `docs/STAGE-0.md`, `docs/STAGE-1.md`, `docs/STAGE-2.md` - durable records of the completed Stage 0, Stage 1, and Stage 2 work.
 
 Module path is `github.com/wimpysworld/nyala`. Go 1.26.
 
@@ -24,8 +24,10 @@ Tools are pinned by the Nix flake. Enter the dev shell with `nix develop`, or le
 
 - `just build` - build the `nyala` binary.
 - `just test` - run the fast unit tests, the routine gate. It runs no corpus sweep, no calibration, and no rasteriser-driven full-corpus measurement, so the harness package finishes in seconds.
-- `just diagnostics` - run the heavy quality gate (`go test -tags diagnostics ./internal/harness/`) over the five committed fixtures (`linuxmatters.png` plus the four `testpage-*` pages) at a fixed 120x40 grid; the calibration runs over the four test pages only. It runs one corpus sweep and one calibration, shared across the tagged tests, writes its report JSON/CSV, summary, and artefact PNGs to `testdata/diagnostics/` (gitignored), gates against the committed baseline and thresholds, and runs the calibration and golden tracks. It takes minutes, so run it deliberately, not on every change.
-- `just update-golden` - rerun `TestGoldenTrack` with `UPDATE_GOLDEN=1` to regenerate the committed golden archives.
+- `just diagnostics` - run the heavy quality gate (`go test -tags diagnostics ./internal/harness/`) over the five committed fixtures (`linuxmatters.png` plus the four `testpage-*` pages) at a fixed 120x40 grid; the calibration runs over the four test pages only. It runs one corpus sweep and one calibration, shared across the tagged tests, writes its report JSON/CSV, summary, and artefact PNGs to `testdata/diagnostics/` (gitignored), gates against the committed baseline and thresholds, and runs the calibration, golden, and overlay-grade tracks. The overlay grade hard-gates the overlaid-grid golden and the matcher `CER == 0`, gates the WCAG low-contrast text-cell count against `baseline.json`, and reports the gosseract differentiator. It takes minutes, so run it deliberately, not on every change.
+- `just update-golden` - rerun `TestGoldenTrack` and `TestOverlayGoldenTrack` with `UPDATE_GOLDEN=1` to regenerate the committed bitmap and overlay golden archives.
+- `just overlay` - regenerate the overlay artefact PNGs into `testdata/diagnostics/` (gitignored) for eyeballing, mirroring `just update-golden`.
+- `just kmscon-testcard` - print the KMSCON quadrant test card to the TTY for the owner to eyeball inter-row bleed; manual and owner-verified, off CI.
 - `just lint` - go vet, gocyclo, ineffassign, golangci-lint, actionlint.
 - `just fmt` - format with gofmt; `just fmt-check` verifies.
 - `just tidy` - `go mod tidy`; `just tidy-check` verifies go.mod/go.sum are clean.
@@ -47,6 +49,7 @@ Format with gofumpt (`just fmt` uses gofmt; both pass `fmt-check`). Lint config 
 - RGBA byte order everywhere in the render and metrics pipeline. The decoders and image maths assume RGBA, never BGRA. Do not swap channels.
 - OCR uses cgo `gosseract`, guarded behind the `//go:build ocr` tag, so the default build and the shipped binary stay cgo-free. The OCR tests need libtesseract and leptonica from the Nix dev shell: run `nix develop`, then `go test -tags ocr ./internal/ocr/...`.
 - The heavy quality tests (corpus sweep, calibration, golden track) carry the `//go:build diagnostics` tag, so they leave the default `go test ./...` run. Run them via `just diagnostics`; regenerate the golden archives via `just update-golden`. The shared sweep and calibration run once each per tagged run, so adding a tagged test that reuses them adds no extra rasteriser pass.
+- The crisp text overlay lives in the block `Grid`: `block.Cell` carries `Text` and `Wide`, and `block.Compose` folds `Frame.Text` on. All three consumers (`block.Renderer.Render`, the viewer `writeGrid`, and the Route A `capture.Rasteriser`) prefer `Cell.Text` over `Cell.Glyph` and write a space for a `Wide` trailing cell, so the overlay travels through one grid. The overlay goldens (`testdata/golden/overlay/*.txtar`) regenerate on amd64 only, like the bitmap goldens, since the whole-cell bg-average rounds differently on arm64; `TestOverlayGoldenTrack` skips off amd64.
 - The image maths is 64-bit floating point and rounds differently across architectures (arm64 contracts to FMA, x86-64 does not). Two consequences for tests, which CI runs on `linux/amd64` and `linux/arm64`. First, never assert exact equality on metric output: identical inputs leave a sub-1e-12 residue on arm64, so compare against an epsilon (see `internal/metrics/colour_test.go`). Second, the committed golden archives are an amd64 byte snapshot; the downscale and block compose diverge by a few bytes on arm64, so `TestGoldenTrack` skips when `runtime.GOARCH != "amd64"`. Regenerate the goldens on amd64 only.
 
 ## Commit conventions
