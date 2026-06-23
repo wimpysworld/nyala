@@ -1,11 +1,11 @@
 // Command genruns deterministically generates the Stage 2 overlay run-set
 // fixtures (testdata/overlay/*.runs) with contrasting foreground colours. For
 // each run it composes the page through the real overlay path, reads each
-// touched cell's bitmap background average, and picks a black or white
-// foreground by the run region's mean background luma, so every glyph contrasts
-// with its local background. The same inputs always yield the same colours, so
-// the fixtures stay reproducible. It is a generator, not part of the shipped
-// binary; run it from the repo root with `go run ./tools/genruns`.
+// touched cell's bitmap background average, and picks the black or white
+// foreground with the higher WCAG contrast against that average, so every glyph
+// contrasts with its local background. The same inputs always yield the same
+// colours, so the fixtures stay reproducible. It is a generator, not part of the
+// shipped binary; run it from the repo root with `go run ./tools/genruns`.
 package main
 
 import (
@@ -59,14 +59,15 @@ func regenerate(fx harness.OverlayFixture) error {
 	return writeRuns(runsPath, fx.Page, out)
 }
 
-// contrastFG picks black or white for a run by the mean background luma of the
-// cells the run's graphemes land on, read from the composed grid. It steps by
-// grapheme cluster and display width, matching applyOverlay, so wide or clustered
-// text samples the lead cell of each cluster and advances by its width. A light
-// region gets black text, a dark region white, so the glyph contrasts with its
-// local background.
+// contrastFG picks black or white for a run by WCAG contrast against the mean
+// background of the cells the run's graphemes land on, read from the composed
+// grid. It steps by grapheme cluster and display width, matching applyOverlay, so
+// wide or clustered text samples the lead cell of each cluster and advances by
+// its width. It accumulates the average background RGB over those cells, then
+// returns whichever of black or white has the higher WCAGContrast against that
+// average. An exact tie returns black, so the choice stays deterministic.
 func contrastFG(g block.Grid, run render.GlyphRun) color.RGBA {
-	var sum, n float64
+	var sumR, sumG, sumB, n float64
 	col := run.Col
 	row := run.Row
 	gr := uniseg.NewGraphemes(run.Text)
@@ -82,18 +83,36 @@ func contrastFG(g block.Grid, run render.GlyphRun) color.RGBA {
 			continue
 		}
 		c := g.At(col, row)
-		sum += 0.299*float64(c.BG.R) + 0.587*float64(c.BG.G) + 0.114*float64(c.BG.B)
+		sumR += float64(c.BG.R)
+		sumG += float64(c.BG.G)
+		sumB += float64(c.BG.B)
 		n++
 		col += w
 	}
-	mean := 0.0
-	if n > 0 {
-		mean = sum / n
+	black := color.RGBA{A: 0xFF}
+	white := color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
+	if n == 0 {
+		return black
 	}
-	if mean > 128 {
-		return color.RGBA{A: 0xFF}
+	bgR := meanByte(sumR, n)
+	bgG := meanByte(sumG, n)
+	bgB := meanByte(sumB, n)
+	blackContrast := metrics.WCAGContrast(black.R, black.G, black.B, bgR, bgG, bgB)
+	whiteContrast := metrics.WCAGContrast(white.R, white.G, white.B, bgR, bgG, bgB)
+	if whiteContrast > blackContrast {
+		return white
 	}
-	return color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
+	return black
+}
+
+// meanByte returns sum/count rounded to an 8-bit value, the average background
+// channel the WCAG contrast choice reads.
+func meanByte(sum, count float64) uint8 {
+	v := sum/count + 0.5
+	if v > 255 {
+		return 255
+	}
+	return uint8(v)
 }
 
 // writeRuns writes the run set back to path, one "col row fgHex text" line per

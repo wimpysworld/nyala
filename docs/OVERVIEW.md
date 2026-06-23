@@ -7,13 +7,13 @@ successor to browsh, built in Go, driving headless Chromium via the Chrome
 DevTools Protocol (CDP). Targets a fully terminal-native experience, including on
 a bare Linux console via KMSCON.
 
-Stage 0 and Stage 1 are built. Three swappable rendering backends sit behind one
+Stage 0, Stage 1, and Stage 2 are built. Three swappable rendering backends sit behind one
 `Renderer` seam (quadrant or half-block, Sixel, Kitty), with a measurement harness
 and automatic capability plus colour detection that nominate the best backend and
-colour depth per terminal. See [`STAGE-0.md`](./STAGE-0.md),
-[`STAGE-1.md`](./STAGE-1.md), and [`STAGE-2.md`](./STAGE-2.md). The browser pipeline and the crisp text overlay are
-the remaining design goal; the rest of this document is the target architecture and
-the research behind the unbuilt stages.
+colour depth per terminal. Stage 2 adds the crisp text overlay on the block path. See
+[`STAGE-0.md`](./STAGE-0.md), [`STAGE-1.md`](./STAGE-1.md), and
+[`STAGE-2.md`](./STAGE-2.md). The browser pipeline is the remaining design goal; the rest
+of this document is the target architecture and the research behind the unbuilt stages.
 
 ## Goals
 
@@ -939,8 +939,8 @@ tests.
   gate on the Stage 1 handshake's `rep` capability probe (terminfo `rep` via XTGETTCAP). On
   a detected multiplexer the handshake is skipped, so gate by env instead. tmux, zellij, and
   herdr honour REP, so trust it under `TMUX`, `ZELLIJ`, or `HERDR_ENV`. The `TMUX` env var
-  carries no version, so the gate trusts any tmux session. A pre-3.0 tmux (rare, 2019 and
-  earlier) does not honour REP, but it no-ops the sequence and under-fills the row rather than
+  carries no version, so the gate trusts any tmux session. A very old tmux predating REP
+  support does not honour the sequence, but it no-ops and under-fills the row rather than
   corrupts it, so bare `TMUX` degrades safely and needs no version probe. GNU screen does not
   support REP, so never send it under `STY`, emit literal repeated characters there. KMSCON (libtsm `case 'b'`, maintained with libtsm at
   github.com/kmscon) and foot both support REP, as do xterm, kitty, alacritty, wezterm,
