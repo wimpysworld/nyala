@@ -1,0 +1,7 @@
+# Overlay run set for the testpage-01-grayscale page.
+# Format: col row fgHex text. text runs to end of line.
+# Foreground is chosen per run to contrast with its local background.
+4 2 000000 Text Size 8px
+4 6 000000 Text Size 12px
+4 10 000000 Text Size 16px
+4 14 000000 Text Size 20px

@@ -93,27 +93,61 @@ func (r *Rasteriser) Rasterise(g block.Grid) *image.RGBA {
 	return img
 }
 
-// drawCell fills cell (col, row) with its background, then draws its glyph in the
-// foreground colour. The glyph baseline sits at baselineY within the cell; the
-// glyph is clipped to the cell rectangle so it never bleeds into a neighbour.
+// drawCell fills cell (col, row) with its background, then draws its text in the
+// foreground colour. The text is the overlay grapheme when c.Text is set, else
+// the bitmap glyph rune. A Wide trailing cell draws background only and returns,
+// because the lead cell already drew the wide glyph clipped to its own cell. The
+// baseline sits at baselineY within the cell; the text is clipped to the cell
+// rectangle so it never bleeds into a neighbour.
 func (r *Rasteriser) drawCell(img *image.RGBA, col, row int, c block.Cell) {
 	rect := image.Rect(col*CellPxW, row*CellPxH, (col+1)*CellPxW, (row+1)*CellPxH)
 	draw.Draw(img, rect, &image.Uniform{C: c.BG}, image.Point{}, draw.Src)
+	if c.Wide {
+		return
+	}
+	s := c.Text
+	if s == "" {
+		s = string(c.Glyph)
+	}
+	r.drawText(img, rect, s, c.FG)
+}
 
-	face := r.faceFor(c.Glyph)
+// drawText draws s in the foreground colour fg over the already-filled rect, on
+// the baseline at baselineY, clipped to rect so it never bleeds into a
+// neighbouring cell. It resolves the face from the first rune of s through the
+// same path drawCell and RenderGlyphCell share, so the rasterised cells and the
+// matcher templates draw through one face. An empty s or a rune neither font
+// covers leaves the rect as its background.
+func (r *Rasteriser) drawText(img *image.RGBA, rect image.Rectangle, s string, fg color.RGBA) {
+	if s == "" {
+		return
+	}
+	face := r.faceFor([]rune(s)[0])
 	if face == nil {
 		return
 	}
 	d := xfont.Drawer{
 		Dst:  clip{img: img, rect: rect},
-		Src:  &image.Uniform{C: c.FG},
+		Src:  &image.Uniform{C: fg},
 		Face: face,
 		Dot: fixed.Point26_6{
-			X: fixed.I(col * CellPxW),
-			Y: fixed.I(row*CellPxH + baselineY),
+			X: fixed.I(rect.Min.X),
+			Y: fixed.I(rect.Min.Y + baselineY),
 		},
 	}
-	d.DrawString(string(c.Glyph))
+	d.DrawString(s)
+}
+
+// RenderGlyphCell draws one grapheme to a fresh CellPxW x CellPxH tile through
+// the same face path drawCell uses, filling the background with bg and the text
+// with fg. The matcher uses it to build per-grapheme templates that match the
+// graded PNG exactly. The returned image is a single cell tile in RGBA order.
+func (r *Rasteriser) RenderGlyphCell(text string, fg, bg color.RGBA) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, CellPxW, CellPxH))
+	rect := img.Bounds()
+	draw.Draw(img, rect, &image.Uniform{C: bg}, image.Point{}, draw.Src)
+	r.drawText(img, rect, text, fg)
+	return img
 }
 
 // faceFor returns the face that covers glyph, preferring the primary. It returns

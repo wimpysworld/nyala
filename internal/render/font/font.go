@@ -68,6 +68,65 @@ func (a *Atlas) Covers(r rune) bool {
 	return ok
 }
 
+// QuadrantSupport reports which glyph tier the atlas reaches for the quadrant
+// block set, deciding the KMSCON fallback with no runtime terminal probe. The
+// fallback exists because KMSCON font coverage is environment-dependent: a given
+// console may lack the quadrant glyphs, so the renderer picks the richest tier
+// the embedded fonts can actually draw rather than assuming the terminal has them.
+type QuadrantSupport int
+
+const (
+	// QuadrantPrimary means the primary font covers the quadrant block set
+	// U+2596..U+259F, so the quadrant scheme renders from the primary face.
+	QuadrantPrimary QuadrantSupport = iota
+	// QuadrantUnifont means the primary lacks the quadrant set but the GNU
+	// Unifont fallback covers it, so the quadrant scheme renders from the
+	// fallback face.
+	QuadrantUnifont
+	// QuadrantHalfBlock means neither font covers the full quadrant set, so the
+	// renderer falls to the half-block floor U+2584.
+	QuadrantHalfBlock
+)
+
+// quadrantRange is the contiguous quadrant block set U+2596..U+259F the quadrant
+// scheme emits. The fallback tier is decided by whether a font covers every code
+// point in this range.
+const (
+	quadrantLow  = 0x2596
+	quadrantHigh = 0x259F
+)
+
+// QuadrantSupport reports the highest tier the atlas reaches for the quadrant
+// block set U+2596..U+259F. It returns QuadrantPrimary when the primary font
+// covers the whole set, QuadrantUnifont when only the GNU Unifont fallback does,
+// and QuadrantHalfBlock when neither covers it so the half-block floor U+2584
+// applies. Coverage is checked through GlyphIndex on each font in turn.
+func (a *Atlas) QuadrantSupport() QuadrantSupport {
+	if a.fontCoversQuadrants(a.Primary) {
+		return QuadrantPrimary
+	}
+	if a.fontCoversQuadrants(a.Fallback) {
+		return QuadrantUnifont
+	}
+	return QuadrantHalfBlock
+}
+
+// fontCoversQuadrants reports whether font f has a glyph for every code point in
+// the quadrant block set U+2596..U+259F. A nil font or any missing code point
+// returns false.
+func (a *Atlas) fontCoversQuadrants(f *sfnt.Font) bool {
+	if f == nil {
+		return false
+	}
+	for r := rune(quadrantLow); r <= quadrantHigh; r++ {
+		gi, err := f.GlyphIndex(&a.buf, r)
+		if err != nil || gi == 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // CoverageGap is one rune the atlas cannot render. It would show as tofu.
 type CoverageGap struct {
 	// Rune is the uncovered code point.

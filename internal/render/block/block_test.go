@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"image"
 	"image/color"
+	"strings"
 	"testing"
 
 	"github.com/wimpysworld/nyala/internal/render"
@@ -288,6 +289,29 @@ func TestRenderDeterministic(t *testing.T) {
 	}
 	if a.Len() == 0 {
 		t.Fatal("empty render output")
+	}
+}
+
+// TestRenderEmitsText asserts Render writes the overlay grapheme, not the bitmap
+// rune, for a text cell, and a space for a Wide trailing cell.
+func TestRenderEmitsText(t *testing.T) {
+	fg := color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+	bg := color.RGBA{R: 0x10, G: 0x20, B: 0x30, A: 0xff}
+	g := Grid{Cols: 2, Rows: 1, Cells: []Cell{
+		{Glyph: 0x2588, FG: fg, BG: bg, Text: "Q"},
+		{Glyph: 0x2588, FG: fg, BG: bg, Wide: true},
+	}}
+	var buf bytes.Buffer
+	br := &Renderer{Cols: 2, Rows: 1}
+	if err := br.renderGrid(g, &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Q") {
+		t.Fatalf("output %q does not contain the overlay grapheme Q", out)
+	}
+	if strings.ContainsRune(out, 0x2588) {
+		t.Fatalf("output %q contains the bitmap rune; overlay must win", out)
 	}
 }
 

@@ -10,8 +10,8 @@ a bare Linux console via KMSCON.
 Stage 0 and Stage 1 are built. Three swappable rendering backends sit behind one
 `Renderer` seam (quadrant or half-block, Sixel, Kitty), with a measurement harness
 and automatic capability plus colour detection that nominate the best backend and
-colour depth per terminal. See [`STAGE-0.md`](./STAGE-0.md) and
-[`STAGE-1.md`](./STAGE-1.md). The browser pipeline and the crisp text overlay are
+colour depth per terminal. See [`STAGE-0.md`](./STAGE-0.md),
+[`STAGE-1.md`](./STAGE-1.md), and [`STAGE-2.md`](./STAGE-2.md). The browser pipeline and the crisp text overlay are
 the remaining design goal; the rest of this document is the target architecture and
 the research behind the unbuilt stages.
 
@@ -935,14 +935,21 @@ tests.
   env plus terminfo, so there is no reply to forward or swallow.)
 - Does REP (`\x1b[<n>b`) for flat-colour runs shrink output on KMSCON, foot, and basic
   emulators, or add parser risk for little gain? Resolved: emit REP for flat-colour runs
-  of about 4+ identical cells, guarded by a one-off capability probe (terminfo `rep` via
-  XTGETTCAP, cached with the Stage 1 handshake) with a plain repeated-write fallback.
-  KMSCON (libtsm `case 'b'`, the Aetf fork) and foot both support REP, as do xterm, kitty,
-  alacritty, wezterm, ghostty, konsole, vte, and Windows Terminal 1.18+; Terminal.app,
-  iTerm2, and tmux/screen do not, so never send REP under tmux or screen. A
-  non-supporting terminal that ignores REP corrupts the row, so do not emit blind. Stage 2
-  spike: measure the byte saving and confirm the probe on KMSCON and foot against the
-  diagnostics fixtures.
+  of about 4+ identical cells, with a plain repeated-write fallback. On a bare terminal,
+  gate on the Stage 1 handshake's `rep` capability probe (terminfo `rep` via XTGETTCAP). On
+  a detected multiplexer the handshake is skipped, so gate by env instead: tmux 3.0+ (added
+  2019), zellij, and herdr all honour REP, so trust it under `TMUX`, `ZELLIJ`, or
+  `HERDR_ENV`; GNU screen does not support REP, so never send it under `STY`, emit literal
+  repeated characters there. KMSCON (libtsm `case 'b'`, maintained with libtsm at
+  github.com/kmscon) and foot both support REP, as do xterm, kitty, alacritty, wezterm,
+  ghostty, konsole, vte, Windows Terminal 1.18+, iTerm2, and Terminal.app. A non-supporting
+  terminal silently no-ops REP and under-fills the row (it does not corrupt it), so the gate
+  matters, do not emit blind. The terminfo `rep` cap is an unreliable sole gate: tmux,
+  zellij, herdr, konsole, and the Linux console all honour REP yet do not advertise `rep`
+  reliably (tmux and zellij omit the cap; herdr answers XTGETTCAP only for a fixed allowlist
+  that excludes `rep`), which is why the supported multiplexers are trusted by env, not by
+  probe. Stage 2 spike: measure the byte saving and confirm the gate on KMSCON, foot, tmux,
+  zellij, and herdr against the diagnostics fixtures.
 - Wide glyph at the viewport right edge or a damage-rect boundary: drop, space-fill, or
   extend the rect? Resolved: never half-emit. When a 2-cell glyph would cross the viewport
   right edge or a damage-rect right boundary, write a single background-coloured space in
@@ -981,7 +988,7 @@ path renders a real webpage with images as blocks and text as crisp glyphs; on f
 kitty the same `Frame` renders via Sixel and Kitty with no change above the `Renderer`
 seam. Measure correctness (golden frame), bytes per frame, and FPS on each target.
 
-Stage 0 is the image-based harness, and it is built. The record of the work done and the decisions made is in [`STAGE-0.md`](./STAGE-0.md). Stage 1 is the capability and colour detection, and it is built; its record is in [`STAGE-1.md`](./STAGE-1.md). Stages 2 to 4 remain.
+Stage 0 is the image-based harness, and it is built. The record of the work done and the decisions made is in [`STAGE-0.md`](./STAGE-0.md). Stage 1 is the capability and colour detection, and it is built; its record is in [`STAGE-1.md`](./STAGE-1.md). Stage 2 is the crisp text overlay, and it is built; its record is in [`STAGE-2.md`](./STAGE-2.md). Stages 3 and 4 remain.
 
 ## Prior Art (reference, not dependencies)
 

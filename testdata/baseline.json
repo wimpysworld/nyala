@@ -184,6 +184,71 @@
         "histDivergence": 0,
         "bytesPerFrame": 650579
       }
+    },
+    {
+      "page": "linuxmatters",
+      "mode": "overlay",
+      "metrics": {
+        "ssim": null,
+        "msssim": null,
+        "psnr": null,
+        "deltaE2000Mean": null,
+        "histDivergence": null,
+        "bytesPerFrame": null,
+        "lowContrastTextCells": 5
+      }
+    },
+    {
+      "page": "testpage-01-grayscale",
+      "mode": "overlay",
+      "metrics": {
+        "ssim": null,
+        "msssim": null,
+        "psnr": null,
+        "deltaE2000Mean": null,
+        "histDivergence": null,
+        "bytesPerFrame": null,
+        "lowContrastTextCells": 0
+      }
+    },
+    {
+      "page": "testpage-02-basic",
+      "mode": "overlay",
+      "metrics": {
+        "ssim": null,
+        "msssim": null,
+        "psnr": null,
+        "deltaE2000Mean": null,
+        "histDivergence": null,
+        "bytesPerFrame": null,
+        "lowContrastTextCells": 0
+      }
+    },
+    {
+      "page": "testpage-03-cmyk",
+      "mode": "overlay",
+      "metrics": {
+        "ssim": null,
+        "msssim": null,
+        "psnr": null,
+        "deltaE2000Mean": null,
+        "histDivergence": null,
+        "bytesPerFrame": null,
+        "lowContrastTextCells": 0
+      }
+    },
+    {
+      "page": "testpage-04-color",
+      "mode": "overlay",
+      "metrics": {
+        "ssim": null,
+        "msssim": null,
+        "psnr": null,
+        "deltaE2000Mean": null,
+        "histDivergence": null,
+        "bytesPerFrame": null,
+        "lowContrastTextCells": 0
+      }
     }
   ]
 }

@@ -17,13 +17,21 @@ check:
     @nix flake check
     @just vuln
 
-# Run the heavy quality gate: sweep, calibration, and golden track
+# Run the heavy quality gate: sweep, calibration, golden track, and overlay grade
 diagnostics:
     @go test -v -tags diagnostics -count=1 ./internal/harness/
 
 # Regenerate golden archives via the golden track writer
 update-golden:
-    @UPDATE_GOLDEN=1 go test -run TestGoldenTrack -count=1 ./internal/harness/
+    @UPDATE_GOLDEN=1 go test -run 'TestGoldenTrack|TestOverlayGoldenTrack' -tags diagnostics -count=1 ./internal/harness/
+
+# Regenerate the overlay artefact PNGs into testdata/diagnostics/ for eyeballing
+overlay:
+    @OVERLAY_ARTEFACTS=1 go test -run TestOverlayMatcherRoundTrip -tags diagnostics -count=1 ./internal/harness/
+
+# Print the KMSCON quadrant test card to the TTY (owner-verified, off CI)
+kmscon-testcard:
+    @go run ./tools/kmscon-testcard
 
 # Rebuild the test page PNGs from the committed PDFs at 150 DPI for reproducibility
 regen-fixtures:
@@ -35,13 +43,13 @@ regen-fixtures:
 
 # Format Go sources
 fmt:
-    @gofmt -w ./cmd ./internal
+    @gofmt -w ./cmd ./internal ./tools
 
 # Check Go formatting
 fmt-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    files="$(gofmt -l ./cmd ./internal)"
+    files="$(gofmt -l ./cmd ./internal ./tools)"
     if [ -n "$files" ]; then
         printf '%s\n' "$files"
         exit 1

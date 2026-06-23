@@ -1,0 +1,8 @@
+# Overlay run set for the testpage-04-color page.
+# Format: col row fgHex text. text runs to end of line.
+# Foreground is chosen per run to contrast with its local background.
+4 2 000000 Text Size 8px
+4 6 000000 Text Size 12px
+60 4 000000 Text Size 18px
+60 8 000000 Text Size 24px
+60 12 000000 Text Size 28px
