@@ -3,6 +3,8 @@
 package engine
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -51,5 +53,55 @@ func TestLiveSyncedFrame(t *testing.T) {
 		}
 	case <-deadline.C:
 		t.Fatal("no synced frame within the deadline")
+	}
+}
+
+func TestLiveFrameArrivesBeforeFullLoad(t *testing.T) {
+	if _, err := resolveExecutable(""); err != nil {
+		t.Skipf("no Chromium for the live test: %v", err)
+	}
+
+	hang := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><body><p>nyala partial load</p><img src='/hang'></body></html>"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	})
+	mux.HandleFunc("/hang", func(_ http.ResponseWriter, _ *http.Request) {
+		<-hang
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	defer close(hang)
+
+	e := New("")
+	e.SetCellPx(8, 16)
+	e.Resize(80, 24)
+
+	navDone := make(chan error, 1)
+	go func() { navDone <- e.Navigate(srv.URL) }()
+	select {
+	case err := <-navDone:
+		if err != nil {
+			t.Fatalf("navigate: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Navigate blocked waiting for full page load")
+	}
+	t.Cleanup(func() { _ = e.Close() })
+
+	select {
+	case f, ok := <-e.Frames():
+		if !ok {
+			t.Fatal("frames channel closed before a frame arrived")
+		}
+		if f.Img == nil {
+			t.Fatal("frame has a nil bitmap")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("no frame arrived before full page load")
 	}
 }
