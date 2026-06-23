@@ -16,7 +16,9 @@ import (
 // wins; there is no z-buffer. Runs that run past the grid edge are clipped. A
 // width-2 grapheme claims the next cell as a Wide trailing cell, or writes a
 // background space when it would cross the right edge, so it is never
-// half-emitted. The cell background is the exact whole-cell average of the
+// half-emitted. A cluster clipped past the left edge advances col by its display
+// width, so the partition stays monotonic and the visible remainder lands in the
+// right columns. The cell background is the exact whole-cell average of the
 // sampled source pixels, read in RGBA order.
 func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 	for _, run := range f.Text {
@@ -27,7 +29,7 @@ func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 		col := run.Col
 		for _, cluster := range graphemeCells(run.Text) {
 			if col < 0 {
-				col++
+				col += cellWidth(cluster)
 				continue
 			}
 			if col >= g.Cols {

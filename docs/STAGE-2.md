@@ -4,7 +4,7 @@ Stage 2 builds the crisp text overlay on the block path. It composites positione
 
 ## Status summary
 
-Stage 2 is code-complete and staged (committed at \<pending>). The compositor, the matcher, the font fallback, the run-set fixtures, the four-measure harness grade, and the new `just` recipes are in the tree.
+Stage 2 is code-complete. The compositor, the matcher, the font fallback, the run-set fixtures, the four-measure harness grade, and the new `just` recipes are in the tree.
 
 Acceptance criteria are met. The compositor folds the overlay into `block.Compose`, grapheme-wins-the-cell, with the foreground from the run and the background from the whole-cell bitmap average. All three consumers (`capture.Rasteriser.Rasterise`, `block.Renderer.Render`, the viewer `writeGrid`) prefer `Cell.Text` over `Cell.Glyph`. The overlay grades through four measures with gating: the overlaid-grid golden hard-gates byte-exact, the matcher hard-gates `CER == 0`, the WCAG low-contrast text-cell count gates against `baseline.json`, and the gosseract differentiator is reported, not gated.
 

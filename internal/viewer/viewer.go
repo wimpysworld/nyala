@@ -319,16 +319,19 @@ func writeGrid(g block.Grid, mode ColourMode, w io.Writer) error {
 		}
 		for col := 0; col < g.Cols; col++ {
 			c := g.At(col, row)
+			if c.Wide {
+				// The lead cell's wide grapheme already paints both columns, so
+				// the trailing cell emits no SGR and no rune, matching the block
+				// renderer.
+				continue
+			}
 			sb.WriteString(fgSGR(c.FG, mode))
 			sb.WriteString(bgSGR(c.BG, mode))
 			// Stage 2 feeds the viewer no overlay (the overlay demo is
-			// harness-only), so a Wide or Text cell never reaches here yet; the
-			// branches ready Stage 3. A Wide trailing cell draws its background
-			// and a space; a Text cell draws its overlay grapheme over the
+			// harness-only), so a Text cell never reaches here yet; the branch
+			// readies Stage 3. A Text cell draws its overlay grapheme over the
 			// bitmap glyph; otherwise the bitmap glyph wins.
 			switch {
-			case c.Wide:
-				sb.WriteRune(' ')
 			case c.Text != "":
 				sb.WriteString(c.Text)
 			default:

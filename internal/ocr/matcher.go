@@ -19,10 +19,11 @@ import (
 // cell where the overlay failed to apply.
 //
 // The candidate set is fixed and grid-independent: the distinct graphemes of the
-// run text plus the block glyph set (the ten quadrant glyphs U+2596..U+259F, the
-// lower-half-block U+2584, the full block U+2588, and space). The fixed block
-// glyphs let the matcher catch a block showing through where the overlay should
-// have won.
+// run text plus the block glyph set. That set is every glyph binarizeQuadrant can
+// emit: the ten quadrant glyphs U+2596..U+259F, the half blocks U+2580 upper,
+// U+2584 lower, U+258C left, U+2590 right, the full block U+2588, and space. The
+// fixed block glyphs let the matcher catch a block showing through where the
+// overlay should have won.
 //
 // Matcher is pure Go and carries no build tag, so it builds and unit-tests under
 // the routine gate. Only the gosseract engine in tesseract.go needs cgo.
@@ -38,14 +39,16 @@ type candidate struct {
 	template []bool
 }
 
-// blockGlyphs is the fixed block glyph set the matcher always considers: the ten
-// quadrant glyphs U+2596..U+259F, the lower-half-block U+2584, the full block
-// U+2588, and the space. They let the matcher recover a block cell that showed
-// through where the overlay should have placed a grapheme.
+// blockGlyphs is the fixed block glyph set the matcher always considers: every
+// glyph binarizeQuadrant can emit. That is the ten quadrant glyphs
+// U+2596..U+259F, the upper-half-block U+2580, the lower-half-block U+2584, the
+// left-half-block U+258C, the right-half-block U+2590, the full block U+2588, and
+// the space. They let the matcher recover a block cell that showed through where
+// the overlay should have placed a grapheme.
 var blockGlyphs = []string{
 	"▖", "▗", "▘", "▙", "▚",
 	"▛", "▜", "▝", "▞", "▟",
-	"▄", "█", " ",
+	"▀", "▄", "▌", "▐", "█", " ",
 }
 
 // matchFG and matchBG are the fixed colours the matcher renders every template

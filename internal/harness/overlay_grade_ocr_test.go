@@ -17,14 +17,28 @@ import (
 	"image/color"
 	"testing"
 
+	"github.com/wimpysworld/nyala/internal/capture"
 	"github.com/wimpysworld/nyala/internal/ocr"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
 // overlayLadderCellRows is the per-rung row height of the overlay ladder grid in
-// cells. Each bitmap ladder rung is ladderRowH source pixels tall and a quadrant
-// cell maps to four source rows, so a rung spans ladderRowH/4 cells.
+// cells, chosen so the rasterised overlay rung matches the rasterised bitmap
+// rung in output pixels. The bitmap path composes the ladder (a quadrant cell
+// spans four source rows, so ladderRowH source pixels become ladderRowH/4 cells)
+// and rasterises each cell to capture.CellPxH output pixels, giving a bitmap rung
+// of ladderRowH/4 * capture.CellPxH output pixels. The overlay grid rasterises
+// through the same cell height, so ladderRowH/4 cells per rung reproduces that
+// output rung height.
 const overlayLadderCellRows = ladderRowH / 4
+
+// overlayLadderRowHeight is the per-rung crop height in output pixels for the
+// rasterised ladder images. Both the bitmap and overlay ladders rasterise at
+// capture.CellPxH per cell, so a rung occupies overlayLadderCellRows cells, i.e.
+// overlayLadderCellRows * capture.CellPxH output pixels. The OCR spec must crop
+// this output-pixel band, not the ladderRowH source-pixel band, or the overlay
+// text (centred in the output rung) falls outside the crop.
+const overlayLadderRowHeight = overlayLadderCellRows * capture.CellPxH
 
 // TestOverlayGosseractDifferentiator reports the gosseract CER on the overlay
 // ladder against the bitmap ladder. It is a reported measure, not a gate, so it
@@ -48,7 +62,7 @@ func TestOverlayGosseractDifferentiator(t *testing.T) {
 	overlayGrid := overlayLadderGrid(sizes, bitmapLadder.Bounds().Dx()/2)
 	overlayImg := rast.Rasterise(overlayGrid)
 
-	spec := ocr.Spec{Sizes: sizes, RowHeight: ladderRowH}
+	spec := ocr.Spec{Sizes: sizes, RowHeight: overlayLadderRowHeight}
 	bitmapCER := meanLadderCER(t, bitmapImg, spec, eng)
 	overlayCER := meanLadderCER(t, overlayImg, spec, eng)
 

@@ -124,6 +124,11 @@ func (br *Renderer) renderGrid(grid Grid, w io.Writer) error {
 	for row := 0; row < grid.Rows; row++ {
 		for col := 0; col < grid.Cols; col++ {
 			c := grid.At(col, row)
+			if c.Wide {
+				// The lead cell's wide grapheme already paints both columns, so
+				// the trailing cell emits no SGR and no rune.
+				continue
+			}
 			if _, err := bw.WriteString(TrueColorFG(c.FG)); err != nil {
 				return err
 			}
@@ -142,14 +147,9 @@ func (br *Renderer) renderGrid(grid Grid, w io.Writer) error {
 }
 
 // writeCellText writes a cell's drawable text to bw: the overlay grapheme when
-// Text is set, otherwise the bitmap glyph rune. A Wide trailing cell holds an
-// empty Text, so it writes a single space over its background, occupying its one
-// column without re-emitting the wide grapheme.
+// Text is set, otherwise the bitmap glyph rune. renderGrid skips a Wide trailing
+// cell before reaching here, so this writes one column per call.
 func writeCellText(bw *bufio.Writer, c *Cell) error {
-	if c.Wide {
-		_, err := bw.WriteRune(' ')
-		return err
-	}
 	if c.Text != "" {
 		_, err := bw.WriteString(c.Text)
 		return err
