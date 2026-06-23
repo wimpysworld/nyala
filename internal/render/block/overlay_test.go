@@ -125,6 +125,35 @@ func TestComposeWideClaimsTrailingCell(t *testing.T) {
 	}
 }
 
+// TestComposeNarrowOverwriteClearsStaleWide places a width-2 grapheme at a cell,
+// then a width-1 grapheme at the same cell in a later run. The lead cell must hold
+// the ASCII Text, and the trailing cell must drop its stale Wide and return to a
+// plain bitmap cell.
+func TestComposeNarrowOverwriteClearsStaleWide(t *testing.T) {
+	src := color.RGBA{R: 30, G: 40, B: 50, A: 0xff}
+	img := overlaySrc(3, 1, src)
+	br := &Renderer{Cols: 3, Rows: 1}
+	f := render.Frame{Img: img, Text: []render.GlyphRun{
+		{Col: 0, Row: 0, Text: "世", FG: color.RGBA{A: 0xff}},
+		{Col: 0, Row: 0, Text: "A", FG: color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}},
+	}}
+	g := br.Compose(f)
+	lead := g.At(0, 0)
+	if lead.Text != "A" {
+		t.Fatalf("lead Text = %q, want A", lead.Text)
+	}
+	trail := g.At(1, 0)
+	if trail.Wide {
+		t.Fatal("trailing cell Wide = true, want false (stale wide not cleared)")
+	}
+	if trail.Text != "" {
+		t.Fatalf("trailing Text = %q, want empty", trail.Text)
+	}
+	if want := bitmapCell(img, 1, 0, SchemeQuadrant); *trail != want {
+		t.Fatalf("trailing cell = %+v, want recomputed bitmap cell %+v", *trail, want)
+	}
+}
+
 // TestComposeWideAtRightEdgeWritesSpace places a width-2 grapheme in the last
 // column and asserts the cell holds a background space, no Wide neighbour, no
 // panic.

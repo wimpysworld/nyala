@@ -19,7 +19,9 @@ import (
 // half-emitted. A cluster clipped past the left edge advances col by its display
 // width, so the partition stays monotonic and the visible remainder lands in the
 // right columns. The cell background is the exact whole-cell average of the
-// sampled source pixels, read in RGBA order.
+// sampled source pixels, read in RGBA order. When a width-1 grapheme overwrites a
+// cell that was a former width-2 lead, it clears the stale Wide on the trailing
+// cell to its right and restores it to a plain bitmap cell.
 func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 	for _, run := range f.Text {
 		row := run.Row
@@ -52,9 +54,27 @@ func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 				continue
 			}
 			*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: cluster}
+			if col+1 < g.Cols {
+				if trailing := g.At(col+1, row); trailing.Wide {
+					*trailing = bitmapCell(f.Img, col+1, row, scheme)
+				}
+			}
 			col++
 		}
 	}
+}
+
+// bitmapCell recomputes one bitmap cell for the scheme, mirroring composeQuadrant
+// and composeHalfBlock for a single cell. It restores a cell to its plain bitmap
+// state, with no overlay Text and not Wide.
+func bitmapCell(img *image.RGBA, col, row int, scheme Scheme) Cell {
+	if scheme == SchemeHalfBlock {
+		top, bottom := sampleHalfBlock(img, col, row)
+		return Cell{Glyph: lowerHalfBlock, FG: bottom, BG: top}
+	}
+	x, y, z, w := sampleQuadrant(img, col, row)
+	glyph, fg, bg := binarizeQuadrant(x, y, z, w)
+	return Cell{Glyph: glyph, FG: fg, BG: bg}
 }
 
 // graphemeCells segments text into grapheme clusters with rivo/uniseg, so a

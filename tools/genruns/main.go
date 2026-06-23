@@ -17,6 +17,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mattn/go-runewidth"
+	"github.com/rivo/uniseg"
+
 	"github.com/wimpysworld/nyala/internal/harness"
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
@@ -57,22 +60,31 @@ func regenerate(fx harness.OverlayFixture) error {
 }
 
 // contrastFG picks black or white for a run by the mean background luma of the
-// cells the run's graphemes land on, read from the composed grid. A light region
-// gets black text, a dark region white, so the glyph contrasts with its local
-// background.
+// cells the run's graphemes land on, read from the composed grid. It steps by
+// grapheme cluster and display width, matching applyOverlay, so wide or clustered
+// text samples the lead cell of each cluster and advances by its width. A light
+// region gets black text, a dark region white, so the glyph contrasts with its
+// local background.
 func contrastFG(g block.Grid, run render.GlyphRun) color.RGBA {
 	var sum, n float64
 	col := run.Col
 	row := run.Row
-	for range []rune(run.Text) {
+	gr := uniseg.NewGraphemes(run.Text)
+	for gr.Next() {
+		w := runewidth.StringWidth(gr.Str())
+		if w >= 2 {
+			w = 2
+		} else {
+			w = 1
+		}
 		if row < 0 || row >= g.Rows || col < 0 || col >= g.Cols {
-			col++
+			col += w
 			continue
 		}
 		c := g.At(col, row)
 		sum += 0.299*float64(c.BG.R) + 0.587*float64(c.BG.G) + 0.114*float64(c.BG.B)
 		n++
-		col++
+		col += w
 	}
 	mean := 0.0
 	if n > 0 {
