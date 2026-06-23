@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	cterm "github.com/charmbracelet/x/term"
@@ -97,10 +98,6 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag string) (err error)
 	if _, werr := io.WriteString(tty, fmt.Sprintf("loading %s\r\n", url)); werr != nil {
 		return werr
 	}
-	if nerr := eng.Navigate(url); nerr != nil {
-		return nerr
-	}
-
 	winch := make(chan os.Signal, 1)
 	signal.Notify(winch, syscall.SIGWINCH)
 	defer signal.Stop(winch)
@@ -110,8 +107,19 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag string) (err error)
 	done := make(chan struct{})
 	defer close(done)
 
-	s := &streamSession{eng: eng, st: &st, tty: tty, fd: fd}
-	return s.loop(winch, readKeys(tty, done))
+	keySender := newKeySender(eng)
+	defer keySender.close()
+
+	s := &streamSession{eng: eng, st: &st, tty: tty, fd: fd, keySender: keySender}
+	keys := readKeys(tty, done)
+	navigated := make(chan error, 1)
+	go func() {
+		navigated <- eng.Navigate(url)
+	}()
+	if nerr := s.waitForNavigate(winch, keys, navigated); nerr != nil {
+		return nerr
+	}
+	return s.loop(winch, keys)
 }
 
 // streamSession bundles the per-run viewer state the push loop mutates: the
@@ -123,6 +131,7 @@ type streamSession struct {
 	st         *State
 	tty        *os.File
 	fd         uintptr
+	keySender  *keySender
 	firstDrawn bool
 }
 
@@ -153,6 +162,36 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			}
 		}
 	}
+}
+
+// waitForNavigate keeps the raw-mode controls live while engine startup runs.
+// Browser launch and CDP setup can block before frames exist, so Ctrl-C and
+// resize handling must not wait for Navigate to return.
+func (s *streamSession) waitForNavigate(winch <-chan os.Signal, keys <-chan keyEvent, navigated <-chan error) error {
+	for {
+		select {
+		case <-winch:
+			if err := s.resize(); err != nil {
+				return err
+			}
+		case ev, ok := <-keys:
+			if !ok {
+				return nil
+			}
+			if startupQuit(ev) {
+				return nil
+			}
+		case err := <-navigated:
+			return err
+		}
+	}
+}
+
+// startupQuit reports whether a pre-navigation key requests exit. Browser input
+// and backend cycling are ignored until Navigate finishes and the live loop owns
+// the page.
+func startupQuit(ev keyEvent) bool {
+	return ev.scroll == ScrollNone && (ev.b == 'q' || ev.b == 'Q' || ev.b == keyQuitCtrlC)
 }
 
 // draw renders one pushed frame. It updates the image size from the frame, clears
@@ -195,7 +234,12 @@ func (s *streamSession) resize() error {
 // capture size.
 func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 	if ev.scroll != ScrollNone {
-		s.eng.SendKey(scrollKeyCode(ev.scroll))
+		code := scrollKeyCode(ev.scroll)
+		if s.keySender != nil {
+			s.keySender.send(code)
+		} else {
+			s.eng.SendKey(code)
+		}
 		return false
 	}
 	act := s.st.HandleKey(ev.b)
@@ -206,6 +250,52 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		s.eng.SetBackend(backendName(s.st.Backend))
 	}
 	return false
+}
+
+// keySender serialises forwarded browser keys away from the input loop. The
+// one-slot buffer keeps quit keys responsive if a browser scroll call stalls.
+type keySender struct {
+	eng  Engine
+	keys chan string
+	done chan struct{}
+	once sync.Once
+}
+
+func newKeySender(eng Engine) *keySender {
+	s := &keySender{
+		eng:  eng,
+		keys: make(chan string, 1),
+		done: make(chan struct{}),
+	}
+	go s.run()
+	return s
+}
+
+func (s *keySender) send(code string) {
+	if code == "" {
+		return
+	}
+	select {
+	case s.keys <- code:
+	default:
+	}
+}
+
+func (s *keySender) close() {
+	s.once.Do(func() {
+		close(s.done)
+	})
+}
+
+func (s *keySender) run() {
+	for {
+		select {
+		case code := <-s.keys:
+			s.eng.SendKey(code)
+		case <-s.done:
+			return
+		}
+	}
 }
 
 // backendName maps a Backend to the engine's backend string. The engine sizes

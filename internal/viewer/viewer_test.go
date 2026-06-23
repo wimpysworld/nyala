@@ -3,11 +3,13 @@ package viewer
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"image"
 	"image/color"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wimpysworld/nyala/internal/capture"
 	"github.com/wimpysworld/nyala/internal/render"
@@ -366,6 +368,191 @@ func TestNextEventCSI(t *testing.T) {
 				t.Fatalf("nextEvent byte = %q, want %q", ev.b, c.wantByte)
 			}
 		})
+	}
+}
+
+// TestReadKeysKeepsQuitKeysAfterDownArrow asserts a Down-arrow CSI sequence
+// does not swallow later quit keys from the same input stream.
+func TestReadKeysKeepsQuitKeysAfterDownArrow(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want byte
+	}{
+		{"q", "\x1b[Bq", 'q'},
+		{"ctrl-c", "\x1b[B\x03", keyQuitCtrlC},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			done := make(chan struct{})
+			defer close(done)
+			keys := readKeys(strings.NewReader(c.in), done)
+
+			first, ok := <-keys
+			if !ok {
+				t.Fatalf("first event missing, want Down arrow")
+			}
+			if first.scroll != ScrollDown {
+				t.Fatalf("first event scroll = %d, want ScrollDown", first.scroll)
+			}
+
+			second, ok := <-keys
+			if !ok {
+				t.Fatalf("second event missing, want %q", c.want)
+			}
+			if second.scroll != ScrollNone || second.b != c.want {
+				t.Fatalf("second event = %+v, want byte %q", second, c.want)
+			}
+		})
+	}
+}
+
+// TestStreamLoopQuitsAfterDownArrowWhenSendKeyBlocks pins the regression where
+// a blocked scroll dispatch keeps the loop from seeing a later quit key.
+func TestStreamLoopQuitsAfterDownArrowWhenSendKeyBlocks(t *testing.T) {
+	cases := []struct {
+		name string
+		quit keyEvent
+	}{
+		{"q", keyEvent{b: 'q'}},
+		{"ctrl-c", keyEvent{b: keyQuitCtrlC}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			st := NewState(80, 24, 1, 1)
+			sendStarted := make(chan string, 1)
+			releaseSend := make(chan struct{})
+			e := streamTestEngine{
+				frames: make(chan render.Frame),
+				sendKey: func(code string) {
+					sendStarted <- code
+					<-releaseSend
+				},
+			}
+			keySender := newKeySender(e)
+			defer keySender.close()
+			s := &streamSession{eng: e, st: &st, keySender: keySender}
+			keys := make(chan keyEvent, 2)
+			keys <- keyEvent{scroll: ScrollDown}
+			keys <- c.quit
+
+			loopDone := make(chan error, 1)
+			go func() {
+				loopDone <- s.loop(nil, keys)
+			}()
+
+			select {
+			case code := <-sendStarted:
+				if code != "ArrowDown" {
+					close(releaseSend)
+					t.Fatalf("SendKey code = %q, want ArrowDown", code)
+				}
+			case <-time.After(100 * time.Millisecond):
+				close(releaseSend)
+				t.Fatalf("SendKey was not called for Down arrow")
+			}
+
+			select {
+			case err := <-loopDone:
+				close(releaseSend)
+				if err != nil {
+					t.Fatalf("loop returned error: %v", err)
+				}
+			case <-time.After(100 * time.Millisecond):
+				close(releaseSend)
+				<-loopDone
+				t.Fatalf("loop did not quit after Down arrow then %s", c.name)
+			}
+		})
+	}
+}
+
+// TestWaitForNavigateQuitsWhileNavigatePending asserts quit keys are handled
+// during startup, before Navigate returns and before a frame channel is ready.
+func TestWaitForNavigateQuitsWhileNavigatePending(t *testing.T) {
+	cases := []struct {
+		name string
+		key  byte
+	}{
+		{"q", 'q'},
+		{"Q", 'Q'},
+		{"ctrl-c", keyQuitCtrlC},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			st := NewState(80, 24, 1, 1)
+			s := &streamSession{eng: streamTestEngine{frames: make(chan render.Frame)}, st: &st}
+			keys := make(chan keyEvent, 1)
+			keys <- keyEvent{b: c.key}
+			navigated := make(chan error)
+
+			if err := s.waitForNavigate(nil, keys, navigated); err != nil {
+				t.Fatalf("waitForNavigate returned error on quit: %v", err)
+			}
+		})
+	}
+}
+
+// TestWaitForNavigateIgnoresBrowserKeysWhileNavigatePending pins the startup
+// key policy: before Navigate completes, quit keys are live but browser keys and
+// backend cycling must not touch the engine or viewer state.
+func TestWaitForNavigateIgnoresBrowserKeysWhileNavigatePending(t *testing.T) {
+	cases := []struct {
+		name string
+		key  keyEvent
+	}{
+		{"scroll", keyEvent{scroll: ScrollDown}},
+		{"tab", keyEvent{b: keyTab}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			st := NewState(80, 24, 1, 1)
+			startBackend := st.Backend
+			var sentKeys []string
+			var backends []string
+			eng := streamTestEngine{
+				frames: make(chan render.Frame),
+				sendKey: func(code string) {
+					sentKeys = append(sentKeys, code)
+				},
+				setBackend: func(name string) {
+					backends = append(backends, name)
+				},
+			}
+			s := &streamSession{eng: eng, st: &st}
+			keys := make(chan keyEvent, 2)
+			keys <- c.key
+			keys <- keyEvent{b: 'q'}
+			navigated := make(chan error)
+
+			if err := s.waitForNavigate(nil, keys, navigated); err != nil {
+				t.Fatalf("waitForNavigate returned error after startup key: %v", err)
+			}
+			if len(sentKeys) != 0 {
+				t.Fatalf("SendKey calls = %v, want none before Navigate completes", sentKeys)
+			}
+			if len(backends) != 0 {
+				t.Fatalf("SetBackend calls = %v, want none before Navigate completes", backends)
+			}
+			if st.Backend != startBackend {
+				t.Fatalf("Backend = %v, want %v before Navigate completes", st.Backend, startBackend)
+			}
+		})
+	}
+}
+
+// TestWaitForNavigateReturnsNavigateError keeps startup errors visible once
+// Navigate does finish, so browser launch failures still reach the caller.
+func TestWaitForNavigateReturnsNavigateError(t *testing.T) {
+	st := NewState(80, 24, 1, 1)
+	s := &streamSession{eng: streamTestEngine{frames: make(chan render.Frame)}, st: &st}
+	keys := make(chan keyEvent)
+	want := errors.New("navigate failed")
+	navigated := make(chan error, 1)
+	navigated <- want
+
+	if err := s.waitForNavigate(nil, keys, navigated); !errors.Is(err, want) {
+		t.Fatalf("waitForNavigate error = %v, want %v", err, want)
 	}
 }
 
@@ -802,6 +989,34 @@ func TestWinsizeCellPixelsNonTTY(t *testing.T) {
 		t.Fatalf("winsizeCellPixels on a non-tty returned ok=true, want false")
 	}
 }
+
+type streamTestEngine struct {
+	frames     chan render.Frame
+	sendKey    func(string)
+	setBackend func(string)
+}
+
+func (e streamTestEngine) SetBackend(name string) {
+	if e.setBackend != nil {
+		e.setBackend(name)
+	}
+}
+
+func (e streamTestEngine) SetCellPx(int, int) {}
+
+func (e streamTestEngine) Resize(int, int) {}
+
+func (e streamTestEngine) Navigate(string) error { return nil }
+
+func (e streamTestEngine) Frames() <-chan render.Frame { return e.frames }
+
+func (e streamTestEngine) SendKey(code string) {
+	if e.sendKey != nil {
+		e.sendKey(code)
+	}
+}
+
+func (e streamTestEngine) Close() error { return nil }
 
 // solidImage builds a 16 x 16 RGBA image filled with one colour.
 func solidImage(c color.RGBA) *image.RGBA {

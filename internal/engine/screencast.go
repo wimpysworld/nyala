@@ -125,12 +125,13 @@ func (s *frameSlot) drain(ack ackFunc) {
 // size and registers a ListenTarget handler that decodes each EventScreencastFrame
 // and feeds it into the slot, acking displaced frames as they are replaced. The
 // stream couples to the consume rate because Chrome withholds frames until acked.
-func (e *ChromiumEngine) startScreencast() error {
-	e.mu.Lock()
-	ctx := e.ctx
-	slot := e.slot
-	capW, capH := e.captureW, e.captureH
-	e.mu.Unlock()
+func (e *ChromiumEngine) startScreencast(ctx context.Context, slot *frameSlot, capW, capH int) error {
+	if ctx == nil {
+		return fmt.Errorf("engine: start screencast: no browser context")
+	}
+	if slot == nil {
+		return fmt.Errorf("engine: start screencast: no frame slot")
+	}
 	chromedp.ListenTarget(ctx, func(ev any) {
 		f, ok := ev.(*page.EventScreencastFrame)
 		if !ok {
@@ -172,19 +173,18 @@ func (e *ChromiumEngine) ackFrame(ack int64) {
 // frames: the channel outlives one session so consumers keep reading across a
 // crash recovery, and only the supervisor closes it on Close. The send selects on
 // the context so the goroutine cannot leak when the consumer stops.
-func (e *ChromiumEngine) runFrameLoop() {
-	e.mu.Lock()
-	ctx := e.ctx
-	slot := e.slot
-	e.mu.Unlock()
+func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, frames chan render.Frame) {
+	if ctx == nil || slot == nil || frames == nil {
+		return
+	}
 	for {
 		pending, ok := slot.consume(ctx, e.ackFrame)
 		if !ok {
 			return
 		}
-		frame := e.composeFrame(pending)
+		frame := e.composeFrame(ctx, pending)
 		select {
-		case e.frames <- frame:
+		case frames <- frame:
 		case <-ctx.Done():
 			return
 		}
@@ -199,8 +199,8 @@ func (e *ChromiumEngine) runFrameLoop() {
 // fresh runs on, on divergence it holds the last-matched text, and on a snapshot
 // read error it also holds the last-matched text so a frame is never emitted with
 // stale-but-wrong text.
-func (e *ChromiumEngine) composeFrame(pending pendingFrame) render.Frame {
-	return render.Frame{Img: pending.img, Text: e.syncedRuns(pending.meta)}
+func (e *ChromiumEngine) composeFrame(ctx context.Context, pending pendingFrame) render.Frame {
+	return render.Frame{Img: pending.img, Text: e.syncedRuns(ctx, pending.meta)}
 }
 
 // syncedRuns runs one captureSnapshot, decodes its inline text boxes to glyph
@@ -209,9 +209,13 @@ func (e *ChromiumEngine) composeFrame(pending pendingFrame) render.Frame {
 // fold the fresh runs or hold the last-matched set. It records the emitted set as
 // the last-matched. On a snapshot error it holds the last-matched runs so the
 // overlay holds rather than flickers.
-func (e *ChromiumEngine) syncedRuns(meta *page.ScreencastFrameMetadata) []render.GlyphRun {
+func (e *ChromiumEngine) syncedRuns(ctx context.Context, meta *page.ScreencastFrameMetadata) []render.GlyphRun {
+	if ctx == nil {
+		emit := errorHoldRuns(context.Canceled, nil, e.lastText)
+		e.lastText = emit
+		return emit
+	}
 	e.mu.Lock()
-	ctx := e.ctx
 	cellW, cellH := e.snapshotCellPx()
 	e.mu.Unlock()
 	documents, strs, err := captureSnapshot(ctx)
@@ -267,14 +271,15 @@ func snapshotScrollOffset(documents []*domsnapshot.DocumentSnapshot) scrollOffse
 func (e *ChromiumEngine) restartStream() error {
 	e.mu.Lock()
 	ctx := e.ctx
+	slot := e.slot
 	capW, capH := e.captureW, e.captureH
 	e.mu.Unlock()
-	if ctx == nil {
+	if ctx == nil || slot == nil {
 		return nil
 	}
 	_ = chromedp.Run(ctx, page.StopScreencast())
 	if err := applyDeviceMetrics(ctx, capW, capH); err != nil {
 		return fmt.Errorf("engine: resize viewport: %w", err)
 	}
-	return e.startScreencast()
+	return e.startScreencast(ctx, slot, capW, capH)
 }

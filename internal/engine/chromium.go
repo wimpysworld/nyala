@@ -52,9 +52,10 @@ type ChromiumEngine struct {
 	// each browser session, watches for a crash or a lost connection, rebuilds
 	// from held state, and closes frames when Close stops it. closing signals a
 	// real shutdown so the supervisor exits instead of rebuilding.
-	closing   chan struct{} // closed by Close to stop the supervisor
-	closeOnce sync.Once     // guards closing against a double Close
-	supDone   chan struct{} // closed when the supervisor goroutine has exited
+	closing    chan struct{} // closed by Close to stop the supervisor
+	closeOnce  sync.Once     // guards closing against a double Close
+	supDone    chan struct{} // closed when the supervisor goroutine has exited
+	supervised bool          // true after the supervisor goroutine starts
 }
 
 // Ensure ChromiumEngine satisfies Engine.
@@ -66,7 +67,11 @@ var _ Engine = (*ChromiumEngine)(nil)
 // (Resize) before Navigate, since the engine sizes the screencast capture from
 // them.
 func New(browserFlag string) *ChromiumEngine {
-	return &ChromiumEngine{backend: "block", browserFlag: browserFlag}
+	return &ChromiumEngine{
+		backend:     "block",
+		browserFlag: browserFlag,
+		closing:     make(chan struct{}),
+	}
 }
 
 // SetCellPx records the resolved terminal cell pixel size. The engine uses it to
@@ -81,16 +86,35 @@ func (e *ChromiumEngine) SetCellPx(w, h int) {
 // Navigate launches the browser, loads url, and records it in engine state so a
 // later crash recovery can re-navigate. It resolves the executable from the
 // --browser flag held in browserFlag, launches a context sized to the current
-// capture size, runs the navigation, then starts the latest-wins screencast and
-// the frame loop that pushes synced frames on Frames().
+// capture size, starts the latest-wins screencast and frame loop, then dispatches
+// navigation without waiting for every page resource to finish loading.
 func (e *ChromiumEngine) Navigate(url string) error {
+	e.mu.Lock()
+	if channelClosed(e.closing) {
+		e.mu.Unlock()
+		return context.Canceled
+	}
 	e.url = url
 	e.scrollX, e.scrollY = 0, 0
 	e.frames = make(chan render.Frame)
 	e.closing = make(chan struct{})
 	e.supDone = make(chan struct{})
+	e.closeOnce = sync.Once{}
+	e.supervised = false
+	e.mu.Unlock()
+
 	crashed, err := e.startSession()
 	if err != nil {
+		e.teardownSession()
+		e.mu.Lock()
+		e.frames = nil
+		e.closing = nil
+		e.supDone = nil
+		e.supervised = false
+		e.mu.Unlock()
+		return err
+	}
+	if err := e.finishStartup(); err != nil {
 		return err
 	}
 	go e.supervise(crashed)
@@ -114,6 +138,8 @@ func (e *ChromiumEngine) Resize(cols, rows int) {
 
 // Frames returns the emitted-frame channel.
 func (e *ChromiumEngine) Frames() <-chan render.Frame {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	return e.frames
 }
 
@@ -197,11 +223,22 @@ func (e *ChromiumEngine) dispatchWheel(dx, dy int) {
 // will never complete. closeOnce makes a second Close a no-op rather than a double
 // channel close.
 func (e *ChromiumEngine) Close() error {
-	if e.closing == nil { // Navigate was never called.
+	e.mu.Lock()
+	closing := e.closing
+	supDone := e.supDone
+	supervised := e.supervised
+	e.mu.Unlock()
+	if closing != nil {
+		e.closeOnce.Do(func() { close(closing) })
+	}
+	if closing == nil || supDone == nil { // Navigate was never called or startup failed.
 		e.teardownSession()
 		return nil
 	}
-	e.closeOnce.Do(func() { close(e.closing) })
-	<-e.supDone
+	if !supervised {
+		e.teardownSession()
+		return nil
+	}
+	<-supDone
 	return nil
 }
