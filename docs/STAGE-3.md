@@ -216,7 +216,12 @@ together with `applySizing`. `applySizing` sets the CSS viewport via
 `SetDeviceMetricsOverride` at DSF 1, then sizes the captured content area
 authoritatively with `Browser.SetContentsSize` on the window id, because the
 override sizes only the layout viewport, not the captured surface; without the
-surface call frames arrive cropped or blank. `enableLifecycle` calls `page.Enable`
+surface call frames arrive cropped or blank. The natural call,
+`Emulation.setVisibleSize`, was removed from the pinned cdproto: the emulation
+package has no `SetVisibleSize` function, only the `DontSetVisibleSize` field on
+`SetDeviceMetricsOverrideParams`. So `Browser.SetContentsSize(windowID)` is the
+forced choice for sizing the screencast surface, not a preference.
+`enableLifecycle` calls `page.Enable`
 and `SetLifecycleEventsEnabled(true)` per session, because CDP emits
 `Page.lifecycleEvent` only after it, and the navigate waiter needs that event to
 match a loaderID. `restartStream` re-applies the surface sizing and the screencast
@@ -299,6 +304,14 @@ latest-wins slot drops never count. A full capture exits 0; a partial run (the
 first-draw deadline, the per-frame idle timeout, a forced-backend rejection, or the
 frame channel closing early) writes what it has and exits non-zero. Tab cycling is
 off in capture mode.
+
+Two deadlines bound the run, not one total window: a first-draw deadline of 5
+seconds after navigate succeeds, and a per-frame idle deadline of 5 seconds since
+the last delivered frame, reset on every drawn frame. One resettable timer drives
+both: arm it at 5 seconds after navigate, reset it to 5 seconds on each delivered
+frame, and a firing always means a stall. The `cdp_frame_wait_ms` metric was
+dropped, because the latest-wins slot decouples Chromium's produce rate from the
+consume rate, so there is no honest per-frame wait to measure.
 
 The work sits in four places, each behind the existing seams:
 
@@ -424,3 +437,29 @@ reviews it.
   gate on per-frame write latency (33 ms at 30 FPS provisional), the per-frame
   `shm_open`/mmap cost against a reused mapping, and the sub-cell box jitter past the
   clip rule.
+
+## References
+
+These sources sit behind the engine fixes recorded above.
+
+- chromedp v0.15.1 source:
+  - Navigate and the `responseAction` load waiter: `nav.go` lines 18 to 29, `chromedp.go` lines 566 to 702.
+  - `ListenTarget` no-blocking rule: `chromedp.go` lines 791 to 836.
+  - `Target.run` event goroutine and `Execute`: `target.go` lines 90 to 217.
+  - Current top-frame tracking: `target.go` lines 290 to 359.
+  - `KeyEvent` input dispatch: `input.go` lines 166 to 193.
+  - Context model and shutdown via `Cancel`: `chromedp.go` lines 122 to 300.
+- chromedp issues:
+  - #920 ack-inside-listener screencast stall, the primary root cause: https://github.com/chromedp/chromedp/issues/920
+  - #455 the same fault with `network.GetResponseBody`: https://github.com/chromedp/chromedp/issues/455
+  - #431 the lifecycle-events and networkIdle idiom: https://github.com/chromedp/chromedp/issues/431
+  - #631 the enable-lifecycle-events idiom: https://github.com/chromedp/chromedp/issues/631
+  - #1393 a hand-rolled WaitForNavigation is error-prone: https://github.com/chromedp/chromedp/issues/1393
+- CDP protocol docs:
+  - Page domain (`startScreencast`, `screencastFrame`, `lifecycleEvent`, `setLifecycleEventsEnabled`): https://chromedevtools.github.io/devtools-protocol/tot/Page/
+  - Emulation domain (`setDeviceMetricsOverride`, `setVisibleSize`): https://chromedevtools.github.io/devtools-protocol/tot/Emulation/
+  - DOMSnapshot domain (`InlineTextBox.boundingBox`, `TextBoxSnapshot.bounds`, `LayoutTreeSnapshot.PaintOrders`): https://chromedevtools.github.io/devtools-protocol/tot/DOMSnapshot/
+  - Fetch domain (the proxy auth challenge answer): https://chromedevtools.github.io/devtools-protocol/tot/Fetch/
+- The same device-metrics-versus-surface sizing bug fixed in the wild: https://github.com/vercel-labs/agent-browser/pull/1033
+- The reference screencast loop: https://github.com/mafredri/cdp/blob/master/example/screencast/main.go
+- Chromium `page_handler.cc`, the `frames_in_flight_` screencast backpressure: https://chromium.googlesource.com/chromium/src/+/3d83dad2db679c3924ffe74599cfd48a03211778/content/browser/devtools/protocol/page_handler.cc
