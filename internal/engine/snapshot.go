@@ -36,8 +36,9 @@ func captureSnapshot(ctx context.Context) (documents []*domsnapshot.DocumentSnap
 // decodeGlyphRuns maps a DOM snapshot to crisp text runs without any browser
 // dependency, so it is unit-testable on canned structs. It walks every inline
 // text box in every document, converts each box's device-pixel bounds to CSS
-// pixels by dividing by dpr, re-adds the page scroll offset (the snapshot bounds
-// ignore it), and bins the box top-left to a cell with the Stage 2 floor rule.
+// pixels by dividing by dpr, subtracts the page scroll offset (the bounds are
+// document-absolute and the bitmap is the scrolled view), and bins the box
+// top-left to a cell with the Stage 2 floor rule.
 // Each box becomes one render.GlyphRun whose graphemes are clipped to
 // floor(boxWidthPx/cellW) display cells, counting cells with the Stage 2 width
 // rule so a width-2 cluster is never half-emitted; overflow graphemes are
@@ -77,8 +78,12 @@ func appendDocumentRuns(runs []render.GlyphRun, doc *domsnapshot.DocumentSnapsho
 		if len(bounds) < 4 {
 			continue
 		}
-		px := bounds[0]/dpr + scrollX
-		py := bounds[1]/dpr + scrollY
+		// The snapshot box bounds are document-absolute; the bitmap is the scrolled
+		// view, so the on-screen position subtracts the scroll offset. Adding it (the
+		// prior bug) placed runs off by 2*scroll on any scrolled page, invisible only
+		// at scroll 0.
+		px := bounds[0]/dpr - scrollX
+		py := bounds[1]/dpr - scrollY
 		col := int(math.Floor(px / float64(cellW)))
 		row := int(math.Floor(py / float64(cellH)))
 		maxCells := int(math.Floor((bounds[2] / dpr) / float64(cellW)))

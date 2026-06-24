@@ -3,6 +3,8 @@
 package engine
 
 import (
+	"image"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -53,6 +55,87 @@ func TestLiveSyncedFrame(t *testing.T) {
 		}
 	case <-deadline.C:
 		t.Fatal("no synced frame within the deadline")
+	}
+}
+
+// distinctColours counts the distinct RGBA colours in img, capped at cap so a
+// painted frame returns early. It samples every pixel; the test images are small.
+func distinctColours(img image.Image, cap int) int {
+	seen := map[[4]uint32]struct{}{}
+	b := img.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, g, bl, a := img.At(x, y).RGBA()
+			seen[[4]uint32{r, g, bl, a}] = struct{}{}
+			if len(seen) >= cap {
+				return len(seen)
+			}
+		}
+	}
+	return len(seen)
+}
+
+// TestLiveCaptureWaitsForLoadThenPaintedFrame proves the capture load gate yields
+// a painted frame, not a blank pre-paint one. It serves a local page with a solid
+// coloured block, enables capture, waits on the engine load latch, then reads a
+// frame and asserts the bitmap has more than one distinct colour. Deterministic
+// and hermetic: no network, a httptest server. Run it with the live tag and the
+// no-sandbox env.
+func TestLiveCaptureWaitsForLoadThenPaintedFrame(t *testing.T) {
+	if _, err := resolveExecutable(""); err != nil {
+		t.Skipf("no Chromium for the live test: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		// A solid red page over a white default: at least two distinct colours once
+		// painted, so a single-colour frame is provably pre-paint.
+		_, _ = w.Write([]byte("<html><body style='margin:0'>" +
+			"<div style='width:100vw;height:50vh;background:#ff0000'></div>" +
+			"<div style='width:100vw;height:50vh;background:#0000ff'></div>" +
+			"</body></html>"))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	e := New("")
+	rec := NewCaptureRecorder(io.Discard)
+	e.EnableCapture(rec)
+	e.SetCellPx(8, 16)
+	e.Resize(80, 24)
+	if err := e.Navigate(srv.URL); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	t.Cleanup(func() { _ = e.Close() })
+
+	// Wait for the painted latch, mirroring the capture driver.
+	select {
+	case <-rec.Painted():
+	case <-time.After(20 * time.Second):
+		t.Fatal("painted latch never closed within the deadline")
+	}
+
+	// Read a frame at or after paint and assert it is painted (more than one colour).
+	deadline := time.NewTimer(20 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case f, ok := <-e.Frames():
+			if !ok {
+				t.Fatal("frames channel closed before a painted frame")
+			}
+			if f.Img == nil {
+				t.Fatal("frame has a nil bitmap")
+			}
+			if n := distinctColours(f.Img, 2); n >= 2 {
+				return // painted frame proven
+			}
+			// A blank frame can still arrive right at load; keep reading until the
+			// deadline for the first painted one.
+		case <-deadline.C:
+			t.Fatal("no painted frame (more than one colour) within the deadline")
+		}
 	}
 }
 

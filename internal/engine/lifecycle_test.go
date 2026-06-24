@@ -154,7 +154,7 @@ func TestRunFrameLoopReturnsWhenSessionClearedBeforeStart(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		e.runFrameLoop(ctx, slot, frames)
+		e.runFrameLoop(ctx, slot, frames, &textSync{})
 		close(done)
 	}()
 
@@ -165,16 +165,14 @@ func TestRunFrameLoopReturnsWhenSessionClearedBeforeStart(t *testing.T) {
 	}
 }
 
-// TestComposeFrameWithCancelledContextKeepsBitmap checks shutdown during
-// composition. A cancelled session context must not panic or drop the bitmap
-// frame.
-func TestComposeFrameWithCancelledContextKeepsBitmap(t *testing.T) {
+// TestComposeFrameNilTextKeepsBitmap checks a frame composed with no published
+// overlay (a nil textSync, as before the first snapshot lands) keeps the bitmap
+// and emits a bitmap-only frame, without panicking.
+func TestComposeFrameNilTextKeepsBitmap(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 	e := New("")
 
-	frame := e.composeFrame(ctx, pendingFrame{img: img})
+	frame := e.composeFrame(pendingFrame{img: img}, nil)
 
 	if frame.Img != img {
 		t.Fatal("composeFrame dropped the bitmap")

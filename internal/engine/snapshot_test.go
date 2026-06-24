@@ -12,7 +12,7 @@ import (
 // text at index 0 and the computed colour at index 1. The box covers the whole
 // layout text (Start 0, Length in UTF-16 code units). bounds is the device-pixel
 // rectangle [x, y, w, h] the snapshot reports, before the DPR divide and scroll
-// re-add. colour is the serialised CSS colour fed to GlyphRun.FG.
+// subtract. colour is the serialised CSS colour fed to GlyphRun.FG.
 //
 // The decode reads bounds, the box Start/Length, the layout Text index, and the
 // layout Styles[0] colour index, so this is the minimal shape decodeGlyphRuns
@@ -85,9 +85,12 @@ func TestDecodeGlyphRunsMultiBoxDropsClippedBox(t *testing.T) {
 }
 
 // TestDecodeGlyphRunsBinning checks the device-pixel-to-cell binning: divide the
-// box top-left by DPR, re-add the page scroll, then floor by the cell size. A
-// wrong DPR divide or a dropped scroll re-add lands the box in the wrong cell,
-// which this catches because the expected col/row are computed by hand.
+// box top-left by DPR, subtract the page scroll, then floor by the cell size. The
+// bounds are document-absolute and the bitmap is the scrolled view, so the screen
+// cell is floor((bounds/dpr - scroll) / cell). A wrong DPR divide or the old
+// add-scroll sign lands the box in the wrong cell, off by 2*scroll; the
+// hand-computed col/row catch it. These non-zero scroll cases fail against the
+// add-scroll bug and pass against the subtract fix.
 func TestDecodeGlyphRunsBinning(t *testing.T) {
 	cases := []struct {
 		name                  string
@@ -98,12 +101,12 @@ func TestDecodeGlyphRunsBinning(t *testing.T) {
 	}{
 		{
 			// Worked example: (200, 100) device px, DPR 2, scroll (10, 4),
-			// 8x16 cells.
-			//   col = floor((200/2 + 10)/8) = floor(110/8)  = 13
-			//   row = floor((100/2 + 4)/16) = floor(54/16)  = 3
+			// 8x16 cells. The bitmap is scrolled, so screen = document - scroll.
+			//   col = floor((200/2 - 10)/8)  = floor(90/8)  = 11
+			//   row = floor((100/2 - 4)/16)  = floor(46/16) = 2
 			name: "worked example dpr 2 with scroll",
 			x:    200, y: 100, dpr: 2, scrollX: 10, scrollY: 4,
-			cellW: 8, cellH: 16, wantCol: 13, wantRow: 3,
+			cellW: 8, cellH: 16, wantCol: 11, wantRow: 2,
 		},
 		{
 			// No scroll, DPR 1: the box top-left bins straight to a cell.
@@ -114,12 +117,12 @@ func TestDecodeGlyphRunsBinning(t *testing.T) {
 			cellW: 8, cellH: 16, wantCol: 8, wantRow: 3,
 		},
 		{
-			// Scroll re-add crosses a cell boundary the bare bounds would not.
-			//   col = floor((40/2 + 5)/8) = floor(25/8) = 3
-			//   row = floor((40/2 + 5)/8) = floor(25/8) = 3
-			name: "scroll re-add crosses cell boundary",
+			// Scroll subtract crosses a cell boundary the bare bounds would not.
+			//   col = floor((40/2 - 5)/8) = floor(15/8) = 1
+			//   row = floor((40/2 - 5)/8) = floor(15/8) = 1
+			name: "scroll subtract crosses cell boundary",
 			x:    40, y: 40, dpr: 2, scrollX: 5, scrollY: 5,
-			cellW: 8, cellH: 8, wantCol: 3, wantRow: 3,
+			cellW: 8, cellH: 8, wantCol: 1, wantRow: 1,
 		},
 	}
 

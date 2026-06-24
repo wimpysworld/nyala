@@ -18,15 +18,30 @@ const deviceScaleFactor = 1.0
 // below cell visibility while keeping the payload small for the moving viewport.
 const screencastQuality = 90
 
-// snapshotCellPx returns the capture pixels per terminal cell, the divisor
-// decodeGlyphRuns floors the DOM box bounds by. The CSS viewport equals the
-// capture size (set by SetDeviceMetricsOverride), so the snapshot bounds are in
-// capture pixels; dividing the capture size by the grid maps a box to its cell.
-// This holds for both the sub-cell block capture and the cell-pixel graphics
-// capture. A zero grid falls back to the resolved cell px.
+// frameChannelBuffer is the buffer size of the emitted-frame channel. A small
+// buffer stops a transient restartStream stall from parking the frame loop on the
+// frames send while the viewer control goroutine runs the restart; the latest-wins
+// slot already bounds upstream backpressure, so a couple of slots is enough.
+const frameChannelBuffer = 2
+
+// ackBufferDepth is the buffer size of the ack channel the ack pump drains. The
+// latest-wins slot holds at most one unconsumed frame, so at most one consume
+// ack plus a small burst of displaced-frame acks are in flight at once; a few
+// slots of headroom keep the listener's select-with-default enqueue from ever
+// dropping a real ack under normal cadence.
+const ackBufferDepth = 8
+
+// snapshotCellPx returns the layout pixels per terminal cell, the divisor
+// decodeGlyphRuns floors the DOM box bounds by. The CSS layout viewport is the
+// real surface (surfaceSize, set by SetDeviceMetricsOverride and SetContentsSize),
+// so the snapshot box bounds are in surface pixels; dividing the surface viewport
+// by the grid maps a box to its cell. This is the real cell px (cellW x cellH),
+// independent of the sub-cell client-side downscale the block frame undergoes. A
+// zero grid falls back to the resolved cell px.
 func (e *ChromiumEngine) snapshotCellPx() (cellW, cellH int) {
 	if e.cols > 0 && e.rows > 0 {
-		return e.captureW / e.cols, e.captureH / e.rows
+		surfW, surfH := e.surfaceSize(e.cols, e.rows)
+		return surfW / e.cols, surfH / e.rows
 	}
 	return e.cellW, e.cellH
 }

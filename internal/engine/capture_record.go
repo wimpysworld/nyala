@@ -30,17 +30,21 @@ const (
 	captureEventScreencastControl captureEventType = "screencast_control"
 	// captureEventFrameAck marks one screencast frame acknowledgement.
 	captureEventFrameAck captureEventType = "frame_ack"
+	// captureEventInputDispatchFailed marks a persistent run of input-dispatch
+	// failures, so a wedged browser is observable in the bundle.
+	captureEventInputDispatchFailed captureEventType = "input_dispatch_failed"
 )
 
 // captureWhitelist is the set of event types the recorder accepts. A type absent
 // here is dropped, never written.
 var captureWhitelist = map[captureEventType]bool{
-	captureEventScreencastFrame:   true,
-	captureEventTargetCrashed:     true,
-	captureEventNavigate:          true,
-	captureEventDOMSnapshot:       true,
-	captureEventScreencastControl: true,
-	captureEventFrameAck:          true,
+	captureEventScreencastFrame:     true,
+	captureEventTargetCrashed:       true,
+	captureEventNavigate:            true,
+	captureEventDOMSnapshot:         true,
+	captureEventScreencastControl:   true,
+	captureEventFrameAck:            true,
+	captureEventInputDispatchFailed: true,
 }
 
 // captureEvent is one event offered to the recorder. Type is the discriminator;
@@ -81,8 +85,9 @@ type captureRecorder interface {
 // the engine emits events from the listener goroutine and the supervisor
 // goroutine, so each Record holds mu across the single write.
 type ndjsonRecorder struct {
-	mu sync.Mutex
-	w  io.Writer
+	mu      sync.Mutex
+	w       io.Writer
+	dropped int // count of events dropped: non-whitelisted type or a marshal error
 }
 
 // Ensure ndjsonRecorder satisfies captureRecorder.
@@ -100,16 +105,32 @@ func newNDJSONRecorder(w io.Writer) *ndjsonRecorder {
 // one bad event cannot stall the stream.
 func (r *ndjsonRecorder) Record(event captureEvent) {
 	if !captureWhitelist[event.Type] {
+		r.mu.Lock()
+		r.dropped++
+		r.mu.Unlock()
 		return
 	}
 	line, err := json.Marshal(event)
 	if err != nil {
+		r.mu.Lock()
+		r.dropped++
+		r.mu.Unlock()
 		return
 	}
 	line = append(line, '\n')
 	r.mu.Lock()
 	_, _ = r.w.Write(line)
 	r.mu.Unlock()
+}
+
+// droppedCount returns how many events the recorder dropped, under mu so the
+// count is consistent with the writes. A dropped event is one whose type is not
+// whitelisted or that failed to marshal; it is never written, so the count is the
+// only record that it was offered.
+func (r *ndjsonRecorder) droppedCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dropped
 }
 
 // Recorder is the exported capture sink the viewer wires into one engine run. It
@@ -124,6 +145,12 @@ type Recorder struct {
 
 	mu      sync.Mutex
 	session []byte
+
+	// painted is the engine's painted latch, set once by the engine in EnableCapture
+	// before any goroutine starts and read-only afterwards, so it needs no mu. The
+	// engine closes it on the first contentful paint (or load fallback); the viewer
+	// reads it via Painted to wait for a painted page before counting usable frames.
+	painted <-chan struct{}
 }
 
 // Ensure Recorder satisfies captureRecorder.
@@ -146,6 +173,12 @@ func (r *Recorder) Record(event captureEvent) {
 	r.events.Record(event)
 }
 
+// droppedCount returns how many events the wrapped recorder dropped, so the
+// engine can surface the count in cdp-session.json.
+func (r *Recorder) droppedCount() int {
+	return r.events.droppedCount()
+}
+
 // setSession stores the cdp-session.json bytes the engine assembled after
 // navigation. The engine calls it once from the navigate path; the viewer reads
 // the bytes with SessionJSON. It holds mu across the store so the navigate
@@ -164,6 +197,22 @@ func (r *Recorder) SessionJSON() []byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.session
+}
+
+// setPainted records the engine's painted latch. The engine calls it once in
+// EnableCapture before any goroutine starts; the viewer reads the channel with
+// Painted. It is set-once and read-only afterwards, so it takes no lock.
+func (r *Recorder) setPainted(painted <-chan struct{}) {
+	r.painted = painted
+}
+
+// Painted returns the engine's painted latch, closed on the first contentful
+// paint (or load fallback) under capture. The capture driver waits on it before
+// counting usable frames so a blank pre-paint frame is never one of the n. A nil
+// latch (no engine wiring, as in a fake) reads as a never-closed channel; the
+// driver's paint deadline then bounds the wait.
+func (r *Recorder) Painted() <-chan struct{} {
+	return r.painted
 }
 
 // cdpSession is the run-metadata view serialised to cdp-session.json. It records
@@ -190,6 +239,9 @@ type cdpSession struct {
 	NavigationURL string `json:"navigation_url"`
 	// NavigationResult is the navigation outcome: "ok" or the error text.
 	NavigationResult string `json:"navigation_result"`
+	// DroppedEvents is the count of capture events the recorder dropped (a
+	// non-whitelisted type or a marshal error), so a dropped event leaves a trace.
+	DroppedEvents int `json:"dropped_events"`
 	// LaunchFlags is the credential-free launch flag set, name to value, derived
 	// from proxyFlags. It never carries the proxy user or password.
 	LaunchFlags map[string]string `json:"launch_flags"`
@@ -238,10 +290,12 @@ func executablePathSource(flag string) string {
 // derives the launch flags from proxyFlags so the credential-free Server is
 // recorded and the proxy user and password are never included. The browser
 // version, target id, navigation URL, and navigation result come from the live
-// session; the capture size and screencast config come from engine geometry.
+// session. capW/capH is the requested capture-grid (sample) size; maxW/maxH is the
+// screencast cap (the real pixel surface), recorded separately so the bundle shows
+// the requested-vs-delivered split the sizing rewrite introduced.
 func buildCDPSession(
 	browserVersion, browserFlag, targetID, navURL, navResult string,
-	capW, capH int,
+	capW, capH, maxW, maxH, droppedEvents int,
 	proxy ProxyConfig,
 ) cdpSession {
 	flags := map[string]string{}
@@ -257,11 +311,12 @@ func buildCDPSession(
 		Screencast: cdpSessionScreencast{
 			Format:    string(page.ScreencastFormatJpeg),
 			Quality:   screencastQuality,
-			MaxWidth:  capW,
-			MaxHeight: capH,
+			MaxWidth:  maxW,
+			MaxHeight: maxH,
 		},
 		NavigationURL:    navURL,
 		NavigationResult: navResult,
+		DroppedEvents:    droppedEvents,
 		LaunchFlags:      flags,
 	}
 }

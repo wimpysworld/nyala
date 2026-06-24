@@ -6,8 +6,10 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/fetch"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 	"github.com/wimpysworld/nyala/internal/render"
 )
@@ -51,17 +53,44 @@ func resolveExecutable(flag string) (string, error) {
 	)
 }
 
-// captureSize returns the source-pixel extent the screencast captures for the
-// engine's active backend and resolved cell px. The block backend samples a
-// sub-cell grid via render.BlockCaptureSize (quadrant scheme); the graphics
-// backends capture a real cell-pixel bitmap via render.GraphicsCaptureSize. The
-// engine derives this itself on every resize and backend switch, so the size is
-// never passed in from the viewer.
+// surfaceFloorPx is the minimum captured-surface dimension. A 0x0 pty (the agent
+// shell reports no pixel size) would otherwise launch a blank, zero-size surface
+// that Chromium cannot lay out. The floor keeps the layout viewport, the captured
+// surface, and the screencast cap non-degenerate so the page still renders.
+const surfaceFloorPx = 16
+
+// captureSize returns the client-side downscale (sample-grid) target for the
+// active backend: the source-pixel extent the emitted bitmap is reduced to. The
+// block backend samples a sub-cell grid via render.BlockCaptureSize (quadrant
+// scheme); the graphics backends keep the real cell-pixel bitmap via
+// render.GraphicsCaptureSize. This is no longer the layout viewport or the
+// screencast cap (see surfaceSize); it is only the downscale target and the
+// snapshot cell-px divisor source. The engine derives it itself on every resize
+// and backend switch, so the size is never passed in from the viewer.
 func (e *ChromiumEngine) captureSize(cols, rows int) (pxW, pxH int) {
 	if e.backend == "block" {
 		return render.BlockCaptureSize(true, cols, rows)
 	}
 	return render.GraphicsCaptureSize(cols, rows, e.cellW, e.cellH)
+}
+
+// surfaceSize returns the real CSS-pixel viewport the page lays out into: the
+// terminal grid in cell pixels, cols*cellW by rows*cellH, the same for every
+// backend. It is one of the three independent sizing values: the layout viewport
+// (setDeviceMetricsOverride), the captured surface (Browser.SetContentsSize), and
+// the screencast cap (maxWidth/maxHeight) all take this real viewport, while the
+// per-backend captureSize is the separate client-side downscale target. Each axis
+// is clamped to surfaceFloorPx so a 0x0 grid resolves to a small non-zero surface
+// rather than a blank one.
+func (e *ChromiumEngine) surfaceSize(cols, rows int) (pxW, pxH int) {
+	w, h := render.GraphicsCaptureSize(cols, rows, e.cellW, e.cellH)
+	if w < surfaceFloorPx {
+		w = surfaceFloorPx
+	}
+	if h < surfaceFloorPx {
+		h = surfaceFloorPx
+	}
+	return w, h
 }
 
 // textOverlayBackend reports whether the active backend consumes the crisp
@@ -76,18 +105,18 @@ func (e *ChromiumEngine) textOverlayBackend() bool {
 }
 
 // newAllocator builds a chromedp ExecAllocator for the resolved executable,
-// sized to capW x capH. It sets the launch --window-size from the capture size
-// and pins the device scale factor to 1. The window size matters because
-// emulation.SetDeviceMetricsOverride resizes only the CSS viewport, not the
-// captured content area; without it frames arrive at the default 1280x720. The
-// device-metrics override at DSF 1 is not an allocator option, so it is applied
-// on the context via applyDeviceMetrics once the context exists. When cfg has a
-// Server it adds --proxy-server; it adds --proxy-bypass-list only when both a
-// Server and a Bypass are set, so a stray NO_PROXY without a proxy adds no flag.
-func newAllocator(parent context.Context, execPath string, capW, capH int, cfg ProxyConfig) (context.Context, context.CancelFunc) {
+// sized to surfW x surfH, the real CSS-pixel viewport (surfaceSize). It sets the
+// launch --window-size from the surface size and pins the device scale factor to
+// 1. The window size matters because emulation.SetDeviceMetricsOverride resizes
+// only the CSS viewport, not the captured content area; the surface is then sized
+// authoritatively with Browser.SetContentsSize once the context and window id
+// exist. When cfg has a Server it adds --proxy-server; it adds --proxy-bypass-list
+// only when both a Server and a Bypass are set, so a stray NO_PROXY without a
+// proxy adds no flag.
+func newAllocator(parent context.Context, execPath string, surfW, surfH int, cfg ProxyConfig) (context.Context, context.CancelFunc) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(execPath),
-		chromedp.WindowSize(capW, capH),
+		chromedp.WindowSize(surfW, surfH),
 		chromedp.Flag("force-device-scale-factor", "1"),
 	)
 	for _, pair := range proxyFlags(cfg) {
@@ -113,21 +142,44 @@ func proxyFlags(cfg ProxyConfig) [][2]string {
 	return pairs
 }
 
-// applyDeviceMetrics sets the CSS viewport to capW x capH at device scale
-// factor 1 on the live context. It runs after the context exists because the
-// override is a CDP command on the page, not an allocator option. The launch
-// --window-size set by newAllocator sizes the captured content area; this sizes
-// the viewport to match.
-func applyDeviceMetrics(ctx context.Context, capW, capH int) error {
+// applySizing sizes the layout viewport and the captured surface together to
+// surfW x surfH on the live context. It sets the CSS layout viewport with
+// emulation.SetDeviceMetricsOverride at device scale factor 1, then sizes the
+// captured content area with Browser.SetContentsSize on windowID (width and
+// height in DIP). The two are distinct CDP concepts: the device-metrics override
+// resizes only the layout viewport, never the captured surface, so the surface
+// call is required or frames arrive cropped or blank. Both are CDP commands on
+// the live context, not allocator options, so they run once the context exists.
+// The screencast cap (maxWidth/maxHeight) is the third, independent value set by
+// startScreencast.
+func applySizing(ctx context.Context, windowID browser.WindowID, surfW, surfH int) error {
+	if err := chromedp.Run(ctx,
+		emulation.SetDeviceMetricsOverride(int64(surfW), int64(surfH), 1, false),
+	); err != nil {
+		return err
+	}
 	return chromedp.Run(ctx,
-		emulation.SetDeviceMetricsOverride(int64(capW), int64(capH), 1, false),
+		browser.SetContentsSize(windowID).WithWidth(int64(surfW)).WithHeight(int64(surfH)),
+	)
+}
+
+// enableLifecycle enables the Page domain and lifecycle events once per session
+// before navigation. CDP emits Page.lifecycleEvent only after
+// SetLifecycleEventsEnabled, so without it the navigate waiter cannot match a
+// loaderID from the "init" event and the capture paint latch never fires.
+func enableLifecycle(ctx context.Context) error {
+	return chromedp.Run(ctx,
+		page.Enable(),
+		page.SetLifecycleEventsEnabled(true),
 	)
 }
 
 // launch resolves the executable from flag, builds the allocator and the
-// chromedp context sized to the engine's current capture size, then applies the
-// device-metrics override at DSF 1. It stores the context and its cancel on the
-// engine. The full navigate path that calls this lands in Phase 4.
+// chromedp context sized to the real CSS-pixel viewport (surfaceSize), fetches
+// the browser window id, enables lifecycle events, then sizes the layout viewport
+// and the captured surface together. It stores the context, its cancel, and the
+// window id on the engine. The full navigate path that calls this lands in the
+// navigate rewrite.
 func (e *ChromiumEngine) launch(flag string) error {
 	if e.proxyErr != nil {
 		return e.proxyErr
@@ -137,9 +189,9 @@ func (e *ChromiumEngine) launch(flag string) error {
 		return err
 	}
 	e.mu.Lock()
-	capW, capH := e.captureW, e.captureH
+	surfW, surfH := e.surfaceSize(e.cols, e.rows)
 	e.mu.Unlock()
-	allocCtx, allocCancel := newAllocator(context.Background(), execPath, capW, capH, e.proxy)
+	allocCtx, allocCancel := newAllocator(context.Background(), execPath, surfW, surfH, e.proxy)
 	ctx, ctxCancel := chromedp.NewContext(allocCtx)
 	cancel := func() {
 		ctxCancel()
@@ -149,7 +201,26 @@ func (e *ChromiumEngine) launch(flag string) error {
 	e.ctx = ctx
 	e.cancel = cancel
 	e.mu.Unlock()
-	if err := applyDeviceMetrics(ctx, capW, capH); err != nil {
+	// Fetch the window id once per session so SetContentsSize can size the captured
+	// surface here and on every restart. GetWindowForTarget runs through chromedp.Run
+	// so it gets the target executor context.
+	var windowID browser.WindowID
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {
+		id, _, gerr := browser.GetWindowForTarget().Do(runCtx)
+		windowID = id
+		return gerr
+	})); err != nil {
+		cancel()
+		return err
+	}
+	e.mu.Lock()
+	e.windowID = windowID
+	e.mu.Unlock()
+	if err := enableLifecycle(ctx); err != nil {
+		cancel()
+		return err
+	}
+	if err := applySizing(ctx, windowID, surfW, surfH); err != nil {
 		cancel()
 		return err
 	}
@@ -230,6 +301,12 @@ func (e *ChromiumEngine) enableProxyAuth(ctx context.Context) error {
 	if !e.proxy.HasCredentials {
 		return nil
 	}
+	// fetch.Enable with no RequestPattern set pauses every request, not just the
+	// ones carrying an auth challenge. That blanket pause is load-bearing: the
+	// listener's proxyAuthContinueRequest arm continues each paused request
+	// unchanged, so the no-pattern enable plus the continue drain keeps traffic
+	// flowing while answering proxy auth. Narrowing the patterns would skip the
+	// drain but also risk missing an auth challenge, so the blanket enable stays.
 	if err := chromedp.Run(ctx, fetch.Enable().WithHandleAuthRequests(true)); err != nil {
 		return err
 	}

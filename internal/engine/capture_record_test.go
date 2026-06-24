@@ -145,7 +145,7 @@ func TestBuildCDPSessionStripsProxyCredentials(t *testing.T) {
 		"TARGET-1",
 		"https://wimpys.world",
 		"ok",
-		800, 600,
+		800, 600, 1280, 960, 0,
 		proxy,
 	)
 
@@ -178,7 +178,7 @@ func TestBuildCDPSessionMetadata(t *testing.T) {
 		"TARGET-2",
 		"https://wimpys.world",
 		"ok",
-		1024, 768,
+		1024, 768, 1024, 768, 3,
 		ProxyConfig{},
 	)
 
@@ -191,6 +191,12 @@ func TestBuildCDPSessionMetadata(t *testing.T) {
 	if session.CapturePx.Width != 1024 || session.CapturePx.Height != 768 {
 		t.Errorf("CapturePx = %dx%d, want 1024x768", session.CapturePx.Width, session.CapturePx.Height)
 	}
+	if session.Screencast.MaxWidth != 1024 || session.Screencast.MaxHeight != 768 {
+		t.Errorf("Screencast cap = %dx%d, want the surface 1024x768", session.Screencast.MaxWidth, session.Screencast.MaxHeight)
+	}
+	if session.DroppedEvents != 3 {
+		t.Errorf("DroppedEvents = %d, want 3", session.DroppedEvents)
+	}
 	if session.DeviceScaleFactor != 1 {
 		t.Errorf("DeviceScaleFactor = %v, want 1", session.DeviceScaleFactor)
 	}
@@ -202,6 +208,27 @@ func TestBuildCDPSessionMetadata(t *testing.T) {
 	}
 	if len(session.LaunchFlags) != 0 {
 		t.Errorf("LaunchFlags = %v, want empty for a zero ProxyConfig", session.LaunchFlags)
+	}
+}
+
+// TestNDJSONRecorderCountsDropped asserts the recorder counts a dropped event: a
+// non-whitelisted type is never written but is counted, so a dropped event leaves
+// a trace in cdp-session.json. A whitelisted event is written and not counted.
+func TestNDJSONRecorderCountsDropped(t *testing.T) {
+	var buf bytes.Buffer
+	r := newNDJSONRecorder(&buf)
+
+	// A whitelisted event is written, not counted.
+	r.Record(captureEvent{Type: captureEventNavigate, URL: "https://wimpys.world"})
+	// A non-whitelisted type is dropped and counted.
+	r.Record(captureEvent{Type: captureEventType("not_whitelisted")})
+	r.Record(captureEvent{Type: captureEventType("also_not")})
+
+	if got := r.droppedCount(); got != 2 {
+		t.Errorf("droppedCount = %d, want 2", got)
+	}
+	if buf.Len() == 0 {
+		t.Error("the whitelisted event was not written")
 	}
 }
 
@@ -240,11 +267,9 @@ func TestEnableCaptureSetsHook(t *testing.T) {
 // context keeps it browser-free.
 func TestComposeFrameNoCaptureLeavesStatsNil(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 	e := New("")
 
-	frame := e.composeFrame(ctx, pendingFrame{img: img, bytes: 99, decodeMS: 1.5})
+	frame := e.composeFrame(pendingFrame{img: img, bytes: 99, decodeMS: 1.5}, nil)
 
 	if frame.Stats != nil {
 		t.Fatalf("non-capture composeFrame set Stats = %+v, want nil", frame.Stats)
@@ -255,21 +280,21 @@ func TestComposeFrameNoCaptureLeavesStatsNil(t *testing.T) {
 }
 
 // TestComposeFrameCaptureFillsStats checks the capture engine attaches a
-// FrameStats carrying the payload bytes and decode time from the pendingFrame
-// and a non-negative snapshot time (task 2.3). A cancelled context drives the
-// snapshot path without a browser; the dom_snapshot event still emits.
+// FrameStats carrying the payload bytes and decode time from the pendingFrame and
+// the snapshot time from the published textSync. The DOM snapshot now runs on the
+// snapshot goroutine and publishes its time through textSync; composeFrame reads
+// it, so the test feeds a textSync carrying a snapshot time. A separate call to
+// snapshotRuns over a cancelled context proves the snapshot path still emits the
+// dom_snapshot event without a browser.
 func TestComposeFrameCaptureFillsStats(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
-	// A non-nil but cancelled context routes captureSnapshot to its error path,
-	// so syncedRuns holds the last text but still returns a timed, non-negative
-	// snapshot duration. No browser launches.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 	e := New("")
 	rec := &fakeRecorder{}
 	e.EnableCapture(rec)
 
-	frame := e.composeFrame(ctx, pendingFrame{img: img, bytes: 4096, decodeMS: 2.5})
+	ts := &textSync{}
+	ts.store(nil, 3.0)
+	frame := e.composeFrame(pendingFrame{img: img, bytes: 4096, decodeMS: 2.5}, ts)
 
 	if frame.Stats == nil {
 		t.Fatal("capture composeFrame left Stats nil, want populated")
@@ -280,17 +305,21 @@ func TestComposeFrameCaptureFillsStats(t *testing.T) {
 	if frame.Stats.ScreencastDecodeMS != 2.5 {
 		t.Errorf("ScreencastDecodeMS = %v, want 2.5", frame.Stats.ScreencastDecodeMS)
 	}
-	if frame.Stats.DOMSnapshotMS < 0 {
-		t.Errorf("DOMSnapshotMS = %v, want non-negative", frame.Stats.DOMSnapshotMS)
+	if frame.Stats.DOMSnapshotMS != 3.0 {
+		t.Errorf("DOMSnapshotMS = %v, want the published 3.0", frame.Stats.DOMSnapshotMS)
 	}
+
+	// The snapshot goroutine's snapshotRuns emits the dom_snapshot event; a
+	// cancelled context fails the snapshot fast with no browser.
+	e.snapshotRuns(cancelledContext(), overlayState{})
 	if !rec.has(captureEventDOMSnapshot) {
-		t.Error("capture path did not emit a dom_snapshot event")
+		t.Error("snapshot path did not emit a dom_snapshot event")
 	}
 }
 
 // TestNavigateAsyncEmitsNavigate checks navigateAsync records a navigate event
 // with the URL and result when capture is on (task 5.2). A cancelled chromedp
-// context makes dispatchNavigate fail fast with no browser, so the recorded
+// context makes the navigate waiter fail fast with no browser, so the recorded
 // result carries the error text.
 func TestNavigateAsyncEmitsNavigate(t *testing.T) {
 	ctx, cancel := chromedp.NewContext(context.Background())
@@ -299,7 +328,7 @@ func TestNavigateAsyncEmitsNavigate(t *testing.T) {
 	rec := &fakeRecorder{}
 	e.EnableCapture(rec)
 
-	e.navigateAsync(ctx, "https://wimpys.world")
+	e.navigateAsync(ctx, "https://wimpys.world", scrollRestore{})
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
@@ -417,7 +446,7 @@ func TestNoCaptureEmitsNothing(t *testing.T) {
 	// Capture stays off: the recorder field is nil, so no call site emits.
 
 	e.ackFrame(1)
-	e.navigateAsync(ctx, "https://wimpys.world")
+	e.navigateAsync(ctx, "https://wimpys.world", scrollRestore{})
 	_ = e.Close()
 
 	if rec.count() != 0 {
@@ -450,7 +479,7 @@ func TestProductionPathZeroCost(t *testing.T) {
 	}
 
 	// A composed frame carries no Stats: no engine-phase timing runs off capture.
-	frame := e.composeFrame(ctx, pendingFrame{img: img, bytes: 4096, decodeMS: 2.5})
+	frame := e.composeFrame(pendingFrame{img: img, bytes: 4096, decodeMS: 2.5}, nil)
 	if frame.Stats != nil {
 		t.Fatalf("non-capture composeFrame set Stats = %+v, want nil", frame.Stats)
 	}
@@ -459,7 +488,7 @@ func TestProductionPathZeroCost(t *testing.T) {
 	// detached recorder is never wired in, so a non-zero count would prove a leak.
 	detached := &fakeRecorder{}
 	e.ackFrame(1)
-	e.navigateAsync(ctx, "https://wimpys.world")
+	e.navigateAsync(ctx, "https://wimpys.world", scrollRestore{})
 	_ = e.Close()
 	if detached.count() != 0 {
 		t.Fatalf("detached recorder saw %d events on the production path, want 0", detached.count())

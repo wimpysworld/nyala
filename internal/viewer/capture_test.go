@@ -14,6 +14,66 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
+// TestRenderStreamFrameGraphicsNoSecondDownscale asserts the graphics path treats
+// frame.Img as final: the engine sized the bitmap, so RenderStreamFrame encodes it
+// at its exact dimensions with no second Downscale. A frame.Img whose size already
+// fills the grid decodes back at the same dimensions; a second downscale would
+// resize it and the decoded extent would differ.
+func TestRenderStreamFrameGraphicsNoSecondDownscale(t *testing.T) {
+	const cols, rows = 40, 20
+	const cellW, cellH = 8, 16
+	st := NewState(cols, rows, 1, 1)
+	st.cellPx = cellPx{W: cellW, H: cellH}
+	st.SetEnabled([]Backend{BackendSixel, BackendBlock})
+	st.Backend = BackendSixel
+
+	// The engine sizes the graphics bitmap to the full grid pixel extent, so the
+	// image fills the grid and the fit offset is zero. Treating it as final keeps
+	// these exact dimensions.
+	imgW, imgH := render.GraphicsCaptureSize(cols, rows, cellW, cellH)
+	img := image.NewRGBA(image.Rect(0, 0, imgW, imgH))
+	// Fill with an opaque colour so the sixel encoder emits a non-empty raster; an
+	// all-transparent image can encode to nothing.
+	for i := range img.Pix {
+		img.Pix[i] = 0xff
+	}
+	frame := render.Frame{Img: img}
+	st.ImgW, st.ImgH = imgW, imgH
+
+	var out bytes.Buffer
+	if err := st.RenderStreamFrame(frame, &out); err != nil {
+		t.Fatalf("RenderStreamFrame(sixel) = %v, want nil", err)
+	}
+	decoded, err := capture.DecodeSixel(out.Bytes())
+	if err != nil {
+		t.Fatalf("DecodeSixel: %v", err)
+	}
+	b := decoded.Bounds()
+	if b.Dx() != imgW || b.Dy() != imgH {
+		t.Errorf("decoded sixel = %dx%d, want the engine-sized %dx%d (no second downscale)", b.Dx(), b.Dy(), imgW, imgH)
+	}
+}
+
+// TestRenderStreamFrameDegenerateGuardBothBackends asserts the single degenerate
+// guard hoisted into RenderStreamFrame covers both the block and the graphics
+// backends: a zero-extent frame.Img draws nothing rather than downscaling to a
+// zero extent.
+func TestRenderStreamFrameDegenerateGuardBothBackends(t *testing.T) {
+	frame := render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 0, 0))}
+	for _, b := range []Backend{BackendBlock, BackendSixel} {
+		st := NewState(40, 20, 1, 1)
+		st.SetEnabled([]Backend{BackendSixel, BackendBlock})
+		st.Backend = b
+		var out bytes.Buffer
+		if err := st.RenderStreamFrame(frame, &out); err != nil {
+			t.Fatalf("RenderStreamFrame(%v) on a zero-extent image = %v, want nil", b, err)
+		}
+		if out.Len() != 0 {
+			t.Errorf("RenderStreamFrame(%v) wrote %d bytes for a zero-extent image, want a no-op", b, out.Len())
+		}
+	}
+}
+
 // fakeBundle is the bundleWriter the capture-driver tests drive instead of a
 // real on-disk capture.Bundle. It hands back in-memory buffers for the tee and
 // the event sink, records each WriteFrame input, and remembers the finalise
@@ -75,6 +135,11 @@ func (b *fakeBundle) FinalisePartial(reason string) error {
 type fakeSession struct {
 	filled bool
 	data   []byte
+	// painted is the painted latch the driver waits on. A nil channel means
+	// "already painted": Painted returns a pre-closed channel so the session-timing
+	// tests, not the gate, drive the bounded loop. The gate tests set their own
+	// channel.
+	painted <-chan struct{}
 }
 
 func (s *fakeSession) SessionJSON() []byte {
@@ -82,6 +147,22 @@ func (s *fakeSession) SessionJSON() []byte {
 		return nil
 	}
 	return s.data
+}
+
+// closedChan is a pre-closed channel the fake session hands back when no explicit
+// painted latch is set, so a session-timing test proceeds straight to the bounded
+// loop.
+var closedChan = func() <-chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
+
+func (s *fakeSession) Painted() <-chan struct{} {
+	if s.painted == nil {
+		return closedChan
+	}
+	return s.painted
 }
 
 // fakeCaptureEngine is the viewer.Engine the capture-driver tests drive. It
@@ -159,7 +240,7 @@ func TestCaptureForcedBlockOverridesDetectedKitty(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := runCapture(eng, "https://example.test", st, &tty, bundle, ModeBlock, 1, captureIdle)
+	err := runCapture(eng, "https://example.test", st, &tty, bundle, ModeBlock, 1, captureIdle, captureIdle)
 	if err != nil {
 		t.Fatalf("runCapture err = %v, want nil for a full forced-block capture", err)
 	}
@@ -182,7 +263,7 @@ func TestRunCaptureForcedSixelRejectedWritesPartial(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := runCapture(eng, "https://example.test", blockState(), &tty, bundle, ModeSixel, 1, time.Millisecond)
+	err := runCapture(eng, "https://example.test", blockState(), &tty, bundle, ModeSixel, 1, captureIdle, time.Millisecond)
 
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("runCapture err = %v, want ErrPartialBundle", err)
@@ -208,7 +289,7 @@ func TestRunCaptureForcedKittyRejectedWritesPartial(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := runCapture(eng, "https://example.test", blockState(), &tty, bundle, ModeKitty, 1, time.Millisecond)
+	err := runCapture(eng, "https://example.test", blockState(), &tty, bundle, ModeKitty, 1, captureIdle, time.Millisecond)
 
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("runCapture err = %v, want ErrPartialBundle", err)
@@ -231,7 +312,7 @@ func TestRunCaptureForcedBlockNotRejected(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := runCapture(eng, "https://example.test", blockState(), &tty, bundle, ModeBlock, 1, captureIdle)
+	err := runCapture(eng, "https://example.test", blockState(), &tty, bundle, ModeBlock, 1, captureIdle, captureIdle)
 	if err != nil {
 		t.Fatalf("runCapture err = %v, want nil for a full block capture", err)
 	}
@@ -271,7 +352,7 @@ func TestRunCaptureFullReturnsNilPartialReturnsSentinel(t *testing.T) {
 		eng := &fakeCaptureEngine{frames: ch}
 		var tty bytes.Buffer
 
-		err := runCapture(eng, "https://example.test", blockState(), &tty, &fakeBundle{}, ModeBlock, 1, captureIdle)
+		err := runCapture(eng, "https://example.test", blockState(), &tty, &fakeBundle{}, ModeBlock, 1, captureIdle, captureIdle)
 		if err != nil {
 			t.Fatalf("runCapture err = %v, want nil for a full capture", err)
 		}
@@ -282,7 +363,7 @@ func TestRunCaptureFullReturnsNilPartialReturnsSentinel(t *testing.T) {
 		eng := &fakeCaptureEngine{frames: make(chan render.Frame)}
 		var tty bytes.Buffer
 
-		err := runCapture(eng, "https://example.test", blockState(), &tty, &fakeBundle{}, ModeSixel, 1, time.Millisecond)
+		err := runCapture(eng, "https://example.test", blockState(), &tty, &fakeBundle{}, ModeSixel, 1, captureIdle, time.Millisecond)
 		if !errors.Is(err, ErrPartialBundle) {
 			t.Fatalf("runCapture err = %v, want ErrPartialBundle for a partial capture", err)
 		}
@@ -313,7 +394,7 @@ func TestCaptureLoopWritesSessionAtFinalise(t *testing.T) {
 	bundle := &fakeBundle{onWriteFrame: func() { sess.filled = true }}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, 1, captureIdle)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, 1, captureIdle, captureIdle)
 	if err != nil {
 		t.Fatalf("captureLoop err = %v, want nil for a full capture", err)
 	}
@@ -339,7 +420,7 @@ func TestCaptureLoopWritesSessionOnPartialExit(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, 3, captureIdle)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, 3, captureIdle, captureIdle)
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
 	}
@@ -381,6 +462,38 @@ func TestDrawCaptureFrameCopiesMeta(t *testing.T) {
 	}
 }
 
+// TestDrawCaptureFrameRecordsSixelPayloadBytes asserts the sixel payload byte
+// count reaches FrameInput.Perf.SixelPayloadBytes for the sixel backend, and stays
+// zero for the block backend. The count is the renderer's own output, excluding
+// the clearScreen prefix, so it is positive but below the total terminal bytes.
+// No real terminal: the draw writes to a bytes.Buffer.
+func TestDrawCaptureFrameRecordsSixelPayloadBytes(t *testing.T) {
+	st := blockState()
+	st.SetEnabled([]Backend{BackendSixel, BackendBlock})
+	st.Backend = BackendSixel
+	var buf bytes.Buffer
+
+	in, err := drawCaptureFrame(st, blockFrame(), &buf)
+	if err != nil {
+		t.Fatalf("drawCaptureFrame err = %v, want nil", err)
+	}
+	if in.Perf.SixelPayloadBytes <= 0 {
+		t.Fatalf("SixelPayloadBytes = %d, want a positive sixel payload size", in.Perf.SixelPayloadBytes)
+	}
+	if in.Perf.SixelPayloadBytes >= in.Perf.TerminalBytes {
+		t.Errorf("SixelPayloadBytes = %d, want below TerminalBytes %d (the clearScreen prefix is excluded)",
+			in.Perf.SixelPayloadBytes, in.Perf.TerminalBytes)
+	}
+
+	blockIn, err := drawCaptureFrame(blockState(), blockFrame(), &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("drawCaptureFrame (block) err = %v, want nil", err)
+	}
+	if blockIn.Perf.SixelPayloadBytes != 0 {
+		t.Errorf("block SixelPayloadBytes = %d, want 0", blockIn.Perf.SixelPayloadBytes)
+	}
+}
+
 // TestCaptureLoopFullCaptureReturnsNil covers exit condition 1: n scripted frames
 // deliver, so the loop draws n, finalises a full bundle, and returns nil (task
 // 3.4). It buffers all n frames so the loop never waits on the idle timer.
@@ -394,7 +507,7 @@ func TestCaptureLoopFullCaptureReturnsNil(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, captureIdle)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, captureIdle, captureIdle)
 	if err != nil {
 		t.Fatalf("captureLoop err = %v, want nil for a full capture", err)
 	}
@@ -419,7 +532,7 @@ func TestCaptureLoopFirstDrawTimeoutWritesPartial(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, time.Millisecond)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, captureIdle, time.Millisecond)
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
 	}
@@ -434,6 +547,68 @@ func TestCaptureLoopFirstDrawTimeoutWritesPartial(t *testing.T) {
 	}
 }
 
+// TestCaptureLoopDiscardsPrePaintFrames asserts the paint gate: frames delivered
+// before the painted latch closes are drained and discarded, never drawn or
+// written, and only post-paint frames are counted up to n. A goroutine sends two
+// pre-paint blank frames, closes the latch, then sends n post-paint frames. The
+// bundle must hold exactly n frames and finalise full. This keeps a blank
+// pre-paint frame out of the captured n. It forces block detection via blockState
+// and uses no terminal.
+func TestCaptureLoopDiscardsPrePaintFrames(t *testing.T) {
+	const n = 2
+	painted := make(chan struct{})
+	sess := &fakeSession{painted: painted}
+	ch := make(chan render.Frame)
+	eng := &fakeCaptureEngine{frames: ch}
+	bundle := &fakeBundle{}
+	var tty bytes.Buffer
+
+	go func() {
+		// Two pre-paint frames the gate must discard.
+		ch <- blockFrame()
+		ch <- blockFrame()
+		close(painted)
+		// n post-paint frames the bounded loop must count.
+		for i := 0; i < n; i++ {
+			ch <- blockFrame()
+		}
+	}()
+
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, n, captureIdle, captureIdle)
+	if err != nil {
+		t.Fatalf("captureLoop err = %v, want nil for a full post-paint capture", err)
+	}
+	if bundle.finalise != "full" {
+		t.Fatalf("bundle finalise = %q, want full", bundle.finalise)
+	}
+	if len(bundle.frames) != n {
+		t.Fatalf("bundle wrote %d frames, want %d (pre-paint frames must be discarded)", len(bundle.frames), n)
+	}
+}
+
+// TestCaptureLoopPaintTimeoutWritesPartial asserts the paint gate's deadline: the
+// painted latch never closes, so the loop writes a partial bundle reasoned "first
+// contentful paint timeout" and returns ErrPartialBundle, without counting any
+// frame. A tiny paint deadline runs it instantly. The frames channel stays open
+// and empty so only the paint deadline can fire.
+func TestCaptureLoopPaintTimeoutWritesPartial(t *testing.T) {
+	sess := &fakeSession{painted: make(chan struct{})} // never closed
+	eng := &fakeCaptureEngine{frames: make(chan render.Frame)}
+	bundle := &fakeBundle{}
+	var tty bytes.Buffer
+
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, 3, time.Millisecond, captureIdle)
+	if !errors.Is(err, ErrPartialBundle) {
+		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
+	}
+	if !strings.Contains(bundle.finalise, "first contentful paint timeout") {
+		t.Errorf("partial reason = %q, want it to name the first contentful paint timeout", bundle.finalise)
+	}
+	if len(bundle.frames) != 0 {
+		t.Errorf("bundle wrote %d frames, want 0 on a paint timeout", len(bundle.frames))
+	}
+}
+
 // TestCaptureLoopPerFrameIdleTimeoutWritesPartial covers exit condition 3: one
 // frame draws, then the channel goes silent, so the reset idle timer fires after
 // the first draw. The loop finalises a partial bundle and returns ErrPartialBundle
@@ -445,7 +620,7 @@ func TestCaptureLoopPerFrameIdleTimeoutWritesPartial(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, time.Millisecond)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, captureIdle, time.Millisecond)
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
 	}
@@ -477,7 +652,7 @@ func TestCaptureLoopSteadyStreamDoesNotTripIdle(t *testing.T) {
 		}
 	}()
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, idle)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, captureIdle, idle)
 	if err != nil {
 		t.Fatalf("captureLoop err = %v, want nil; a steady stream must not trip the idle timeout", err)
 	}
@@ -505,7 +680,7 @@ func TestCaptureLoopChannelCloseBeforeNWritesPartial(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, captureIdle)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, captureIdle, captureIdle)
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
 	}
@@ -529,7 +704,7 @@ func TestCaptureLoopWriteFrameErrorWritesPartial(t *testing.T) {
 	bundle := &fakeBundle{writeErr: errors.New("disk full")}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, captureIdle)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, captureIdle, captureIdle)
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
 	}
@@ -555,7 +730,7 @@ func TestCaptureLoopNavigateFailureWritesPartial(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, time.Millisecond)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, captureIdle, time.Millisecond)
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
 	}
@@ -584,7 +759,7 @@ func TestCaptureLoopTeeMirrorsClearAndRenderOnly(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	if err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, captureIdle); err != nil {
+	if err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, captureIdle, captureIdle); err != nil {
 		t.Fatalf("captureLoop err = %v, want nil", err)
 	}
 
