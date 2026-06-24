@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"sync"
+	"time"
 
 	"github.com/chromedp/cdproto/domsnapshot"
 	"github.com/chromedp/cdproto/page"
@@ -13,13 +14,22 @@ import (
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
+// msSince returns the milliseconds elapsed since start as a wall-clock duration.
+// It is never negative because time.Since uses the monotonic clock. The capture
+// phase timing uses it so the stats carry float milliseconds.
+func msSince(start time.Time) float64 {
+	return float64(time.Since(start).Microseconds()) / 1000
+}
+
 // pendingFrame is one decoded screencast frame waiting in the latest-wins slot,
 // paired with the ack id Chrome expects so the frame can be acked on consume or
 // on replace.
 type pendingFrame struct {
-	img  *image.RGBA                   // decoded bitmap in RGBA channel order
-	meta *page.ScreencastFrameMetadata // scroll offset and page scale for the sync
-	ack  int64                         // SessionID to pass to page.ScreencastFrameAck
+	img      *image.RGBA                   // decoded bitmap in RGBA channel order
+	meta     *page.ScreencastFrameMetadata // scroll offset and page scale for the sync
+	ack      int64                         // SessionID to pass to page.ScreencastFrameAck
+	bytes    int                           // screencast payload byte size, for capture stats
+	decodeMS float64                       // wall-clock decode time in ms, set under capture only
 }
 
 // ackFunc acks one received screencast frame by its SessionID. The live loop
@@ -137,14 +147,34 @@ func (e *ChromiumEngine) startScreencast(ctx context.Context, slot *frameSlot, c
 		if !ok {
 			return
 		}
+		// The recorder carries metadata only here, never f.Data, so the frame
+		// image bytes cannot enter the event stream.
+		if e.recorder != nil {
+			e.recorder.Record(captureEvent{
+				Type:      captureEventScreencastFrame,
+				Meta:      f.Metadata,
+				SessionID: f.SessionID,
+			})
+		}
+		// Time the decode only under capture; off the capture path the wall-clock
+		// read is skipped and decodeMS stays zero.
+		start := time.Now()
 		img, err := decodeScreencastImage(f.Data)
 		if err != nil {
 			// A corrupt frame is acked and dropped so the stream does not stall.
 			_ = chromedp.Run(ctx, page.ScreencastFrameAck(f.SessionID))
 			return
 		}
-		slot.put(pendingFrame{img: img, meta: f.Metadata, ack: f.SessionID}, e.ackFrame)
+		pending := pendingFrame{img: img, meta: f.Metadata, ack: f.SessionID}
+		if e.captureOn {
+			pending.bytes = len(f.Data)
+			pending.decodeMS = msSince(start)
+		}
+		slot.put(pending, e.ackFrame)
 	})
+	if e.recorder != nil {
+		e.recorder.Record(captureEvent{Type: captureEventScreencastControl, Action: "start"})
+	}
 	return chromedp.Run(ctx,
 		page.StartScreencast().
 			WithFormat(page.ScreencastFormatJpeg).
@@ -160,6 +190,9 @@ func (e *ChromiumEngine) ackFrame(ack int64) {
 	e.mu.Lock()
 	ctx := e.ctx
 	e.mu.Unlock()
+	if e.recorder != nil {
+		e.recorder.Record(captureEvent{Type: captureEventFrameAck, SessionID: ack})
+	}
 	if ctx == nil {
 		return
 	}
@@ -200,7 +233,16 @@ func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, fram
 // read error it also holds the last-matched text so a frame is never emitted with
 // stale-but-wrong text.
 func (e *ChromiumEngine) composeFrame(ctx context.Context, pending pendingFrame) render.Frame {
-	return render.Frame{Img: pending.img, Text: e.syncedRuns(ctx, pending.meta)}
+	runs, snapshotMS := e.syncedRuns(ctx, pending.meta)
+	frame := render.Frame{Img: pending.img, Text: runs}
+	if e.captureOn {
+		frame.Stats = &render.FrameStats{
+			ScreencastPayloadBytes: int64(pending.bytes),
+			ScreencastDecodeMS:     pending.decodeMS,
+			DOMSnapshotMS:          snapshotMS,
+		}
+	}
+	return frame
 }
 
 // syncedRuns runs one captureSnapshot, decodes its inline text boxes to glyph
@@ -209,20 +251,28 @@ func (e *ChromiumEngine) composeFrame(ctx context.Context, pending pendingFrame)
 // fold the fresh runs or hold the last-matched set. It records the emitted set as
 // the last-matched. On a snapshot error it holds the last-matched runs so the
 // overlay holds rather than flickers.
-func (e *ChromiumEngine) syncedRuns(ctx context.Context, meta *page.ScreencastFrameMetadata) []render.GlyphRun {
+func (e *ChromiumEngine) syncedRuns(ctx context.Context, meta *page.ScreencastFrameMetadata) ([]render.GlyphRun, float64) {
 	if ctx == nil {
 		emit := errorHoldRuns(context.Canceled, nil, e.lastText)
 		e.lastText = emit
-		return emit
+		return emit, 0
 	}
 	e.mu.Lock()
 	cellW, cellH := e.snapshotCellPx()
 	e.mu.Unlock()
+	start := time.Now()
 	documents, strs, err := captureSnapshot(ctx)
+	var snapshotMS float64
+	if e.captureOn {
+		snapshotMS = msSince(start)
+	}
+	if e.recorder != nil {
+		e.recorder.Record(captureEvent{Type: captureEventDOMSnapshot})
+	}
 	if err != nil {
 		emit := errorHoldRuns(err, nil, e.lastText)
 		e.lastText = emit
-		return emit
+		return emit, snapshotMS
 	}
 	bitmap := bitmapScrollOffset(meta)
 	// deviceScaleFactor is pinned to 1 (DSF 1 plus a small viewport), so capture
@@ -231,7 +281,7 @@ func (e *ChromiumEngine) syncedRuns(ctx context.Context, meta *page.ScreencastFr
 	decoded := decodeGlyphRuns(documents, strs, deviceScaleFactor, bitmap.X, bitmap.Y, cellW, cellH)
 	emit, lastMatched := syncDecision(bitmap, snapshotScrollOffset(documents), metaPageScaleFactor(meta), decoded, e.lastText)
 	e.lastText = lastMatched
-	return emit
+	return emit, snapshotMS
 }
 
 // bitmapScrollOffset reads the bitmap's CSS-pixel scroll offset from the
@@ -276,6 +326,9 @@ func (e *ChromiumEngine) restartStream() error {
 	e.mu.Unlock()
 	if ctx == nil || slot == nil {
 		return nil
+	}
+	if e.recorder != nil {
+		e.recorder.Record(captureEvent{Type: captureEventScreencastControl, Action: "restart"})
 	}
 	_ = chromedp.Run(ctx, page.StopScreencast())
 	if err := applyDeviceMetrics(ctx, capW, capH); err != nil {

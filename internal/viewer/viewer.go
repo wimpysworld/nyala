@@ -81,6 +81,22 @@ type State struct {
 	ImgH    int          // loaded image height in pixels
 	Enabled []Backend    // backends in the Tab cycle, block first
 	cellPx               // terminal cell pixel size for graphics scaling
+
+	// captureGrid is the capture-only grid sink. It defaults nil. The capture
+	// driver sets it before a block draw so renderBlock writes the composed
+	// letterbox grid here as well as to the terminal, yielding both the drawn
+	// bytes and the serialised grid from one compose with no drift. Off the
+	// capture path it stays nil and renderBlock writes nothing to it.
+	captureGrid *block.Grid
+}
+
+// SetCaptureGrid sets the capture-only grid sink. The capture driver passes a
+// pointer to a block.Grid before each block draw; renderBlock fills it with the
+// composed letterbox grid it draws, so the serialised grid never drifts from the
+// drawn bytes. Pass nil to clear it. It is a no-op for the graphics backends,
+// which compose no cell grid.
+func (s *State) SetCaptureGrid(g *block.Grid) {
+	s.captureGrid = g
 }
 
 // NewState builds the initial state: block as the safe pre-detection backend, the
@@ -331,6 +347,9 @@ func (s *State) renderBlock(src *image.RGBA, text []render.GlyphRun, w io.Writer
 		inner := block.Renderer{Cols: cols, Rows: rows, Scheme: s.Scheme}
 		return inner.Compose(render.Frame{Img: sub, Text: text})
 	})
+	if s.captureGrid != nil {
+		*s.captureGrid = grid
+	}
 	return writeGrid(grid, s.Colour, w)
 }
 

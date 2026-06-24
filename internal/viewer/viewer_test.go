@@ -6,6 +6,7 @@ import (
 	"errors"
 	"image"
 	"image/color"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -1001,6 +1002,8 @@ func (e streamTestEngine) SetBackend(name string) {
 		e.setBackend(name)
 	}
 }
+
+func (e streamTestEngine) EnableCapture(io.Writer) CaptureSession { return nil }
 
 func (e streamTestEngine) SetCellPx(int, int) {}
 

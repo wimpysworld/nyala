@@ -244,6 +244,57 @@ Chromium against a self-contained `data:` URL, and asserts at least one synced f
 arrives with non-empty text. It runs via `just live`, stays off `just test` and CI,
 and skips with a clear message when no Chromium resolves.
 
+### Bounded capture (diagnostic tooling)
+
+A later pass added bounded capture over the Stage 3 seams, so an agent loop or a
+person can inspect a run that drew nothing it can see. It records what Chromium
+sent, what Nyala built, and the exact bytes Nyala wrote to the terminal. It is
+diagnostic capture, not benchmarking.
+
+Two controls drive it. `--backend=auto|block|kitty|sixel` (default `auto`) forces
+one renderer; `auto` keeps the detect-and-cycle behaviour. A named graphics backend
+is validated after terminal detection and before navigation, so it fails fast when
+the terminal cannot run it. `NYALA_CAPTURE=n` enables capture: unset or `0` is off,
+`1` writes a first-frame bundle, and a positive `n` draws `n` usable frames, writes
+one `nyala-capture-*` bundle directory, prints the path, then exits. A usable frame
+is one `render.Frame` the engine delivers with a decoded bitmap, so frames the
+latest-wins slot drops never count. A full capture exits 0; a partial run (the
+first-draw deadline, the per-frame idle timeout, a forced-backend rejection, or the
+frame channel closing early) writes what it has and exits non-zero. Tab cycling is
+off in capture mode.
+
+The work sits in four places, each behind the existing seams:
+
+- **The render-measurement carrier.** `render.FrameStats` rides on `render.Frame`
+  (`render.go`). The engine fills it with its own phase timings and sizes
+  (screencast payload bytes, screencast decode, DOM snapshot) only when capture is
+  enabled; `Frame.Stats` is nil on the production path, so live frames pay nothing.
+  The viewer times its own draw phases separately.
+- **The capture driver.** `internal/viewer/capture.go` adds `viewer.Capture`, a
+  sibling to `viewer.Stream` that `app.Run` selects when `NYALA_CAPTURE` is set. It
+  shares the setup and the per-frame `RenderStreamFrame` call but runs a bounded loop
+  with no key reader and no Tab, keeping the interactive `Stream` path untouched. It
+  tees the terminal writer through `io.MultiWriter(tty, rawFile)` at the one render
+  call, so `terminal-stream.raw` gets the exact emitted frame bytes with no renderer
+  change.
+- **The CDP recorder.** `internal/engine/capture_record.go` adds
+  `engine.NewCaptureRecorder`, enabled before `Navigate`. It writes a fixed whitelist
+  of events to `cdp-events.ndjson` from the engine's existing listeners and call
+  sites, never a firehose, and excludes image bytes; the decoded bitmap lives in
+  `screenshot.png`. `app` constructs the recorder so the viewer keeps no engine
+  import.
+- **The bundle writer.** `internal/capture` writes the bundle: root `manifest.json`,
+  `report.md`, `performance.json`, `terminal-stream.raw`, `cdp-session.json`,
+  `cdp-events.ndjson`, and per-frame `frames/frame-NNNNNN/` with `screenshot.png`,
+  `text.txt`, `cdp-payload.json`, `text-map.json`, and `terminal-model.json` (the
+  composed block cell grid, block backend only; the graphics backends omit it). The
+  default directory is a fresh `os.MkdirTemp` with the `nyala-capture-*` prefix.
+
+The bundle records page pixels, page text, URLs, and terminal bytes with no
+redaction, and launch flags strip secrets and proxy credentials. It is local
+evidence that can expose private data, so it is safe to share only after the user
+reviews it.
+
 ## Decisions recorded with rationale
 
 - **One synced `Frames()` channel, not two.** The engine folds the matched text onto

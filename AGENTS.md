@@ -5,13 +5,13 @@ A browser for the terminal: a TTY web browser driving headless Chromium via the 
 ## Project structure
 
 - `cmd/nyala` - entrypoint; kong CLI wiring. `app.CLI` holds the flags.
-- `internal/render` - the `Frame`/`Renderer` seam, with backends in `block`, `sixel`, `kitty`, and glyph loading in `font`.
-- `internal/engine` - the `Engine` seam and `ChromiumEngine`: launches headless Chromium, streams the screencast, extracts the DOM text layer over CDP, and emits synced `render.Frame` values. It also reads the conventional proxy environment variables and drives Chromium's proxy (see the runtime note below).
-- `internal/capture` - rasterises a frame and decodes terminal output back to pixels.
+- `internal/render` - the `Frame`/`Renderer` seam, with backends in `block`, `sixel`, `kitty`, and glyph loading in `font`. `render.Frame` carries `FrameStats` for engine-phase capture timing; it is nil off the capture path, so production stays zero-cost.
+- `internal/engine` - the `Engine` seam and `ChromiumEngine`: launches headless Chromium, streams the screencast, extracts the DOM text layer over CDP, and emits synced `render.Frame` values. It also reads the conventional proxy environment variables and drives Chromium's proxy (see the runtime note below). `capture_record.go` records whitelisted CDP events (no image bytes, proxy credentials stripped from `cdp-session.json`) for the capture bundle.
+- `internal/capture` - rasterises a frame and decodes terminal output back to pixels, and writes the bounded-capture bundle.
 - `internal/metrics` - image and performance measures over a frame.
 - `internal/ocr` - text legibility scoring (see the OCR gotcha below).
 - `internal/harness` - the diagnostics sweep, golden archives, and thresholds.
-- `internal/viewer` - drives the terminal: the `stream.go` push consumer that draws engine frames, plus capability detection and backend cycling.
+- `internal/viewer` - drives the terminal: the `stream.go` push consumer that draws engine frames, the `Capture` driver (sibling to `Stream`, no key reader, mirrors terminal bytes to `terminal-stream.raw` via `io.MultiWriter`), plus capability detection and backend cycling.
 - `docs/OVERVIEW.md` - architecture and design decisions.
 - `docs/STAGE-0.md`, `docs/STAGE-1.md`, `docs/STAGE-2.md`, `docs/STAGE-3.md` - durable records of the completed Stage 0, Stage 1, Stage 2, and Stage 3 work.
 
@@ -25,7 +25,7 @@ Tools are pinned by the Nix flake. Enter the dev shell with `nix develop`, or le
 
 - `just build` - build the `nyala` binary.
 - `just run https://wimpys.world` - build `./nyala`, then run it against a URL. Prefer this harness when agents need to launch the browser for fenced or local debugging, because it handles `FENCE_SANDBOX=1` (no-sandbox) for that run.
-- `just capture=1 run https://wimpys.world` - run the same harness with `NYALA_CAPTURE=1`. The recipe also accepts `capture=` after the URL. It parses `backend=`, but the current recipe does not pass it through as an active backend selector.
+- `just capture=1 run https://wimpys.world` - run the same harness with `NYALA_CAPTURE=1`, which writes a first-frame bundle (see `NYALA_CAPTURE` below for the bounded-capture lifecycle and `n>1`). The recipe also accepts `capture=` after the URL. It parses `backend=`, but the current recipe does not pass it through as an active backend selector.
 - `just test` - run the fast unit tests, the routine gate. It runs no corpus sweep, no calibration, and no rasteriser-driven full-corpus measurement, so the harness package finishes in seconds.
 - `just diagnostics` - run the heavy quality gate (`go test -tags diagnostics ./internal/harness/`) over the five committed fixtures (`linuxmatters.png` plus the four `testpage-*` pages) at a fixed 120x40 grid; the calibration runs over the four test pages only. It runs one corpus sweep and one calibration, shared across the tagged tests, writes its report JSON/CSV, summary, and artefact PNGs to `testdata/diagnostics/` (gitignored), gates against the committed baseline and thresholds, and runs the calibration, golden, and overlay-grade tracks. The overlay grade hard-gates the overlaid-grid golden and the matcher `CER == 0`, gates the WCAG low-contrast text-cell count against `baseline.json`, and reports the gosseract differentiator. It takes minutes, so run it deliberately, not on every change.
 - `just live` - run the live-browser integration test (`go test -tags live ./internal/engine/`). It launches a real Chromium, so it stays off `just test` and off CI; run it deliberately in the dev shell.
@@ -40,7 +40,9 @@ Tools are pinned by the Nix flake. Enter the dev shell with `nix develop`, or le
 - `just release-check`, `just release-snapshot` - GoReleaser config check and local snapshot.
 - `just check` - full local gate (tidy-check, fmt-check, lint, test, build, release-check, `nix flake check`, vuln).
 
-The `nyala` binary opens the positional `<url>`. A bare host gains an `https://` scheme; `http`, `https`, and `file` are accepted, others are rejected. Its flags are `--browser` (path to the Chromium executable to drive), `--color` (auto, truecolor, 256, none; default auto), and `--version`. The viewer auto-detects terminal capability (Kitty, then Sixel, then Block) and Tab cycles the supported backends. The diagnostics sweep runs via `just diagnostics`; the golden archives regenerate via `just update-golden`.
+The `nyala` binary opens the positional `<url>`. A bare host gains an `https://` scheme; `http`, `https`, and `file` are accepted, others are rejected. Its flags are `--browser` (path to the Chromium executable to drive), `--color` (auto, truecolor, 256, none; default auto), `--backend` (auto, block, kitty, sixel; default auto), and `--version`. `--backend=auto` keeps the detection behaviour below; a named backend forces one renderer and fails fast if the terminal cannot run it (validated after detection, before navigation). The viewer auto-detects terminal capability (Kitty, then Sixel, then Block) and Tab cycles the supported backends. The diagnostics sweep runs via `just diagnostics`; the golden archives regenerate via `just update-golden`.
+
+`NYALA_CAPTURE=n` is the bounded-capture switch. Unset or `0` is off. `1` writes a first-frame bundle. A positive `n` captures and draws `n` usable frames (a delivered `render.Frame` with a non-nil bitmap), writes one `nyala-capture-*` temp directory bundle, prints its path, then exits; Tab cycling is off in capture mode. A full capture exits 0; a partial bundle exits non-zero (first-draw timeout, per-frame idle timeout, forced-backend rejection, or frame channel close). The bundle is plain files: root `manifest.json`, `report.md`, `performance.json`, `terminal-stream.raw`, `cdp-session.json`, `cdp-events.ndjson`, and per-frame `frames/frame-NNNNNN/` with `screenshot.png`, `text.txt`, `cdp-payload.json`, `text-map.json`, and `terminal-model.json` (block backend only; Kitty and Sixel omit it and the manifest notes a graphics backend has no cell grid). The bundle can hold sensitive page content, so share it only after review.
 
 Chromium is a runtime dependency. The Nix dev shell adds it Linux-gated, and the wrapped binary sets `CHROME_PATH` to it. The binary discovers the executable via `--browser`, then `NYALA_BROWSER`, then `CHROME_PATH`, then a `PATH` lookup.
 
