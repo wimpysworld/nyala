@@ -7,13 +7,15 @@ successor to browsh, built in Go, driving headless Chromium via the Chrome
 DevTools Protocol (CDP). Targets a fully terminal-native experience, including on
 a bare Linux console via KMSCON.
 
-Stage 0, Stage 1, and Stage 2 are built. Three swappable rendering backends sit behind one
+Stage 0, Stage 1, Stage 2, and Stage 3 are built. Three swappable rendering backends sit behind one
 `Renderer` seam (quadrant or half-block, Sixel, Kitty), with a measurement harness
 and automatic capability plus colour detection that nominate the best backend and
-colour depth per terminal. Stage 2 adds the crisp text overlay on the block path. See
-[`STAGE-0.md`](./STAGE-0.md), [`STAGE-1.md`](./STAGE-1.md), and
-[`STAGE-2.md`](./STAGE-2.md). The browser pipeline is the remaining design goal; the rest
-of this document is the target architecture and the research behind the unbuilt stages.
+colour depth per terminal. Stage 2 adds the crisp text overlay on the block path, and
+Stage 3 makes the binary web-first: `nyala <url>` launches headless Chromium, streams the
+screencast, and renders the live page. See
+[`STAGE-0.md`](./STAGE-0.md), [`STAGE-1.md`](./STAGE-1.md),
+[`STAGE-2.md`](./STAGE-2.md), and [`STAGE-3.md`](./STAGE-3.md). Stage 4 is the remaining design goal; the rest
+of this document is the target architecture and the research behind the unbuilt stage.
 
 ## Goals
 
@@ -1074,7 +1076,7 @@ static image first; add the live Chromium screencast later. Each stage kills one
 | 0 | Load a PNG, render it via all three backends, hotkey to cycle them | The three output paths work and are swappable behind one seam | Built; see [`STAGE-0.md`](./STAGE-0.md) |
 | 1 | Capability probe picks the default backend; manual override stays | Detection is correct on the real target terminals | Built; see [`STAGE-1.md`](./STAGE-1.md) |
 | 2 | Composite hardcoded glyph runs over the bitmap | The crisp-text overlay, the gold-standard differentiator | Built; see [`STAGE-2.md`](./STAGE-2.md) |
-| 3 | Replace the PNG with a chromedp screencast loop; the binary becomes web-first (`nyala <url>`), dropping the static-PNG viewer | The frame ack-pump loop and real FPS | Remaining |
+| 3 | Replace the PNG with a chromedp screencast loop; the binary becomes web-first (`nyala <url>`), dropping the static-PNG viewer | The frame ack-pump loop and real FPS | Built; see [`STAGE-3.md`](./STAGE-3.md) |
 | 4 | Run under Bubble Tea v2 with a URL bar and a viewport region | Coexistence: the chrome renderer does not clobber graphics | Remaining |
 
 Pass/fail for the PoC: on a no-graphics terminal (KMSCON), the quadrant plus text-overlay
@@ -1082,7 +1084,7 @@ path renders a real webpage with images as blocks and text as crisp glyphs; on f
 kitty the same `Frame` renders via Sixel and Kitty with no change above the `Renderer`
 seam. Measure correctness (golden frame), bytes per frame, and FPS on each target.
 
-Stage 0 is the image-based harness, and it is built. The record of the work done and the decisions made is in [`STAGE-0.md`](./STAGE-0.md). Stage 1 is the capability and colour detection, and it is built; its record is in [`STAGE-1.md`](./STAGE-1.md). Stage 2 is the crisp text overlay, and it is built; its record is in [`STAGE-2.md`](./STAGE-2.md). Stages 3 and 4 remain.
+Stage 0 is the image-based harness, and it is built. The record of the work done and the decisions made is in [`STAGE-0.md`](./STAGE-0.md). Stage 1 is the capability and colour detection, and it is built; its record is in [`STAGE-1.md`](./STAGE-1.md). Stage 2 is the crisp text overlay, and it is built; its record is in [`STAGE-2.md`](./STAGE-2.md). Stage 3 is the live browser integration, and it is built; its record is in [`STAGE-3.md`](./STAGE-3.md). Stage 4 remains.
 
 ## Prior Art (reference, not dependencies)
 

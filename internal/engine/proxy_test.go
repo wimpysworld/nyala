@@ -195,6 +195,36 @@ func TestParseProxyEnvMalformedURL(t *testing.T) {
 	}
 }
 
+func TestParseProxyEnvSchemeless(t *testing.T) {
+	// A scheme-less value parses to an opaque form (Host empty, User nil), so
+	// the credential strip would miss it. It must error, return a zero config,
+	// and never echo the password. Bare host:port has the same shape.
+	const secret = "leaktoken"
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"credentialed no scheme", "user:" + secret + "@host:3128"},
+		{"bare host port", "host:3128"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clearProxyEnv(t, map[string]string{"HTTPS_PROXY": c.value})
+
+			cfg, err := parseProxyEnv()
+			if err == nil {
+				t.Fatalf("parseProxyEnv() = %+v, want error", cfg)
+			}
+			if cfg != (ProxyConfig{}) {
+				t.Errorf("cfg = %+v, want zero ProxyConfig", cfg)
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("error %q leaks the credential value", err.Error())
+			}
+		})
+	}
+}
+
 func TestParseProxyEnvNoProxy(t *testing.T) {
 	// With nothing set, parsing yields a zero config and no error: no proxy is
 	// not an error.

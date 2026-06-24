@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"image"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -135,6 +137,54 @@ func TestSuperviseWithNilContextReturns(t *testing.T) {
 	case <-e.supDone:
 	case <-time.After(time.Second):
 		t.Fatal("supervise blocked with nil context")
+	}
+}
+
+// TestSuperviseCloseWinsOverRebuild checks the shutdown race where Close fires
+// together with a crash. The select picks a ready case at random, so it can wake
+// on crashed while closing is also set; supervise must re-check closing and tear
+// down rather than relaunch Chromium. The browser flag points at a real
+// executable that no rebuild may launch: a spurious rebuild would call launch and
+// set a fresh e.ctx, so a nil e.ctx after supervise returns proves close won.
+func TestSuperviseCloseWinsOverRebuild(t *testing.T) {
+	t.Setenv("PATH", "")
+	t.Setenv("NYALA_BROWSER", "")
+	t.Setenv("CHROME_PATH", "")
+
+	browserPath := filepath.Join(t.TempDir(), "fake-browser")
+	if err := os.WriteFile(browserPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake browser: %v", err)
+	}
+
+	e := New(browserPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	e.ctx = ctx
+	e.cancel = cancel
+	e.slot = newFrameSlot()
+	e.frames = make(chan render.Frame)
+	e.closing = make(chan struct{})
+	e.supDone = make(chan struct{})
+
+	// Both wake conditions are ready before supervise runs: closing is set (Close
+	// in flight) and crashed is closed (a concurrent crash). Close must win.
+	crashed := make(chan struct{})
+	close(crashed)
+	e.closeOnce.Do(func() { close(e.closing) })
+
+	go e.supervise(crashed)
+
+	select {
+	case <-e.supDone:
+	case <-time.After(time.Second):
+		t.Fatal("supervise blocked instead of tearing down on close")
+	}
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("supervise did not tear down the session on close")
+	}
+	if e.ctx != nil {
+		t.Fatal("supervise rebuilt a session during shutdown instead of closing")
 	}
 }
 

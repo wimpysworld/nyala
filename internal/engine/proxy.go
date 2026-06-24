@@ -80,14 +80,22 @@ func parseProxyEnv() (ProxyConfig, error) {
 		// may carry credentials. Name the source variable only.
 		return ProxyConfig{}, fmt.Errorf("invalid proxy URL in %s", source)
 	}
+	// Require a real scheme and host. A scheme-less value like
+	// user:pass@host:8080 parses to an opaque form (Host empty, User nil), so
+	// the credential strip below would miss it and the password would reach
+	// Server. Reject anything without a scheme://host authority.
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return ProxyConfig{}, fmt.Errorf("invalid proxy URL in %s", source)
+	}
 
 	if parsed.User != nil {
 		cfg.User = parsed.User.Username()
 		cfg.Password, _ = parsed.User.Password()
 		cfg.HasCredentials = cfg.User != ""
-		parsed.User = nil
 	}
-	cfg.Server = parsed.String()
+	// Build Server explicitly from scheme and host only, never parsed.String(),
+	// so no userinfo, path, query, or opaque can leak into --proxy-server.
+	cfg.Server = parsed.Scheme + "://" + parsed.Host
 
 	return cfg, nil
 }

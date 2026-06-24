@@ -265,7 +265,10 @@ func (e *ChromiumEngine) teardownSession() {
 // session down and closes frames, the single point that closes it. On a crash or
 // a lost connection it tears the dead session down and rebuilds from held state,
 // re-navigating to the held URL so frames resume. A rebuild that fails to
-// relaunch ends the supervisor; frames closes and the consumer stops.
+// relaunch ends the supervisor; frames closes and the consumer stops. Close has
+// priority over a rebuild: when a crash or context cancellation races Close, the
+// supervisor re-checks closing after the select and tears down rather than
+// relaunching Chromium during shutdown.
 func (e *ChromiumEngine) supervise(crashed chan struct{}) {
 	defer close(e.supDone)
 	defer close(e.frames)
@@ -282,6 +285,14 @@ func (e *ChromiumEngine) supervise(crashed chan struct{}) {
 			return
 		case <-crashed:
 		case <-ctx.Done():
+		}
+		// A concurrent Close always wins over a rebuild. The select picks a ready
+		// case at random, so a crash or context cancellation racing Close can land
+		// here with closing already set; re-check it and tear down instead of
+		// relaunching Chromium during shutdown.
+		if channelClosed(e.closing) {
+			e.teardownSession()
+			return
 		}
 		next, ok := e.rebuild()
 		if !ok {
