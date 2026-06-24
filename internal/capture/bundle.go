@@ -3,6 +3,7 @@ package capture
 import (
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"io"
 	"os"
 	"path/filepath"
@@ -100,13 +101,14 @@ const reportPlaceholder = "# Nyala capture report\n\nPlaceholder. Populated by r
 // with NewBundle; the zero value is not usable. It is not safe for concurrent
 // use: the capture driver calls it from one goroutine.
 type Bundle struct {
-	dir      string
-	meta     Meta
-	raw      *os.File
-	events   *os.File
-	frames   int
-	perf     []FramePerformance
-	captured int
+	dir        string
+	meta       Meta
+	raw        *os.File
+	events     *os.File
+	frames     int
+	perf       []FramePerformance
+	captured   int
+	rasteriser *Rasteriser
 }
 
 // NewBundle creates a fresh nyala-capture-* temp directory, writes the root
@@ -197,8 +199,9 @@ type FrameInput struct {
 // screenshot.png from the frame bitmap, cdp-payload.json from the screencast
 // metadata (no image bytes), text-map.json from the frame text runs, text.txt
 // from the grid flattened one line per row, and, for a block capture, an explicit
-// terminal-model.json view of the composed grid. It also accumulates this frame's
-// performance record. The frame index is one-based and zero-padded to six digits.
+// terminal-model.json view of the composed grid plus block-render.png, the grid
+// rasterised at the pinned 8x16 cell. It also accumulates this frame's performance
+// record. The frame index is one-based and zero-padded to six digits.
 func (b *Bundle) WriteFrame(in FrameInput) error {
 	b.frames++
 	b.captured = b.frames
@@ -222,8 +225,35 @@ func (b *Bundle) WriteFrame(in FrameInput) error {
 		if err := writeJSON(filepath.Join(frameDir, "terminal-model.json"), gridView(in.Grid)); err != nil {
 			return err
 		}
+		if err := b.writeBlockRender(frameDir, *in.Grid); err != nil {
+			return err
+		}
 	}
 	b.perf = append(b.perf, performanceRecord(b.meta.Backend, in))
+	return nil
+}
+
+// writeBlockRender rasterises grid to block-render.png in frameDir, the composed
+// block grid drawn at the pinned 8x16 cell. It builds the bundle Rasteriser once
+// and reuses it across frames, because the rasteriser loads a font. A graphics
+// backend never reaches here, since WriteFrame gates this call on a non-nil grid.
+func (b *Bundle) writeBlockRender(frameDir string, grid block.Grid) error {
+	if b.rasteriser == nil {
+		r, err := NewRasteriser()
+		if err != nil {
+			return fmt.Errorf("build rasteriser: %w", err)
+		}
+		b.rasteriser = r
+	}
+	img := b.rasteriser.Rasterise(grid)
+	f, err := os.Create(filepath.Join(frameDir, "block-render.png"))
+	if err != nil {
+		return fmt.Errorf("create block-render.png: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := EncodePNG(f, img); err != nil {
+		return fmt.Errorf("encode block-render.png: %w", err)
+	}
 	return nil
 }
 
@@ -384,6 +414,49 @@ type gridDoc struct {
 	Rows int `json:"rows"`
 	// Cells is the per-cell view, row-major, len == Cols*Rows.
 	Cells []cellView `json:"cells"`
+}
+
+// ReadTerminalModel reads a terminal-model.json file at path and reconstructs
+// the full composed block.Grid the bundle wrote: every cell, not just the text
+// cells, with the glyph, overlay text, foreground, background, and wide flag
+// restored. It is the inverse of gridView, so the schema stays in one place. It
+// fails if the file cannot be read, is not valid JSON, or the cell count does
+// not match Cols*Rows (a malformed or non-block model).
+func ReadTerminalModel(path string) (block.Grid, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return block.Grid{}, fmt.Errorf("read terminal-model.json: %w", err)
+	}
+	var doc gridDoc
+	if uerr := json.Unmarshal(data, &doc); uerr != nil {
+		return block.Grid{}, fmt.Errorf("unmarshal terminal-model.json: %w", uerr)
+	}
+	if doc.Cols <= 0 || doc.Rows <= 0 {
+		return block.Grid{}, fmt.Errorf("terminal-model.json has empty grid: %dx%d", doc.Cols, doc.Rows)
+	}
+	if want := doc.Cols * doc.Rows; len(doc.Cells) != want {
+		return block.Grid{}, fmt.Errorf("terminal-model.json cell count = %d, want %d for %dx%d", len(doc.Cells), want, doc.Cols, doc.Rows)
+	}
+	g := block.Grid{Cols: doc.Cols, Rows: doc.Rows, Cells: make([]block.Cell, len(doc.Cells))}
+	for i, c := range doc.Cells {
+		g.Cells[i] = block.Cell{
+			Glyph: firstRune(c.Glyph),
+			Text:  c.Text,
+			FG:    color.RGBA{c.FG.R, c.FG.G, c.FG.B, c.FG.A},
+			BG:    color.RGBA{c.BG.R, c.BG.G, c.BG.B, c.BG.A},
+			Wide:  c.Wide,
+		}
+	}
+	return g, nil
+}
+
+// firstRune returns the first rune of s, or 0 when s is empty. The glyph view is
+// a one-rune string, so this restores the rune the bitmap cell carried.
+func firstRune(s string) rune {
+	for _, r := range s {
+		return r
+	}
+	return 0
 }
 
 // gridView builds the explicit JSON view of g: the size and a readable view of

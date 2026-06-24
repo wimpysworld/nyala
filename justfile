@@ -67,10 +67,27 @@ run url="https://wimpys.world" *flags: build
     fi
     args+=("${flags[@]}")
 
+    cmd=(./nyala "${args[@]}")
     if [ -n "$capture" ]; then
-        NYALA_CAPTURE="$capture" ./nyala "${args[@]}"
+        cmd=(env "NYALA_CAPTURE=$capture" "${cmd[@]}")
+    fi
+
+    if [ -t 0 ] && [ -t 1 ]; then
+        "${cmd[@]}"
     else
-        ./nyala "${args[@]}"
+        # No TTY (headless or fenced): wrap in script to allocate a pty so the
+        # viewer has a terminal. A synthetic pty has no emulator, so graphics
+        # backend probes fall back to block. stty fixes a deterministic grid
+        # while still honouring caller-exported LINES/COLUMNS.
+        if [ -z "$(command -v script)" ]; then
+            printf '%s\n' 'script (util-linux) not found; needed for headless run' >&2
+            exit 1
+        fi
+        wrapped="stty rows \"\${LINES:-40}\" cols \"\${COLUMNS:-120}\"; "
+        for word in "${cmd[@]}"; do
+            wrapped+="$(printf '%q ' "$word")"
+        done
+        script -qec "$wrapped" /dev/null
     fi
 
 # Run all local checks
@@ -95,6 +112,10 @@ update-golden:
 # Regenerate the overlay artefact PNGs into testdata/diagnostics/ for eyeballing
 overlay:
     @OVERLAY_ARTEFACTS=1 go test -run TestOverlayMatcherRoundTrip -tags diagnostics -count=1 ./internal/harness/
+
+# Rasterise a captured terminal-model.json (or frame dir) into block-render.png beside it
+rasterise path:
+    @go run ./tools/rasterise {{path}}
 
 # Print the KMSCON quadrant test card to the TTY (owner-verified, off CI)
 kmscon-testcard:

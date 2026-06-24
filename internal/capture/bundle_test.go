@@ -7,6 +7,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -19,8 +20,8 @@ import (
 func testImage(w, h int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	red := color.RGBA{R: 0xff, A: 0xff}
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			img.Set(x, y, red)
 		}
 	}
@@ -121,7 +122,7 @@ func TestBlockBundleLayout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBundle: %v", err)
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if werr := b.WriteFrame(blockFrameInput()); werr != nil {
 			t.Fatalf("WriteFrame %d: %v", i, werr)
 		}
@@ -155,7 +156,7 @@ func TestBlockBundleLayout(t *testing.T) {
 
 	frame1 := filepath.Join(framesDir, "frame-000001")
 	per := readDirNames(t, frame1)
-	for _, name := range []string{"screenshot.png", "text.txt", "cdp-payload.json", "text-map.json", "terminal-model.json"} {
+	for _, name := range []string{"screenshot.png", "text.txt", "cdp-payload.json", "text-map.json", "terminal-model.json", "block-render.png"} {
 		if !per[name] {
 			t.Errorf("frame-000001 missing %s", name)
 		}
@@ -375,6 +376,81 @@ func TestTerminalModelExplicitView(t *testing.T) {
 	}
 }
 
+// TestBlockRenderDimensions writes a block frame whose grid is 120x40 and asserts
+// the bundle rasterises it to block-render.png at 960x640, the pinned 8x16 cell.
+func TestBlockRenderDimensions(t *testing.T) {
+	b, err := NewBundle(blockMeta(1))
+	if err != nil {
+		t.Fatalf("NewBundle: %v", err)
+	}
+	grid := block.Grid{Cols: 120, Rows: 40, Cells: make([]block.Cell, 120*40)}
+	fg := color.RGBA{R: 0xff, A: 0xff}
+	bg := color.RGBA{B: 0xff, A: 0xff}
+	for i := range grid.Cells {
+		grid.Cells[i] = block.Cell{Glyph: 'X', FG: fg, BG: bg}
+	}
+	in := blockFrameInput()
+	in.Grid = &grid
+	if werr := b.WriteFrame(in); werr != nil {
+		t.Fatalf("WriteFrame: %v", werr)
+	}
+	f, err := os.Open(filepath.Join(b.Path(), "frames", "frame-000001", "block-render.png"))
+	if err != nil {
+		t.Fatalf("open block-render.png: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	img, derr := png.Decode(f)
+	if derr != nil {
+		t.Fatalf("decode block-render.png: %v", derr)
+	}
+	bnds := img.Bounds()
+	if bnds.Dx() != 960 || bnds.Dy() != 640 {
+		t.Errorf("block-render.png = %dx%d, want 960x640", bnds.Dx(), bnds.Dy())
+	}
+}
+
+// TestReadTerminalModelRoundTrip writes a grid the way the bundle does, then
+// reads it back with ReadTerminalModel and asserts every cell field survives:
+// glyph, overlay text, foreground, background, and the wide flag.
+func TestReadTerminalModelRoundTrip(t *testing.T) {
+	fg := color.RGBA{R: 0x10, G: 0x20, B: 0x30, A: 0xff}
+	bg := color.RGBA{R: 0x40, G: 0x50, B: 0x60, A: 0xff}
+	want := block.Grid{Cols: 2, Rows: 2, Cells: []block.Cell{
+		{Glyph: 'A', FG: fg, BG: bg},
+		{Glyph: 'B', Text: "界", FG: fg, BG: bg},
+		{Wide: true, BG: bg},
+		{Glyph: ' ', FG: fg, BG: bg},
+	}}
+
+	path := filepath.Join(t.TempDir(), "terminal-model.json")
+	if err := writeJSON(path, gridView(&want)); err != nil {
+		t.Fatalf("writeJSON: %v", err)
+	}
+
+	got, err := ReadTerminalModel(path)
+	if err != nil {
+		t.Fatalf("ReadTerminalModel: %v", err)
+	}
+	if got.Cols != want.Cols || got.Rows != want.Rows {
+		t.Fatalf("size = %dx%d, want %dx%d", got.Cols, got.Rows, want.Cols, want.Rows)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("round-trip grid mismatch:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// TestReadTerminalModelRejectsBadCount rejects a model whose cell count does not
+// match Cols*Rows, the shape a non-block or truncated model would have.
+func TestReadTerminalModelRejectsBadCount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "terminal-model.json")
+	if err := os.WriteFile(path, []byte(`{"cols":3,"rows":3,"cells":[]}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := ReadTerminalModel(path); err == nil {
+		t.Fatal("ReadTerminalModel accepted a mismatched cell count, want error")
+	}
+}
+
 func TestGraphicsBackendsOmitTerminalModel(t *testing.T) {
 	for _, backend := range []Backend{BackendKitty, BackendSixel} {
 		t.Run(string(backend), func(t *testing.T) {
@@ -393,6 +469,9 @@ func TestGraphicsBackendsOmitTerminalModel(t *testing.T) {
 			per := readDirNames(t, filepath.Join(b.Path(), "frames", "frame-000001"))
 			if per["terminal-model.json"] {
 				t.Errorf("%s capture must omit terminal-model.json", backend)
+			}
+			if per["block-render.png"] {
+				t.Errorf("%s capture must omit block-render.png", backend)
 			}
 			// screenshot, cdp-payload, text-map, text still present.
 			for _, name := range []string{"screenshot.png", "cdp-payload.json", "text-map.json", "text.txt"} {
@@ -459,7 +538,7 @@ func TestManifestFullBundle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBundle: %v", err)
 	}
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if werr := b.WriteFrame(blockFrameInput()); werr != nil {
 			t.Fatalf("WriteFrame: %v", werr)
 		}
