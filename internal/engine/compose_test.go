@@ -24,7 +24,7 @@ func cancelledContext() context.Context {
 // metadata reaches the bundle. A cancelled ctx makes the snapshot fail fast, so
 // no browser is launched.
 func TestComposeFrameCopiesMetaUnderCapture(t *testing.T) {
-	e := &ChromiumEngine{captureOn: true}
+	e := &ChromiumEngine{captureOn: true, backend: "block"}
 	ts := cdp.TimeSinceEpoch(time.Unix(0, int64(1500*float64(time.Millisecond))))
 	pending := pendingFrame{
 		img: image.NewRGBA(image.Rect(0, 0, 2, 2)),
@@ -56,10 +56,48 @@ func TestComposeFrameCopiesMetaUnderCapture(t *testing.T) {
 	}
 }
 
+// TestComposeFrameGraphicsBackendSkipsSnapshot asserts composeFrame skips the DOM
+// snapshot for the graphics backends (sixel, kitty) and runs it for block. The
+// graphics backends draw the bitmap alone and ignore Frame.Text, so the snapshot
+// over the full graphics viewport is wasted work that starves the first draw; the
+// skip lets the frame flow. The recorder's dom_snapshot event is the seam: block
+// records it (the snapshot ran, even though the cancelled ctx fails it fast),
+// while sixel and kitty record none and emit a frame with nil Text. No browser is
+// launched.
+func TestComposeFrameGraphicsBackendSkipsSnapshot(t *testing.T) {
+	cases := []struct {
+		backend      string
+		wantSnapshot bool
+	}{
+		{"block", true},
+		{"sixel", false},
+		{"kitty", false},
+	}
+	for _, c := range cases {
+		t.Run(c.backend, func(t *testing.T) {
+			rec := &fakeRecorder{}
+			e := &ChromiumEngine{captureOn: true, backend: c.backend, recorder: rec}
+			pending := pendingFrame{img: image.NewRGBA(image.Rect(0, 0, 2, 2))}
+
+			frame := e.composeFrame(cancelledContext(), pending)
+
+			if got := rec.has(captureEventDOMSnapshot); got != c.wantSnapshot {
+				t.Errorf("dom_snapshot recorded = %v, want %v for backend %q", got, c.wantSnapshot, c.backend)
+			}
+			if !c.wantSnapshot && frame.Text != nil {
+				t.Errorf("graphics backend %q emitted Text = %v, want nil", c.backend, frame.Text)
+			}
+			if frame.Img == nil {
+				t.Errorf("backend %q emitted a nil-image frame, want the bitmap", c.backend)
+			}
+		})
+	}
+}
+
 // TestComposeFrameLeavesMetaNilOffCapture asserts composeFrame leaves frame.Meta
 // nil when capture is off, so production stays zero-cost.
 func TestComposeFrameLeavesMetaNilOffCapture(t *testing.T) {
-	e := &ChromiumEngine{captureOn: false}
+	e := &ChromiumEngine{captureOn: false, backend: "block"}
 	pending := pendingFrame{
 		img:  image.NewRGBA(image.Rect(0, 0, 2, 2)),
 		meta: &page.ScreencastFrameMetadata{ScrollOffsetY: 240},
