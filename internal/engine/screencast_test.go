@@ -4,9 +4,132 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/wimpysworld/nyala/internal/render"
 )
+
+// TestRunTextSyncGatedToFrames proves the snapshot goroutine snapshots about once
+// per delivered frame and does zero snapshots when no frames arrive, the runaway
+// hot-loop fix. It injects a counting snapshot fn and drives the trigger directly,
+// so no browser is involved. Feed K signals one at a time, draining the count
+// after each, then stop signalling and confirm the count holds: a free-spinning
+// loop would run far past K.
+func TestRunTextSyncGatedToFrames(t *testing.T) {
+	t.Parallel()
+	var snaps int64
+	e := &ChromiumEngine{backend: "block"}
+	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState) {
+		atomic.AddInt64(&snaps, 1)
+		return nil, 0, overlayState{}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	trigger := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		e.runTextSync(ctx, &textSync{}, trigger)
+		close(done)
+	}()
+
+	const k = 5
+	for i := 1; i <= k; i++ {
+		trigger <- struct{}{}
+		// Wait for this frame's snapshot to land before sending the next, so the
+		// one-snapshot-per-frame gate is asserted deterministically.
+		waitForCount(t, &snaps, int64(i))
+	}
+
+	// No more signals: the goroutine must block on the trigger, not spin. Give it
+	// time to misbehave, then confirm the count is unchanged.
+	time.Sleep(50 * time.Millisecond)
+	if got := atomic.LoadInt64(&snaps); got != k {
+		t.Fatalf("snapshots = %d with no further frames, want %d (loop is free-spinning)", got, k)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runTextSync did not return after context cancel")
+	}
+}
+
+// TestRunTextSyncCoalescesBurst proves a burst of triggers that arrive while a
+// snapshot is in flight coalesces to far fewer snapshots than triggers: the
+// capacity-1 latest-wins trigger holds at most one pending wake. A blocking
+// snapshot fn lets the test pile triggers up behind one in-flight snapshot, then
+// release it; the gated loop runs at most two snapshots (the in-flight one plus
+// one coalesced wake), never one per trigger.
+func TestRunTextSyncCoalescesBurst(t *testing.T) {
+	t.Parallel()
+	var snaps int64
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	e := &ChromiumEngine{backend: "block"}
+	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release // hold the first snapshot in flight
+		atomic.AddInt64(&snaps, 1)
+		return nil, 0, overlayState{}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	trigger := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		e.runTextSync(ctx, &textSync{}, trigger)
+		close(done)
+	}()
+
+	// Kick the first snapshot and wait until it is parked inside the fn.
+	trigger <- struct{}{}
+	<-entered
+	// Burst many triggers while that snapshot is in flight; the capacity-1 trigger
+	// drops all but one, so only one coalesced wake survives.
+	for i := 0; i < 20; i++ {
+		select {
+		case trigger <- struct{}{}:
+		default:
+		}
+	}
+	close(release) // let snapshots run
+
+	// Two snapshots is the gated ceiling: the in-flight one plus the single
+	// coalesced wake. Settle, then assert the count never reached the burst size.
+	time.Sleep(50 * time.Millisecond)
+	if got := atomic.LoadInt64(&snaps); got > 2 {
+		t.Fatalf("snapshots = %d after a 20-trigger burst, want <= 2 (burst not coalesced)", got)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runTextSync did not return after context cancel")
+	}
+}
+
+// waitForCount spins on an atomic counter until it reaches want or the deadline
+// passes, so a gated-snapshot assertion does not race the snapshot goroutine.
+func waitForCount(t *testing.T, n *int64, want int64) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt64(n) >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("counter reached %d, want %d before deadline", atomic.LoadInt64(n), want)
+}
 
 // ackRecorder is the fake ackFunc the slot tests drive instead of a chromedp
 // ack. It records every acked id under a mutex, so a put on one goroutine and a

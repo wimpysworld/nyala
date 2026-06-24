@@ -47,6 +47,13 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// or the slot's displaced-frame ack.
 	acks := make(chan int64, ackBufferDepth)
 	ts := &textSync{}
+	// snapTrigger gates the snapshot goroutine to about one snapshot per delivered
+	// frame: the frame loop pokes it (latest-wins, non-blocking) after each consumed
+	// frame, and runTextSync wakes once per poke. Capacity 1 coalesces a burst to one
+	// wake; on a static page with no frames the snapshot goroutine blocks on it and
+	// does zero snapshots. It is goroutine-scoped to this session, so ctx cancellation
+	// stops both goroutines and the channel needs no teardown reset.
+	snapTrigger := make(chan struct{}, 1)
 	e.mu.Lock()
 	e.slot = slot
 	e.acks = acks
@@ -57,8 +64,8 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 		return nil, fmt.Errorf("engine: start screencast: %w", err)
 	}
 	go e.ackPump(ctx, acks)
-	go e.runTextSync(ctx, ts)
-	go e.runFrameLoop(ctx, slot, frames, ts)
+	go e.runTextSync(ctx, ts, snapTrigger)
+	go e.runFrameLoop(ctx, slot, frames, ts, snapTrigger)
 
 	// Navigate and the held-scroll restore run on one ordered path: navigateAsync
 	// drives the load waiter, then restores the held offset only after the load

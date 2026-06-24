@@ -70,6 +70,11 @@ type ChromiumEngine struct {
 	// latest decoded runs, the frame loop reads them. It decouples the DOM snapshot
 	// from the frame-emit goroutine. Reset per session by teardownSession.
 	text *textSync
+	// snapshot is the per-iteration snapshot function runTextSync calls, defaulting
+	// to snapshotRuns. The unit test swaps in a counter to assert the snapshot is
+	// gated to about one call per delivered frame without launching a browser; it is
+	// nil in production, where runTextSync falls back to snapshotRuns.
+	snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState)
 
 	// Proxy config parsed once in New, read-only afterwards. Unlike the
 	// mutex-guarded group above, these are set before any goroutine starts and

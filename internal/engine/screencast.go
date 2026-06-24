@@ -282,15 +282,23 @@ const noSnapshotBackoff = 50 * time.Millisecond
 
 // runTextSync runs the DOM snapshot loop on its own goroutine, off the frame-emit
 // goroutine, so snapshot latency never stalls frame emission or withholds acks. It
-// repeatedly captures a snapshot, decodes the runs at the snapshot's own scroll,
-// routes them through the bounded holdDecision, and publishes the emitted set to
-// ts. It owns the overlayState, so the hold is single-goroutine and lock-free. It
-// runs only the block path's snapshot; on a graphics backend it publishes nil and
-// backs off, since those backends ignore the overlay. It exits when ctx is
-// cancelled (session teardown).
-func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync) {
+// gates on the per-frame trigger: it waits for the frame loop to signal a new
+// delivered frame, then captures exactly one snapshot, decodes the runs at the
+// snapshot's own scroll, routes them through the bounded holdDecision, and
+// publishes the emitted set to ts. A burst of frames while a snapshot is in flight
+// coalesces to one wake, so it snapshots about once per delivered frame and never
+// free-spins; on a static page with no frames it blocks on the trigger and does
+// zero snapshots. It owns the overlayState, so the hold is single-goroutine and
+// lock-free. It runs only the block path's snapshot; on a graphics backend it
+// publishes nil and backs off without consuming the trigger, since those backends
+// ignore the overlay. It exits when ctx is cancelled (session teardown).
+func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, trigger <-chan struct{}) {
 	if ctx == nil || ts == nil {
 		return
+	}
+	snapshot := e.snapshot
+	if snapshot == nil {
+		snapshot = e.snapshotRuns
 	}
 	var state overlayState
 	for {
@@ -304,9 +312,19 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync) {
 			}
 			continue
 		}
+		// Wait for the frame loop to signal a delivered frame. The signal is a
+		// capacity-1 latest-wins channel, so a burst of frames coalesces to one
+		// wake and one snapshot; a static page with no frames blocks here and does
+		// zero snapshots. A nil trigger blocks forever (no frames ever arrive), so
+		// callers always pass the per-session trigger.
+		select {
+		case <-trigger:
+		case <-ctx.Done():
+			return
+		}
 		var runs []render.GlyphRun
 		var snapshotMS float64
-		runs, snapshotMS, state = e.snapshotRuns(ctx, state)
+		runs, snapshotMS, state = snapshot(ctx, state)
 		ts.store(runs, snapshotMS)
 		if ctx.Err() != nil {
 			return
@@ -332,11 +350,15 @@ func sleepCtx(ctx context.Context, d time.Duration) (cancelled bool) {
 // the frames channel. It runs in its own goroutine started per session; a crash
 // or Close drains the slot and cancels the context to stop it. The DOM snapshot
 // runs on a separate goroutine (runTextSync), so this loop reads the latest
-// published overlay runs without ever blocking on a snapshot read. It does not
-// close frames: the channel outlives one session so consumers keep reading across
-// a crash recovery, and only the supervisor closes it on Close. The send selects
-// on the context so the goroutine cannot leak when the consumer stops.
-func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, frames chan render.Frame, ts *textSync) {
+// published overlay runs without ever blocking on a snapshot read. After each
+// consumed frame it pokes the snapshot trigger with a non-blocking latest-wins
+// send, so the snapshot goroutine wakes about once per delivered frame and idles
+// when no frames arrive; a full trigger drops the poke, coalescing a burst to one
+// wake. It does not close frames: the channel outlives one session so consumers
+// keep reading across a crash recovery, and only the supervisor closes it on
+// Close. The send selects on the context so the goroutine cannot leak when the
+// consumer stops.
+func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, frames chan render.Frame, ts *textSync, trigger chan<- struct{}) {
 	if ctx == nil || slot == nil || frames == nil {
 		return
 	}
@@ -346,6 +368,12 @@ func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, fram
 			return
 		}
 		frame := e.composeFrame(pending, ts)
+		if trigger != nil {
+			select {
+			case trigger <- struct{}{}:
+			default:
+			}
+		}
 		select {
 		case frames <- frame:
 		case <-ctx.Done():
