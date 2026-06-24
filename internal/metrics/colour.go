@@ -49,8 +49,8 @@ func CIEDE2000(a, b *image.RGBA) CIEDE2000Stats {
 	}
 	des := make([]float64, 0, n)
 	var sum float64
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			ca := a.RGBAAt(ba.Min.X+x, ba.Min.Y+y)
 			cb := b.RGBAAt(bb.Min.X+x, bb.Min.Y+y)
 			de := DeltaE2000(ca.R, ca.G, ca.B, cb.R, cb.G, cb.B)
@@ -83,8 +83,8 @@ func channelHist(img *image.RGBA) (r, g, b []float64) {
 	if n == 0 {
 		return r, g, b
 	}
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			c := img.RGBAAt(bnd.Min.X+x, bnd.Min.Y+y)
 			r[c.R]++
 			g[c.G]++
@@ -92,7 +92,7 @@ func channelHist(img *image.RGBA) (r, g, b []float64) {
 		}
 	}
 	inv := 1.0 / float64(n)
-	for i := 0; i < histBins; i++ {
+	for i := range histBins {
 		r[i] *= inv
 		g[i] *= inv
 		b[i] *= inv

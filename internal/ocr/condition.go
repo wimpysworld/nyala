@@ -87,8 +87,8 @@ func Condition(src image.Image, srcCapHeight int, c Conditioning) *image.Gray {
 	for i := range out.Pix {
 		out.Pix[i] = 255
 	}
-	for y := 0; y < upH; y++ {
-		for x := 0; x < upW; x++ {
+	for y := range upH {
+		for x := range upW {
 			v := up.GrayAt(x, y).Y
 			dark := v <= t
 			if invert {
@@ -158,14 +158,14 @@ func otsuThreshold(g *image.Gray) uint8 {
 	}
 
 	var sum float64
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		sum += float64(i) * float64(hist[i])
 	}
 
 	var sumB, wB float64
 	var maxVar float64
 	var threshold int
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		wB += float64(hist[i])
 		if wB == 0 {
 			continue

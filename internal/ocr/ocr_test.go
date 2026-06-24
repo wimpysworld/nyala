@@ -74,8 +74,8 @@ func TestConditionDarkOnLight(t *testing.T) {
 	// dark-on-light: most pixels light (255), the ink pixels dark (0).
 	src := image.NewRGBA(image.Rect(0, 0, 20, 10))
 	// Fill black, opaque.
-	for y := 0; y < 10; y++ {
-		for x := 0; x < 20; x++ {
+	for y := range 10 {
+		for x := range 20 {
 			src.SetRGBA(x, y, color.RGBA{R: 0, G: 0, B: 0, A: 255})
 		}
 	}
@@ -104,8 +104,8 @@ func TestConditionDarkOnLight(t *testing.T) {
 
 func TestConditionPadAndScale(t *testing.T) {
 	src := image.NewRGBA(image.Rect(0, 0, 10, 8))
-	for y := 0; y < 8; y++ {
-		for x := 0; x < 10; x++ {
+	for y := range 8 {
+		for x := range 10 {
 			src.SetRGBA(x, y, color.RGBA{R: 255, G: 255, B: 255, A: 255})
 		}
 	}
@@ -122,7 +122,7 @@ func TestConditionPadAndScale(t *testing.T) {
 
 func TestOtsuTwoTone(t *testing.T) {
 	g := image.NewGray(image.Rect(0, 0, 10, 1))
-	for x := 0; x < 5; x++ {
+	for x := range 5 {
 		g.SetGray(x, 0, color.Gray{Y: 20})
 	}
 	for x := 5; x < 10; x++ {

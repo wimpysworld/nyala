@@ -34,8 +34,8 @@ const (
 // not a flat fill. Channel order is RGBA.
 func goldenFrame() render.Frame {
 	img := image.NewRGBA(image.Rect(0, 0, benchPxW, benchPxH))
-	for y := 0; y < benchPxH; y++ {
-		for x := 0; x < benchPxW; x++ {
+	for y := range benchPxH {
+		for x := range benchPxW {
 			c := color.RGBA{
 				R: uint8(x % 256),
 				G: uint8(y % 256),
@@ -96,7 +96,7 @@ func benchRenderer(b *testing.B, r render.Renderer, f render.Frame) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if err := r.Render(f, io.Discard); err != nil {
 			b.Fatalf("%s: render: %v", r.Name(), err)
 		}

@@ -26,8 +26,8 @@ func TestDownscaleDimensions(t *testing.T) {
 // TestDownscaleReturnsRGBA checks the output keeps RGBA channel order.
 func TestDownscaleReturnsRGBA(t *testing.T) {
 	src := image.NewRGBA(image.Rect(0, 0, 8, 8))
-	for y := 0; y < 8; y++ {
-		for x := 0; x < 8; x++ {
+	for y := range 8 {
+		for x := range 8 {
 			src.Set(x, y, color.RGBA{R: 200, G: 100, B: 50, A: 255})
 		}
 	}

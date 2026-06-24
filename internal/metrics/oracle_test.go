@@ -14,8 +14,8 @@ import (
 // solidImage returns a w x h opaque RGBA image filled with one colour.
 func solidImage(w, h int, c color.RGBA) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			img.SetRGBA(x, y, c)
 		}
 	}
@@ -28,8 +28,8 @@ func solidImage(w, h int, c color.RGBA) *image.RGBA {
 func halfSplitImage(cols, rows int) *image.RGBA {
 	w, h := cols*oracleCellW, rows*oracleCellH
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			if x%oracleCellW == 0 {
 				img.SetRGBA(x, y, color.RGBA{R: 0, G: 0, B: 0, A: 0xff})
 			} else {
@@ -55,7 +55,7 @@ func newTestRasteriser(t *testing.T) *capture.Rasteriser {
 func TestLinearMeanBlockAveragesInLinearSpace(t *testing.T) {
 	// One 2x4 block: left column black, right column white.
 	img := image.NewRGBA(image.Rect(0, 0, 2, 4))
-	for y := 0; y < 4; y++ {
+	for y := range 4 {
 		img.SetRGBA(0, y, color.RGBA{R: 0, G: 0, B: 0, A: 0xff})
 		img.SetRGBA(1, y, color.RGBA{R: 255, G: 255, B: 255, A: 0xff})
 	}
@@ -226,7 +226,7 @@ func TestIdealGridSplitMatchesGlyph(t *testing.T) {
 	cols, rows := 1, 1
 	// Left source column black, right column white.
 	img := image.NewRGBA(image.Rect(0, 0, oracleCellW, oracleCellH))
-	for y := 0; y < oracleCellH; y++ {
+	for y := range oracleCellH {
 		img.SetRGBA(0, y, color.RGBA{R: 0, G: 0, B: 0, A: 0xff})
 		img.SetRGBA(1, y, color.RGBA{R: 255, G: 255, B: 255, A: 0xff})
 	}

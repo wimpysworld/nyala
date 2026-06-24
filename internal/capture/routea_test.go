@@ -30,8 +30,8 @@ func TestRasteriseDrawsTextCell(t *testing.T) {
 	// A Wide trailing cell draws its background only, so every pixel is bg.
 	wideGrid := block.Grid{Cols: 1, Rows: 1, Cells: []block.Cell{{Glyph: 0x2588, FG: fg, BG: bg, Wide: true}}}
 	wideImg := r.Rasterise(wideGrid)
-	for y := 0; y < CellPxH; y++ {
-		for x := 0; x < CellPxW; x++ {
+	for y := range CellPxH {
+		for x := range CellPxW {
 			if got := wideImg.RGBAAt(x, y); got != bg {
 				t.Fatalf("Wide cell pixel (%d,%d) = %v, want background %v", x, y, got, bg)
 			}
@@ -53,8 +53,8 @@ func TestRenderGlyphCell(t *testing.T) {
 		t.Fatalf("tile size = %dx%d, want %dx%d", tile.Bounds().Dx(), tile.Bounds().Dy(), CellPxW, CellPxH)
 	}
 	foundFG := false
-	for y := 0; y < CellPxH; y++ {
-		for x := 0; x < CellPxW; x++ {
+	for y := range CellPxH {
+		for x := range CellPxW {
 			if tile.RGBAAt(x, y) == fg {
 				foundFG = true
 			}

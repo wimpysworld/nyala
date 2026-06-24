@@ -102,8 +102,8 @@ var quadrantGlyphForMask = [16]rune{
 // measure against. Channel order is RGBA.
 func IdealGrid(src *image.RGBA, cols, rows int) block.Grid {
 	g := block.Grid{Cols: cols, Rows: rows, Cells: make([]block.Cell, cols*rows)}
-	for row := 0; row < rows; row++ {
-		for col := 0; col < cols; col++ {
+	for row := range rows {
+		for col := range cols {
 			*g.At(col, row) = idealCell(src, col, row, 0, 0)
 		}
 	}
@@ -116,8 +116,8 @@ func IdealGrid(src *image.RGBA, cols, rows int) block.Grid {
 // block renderer that drew no glyph could reach. Channel order is RGBA.
 func FloorGrid(src *image.RGBA, cols, rows int) block.Grid {
 	g := block.Grid{Cols: cols, Rows: rows, Cells: make([]block.Cell, cols*rows)}
-	for row := 0; row < rows; row++ {
-		for col := 0; col < cols; col++ {
+	for row := range rows {
+		for col := range cols {
 			mean := linearMeanBlock(src, col*oracleCellW, row*oracleCellH, oracleCellW, oracleCellH)
 			*g.At(col, row) = block.Cell{Glyph: ' ', FG: mean, BG: mean}
 		}
@@ -257,8 +257,8 @@ func linearRGB(c color.RGBA) (r, g, b float64) {
 func linearMeanBlock(img *image.RGBA, x0, y0, w, h int) color.RGBA {
 	var rl, gl, bl float64
 	n := w * h
-	for dy := 0; dy < h; dy++ {
-		for dx := 0; dx < w; dx++ {
+	for dy := range h {
+		for dx := range w {
 			r, g, b := srcPixel(img, x0+dx, y0+dy)
 			lr, lg, lb := linearRGB(color.RGBA{R: r, G: g, B: b, A: 0xff})
 			rl += lr
@@ -459,8 +459,8 @@ func BestShiftRelative(rast *capture.Rasteriser, render, src *image.RGBA, cols, 
 // cell boundary that fell mid-feature can land on it.
 func shiftedIdealGrid(src *image.RGBA, cols, rows, shiftX, shiftY int) block.Grid {
 	g := block.Grid{Cols: cols, Rows: rows, Cells: make([]block.Cell, cols*rows)}
-	for row := 0; row < rows; row++ {
-		for col := 0; col < cols; col++ {
+	for row := range rows {
+		for col := range cols {
 			*g.At(col, row) = idealCell(src, col, row, shiftX, shiftY)
 		}
 	}

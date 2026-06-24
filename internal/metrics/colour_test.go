@@ -152,7 +152,7 @@ func TestCIEDE2000P95(t *testing.T) {
 	w, h := 5, 4 // 20 pixels
 	a := image.NewRGBA(image.Rect(0, 0, w, h))
 	b := image.NewRGBA(image.Rect(0, 0, w, h))
-	for i := 0; i < w*h; i++ {
+	for i := range w * h {
 		a.Pix[i*4+0], a.Pix[i*4+1], a.Pix[i*4+2], a.Pix[i*4+3] = 128, 128, 128, 255
 		b.Pix[i*4+0], b.Pix[i*4+1], b.Pix[i*4+2], b.Pix[i*4+3] = 128, 128, 128, 255
 	}
@@ -204,14 +204,14 @@ func TestHistogramIdentical(t *testing.T) {
 func TestHistogramEMDBanding(t *testing.T) {
 	const w, h = 16, 1
 	smooth := image.NewRGBA(image.Rect(0, 0, w, h))
-	for x := 0; x < w; x++ {
+	for x := range w {
 		v := uint8(x * 16) // 0,16,32,... a smooth ramp
 		smooth.Pix[x*4+0], smooth.Pix[x*4+1], smooth.Pix[x*4+2], smooth.Pix[x*4+3] = v, v, v, 255
 	}
 	// Banded: collapse each pair of ramp steps to one level, shifting mass.
 	near := image.NewRGBA(image.Rect(0, 0, w, h))
 	far := image.NewRGBA(image.Rect(0, 0, w, h))
-	for x := 0; x < w; x++ {
+	for x := range w {
 		nv := uint8((x / 2) * 32) // small shift from the ramp
 		fv := uint8((x / 4) * 64) // larger shift, coarser bands
 		near.Pix[x*4+0], near.Pix[x*4+1], near.Pix[x*4+2], near.Pix[x*4+3] = nv, nv, nv, 255
@@ -237,14 +237,14 @@ func TestHistogramEMDBanding(t *testing.T) {
 func TestHistogramChiSquarePaletteCollapse(t *testing.T) {
 	const w, h = 16, 1
 	spread := image.NewRGBA(image.Rect(0, 0, w, h))
-	for x := 0; x < w; x++ {
+	for x := range w {
 		v := uint8(x * 16)
 		spread.Pix[x*4+0], spread.Pix[x*4+1], spread.Pix[x*4+2], spread.Pix[x*4+3] = v, v, v, 255
 	}
 	mild := image.NewRGBA(image.Rect(0, 0, w, h)) // four levels
 	full := image.NewRGBA(image.Rect(0, 0, w, h)) // one level
 	fillGrey(full, 128)
-	for x := 0; x < w; x++ {
+	for x := range w {
 		mv := uint8((x / 4) * 64)
 		mild.Pix[x*4+0], mild.Pix[x*4+1], mild.Pix[x*4+2], mild.Pix[x*4+3] = mv, mv, mv, 255
 	}

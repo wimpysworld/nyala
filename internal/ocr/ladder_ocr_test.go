@@ -97,7 +97,7 @@ func TestLadderEngineStable(t *testing.T) {
 		t.Fatalf("first ladder: %v", err)
 	}
 	firstMin, _ := MinLegibleSize(first)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		got, err := Ladder(src, spec, eng, 0.15)
 		if err != nil {
 			t.Fatalf("repeat ladder %d: %v", i, err)

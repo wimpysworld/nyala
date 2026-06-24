@@ -211,8 +211,8 @@ func cellErrorMap(reference, render *image.RGBA, g *block.Grid) *image.RGBA {
 
 	cw := render.Bounds().Dx() / max(g.Cols, 1)
 	ch := render.Bounds().Dy() / max(g.Rows, 1)
-	for row := 0; row < g.Rows; row++ {
-		for col := 0; col < g.Cols; col++ {
+	for row := range g.Rows {
+		for col := range g.Cols {
 			de := cellDeltaE(reference, render, col, row, cw, ch)
 			r, gg2 := heatColour(de / maxCellDeltaE)
 			dc.SetRGB(r, gg2, 0)
@@ -238,8 +238,8 @@ func quantErrorMap(grid, ideal *block.Grid) (*image.RGBA, error) {
 	dc.SetRGB(0, 0, 0)
 	dc.Clear()
 
-	for row := 0; row < grid.Rows; row++ {
-		for col := 0; col < grid.Cols; col++ {
+	for row := range grid.Rows {
+		for col := range grid.Cols {
 			gc := grid.At(col, row)
 			ic := ideal.At(col, row)
 			de := metrics.DeltaE2000(gc.FG.R, gc.FG.G, gc.FG.B, ic.FG.R, ic.FG.G, ic.FG.B)
@@ -266,8 +266,8 @@ func cellDeltaE(reference, render *image.RGBA, col, row, cw, ch int) float64 {
 	x0, y0 := col*cw, row*ch
 	var sum float64
 	var n int
-	for dy := 0; dy < ch; dy++ {
-		for dx := 0; dx < cw; dx++ {
+	for dy := range ch {
+		for dx := range cw {
 			x, y := x0+dx, y0+dy
 			p := image.Point{X: x, Y: y}
 			if !p.In(reference.Bounds()) || !p.In(render.Bounds()) {

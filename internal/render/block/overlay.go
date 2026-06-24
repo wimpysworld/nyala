@@ -114,8 +114,8 @@ func cellBGAverage(img *image.RGBA, col, row int, scheme Scheme) color.RGBA {
 	x0 := col * pxW
 	y0 := row * pxH
 	samples := make([]color.RGBA, 0, pxW*pxH)
-	for dy := 0; dy < pxH; dy++ {
-		for dx := 0; dx < pxW; dx++ {
+	for dy := range pxH {
+		for dx := range pxW {
 			r, gc, b := pixel(img, x0+dx, y0+dy)
 			samples = append(samples, color.RGBA{R: r, G: gc, B: b, A: 0xff})
 		}

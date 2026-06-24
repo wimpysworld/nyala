@@ -20,7 +20,7 @@ func readPerformance(t *testing.T, n int, backend Backend) map[string]any {
 	if err != nil {
 		t.Fatalf("NewBundle: %v", err)
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		in := blockFrameInput()
 		if backend != BackendBlock {
 			in.Grid = nil

@@ -61,7 +61,7 @@ func TestMatcherRecoversBothPolarities(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cells := make([]block.Cell, 0, cols)
 			rs := []rune(truth)
-			for i := 0; i < cols; i++ {
+			for i := range cols {
 				if i < len(rs) {
 					cells = append(cells, block.Cell{Text: string(rs[i]), FG: tc.fg, BG: tc.bg})
 					continue

@@ -137,8 +137,8 @@ func polarityDistance(got, template []bool) int {
 // for CER scoring against the run truth.
 func (m *Matcher) Recover(img *image.RGBA, g block.Grid) string {
 	var out []byte
-	for row := 0; row < g.Rows; row++ {
-		for col := 0; col < g.Cols; col++ {
+	for row := range g.Rows {
+		for col := range g.Cols {
 			c := g.At(col, row)
 			if c.Text == "" || c.Wide {
 				continue
@@ -158,8 +158,8 @@ func cropCell(img *image.RGBA, col, row int) *image.RGBA {
 	x0 := col * capture.CellPxW
 	y0 := row * capture.CellPxH
 	b := img.Bounds()
-	for dy := 0; dy < capture.CellPxH; dy++ {
-		for dx := 0; dx < capture.CellPxW; dx++ {
+	for dy := range capture.CellPxH {
+		for dx := range capture.CellPxW {
 			p := image.Point{X: x0 + dx, Y: y0 + dy}
 			if p.In(b) {
 				out.SetRGBA(dx, dy, img.RGBAAt(p.X, p.Y))
@@ -217,7 +217,7 @@ func hamming(a, b []bool) int {
 		n = len(b)
 	}
 	var d int
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if a[i] != b[i] {
 			d++
 		}
