@@ -1,6 +1,7 @@
 package viewer
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -347,10 +348,14 @@ func writeSession(bundle bundleWriter, session CaptureSession) {
 // drawCaptureFrame draws one frame through the tee and returns the FrameInput the
 // bundle serialises for it. It sizes the State to the frame image, sets the
 // capture grid sink for a block draw so the composed letterbox grid travels to
-// the bundle, emits its own clearScreen, then renders with the crisp DOM-text
-// overlay folded on while timing the draw phases. The tee is io.MultiWriter(tty,
-// rawFile), so the clear and render bytes mirror into the bundle raw file, and a
-// CountingWriter over it counts the terminal bytes for this frame.
+// the bundle, then splits the draw into two timed phases: it renders the frame
+// (with the crisp DOM-text overlay folded on) into an in-memory buffer, which is
+// the escape-byte production (the graphics encode or the block compose plus SGR),
+// then writes clearScreen and the buffered bytes to the tee, which is the
+// terminal write. Buffering first separates encode from write so neither span
+// overlaps the other. The tee is io.MultiWriter(tty, rawFile), so the clear and
+// render bytes mirror into the bundle raw file in the same order Stream emits
+// them, and a CountingWriter over it counts the terminal bytes for this frame.
 func drawCaptureFrame(st *State, frame render.Frame, tee io.Writer) (capture.FrameInput, error) {
 	b := frame.Img.Bounds()
 	st.ImgW, st.ImgH = b.Dx(), b.Dy()
@@ -362,16 +367,27 @@ func drawCaptureFrame(st *State, frame render.Frame, tee io.Writer) (capture.Fra
 		defer st.SetCaptureGrid(nil)
 	}
 
+	// Encode phase: render into a buffer so the escape-byte production is timed
+	// apart from the terminal write. The buffer length is the renderer's own
+	// output, excluding the clearScreen prefix, so the sixel payload size stays
+	// accurate.
+	var rendered bytes.Buffer
+	encodeStart := time.Now()
+	if err := st.RenderStreamFrame(frame, &rendered); err != nil {
+		return capture.FrameInput{}, err
+	}
+	encodeMS := msSince(encodeStart)
+	renderBytes := int64(rendered.Len())
+
+	// Write phase: clearScreen then the buffered render bytes go to the tee. Only
+	// the io.Write is timed here, so terminal_write_ms no longer includes the
+	// encode.
 	counter := metrics.NewCountingWriter(tee)
 	writeStart := time.Now()
 	if _, err := io.WriteString(counter, clearScreen); err != nil {
 		return capture.FrameInput{}, err
 	}
-	// Count the renderer's output on its own so the sixel payload size excludes the
-	// clearScreen prefix. For the block path renderBytes is the SGR grid; only the
-	// sixel branch of capturePerf reads it.
-	renderCounter := metrics.NewCountingWriter(counter)
-	if err := st.RenderStreamFrame(frame, renderCounter); err != nil {
+	if _, err := counter.Write(rendered.Bytes()); err != nil {
 		return capture.FrameInput{}, err
 	}
 	writeMS := msSince(writeStart)
@@ -380,19 +396,22 @@ func drawCaptureFrame(st *State, frame render.Frame, tee io.Writer) (capture.Fra
 		Frame: frame,
 		Meta:  frame.Meta,
 		Grid:  grid,
-		Perf:  capturePerf(st, frame, grid, counter.N, renderCounter.N, writeMS),
+		Perf:  capturePerf(st, frame, grid, counter.N, renderBytes, encodeMS, writeMS),
 	}, nil
 }
 
 // capturePerf fills the viewer-phase timing and counts for one drawn frame. It
 // reads the resolved grid size and cell px from State, the capture and draw
 // extent from the frame image and grid, the overlay run and cell counts from the
-// frame text, the terminal bytes from the driver's CountingWriter, and the
-// terminal write time the driver measured. The per-phase fit, encode, and
-// compose timings stay zero here: the viewer draws through one RenderStreamFrame
-// call, so the write time is the measured phase and the finer splits are not
-// instrumented separately in this pass.
-func capturePerf(st *State, frame render.Frame, grid *block.Grid, terminalBytes, renderBytes int64, writeMS float64) capture.ViewerPerf {
+// frame text, the terminal bytes from the driver's CountingWriter, and the encode
+// and terminal write times the driver measured. The encode time is the
+// escape-byte production: for the graphics backends it is the sixel or kitty
+// encode (recorded as BackendEncodeMS); for the block backend it is the grid
+// compose plus SGR build (recorded as BlockComposeMS, leaving BackendEncodeMS
+// zero, because block has no image encode). The fit-downscale split stays zero
+// here: the graphics fit runs inside the same RenderStreamFrame buffer render and
+// is not instrumented separately in this pass.
+func capturePerf(st *State, frame render.Frame, grid *block.Grid, terminalBytes, renderBytes int64, encodeMS, writeMS float64) capture.ViewerPerf {
 	p := capture.ViewerPerf{
 		CellPxW:         st.W,
 		CellPxH:         st.H,
@@ -400,6 +419,14 @@ func capturePerf(st *State, frame render.Frame, grid *block.Grid, terminalBytes,
 		OverlayCells:    overlayCells(frame.Text),
 		TerminalBytes:   terminalBytes,
 		TerminalWriteMS: writeMS,
+	}
+	// Route the escape-byte production time to the field that owns it: the block
+	// path has no image encode, so its cost lands in BlockComposeMS; the graphics
+	// backends record it as BackendEncodeMS.
+	if st.Backend == BackendBlock {
+		p.BlockComposeMS = encodeMS
+	} else {
+		p.BackendEncodeMS = encodeMS
 	}
 	// The sixel renderer's output is the sixel payload, so record its byte count.
 	// The bundle serialises it only for the sixel backend; other backends leave it
