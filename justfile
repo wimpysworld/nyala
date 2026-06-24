@@ -62,6 +62,9 @@ run url="https://wimpys.world" *flags: build
 
     args=()
     args+=("$url")
+    if [ -n "$backend" ]; then
+        args+=("--backend=$backend")
+    fi
     args+=("${flags[@]}")
 
     if [ -n "$capture" ]; then

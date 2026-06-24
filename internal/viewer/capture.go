@@ -88,6 +88,17 @@ func Capture(eng Engine, url string, tty *os.File, colourFlag, mode string, n in
 
 	defer func() { _ = eng.Close() }()
 
+	// Pin the active backend to a named --backend mode before building the bundle
+	// meta, so the manifest records the forced backend. Validation gates forcing:
+	// an unsupported forced backend leaves the detected cycle untouched, and
+	// runCapture's own ValidateForcedBackend then writes the partial bundle.
+	// setupViewer handed the engine the detected backend; re-notify it after a
+	// successful force so the engine sizes its capture for the forced backend.
+	if ValidateForcedBackend(mode, st.Enabled) == nil {
+		applyForcedBackend(st, mode)
+		eng.SetBackend(backendName(st.Backend))
+	}
+
 	b, err := capture.NewBundle(captureMeta(url, st, mode, n))
 	if err != nil {
 		return fmt.Errorf("viewer: open capture bundle: %w", err)

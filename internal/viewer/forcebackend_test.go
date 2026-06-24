@@ -48,3 +48,41 @@ func TestValidateForcedBackend(t *testing.T) {
 		})
 	}
 }
+
+// TestApplyForcedBackendPinsNamedBackend asserts a named --backend mode forces
+// the active backend even when detection advertised a higher-fidelity one. It
+// simulates wezterm: detection enables kitty, sixel, then block, so the active
+// backend resolves to kitty. Forcing block must pin block and shrink the Tab
+// cycle to block only. auto must leave the detected cycle untouched.
+func TestApplyForcedBackendPinsNamedBackend(t *testing.T) {
+	t.Run("block forces block over detected kitty", func(t *testing.T) {
+		st := NewState(120, 40, 64, 64)
+		st.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
+		if st.Backend != BackendKitty {
+			t.Fatalf("detected active backend = %v, want kitty", st.Backend)
+		}
+
+		applyForcedBackend(&st, ModeBlock)
+
+		if st.Backend != BackendBlock {
+			t.Fatalf("forced active backend = %v, want block", st.Backend)
+		}
+		if len(st.Enabled) != 1 || st.Enabled[0] != BackendBlock {
+			t.Fatalf("forced cycle = %v, want block only", st.Enabled)
+		}
+	})
+
+	t.Run("auto leaves the detected cycle", func(t *testing.T) {
+		st := NewState(120, 40, 64, 64)
+		st.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
+
+		applyForcedBackend(&st, ModeAuto)
+
+		if st.Backend != BackendKitty {
+			t.Fatalf("auto active backend = %v, want kitty unchanged", st.Backend)
+		}
+		if len(st.Enabled) != 3 {
+			t.Fatalf("auto cycle = %v, want the detected three backends", st.Enabled)
+		}
+	})
+}
