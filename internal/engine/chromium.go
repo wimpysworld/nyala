@@ -2,10 +2,11 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
+	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/input"
-	"github.com/chromedp/chromedp"
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
@@ -18,8 +19,8 @@ type ChromiumEngine struct {
 	// mu guards the session and geometry fields read or written from both the
 	// viewer goroutine (Resize, SetBackend, SendKey, SendMouse, dispatchWheel)
 	// and the supervisor goroutine (startSession, teardownSession, launch,
-	// rebuild): ctx, cancel, slot, captureW, captureH, cols, rows, scrollX,
-	// scrollY, backend, cellW, cellH. Lock, copy the fields into locals or write
+	// rebuild): ctx, cancel, slot, acks, text, captureW, captureH, cols, rows, scrollX,
+	// scrollY, backend, cellW, cellH, windowID, inputFailures. Lock, copy the fields into locals or write
 	// the updates, unlock, then run the chromedp I/O on the locals. Never hold mu
 	// across a chromedp.Run or a channel send, or it deadlocks with the supervisor.
 	mu sync.Mutex
@@ -43,10 +44,32 @@ type ChromiumEngine struct {
 	captureW    int    // capture width in pixels for the active backend
 	captureH    int    // capture height in pixels for the active backend
 
+	// windowID is the browser window id for the driven target, fetched once per
+	// session via browser.GetWindowForTarget and used to size the captured surface
+	// with Browser.SetContentsSize on launch and on every restart. It is reset per
+	// session by teardownSession so a stale id never sizes a fresh window.
+	windowID browser.WindowID
+
+	// inputFailures counts consecutive input-dispatch failures. A successful
+	// dispatch resets it; a run past inputDispatchFailureThreshold records one
+	// capture event so a wedged browser is observable without spamming.
+	inputFailures int
+
 	// Frame plumbing.
-	frames   chan render.Frame // emitted frames, created once and closed only on Close
-	slot     *frameSlot        // latest-wins single-frame backpressure slot
-	lastText []render.GlyphRun // last text matched to a bitmap
+	frames chan render.Frame // emitted frames, created once and closed only on Close
+	slot   *frameSlot        // latest-wins single-frame backpressure slot
+	// acks carries screencast frame SessionID values from the listener goroutine
+	// to the ack-pump goroutine, which runs page.ScreencastFrameAck off the event
+	// goroutine. Running the ack inside the ListenTarget callback is the chromedp
+	// #920 self-deadlock; the pump breaks it. It is buffered so the listener and
+	// the slot's displaced-frame ack never block on a transient pump stall, and the
+	// enqueue is select-with-default so a full channel or a torn-down session drops
+	// the ack rather than parking the event goroutine.
+	acks chan int64
+	// text is the per-session overlay publisher: the snapshot goroutine stores the
+	// latest decoded runs, the frame loop reads them. It decouples the DOM snapshot
+	// from the frame-emit goroutine. Reset per session by teardownSession.
+	text *textSync
 
 	// Proxy config parsed once in New, read-only afterwards. Unlike the
 	// mutex-guarded group above, these are set before any goroutine starts and
@@ -60,8 +83,10 @@ type ChromiumEngine struct {
 	// goroutines read them without a mu guard. captureOn gates the phase timing
 	// in composeFrame; recorder is the event sink the emit sites use behind a
 	// nil check. Both stay unset on the production path, so it pays zero cost.
-	captureOn bool            // true once EnableCapture turned capture on
-	recorder  captureRecorder // event sink, nil off the capture path
+	captureOn   bool            // true once EnableCapture turned capture on
+	recorder    captureRecorder // event sink, nil off the capture path
+	painted     chan struct{}   // closed on the first contentful paint (or load) under capture
+	paintedOnce sync.Once       // guards painted against a double close
 
 	// Lifecycle. The supervisor goroutine owns the engine lifetime: it starts
 	// each browser session, watches for a crash or a lost connection, rebuilds
@@ -71,6 +96,11 @@ type ChromiumEngine struct {
 	closeOnce  sync.Once     // guards closing against a double Close
 	supDone    chan struct{} // closed when the supervisor goroutine has exited
 	supervised bool          // true after the supervisor goroutine starts
+	// navigated guards Navigate single-shot. The frame channel is created once by
+	// the first Navigate and replaced only by Navigate; Resize and SetBackend never
+	// touch it (the channel-stability invariant V3). A second Navigate is rejected
+	// so two supervisors can never target the engine's session state at once.
+	navigated bool
 }
 
 // Ensure ChromiumEngine satisfies Engine.
@@ -103,6 +133,28 @@ func New(browserFlag string) *ChromiumEngine {
 func (e *ChromiumEngine) EnableCapture(rec captureRecorder) {
 	e.captureOn = true
 	e.recorder = rec
+	// The painted latch lets the capture driver wait for first contentful paint
+	// before it counts usable frames, so a blank pre-paint frame is never one of
+	// the n. It is created once here, before any goroutine starts, like the recorder
+	// above. markPainted closes it on the first paint signal; a late reader still
+	// sees the closed channel. The exported recorder relays it to the viewer's
+	// CaptureSession, so the viewer never imports the engine package.
+	e.painted = make(chan struct{})
+	if r, ok := rec.(*Recorder); ok {
+		r.setPainted(e.painted)
+	}
+}
+
+// markPainted closes the painted latch on the first paint signal (first contentful
+// paint, load, or frame-stopped-loading), so a late reader still sees it closed.
+// paintedOnce guards the close because several signals may arrive and a crash
+// rebuild re-registers the listener. It is a no-op off the capture path, where
+// painted stays nil.
+func (e *ChromiumEngine) markPainted() {
+	if e.painted == nil {
+		return
+	}
+	e.paintedOnce.Do(func() { close(e.painted) })
 }
 
 // SetCellPx records the resolved terminal cell pixel size. The engine uses it to
@@ -118,16 +170,28 @@ func (e *ChromiumEngine) SetCellPx(w, h int) {
 // later crash recovery can re-navigate. It resolves the executable from the
 // --browser flag held in browserFlag, launches a context sized to the current
 // capture size, starts the latest-wins screencast and frame loop, then dispatches
-// navigation without waiting for every page resource to finish loading.
+// navigation without waiting for every page resource to finish loading. It is
+// single-shot: the frame channel is created here once and replaced only here, so
+// Resize and SetBackend (which call restartStream, never Navigate) keep a stable
+// channel handle. A second Navigate is rejected so two supervisors cannot target
+// the engine session state at once.
 func (e *ChromiumEngine) Navigate(url string) error {
 	e.mu.Lock()
 	if channelClosed(e.closing) {
 		e.mu.Unlock()
 		return context.Canceled
 	}
+	if e.navigated {
+		e.mu.Unlock()
+		return fmt.Errorf("engine: Navigate already called; it is single-shot")
+	}
+	e.navigated = true
 	e.url = url
 	e.scrollX, e.scrollY = 0, 0
-	e.frames = make(chan render.Frame)
+	// A small frame-channel buffer keeps a transient restartStream stall from
+	// parking the producer on an unbuffered frames <- frame send (Decision 3); the
+	// control goroutine on the viewer side is the primary interactive-hang fix.
+	e.frames = make(chan render.Frame, frameChannelBuffer)
 	e.closing = make(chan struct{})
 	e.supDone = make(chan struct{})
 	e.closeOnce = sync.Once{}
@@ -142,6 +206,7 @@ func (e *ChromiumEngine) Navigate(url string) error {
 		e.closing = nil
 		e.supDone = nil
 		e.supervised = false
+		e.navigated = false
 		e.mu.Unlock()
 		return err
 	}
@@ -167,7 +232,11 @@ func (e *ChromiumEngine) Resize(cols, rows int) {
 	}
 }
 
-// Frames returns the emitted-frame channel.
+// Frames returns the emitted-frame channel. The channel is stable across Resize
+// and SetBackend (which restart the stream but keep the same channel) and is
+// replaced only by Navigate, which is single-shot (invariant V3). So a consumer
+// that caches the handle keeps reading across a resize, a backend switch, and a
+// crash rebuild.
 func (e *ChromiumEngine) Frames() <-chan render.Frame {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -211,7 +280,7 @@ func (e *ChromiumEngine) SendKey(k Key) {
 		WithText(k.Text).
 		WithCode(k.Code).
 		WithModifiers(input.Modifier(k.Mod))
-	_ = chromedp.Run(ctx, ev)
+	e.dispatchInput(ctx, ev)
 }
 
 // SendMouse forwards a mouse event to the page. A wheel event routes to the
@@ -242,7 +311,7 @@ func (e *ChromiumEngine) dispatchWheel(dx, dy int) {
 	ev := input.DispatchMouseEvent(input.MouseWheel, cx, cy).
 		WithDeltaX(float64(dx)).
 		WithDeltaY(float64(dy))
-	_ = chromedp.Run(ctx, ev)
+	e.dispatchInput(ctx, ev)
 }
 
 // Close tears down the engine and the browser process. It signals the supervisor

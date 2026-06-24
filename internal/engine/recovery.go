@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
+	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/input"
-	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -30,76 +31,144 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	scrollX, scrollY := e.scrollX, e.scrollY
 	cx := float64(e.cols*e.cellW) / 2
 	cy := float64(e.rows*e.cellH) / 2
-	capW, capH := e.captureW, e.captureH
+	// The screencast cap is the real pixel surface, the per-backend pixel target;
+	// the engine downscales the block frame to the sub-cell captureSize client-side.
+	capW, capH := e.surfaceSize(e.cols, e.rows)
 	e.mu.Unlock()
 
 	crashed = make(chan struct{})
 	e.watchCrash(crashed)
 	slot := newFrameSlot()
+	// acks is the buffered ack channel the ack pump drains. It is created before
+	// startScreencast so the listener's first enqueue lands, and the pump runs off
+	// the event goroutine to avoid the chromedp #920 deadlock. The buffer is sized
+	// to a few in-flight frames so a transient pump stall never blocks the listener
+	// or the slot's displaced-frame ack.
+	acks := make(chan int64, ackBufferDepth)
+	ts := &textSync{}
 	e.mu.Lock()
 	e.slot = slot
+	e.acks = acks
+	e.text = ts
 	e.mu.Unlock()
 	if err = e.startScreencast(ctx, slot, capW, capH); err != nil {
 		e.teardownSession()
 		return nil, fmt.Errorf("engine: start screencast: %w", err)
 	}
-	go e.runFrameLoop(ctx, slot, frames)
+	go e.ackPump(ctx, acks)
+	go e.runTextSync(ctx, ts)
+	go e.runFrameLoop(ctx, slot, frames, ts)
 
-	go e.navigateAsync(ctx, url)
-	// Restore the held scroll offset after a rebuild so the page resumes where the
-	// crash left off. A fresh navigate lands at the top, so a non-zero held offset
-	// is re-applied as one mouseWheel at the viewport centre by the held deltas.
-	if scrollX != 0 || scrollY != 0 {
-		wheel := input.DispatchMouseEvent(input.MouseWheel, cx, cy).
-			WithDeltaX(float64(scrollX)).
-			WithDeltaY(float64(scrollY))
-		_ = chromedp.Run(ctx, wheel)
-	}
+	// Navigate and the held-scroll restore run on one ordered path: navigateAsync
+	// drives the load waiter, then restores the held offset only after the load
+	// signal, so document-exists happens-before scroll-restore. A fresh navigate
+	// lands at the top, so a non-zero held offset is re-applied as one mouseWheel
+	// at the viewport centre by the held deltas.
+	go e.navigateAsync(ctx, url, scrollRestore{x: scrollX, y: scrollY, cx: cx, cy: cy})
 	return crashed, nil
 }
 
-// navigateAsync dispatches Page.navigate after the screencast and frame loop are
-// live. Navigation errors tear down the session so the supervisor can rebuild or
-// close the frame channel; they do not trap the raw-mode viewer before its key
-// reader starts.
-func (e *ChromiumEngine) navigateAsync(ctx context.Context, url string) {
-	err := dispatchNavigate(ctx, url)
+// scrollRestore is the held scroll offset re-applied after a navigate completes,
+// expressed as the wheel deltas and the viewport-centre coordinates the engine
+// dispatches one mouseWheel from. A zero offset restores nothing.
+type scrollRestore struct {
+	x, y   int     // held scroll deltas in CSS pixels
+	cx, cy float64 // viewport-centre coordinates for the mouseWheel dispatch
+}
+
+// navigateAsync drives navigation through chromedp's full responseAction waiter
+// (chromedp.Navigate) on this goroutine, after the screencast and frame loop are
+// live. The waiter learns the loaderID from the "init" lifecycle event, buffers
+// pre-loaderID events, matches the top frame, and finishes on the matched load
+// signal; lifecycle events are enabled per session so it can match. Running it
+// here, off the launch path, keeps startup non-blocking so the raw-mode viewer
+// keeps Ctrl-C live during launch (Decision 1). The waiter's completion is the
+// load signal: it closes the capture paint latch. A navigate errorText renders
+// the browser's own error page rather than tearing the session down (Decision 1),
+// so the supervisor never rebuilds on a failed URL.
+func (e *ChromiumEngine) navigateAsync(ctx context.Context, url string, restore scrollRestore) {
+	err := chromedp.Run(ctx, chromedp.Navigate(url))
 	if e.recorder != nil {
 		result := "ok"
 		if err != nil {
 			result = err.Error()
 		}
 		e.recorder.Record(captureEvent{Type: captureEventNavigate, URL: url, Result: result})
-		e.fillSession(url, result)
+		e.fillSession(ctx, url, result)
 	}
-	if err != nil {
-		e.teardownSession()
+	// Restore the held scroll offset only after the load signal, so the document
+	// exists before the wheel lands. This sequences navigate then scroll-restore on
+	// one ordered path and closes the navigate-vs-scroll race.
+	if restore.x != 0 || restore.y != 0 {
+		wheel := input.DispatchMouseEvent(input.MouseWheel, restore.cx, restore.cy).
+			WithDeltaX(float64(restore.x)).
+			WithDeltaY(float64(restore.y))
+		_ = chromedp.Run(ctx, wheel)
 	}
+	// The load signal fires the capture paint latch, whether the page loaded or the
+	// browser rendered an error page. markPainted is a no-op off the capture path.
+	e.markPainted()
 }
 
 // fillSession assembles the cdp-session.json bytes from held engine state and
 // stores them on the recorder when it is an exported *Recorder, so the viewer
 // reads them after Navigate. It runs only on the capture path. It reads the
-// capture size under mu, then builds and marshals outside the lock, so it never
-// holds mu across the assemble. The launch flags derive from proxyFlags, which
-// carries only the credential-free Server, so the proxy user and password never
-// reach the file. Browser version and target id stay empty: the engine holds no
-// live CDP handle to query them without a browser, and the proposal's secret and
-// whitelist guarantees do not depend on them.
-func (e *ChromiumEngine) fillSession(navURL, navResult string) {
+// capture and surface size under mu, then builds and marshals outside the lock, so
+// it never holds mu across the assemble. The launch flags derive from proxyFlags,
+// which carries only the credential-free Server, so the proxy user and password
+// never reach the file. The browser version (Browser.getVersion) and target id
+// (the live chromedp target) are queried from the live ctx, which exists here on
+// the navigate path; a query error leaves the field empty rather than failing the
+// bundle.
+func (e *ChromiumEngine) fillSession(ctx context.Context, navURL, navResult string) {
 	rec, ok := e.recorder.(*Recorder)
 	if !ok {
 		return
 	}
 	e.mu.Lock()
 	capW, capH := e.captureW, e.captureH
+	maxW, maxH := e.surfaceSize(e.cols, e.rows)
 	e.mu.Unlock()
-	session := buildCDPSession("", e.browserFlag, "", navURL, navResult, capW, capH, e.proxy)
+	version := browserVersion(ctx)
+	targetID := liveTargetID(ctx)
+	session := buildCDPSession(version, e.browserFlag, targetID, navURL, navResult, capW, capH, maxW, maxH, rec.droppedCount(), e.proxy)
 	data, err := json.MarshalIndent(session, "", "  ")
 	if err != nil {
 		return
 	}
 	rec.setSession(data)
+}
+
+// browserVersion returns the product version string Browser.getVersion reports,
+// or "" on any error. It runs through chromedp.Run so the action gets the target
+// executor context.
+func browserVersion(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	var product string
+	err := chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {
+		_, p, _, _, _, gerr := browser.GetVersion().Do(runCtx)
+		product = p
+		return gerr
+	}))
+	if err != nil {
+		return ""
+	}
+	return product
+}
+
+// liveTargetID returns the CDP target id of the driven page from the live
+// chromedp context, or "" when no target is attached.
+func liveTargetID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	c := chromedp.FromContext(ctx)
+	if c == nil || c.Target == nil {
+		return ""
+	}
+	return c.Target.TargetID.String()
 }
 
 // finishStartup marks the supervisor as live after startup has a session. If
@@ -140,36 +209,23 @@ func channelClosed(ch <-chan struct{}) bool {
 	}
 }
 
-// dispatchNavigate sends Page.navigate through chromedp.Run so the action gets
-// the target executor context, but avoids chromedp.Navigate's load-wait wrapper.
-func dispatchNavigate(ctx context.Context, url string) error {
-	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		_, _, errorText, _, err := page.Navigate(url).Do(ctx)
-		if err != nil {
-			return err
-		}
-		if errorText != "" {
-			return fmt.Errorf("page load error %s", errorText)
-		}
-		return nil
-	}))
-}
-
 // watchCrash registers a ListenTarget handler that closes crashed on the first
-// Target.targetCrashed event. closeOnce guards the close because the listener
-// may fire more than once. The supervisor selects on crashed to trigger a
-// rebuild.
+// Target.targetCrashed event. A sync.Once guards the close because the listener
+// may fire more than once, matching the rest of the file's once idiom. The
+// supervisor selects on crashed to trigger a rebuild.
 func (e *ChromiumEngine) watchCrash(crashed chan struct{}) {
 	e.mu.Lock()
 	ctx := e.ctx
 	e.mu.Unlock()
-	var once boolFlag
+	var once sync.Once
 	chromedp.ListenTarget(ctx, func(ev any) {
-		if _, ok := ev.(*target.EventTargetCrashed); ok && once.set() {
-			if e.recorder != nil {
-				e.recorder.Record(captureEvent{Type: captureEventTargetCrashed})
-			}
-			close(crashed)
+		if _, ok := ev.(*target.EventTargetCrashed); ok {
+			once.Do(func() {
+				if e.recorder != nil {
+					e.recorder.Record(captureEvent{Type: captureEventTargetCrashed})
+				}
+				close(crashed)
+			})
 		}
 	})
 }
@@ -184,7 +240,8 @@ func (e *ChromiumEngine) teardownSession() {
 	e.mu.Lock()
 	slot := e.slot
 	cancel := e.cancel
-	e.ctx, e.cancel, e.slot = nil, nil, nil
+	e.ctx, e.cancel, e.slot, e.acks, e.text = nil, nil, nil, nil, nil
+	e.windowID = 0
 	e.mu.Unlock()
 	if slot != nil {
 		slot.drain(e.ackFrame)
@@ -236,18 +293,4 @@ func (e *ChromiumEngine) rebuild() (crashed chan struct{}, ok bool) {
 		return nil, false
 	}
 	return next, true
-}
-
-// boolFlag is a one-shot flag used to close a channel exactly once from a
-// listener that may fire repeatedly. It is not safe for concurrent set calls,
-// which is fine because ListenTarget delivers events to one handler serially.
-type boolFlag struct{ done bool }
-
-// set reports whether this is the first call, returning true once.
-func (b *boolFlag) set() bool {
-	if b.done {
-		return false
-	}
-	b.done = true
-	return true
 }

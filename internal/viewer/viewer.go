@@ -318,18 +318,30 @@ func (s *State) RenderFrame(src *image.RGBA, w io.Writer) error {
 }
 
 // RenderStreamFrame draws one live screencast frame, folding its crisp DOM-text
-// overlay on the block path. The engine sizes the block capture to the full grid
-// and bins each text run in whole-cell coordinates, so the overlay aligns when
-// the block path composes at the same full grid. The graphics backends carry no
-// overlay, so they draw the bitmap alone via RenderFrame. A nil image is a no-op.
+// overlay on the block path. The engine sizes the capture to the full grid and
+// bins each text run in whole-cell coordinates, so the overlay aligns when the
+// block path composes at the same full grid. The graphics backends carry no
+// overlay and the engine already sized their bitmap to the terminal target, so
+// they draw frame.Img as final via renderGraphicsFinal with no second downscale:
+// the engine is the one graphics sizing owner. A nil or degenerate (zero-extent)
+// image is a no-op; this one guard covers both the block and the graphics paths,
+// so neither downscales to a zero extent.
 func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
 	if frame.Img == nil {
+		return nil
+	}
+	b := frame.Img.Bounds()
+	if b.Dx() <= 0 || b.Dy() <= 0 {
 		return nil
 	}
 	if s.Backend == BackendBlock {
 		return s.renderBlock(frame.Img, frame.Text, w)
 	}
-	return s.RenderFrame(frame.Img, w)
+	fit := s.Fit()
+	if fit.FitCols <= 0 || fit.FitRows <= 0 {
+		return nil
+	}
+	return s.renderGraphicsFinal(frame.Img, fit, w)
 }
 
 // renderBlock composes the source onto the fit-and-letterbox grid and writes it
@@ -356,10 +368,29 @@ func (s *State) renderBlock(src *image.RGBA, text []render.GlyphRun, w io.Writer
 // renderGraphics downscales the source to the fitted pixel extent and encodes it
 // with the active graphics backend. Sixel and kitty draw a bitmap, so the fit
 // maps to pixels at the real terminal cell size, filling the letterbox; the image
-// keeps its aspect.
+// keeps its aspect. The static-image path (RenderFrame) uses it because its source
+// is a full-resolution loaded image that must be fitted and downscaled here.
 func (s *State) renderGraphics(src *image.RGBA, fit block.Fit, w io.Writer) error {
 	pxW, pxH := render.GraphicsCaptureSize(fit.FitCols, fit.FitRows, s.W, s.H)
 	sub := metrics.Downscale(src, pxW, pxH)
+	return s.encodeGraphics(sub, fit, w)
+}
+
+// renderGraphicsFinal encodes an already-sized graphics bitmap as final, with no
+// second downscale. The live stream path uses it: the engine sized the bitmap to
+// the terminal pixel target, so it is the one sizing owner and the viewer must not
+// resize the frame again. It positions and encodes through the same encodeGraphics
+// seam as the static path.
+func (s *State) renderGraphicsFinal(src *image.RGBA, fit block.Fit, w io.Writer) error {
+	return s.encodeGraphics(src, fit, w)
+}
+
+// encodeGraphics positions the cursor at the letterbox offset and encodes img
+// with the active graphics backend. It is the shared tail of renderGraphics (which
+// downscales first) and renderGraphicsFinal (which passes the engine-sized bitmap
+// through), so the kitty delete-all and the centring offset stay identical on both
+// paths.
+func (s *State) encodeGraphics(img *image.RGBA, fit block.Fit, w io.Writer) error {
 	if s.Backend == BackendKitty {
 		if _, err := io.WriteString(w, kittyDeleteAll); err != nil {
 			return err
@@ -370,7 +401,7 @@ func (s *State) renderGraphics(src *image.RGBA, fit block.Fit, w io.Writer) erro
 			return err
 		}
 	}
-	return s.Renderer().Render(render.Frame{Img: sub}, w)
+	return s.Renderer().Render(render.Frame{Img: img}, w)
 }
 
 // cursorPosition returns the CUP escape (\x1b[<row>;<col>H) that moves the

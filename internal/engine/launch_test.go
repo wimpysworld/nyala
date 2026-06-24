@@ -346,6 +346,52 @@ func TestCaptureSizeBlock(t *testing.T) {
 	}
 }
 
+func TestSizingThreeIndependentValuesBlock(t *testing.T) {
+	// The block backend proves the split: the layout viewport and the captured
+	// surface (surfaceSize) are the real cell-pixel viewport, while the sample-grid
+	// downscale target (captureSize) is the sub-cell quadrant grid. The two must be
+	// different numbers, the fault the rewrite fixes.
+	const cols, rows = 80, 24
+	const cellW, cellH = 9, 18
+	e := &ChromiumEngine{backend: "block", cellW: cellW, cellH: cellH, cols: cols, rows: rows}
+
+	surfW, surfH := e.surfaceSize(cols, rows)
+	capW, capH := e.captureSize(cols, rows)
+
+	// The layout viewport / surface / screencast cap is the real pixel viewport.
+	if surfW != cols*cellW || surfH != rows*cellH {
+		t.Errorf("surfaceSize = (%d, %d), want the real viewport (%d, %d)", surfW, surfH, cols*cellW, rows*cellH)
+	}
+	// The downscale target is the sub-cell quadrant grid, a different number.
+	wantCapW, wantCapH := render.BlockCaptureSize(true, cols, rows)
+	if capW != wantCapW || capH != wantCapH {
+		t.Errorf("captureSize = (%d, %d), want the sub-cell grid (%d, %d)", capW, capH, wantCapW, wantCapH)
+	}
+	// The surface and the sample grid must not be fused into one number.
+	if surfW == capW && surfH == capH {
+		t.Fatalf("layout viewport and sample grid are the same (%d, %d); they must be independent", surfW, surfH)
+	}
+	// The snapshot cell-px divisor is the real cell px, derived from the surface.
+	cw, ch := e.snapshotCellPx()
+	if cw != cellW || ch != cellH {
+		t.Errorf("snapshotCellPx = (%d, %d), want real cell px (%d, %d)", cw, ch, cellW, cellH)
+	}
+}
+
+func TestSurfaceSizeNonZeroFloor(t *testing.T) {
+	// A 0x0 grid (the agent shell reports no pixel size) must resolve to the
+	// non-zero floor, never a blank 0x0 surface Chromium cannot lay out.
+	e := &ChromiumEngine{backend: "block", cellW: 9, cellH: 18}
+
+	surfW, surfH := e.surfaceSize(0, 0)
+	if surfW < surfaceFloorPx || surfH < surfaceFloorPx {
+		t.Fatalf("surfaceSize(0,0) = (%d, %d), want each >= floor %d", surfW, surfH, surfaceFloorPx)
+	}
+	if surfW == 0 || surfH == 0 {
+		t.Fatalf("surfaceSize(0,0) = (%d, %d), want a non-zero surface", surfW, surfH)
+	}
+}
+
 func TestCaptureSizeGraphics(t *testing.T) {
 	const cols, rows = 80, 24
 	const cellW, cellH = 9, 18

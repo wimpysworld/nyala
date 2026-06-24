@@ -85,9 +85,10 @@ already folded on `Frame.Text`, so the consumer does no two-cadence reconcile. T
 `Key` and `MouseEvent` types are terminal-neutral; scroll uses wheel deltas in CSS
 pixels. `ChromiumEngine` (`chromium.go`) is the one concrete engine. It owns a
 `chromedp` context, the URL, the scroll offset, the resolved cell px, the active
-backend, the capture size, the latest-wins slot, and the last-matched text. It
-holds the URL and scroll offset in its own state, not inside `chromedp`, so it
-rebuilds and re-navigates after a crash. The loop, the snapshot decode, the sync,
+backend, the capture size, the latest-wins slot, the ack-pump channel, and the
+overlay publisher. The last-matched text lives in the snapshot goroutine, not engine
+state. It holds the URL and scroll offset in its own state, not inside `chromedp`, so
+it rebuilds and re-navigates after a crash. The loop, the snapshot decode, the sync,
 the launch, and the recovery live in their own files so `chromium.go` stays thin
 orchestration.
 
@@ -113,16 +114,30 @@ marks the slot dropped, acks any held frame, and unblocks a parked consumer, so
 `Close` leaves no frame unacked. A corrupt frame is acked and dropped so the
 stream never stalls.
 
+The ack never runs inline on the `ListenTarget` event goroutine. A `chromedp.Run`
+there is the chromedp #920 self-deadlock: the ack command waits for a response that
+only the parked event goroutine can read, so the event pump freezes and Chrome stops
+sending frames after the first. The production `ackFunc` instead enqueues the
+`SessionID` onto a buffered channel, and one `ackPump` goroutine drains it and runs
+`page.ScreencastFrameAck` off the event goroutine. The enqueue is select-with-default,
+so a full channel or a torn-down session drops the ack rather than parking the caller;
+a dropped ack only delays one frame's credit. The pump exits on context cancel, so it
+never outlives a session.
+
 ### The DOM snapshot decode
 
-`snapshot.go` runs one `DOMSnapshot.captureSnapshot` per consumed frame, requesting
-the computed `color` style and the paint order in one round-trip. The pure
-`decodeGlyphRuns` maps the snapshot documents and the shared string table to
-`[]render.GlyphRun` with no browser dependency, so it is unit-testable on canned
-structs. It walks every inline text box, converts each box's device-pixel bounds to
-CSS pixels by dividing by the device pixel ratio, re-adds the page scroll offset
-(the snapshot bounds ignore it), and bins the box top-left to a cell with the Stage
-2 floor rule. Each box becomes one `GlyphRun` clipped to `floor(boxWidthPx/cellW)`
+`snapshot.go` runs one `DOMSnapshot.captureSnapshot`, requesting the computed
+`color` style and the paint order in one round-trip. The snapshot runs on its own
+goroutine (`runTextSync`), decoupled from the frame-emit loop, so snapshot latency
+never withholds acks or stalls frame emission; `composeFrame` reads the latest
+published runs. The pure `decodeGlyphRuns` maps the snapshot documents and the shared
+string table to `[]render.GlyphRun` with no browser dependency, so it is unit-testable
+on canned structs. It walks every inline text box, converts each box's device-pixel
+bounds to CSS pixels by dividing by the device pixel ratio, places each run at the
+snapshot's own scroll offset, and bins the box top-left to a cell with the Stage
+2 floor rule. The snapshot bounds and the scroll come from one DOM read, so they are
+internally consistent and a sustained scroll shows the current text. Each box becomes
+one `GlyphRun` clipped to `floor(boxWidthPx/cellW)`
 display cells, counting cells with the Stage 2 width rule so a width-2 cluster is
 never half-emitted; overflow graphemes are dropped because the bitmap underneath
 shows them. The box's computed colour feeds `GlyphRun.FG` in RGBA channel order.
@@ -132,19 +147,20 @@ decoder stays general so tests pass other ratios.
 
 ### Frame sync between bitmap and text
 
-The bitmap and the snapshot share no frame id, so they are matched by construction.
-`composeFrame` consumes a bitmap, then `syncedRuns` captures the snapshot
-synchronously so the text reflects the page state of the frame in hand. The pure
-`syncDecision` (`sync.go`) compares the bitmap `Metadata.ScrollOffsetX/Y` against
-the snapshot root `DocumentSnapshot.ScrollOffsetX/Y`, both normalised by
-`PageScaleFactor`, within `scrollMatchTolerancePx` per axis. Within tolerance it
-folds the fresh runs on and records them as the last-matched; on divergence it holds
-the last-matched runs, or emits a bitmap-only frame when no prior match exists, and
-the next consumed frame re-syncs. On a snapshot read error it holds the last-matched
-runs, so the overlay holds rather than flickers. No text buffer is kept: the
-latest-wins slot plus the synchronous capture collapses the two cadences into one.
-`scrollMatchTolerancePx` is a named constant, set to 1, isolated for the post-build
-tuning spike.
+The bitmap and the snapshot share no frame id, so the text is placed by
+construction, not matched by scroll equality. The snapshot goroutine decodes each
+run at the snapshot's own scroll offset, so the runs are internally consistent and a
+sustained scroll shows the current text. `composeFrame` folds the latest published
+runs onto the bitmap; the overlay may lag the bitmap by a frame, which the
+place-by-scroll model tolerates. The pure `holdDecision` (`sync.go`) is one bounded
+error hold: a successful snapshot emits the fresh runs and records them as the
+last-matched; a failing read holds the last-matched runs for at most
+`holdStalenessLimit` of continuous failure, then drops to a bitmap-only frame rather
+than show text that no longer matches the page. No text buffer is kept: the
+latest-wins slot plus the published runs collapses the two cadences into one.
+`holdStalenessLimit` is a named constant set to 250 milliseconds, and
+`scrollMatchTolerancePx` (set to 1, now a pure compare helper off the hot path) sits
+beside it, both isolated for the post-build tuning spike.
 
 ### Scroll input
 
@@ -165,7 +181,10 @@ re-applies the held offset after re-navigate.
 plain-text `loading <url>` cue, navigates, then draws each `Frames()` value through
 the reused `State`, `RenderStreamFrame`, and `writeGrid`. It restarts the stream on
 SIGWINCH at the recomputed capture size, forwards scroll keys and the wheel to the
-engine, cycles the backend on Tab, and restores the terminal on exit. The viewer
+engine, cycles the backend on Tab, and restores the terminal on exit. A dedicated
+control goroutine runs the engine restarts (Resize, SetBackend), off the consumer
+loop, so a slow `restartStream` cannot freeze draw, keys, and quit; the engine frame
+channel is buffered so a transient restart stall does not park the producer. The viewer
 declares its own local `Engine` interface, so it never imports the engine package;
 the dependency runs one way. `app` supplies an `engineAdapter` that maps the
 viewer's string key code to the engine's `Key`. The viewer recognises scroll keys
@@ -187,12 +206,21 @@ needs no custom error UI.
 Chrome names, failing fast with an actionable error naming the search order.
 `resolveExecutable` is pure beyond reading the environment and PATH, so it is
 hermetically testable. `newAllocator` builds a `chromedp.NewExecAllocator` with the
-launch `--window-size` from the capture size and `force-device-scale-factor` 1.
-`applyDeviceMetrics` sets the CSS viewport via `SetDeviceMetricsOverride` at DSF 1
-once the context exists, because the override sizes only the viewport, not the
-captured content area; the window size sizes the content area, so without both
-frames arrive at the default 1280x720. `restartStream` re-applies the device
-metrics and restarts the screencast on a resize or a backend switch.
+launch `--window-size` from the real CSS-pixel viewport (`surfaceSize`) and
+`force-device-scale-factor` 1. Sizing splits into two values: `surfaceSize`
+(`cols*cellW` by `rows*cellH`, the layout viewport) and the per-backend
+`captureSize` (the client-side downscale target, the block sub-cell sample grid).
+`launch` fetches the browser window id once via `GetWindowForTarget`, enables
+lifecycle events with `enableLifecycle`, then sizes the layout and the surface
+together with `applySizing`. `applySizing` sets the CSS viewport via
+`SetDeviceMetricsOverride` at DSF 1, then sizes the captured content area
+authoritatively with `Browser.SetContentsSize` on the window id, because the
+override sizes only the layout viewport, not the captured surface; without the
+surface call frames arrive cropped or blank. `enableLifecycle` calls `page.Enable`
+and `SetLifecycleEventsEnabled(true)` per session, because CDP emits
+`Page.lifecycleEvent` only after it, and the navigate waiter needs that event to
+match a loaderID. `restartStream` re-applies the surface sizing and the screencast
+cap together and restarts the screencast on a resize or a backend switch.
 
 ### Crash recovery
 
@@ -200,7 +228,16 @@ metrics and restarts the screencast on a resize or a backend switch.
 for a crash (`Target.targetCrashed`), a lost-connection context cancellation, or
 `Close`. On a crash or lost connection it tears the dead session down and rebuilds
 from held state, re-navigating to the held URL and re-applying the held scroll
-offset, so frames resume where the crash left off. The supervisor is the single
+offset, so frames resume where the crash left off. `navigateAsync` drives the
+navigation through `chromedp.Navigate`, the full `responseAction` load waiter, on
+its own goroutine after the screencast and frame loop are live, so startup stays
+non-blocking and Ctrl-C stays live during launch. The waiter learns the loaderID
+from the `init` lifecycle event, buffers pre-loaderID events, matches the top frame,
+and finishes on the matched load signal. The held scroll offset is re-applied only
+after that load signal, so the document exists before the wheel lands. A navigate
+errorText renders the browser's own error page rather than tearing the session down,
+so the supervisor never rebuilds on a failed URL. On the capture path the load
+signal fires the paint latch. The supervisor is the single
 owner of the session fields, so no teardown races with `Close`. `Frames()` is
 created once in `Navigate` and closed exactly once, by the supervisor, on `Close`;
 it survives a rebuild, so the consumer keeps reading across a recovery. `Close`
@@ -233,7 +270,7 @@ discovery. `pkgs.makeWrapper` is in the Linux `nativeBuildInputs`.
 ### Tests
 
 The pure cores are unit-tested without a browser: the box decode and binning
-(`snapshot_test.go`), the sync match-or-hold decision (`sync_test.go`), the slot ack
+(`snapshot_test.go`), the bounded error-hold decision (`sync_test.go`), the slot ack
 accounting with a fake event source (`screencast_test.go`), executable discovery and
 the per-backend capture size (`launch_test.go`), the image decode channel order
 (`frame_test.go`), and the capture-size maths (`render/geometry_test.go`).
@@ -310,10 +347,11 @@ reviews it.
   viewport. PNG stays a diagnostics-only A/B for the damage diff.
 - **Capture snapshot per consumed frame, not on a timer.** The cost tracks the draw
   rate, the geometry matches the bitmap, and it keys the sync cleanly.
-- **Match text to bitmap by construction.** They share no frame id, so a synchronous
-  snapshot after each consumed bitmap plus a scroll-offset agreement check binds
-  them; on divergence the engine holds last-matched, so crisp text never composites
-  over a bitmap it disagrees with.
+- **Place text by the snapshot's own scroll, not match by scroll equality.** The
+  bitmap and the snapshot share no frame id, so the snapshot goroutine decodes each
+  run at the snapshot's own scroll offset and `composeFrame` folds the latest runs on.
+  A snapshot read failure holds the last-matched runs for a bounded time, then drops to
+  bitmap-only, so crisp text never composites stale over a page it no longer matches.
 - **Launch managed Chromium, not remote attach.** The browser-side flags (DSF 1,
   window size) apply only to a process Nyala starts. DSF 1 plus a small viewport is
   the clean CDP equivalent of Carbonyl's compiled-in LoDPI hack.
@@ -345,8 +383,8 @@ reviews it.
 | Load failure shows Chromium's own error page | screencast renders the browser error page; no custom error UI in the engine |
 | One static end-to-end frame: navigate, snapshot, bin, composite, render | `SmokeStaticFrame` (live tag) consumes one frame from `Frames()` and renders it once |
 | Stream does not stall; every frame acked exactly once | `frameSlot` ack-on-consume-or-replace; `TestFrameSlotInterleavedAckedExactlyOnce`, `TestFrameSlotConcurrentPutsAckedExactlyOnce` |
-| Box decode: DPR divide, scroll re-add, clip to box width, no half wide cluster | `decodeGlyphRuns`; `TestDecodeGlyphRunsBinning`, `TestDecodeGlyphRunsClip`, `TestDecodeGlyphRunsColour` |
-| Sync: equal folds, divergence holds, first divergence emits bitmap-only, page-scale normalises | `syncDecision`; `TestSyncDecision*` and `TestErrorHoldRuns*` |
+| Box decode: DPR divide, place at snapshot scroll, clip to box width, no half wide cluster | `decodeGlyphRuns`; `TestDecodeGlyphRunsBinning`, `TestDecodeGlyphRunsClip`, `TestDecodeGlyphRunsColour` |
+| Sync: success emits fresh runs, failure holds last-matched then drops to bitmap-only past the bound | `holdDecision`; `TestHoldDecision*` |
 | Discovery order and per-backend capture size | `resolveExecutable`, `captureSize`; `TestResolveExecutablePrecedence`, `TestResolveExecutableNoneResolves`, `TestCaptureSizeBlock`, `TestCaptureSizeGraphics`, `TestBlockCaptureSize`, `TestGraphicsCaptureSize` |
 | Scroll changes the viewport; engine owns the offset | `dispatchWheel` advances the held offset and dispatches one `mouseWheel`; verified live |
 | Resize restarts the stream at the recomputed size, no stale cells | `streamSession.resize` plus `Resize`/`restartStream`; verified live |
@@ -372,9 +410,10 @@ reviews it.
 - **JPEG chroma noise read as spurious cell damage.** Resolved by scope. Full-frame
   redraw is the Stage 3 baseline, so the cell diff is not used for emission;
   damage-rect partial emission is deferred.
-- **Frame-sync tolerance and page-scale skew unmeasured.** Resolved structurally,
-  carried forward to tune. `scrollMatchTolerancePx` is a named constant set to 1, and
-  `syncDecision` normalises by `PageScaleFactor`; the live spike tunes the value.
+- **Frame-sync tolerance and overlay staleness unmeasured.** Resolved structurally,
+  carried forward to tune. `holdStalenessLimit` (250 milliseconds) bounds the error
+  hold and `scrollMatchTolerancePx` (set to 1) stays the pure compare helper; the live
+  spike tunes both.
 - **Live-browser CI flakiness.** Resolved. The pure cores keep `just test` and CI
   browser-free; the live test sits behind `//go:build live` and `just live`, off CI.
 - **Sustained FPS and the CEF fallback.** Carried forward as accepted. FPS on KMSCON

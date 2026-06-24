@@ -61,6 +61,11 @@ type CaptureSession interface {
 	// SessionJSON returns the assembled cdp-session.json bytes, or nil before
 	// navigation fills them.
 	SessionJSON() []byte
+	// Painted returns a channel the engine closes on the first contentful paint
+	// (or load fallback). The capture driver waits on it before counting usable
+	// frames, so a blank pre-paint frame is never one of the n. A nil channel reads
+	// as never closed, so the driver's paint deadline bounds the wait.
+	Painted() <-chan struct{}
 }
 
 // Stream runs the interactive viewer on tty, drawing the live frames eng pushes,
@@ -118,7 +123,13 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode string) (err 
 	keySender := newKeySender(eng)
 	defer keySender.close()
 
-	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender}
+	// The control goroutine runs the engine restarts (Resize, SetBackend) off the
+	// consumer loop, so a slow restartStream cannot freeze draw, keys, and quit
+	// (Decision 3). It stops when Stream returns and closes done.
+	ctl := newControl(eng, done)
+	defer ctl.close()
+
+	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, ctl: ctl}
 	keys := readKeys(tty, done)
 	navigated := make(chan error, 1)
 	go func() {
@@ -128,6 +139,57 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode string) (err 
 		return nerr
 	}
 	return s.loop(winch, keys)
+}
+
+// control runs engine restarts off the viewer consumer loop. The loop enqueues a
+// resize or a backend switch with a non-blocking send; this goroutine runs the
+// engine call (which may block in restartStream) serially, so a slow restart
+// never freezes draw, keys, or quit. It selects on done and exits when Stream
+// returns. The one-slot buffer plus the drop-on-full send keeps the loop
+// responsive: a coalesced restart is fine because each request re-reads the
+// current size and backend from the engine state.
+type control struct {
+	eng  Engine
+	reqs chan func(Engine)
+	done <-chan struct{}
+}
+
+// newControl starts the control goroutine and returns the handle the loop
+// enqueues restarts on. done stops the goroutine when Stream returns.
+func newControl(eng Engine, done <-chan struct{}) *control {
+	c := &control{eng: eng, reqs: make(chan func(Engine), 1), done: done}
+	go c.run()
+	return c
+}
+
+// submit enqueues one engine restart for the control goroutine. The send is
+// non-blocking: if a restart is already queued the request is dropped, because
+// the queued one will re-read the latest size and backend when it runs. So the
+// consumer loop never blocks on a wedged restart.
+func (c *control) submit(fn func(Engine)) {
+	select {
+	case c.reqs <- fn:
+	default:
+	}
+}
+
+// close lets the goroutine drain through the shared done channel; it is a no-op
+// placeholder so the caller can defer a symmetric close beside the other viewer
+// goroutines. The goroutine exits on done.
+func (c *control) close() {}
+
+// run processes restarts serially until done closes. Running them here, not on
+// the consumer loop, is the interactive-hang fix: the loop keeps drawing and
+// handling quit while a restart blocks.
+func (c *control) run() {
+	for {
+		select {
+		case fn := <-c.reqs:
+			fn(c.eng)
+		case <-c.done:
+			return
+		}
+	}
 }
 
 // setupViewer performs the shared viewer setup both Stream and the capture
@@ -175,17 +237,23 @@ func setupViewer(eng Engine, tty *os.File, colourFlag string) (fd uintptr, st *S
 // tty fd it reads the resized geometry from. firstDrawn gates the resize clear
 // so no clear lands before the loading cue is replaced by a real frame.
 type streamSession struct {
-	eng        Engine
-	st         *State
-	tty        *os.File
-	fd         uintptr
-	keySender  *keySender
-	firstDrawn bool
+	eng          Engine
+	st           *State
+	tty          *os.File
+	fd           uintptr
+	keySender    *keySender
+	ctl          *control
+	firstDrawn   bool
+	nilImageOnce sync.Once // guards the one-shot nil-image diagnostic
+	resizeOnce   sync.Once // guards the one-shot dropped-resize diagnostic
 }
 
 // loop runs the push consumer until the frames or keys channel closes, a quit
 // key arrives, or an I/O error occurs. It draws each pushed frame, restarts the
-// stream on SIGWINCH at the recomputed grid, and forwards keys.
+// stream on SIGWINCH at the recomputed grid, and forwards keys. It caches the
+// frame channel once: the engine keeps the channel stable across Resize and
+// SetBackend and replaces it only by Navigate, which is single-shot (invariant
+// V3), so a backend switch or a resize never strands this cached handle.
 func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error {
 	frames := s.eng.Frames()
 	for {
@@ -244,9 +312,13 @@ func startupQuit(ev keyEvent) bool {
 
 // draw renders one pushed frame. It updates the image size from the frame, clears
 // the loading cue (or the prior frame) so a resized or smaller frame leaves no
-// stale cells, then draws with the crisp DOM-text overlay folded on.
+// stale cells, then draws with the crisp DOM-text overlay folded on. A nil-image
+// frame is skipped with a one-shot diagnostic so the dropped frame is observable.
 func (s *streamSession) draw(frame render.Frame) error {
 	if frame.Img == nil {
+		s.nilImageOnce.Do(func() {
+			fmt.Fprintln(os.Stderr, "nyala: dropped a frame with no image")
+		})
 		return nil
 	}
 	b := frame.Img.Bounds()
@@ -265,10 +337,17 @@ func (s *streamSession) draw(frame render.Frame) error {
 func (s *streamSession) resize() error {
 	nc, nr, err := cterm.GetSize(s.fd)
 	if err != nil {
+		// A GetSize failure drops this resize: the engine keeps the old grid, so the
+		// view desyncs until the next resize. A one-shot diagnostic makes it observable.
+		s.resizeOnce.Do(func() {
+			fmt.Fprintf(os.Stderr, "nyala: dropped a resize (terminal size unavailable): %v\n", err)
+		})
 		return nil
 	}
 	s.st.Resize(nc, nr)
-	s.eng.Resize(nc, nr)
+	// The engine restart runs on the control goroutine so a slow restartStream
+	// never freezes the consumer loop; the loop keeps drawing and handling quit.
+	s.ctl.submit(func(eng Engine) { eng.Resize(nc, nr) })
 	if !s.firstDrawn {
 		return nil
 	}
@@ -295,7 +374,10 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		return true
 	}
 	if act.Redraw && ev.b == keyTab {
-		s.eng.SetBackend(backendName(s.st.Backend))
+		// Cycle the backend off the consumer loop: the engine restart runs on the
+		// control goroutine so a slow restartStream cannot freeze draw or quit.
+		name := backendName(s.st.Backend)
+		s.ctl.submit(func(eng Engine) { eng.SetBackend(name) })
 	}
 	return false
 }

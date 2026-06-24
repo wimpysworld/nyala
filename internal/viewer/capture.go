@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/wimpysworld/nyala/internal/capture"
@@ -23,10 +24,17 @@ import (
 var ErrPartialBundle = errors.New("viewer: capture wrote a partial bundle")
 
 // captureIdle is the first-draw and per-frame idle deadline. The loop arms a
-// timer at this duration when Navigate returns nil, and resets it to this
+// timer at this duration when the painted latch closes, and resets it to this
 // duration on every drawn frame. captureLoop takes the duration as a parameter
 // so timeout tests inject a tiny value and run instantly.
 const captureIdle = 5 * time.Second
+
+// capturePaintDeadline bounds the wait for the first contentful paint before the
+// driver counts usable frames. A real page paints slower than the 5s per-frame
+// idle, so this is wider. If the paint signal never fires within it, the driver
+// writes a partial bundle reasoned "first contentful paint timeout". captureLoop
+// takes it as a parameter so tests inject a tiny value and run instantly.
+const capturePaintDeadline = 15 * time.Second
 
 // bundleWriter is the capture-bundle sink the driver depends on. It is the seam
 // the real capture.Bundle satisfies and a fake stands in for, so the bounded
@@ -105,7 +113,7 @@ func Capture(eng Engine, url string, tty *os.File, colourFlag, mode string, n in
 		return fmt.Errorf("viewer: open capture bundle: %w", err)
 	}
 
-	return runCapture(eng, url, st, tty, bundleWriter(b), mode, n, captureIdle)
+	return runCapture(eng, url, st, tty, bundleWriter(b), mode, n, capturePaintDeadline, captureIdle)
 }
 
 // runCapture runs the capture flow below the not-a-terminal guard: it validates
@@ -118,8 +126,9 @@ func Capture(eng Engine, url string, tty *os.File, colourFlag, mode string, n in
 // A forced graphics backend detection did not confirm writes a partial bundle
 // and returns ErrPartialBundle before any browser launch, so validation runs
 // after detection and before Navigate; placing it later would launch the browser
-// before failing. ModeAuto and ModeBlock always pass.
-func runCapture(eng Engine, url string, st *State, tty io.Writer, bundle bundleWriter, mode string, n int, idle time.Duration) error {
+// before failing. ModeAuto and ModeBlock always pass. paintWait bounds the wait
+// for first contentful paint; idle is the per-frame deadline.
+func runCapture(eng Engine, url string, st *State, tty io.Writer, bundle bundleWriter, mode string, n int, paintWait, idle time.Duration) error {
 	if verr := ValidateForcedBackend(mode, st.Enabled); verr != nil {
 		_ = bundle.FinalisePartial(verr.Error())
 		fmt.Fprintf(tty, "capture bundle: %s\r\n", bundle.Path())
@@ -129,10 +138,11 @@ func runCapture(eng Engine, url string, st *State, tty io.Writer, bundle bundleW
 	// Enable engine capture and set the recorder over the bundle's
 	// cdp-events.ndjson sink before Navigate, before any goroutine starts,
 	// matching the proxy set-once discipline. The session exposes the
-	// cdp-session.json bytes the engine assembles during navigation.
+	// cdp-session.json bytes the engine assembles during navigation and the painted
+	// latch the loop waits on before counting usable frames.
 	session := eng.EnableCapture(bundle.CDPEventsFile())
 
-	return captureLoop(eng, url, st, tty, bundle, session, n, idle)
+	return captureLoop(eng, url, st, tty, bundle, session, n, paintWait, idle)
 }
 
 // captureMeta builds the bundle run metadata from the resolved state and the
@@ -152,33 +162,40 @@ func captureMeta(url string, st *State, mode string, n int) capture.Meta {
 
 // captureLoop runs the bounded capture loop below the not-a-terminal guard. It
 // is unexported and takes the Engine, the State, the tty io.Writer, the bundle
-// writer, the capture session, the frame count, and the idle duration, so a unit
-// test drives it directly with a fake Engine, a bytes.Buffer tty, and a tiny
-// duration, bypassing the terminal check. It draws each frame with frame.Img !=
-// nil through io.MultiWriter(tty, bundle.RawFile()), preceded by its own
-// clearScreen, counts drawn frames, and records each frame's artefacts and
+// writer, the capture session, the frame count, the paint deadline, and the idle
+// duration, so a unit test drives it directly with a fake Engine, a bytes.Buffer
+// tty, and tiny durations, bypassing the terminal check. It draws each frame with
+// frame.Img != nil through io.MultiWriter(tty, bundle.RawFile()), preceded by its
+// own clearScreen, counts drawn frames, and records each frame's artefacts and
 // viewer-phase timing.
 //
-// One time.Timer carries both deadlines: it arms at idle when Navigate returns
-// nil (first-draw deadline) and resets to idle on every drawn frame (per-frame
-// idle deadline). The loop returns on one of four outcomes:
+// After Navigate returns nil it waits for the painted latch before counting any
+// usable frame, draining and discarding pre-paint frames so the latest-wins slot
+// does not stall. An early frame, captured before first contentful paint, is
+// blank; waiting for paint keeps a blank frame out of the n. The wait is bounded
+// by paintWait; if the paint signal never fires the loop writes a partial bundle
+// reasoned "first contentful paint timeout".
+//
+// Once painted, one time.Timer carries both per-frame deadlines: it arms at idle
+// on entry (first-draw deadline) and resets to idle on every drawn frame (per-frame
+// idle deadline). The loop returns on one of these outcomes:
 //
 //  1. n frames drawn: finalise a full bundle, return nil.
-//  2. the timer fires before the first frame: finalise a partial bundle, return
+//  2. the painted latch never closes within paintWait: finalise a partial bundle,
+//     return ErrPartialBundle.
+//  3. the timer fires before the first post-paint frame: finalise a partial
+//     bundle, return ErrPartialBundle.
+//  4. the timer fires after the first frame: finalise a partial bundle, return
 //     ErrPartialBundle.
-//  3. the timer fires after the first frame: finalise a partial bundle, return
+//  5. the frames channel closes before n: finalise a partial bundle, return
 //     ErrPartialBundle.
-//  4. the frames channel closes before n: finalise a partial bundle, return
-//     ErrPartialBundle.
-//  5. a mid-loop draw or write error: finalise a partial bundle with the wrapped
+//  6. a mid-loop draw or write error: finalise a partial bundle with the wrapped
 //     error as the reason, return ErrPartialBundle.
 //
-// It prints the bundle path on every exit. The timer anchor matches
-// streamSession.waitForNavigate: it arms exactly when the navigate goroutine
-// returns nil. The single select orders the frames channel against the timer
-// deterministically, so the timeout-after-frame and channel-close cases stay
-// distinct.
-func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundleWriter, session CaptureSession, n int, idle time.Duration) (err error) {
+// It prints the bundle path on every exit. The single select orders the frames
+// channel against the timer deterministically, so the timeout-after-frame and
+// channel-close cases stay distinct.
+func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundleWriter, session CaptureSession, n int, paintWait, idle time.Duration) (err error) {
 	defer func() { fmt.Fprintf(tty, "capture bundle: %s\r\n", bundle.Path()) }()
 
 	// finaliseFull and finalisePartial write the cdp-session.json bytes the engine
@@ -205,12 +222,25 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 		return ErrPartialBundle
 	}
 
-	// Arm the timer exactly when Navigate returns nil, the first-draw deadline.
+	tee := io.MultiWriter(tty, bundle.RawFile())
+	// Cache the frame channel once: the engine keeps it stable across Resize and
+	// SetBackend and replaces it only by Navigate, which is single-shot (invariant
+	// V3). The capture driver never resizes or cycles, so the handle is stable.
+	frames := eng.Frames()
+
+	// Wait for first contentful paint before counting usable frames, draining
+	// pre-paint frames so the slot does not stall. A paint timeout or a closed
+	// channel writes a partial bundle.
+	if reason, ok := waitForPaint(session, frames, paintWait); !ok {
+		_ = finalisePartial(reason)
+		return ErrPartialBundle
+	}
+
+	// Arm the per-frame timer now that paint has fired, the first-draw deadline.
 	timer := time.NewTimer(idle)
 	defer timer.Stop()
 
-	tee := io.MultiWriter(tty, bundle.RawFile())
-	frames := eng.Frames()
+	var nilImageOnce sync.Once
 	drawn := 0
 	for {
 		select {
@@ -220,6 +250,11 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 				return ErrPartialBundle
 			}
 			if frame.Img == nil {
+				// A nil-image frame is skipped with a one-shot diagnostic so the dropped
+				// frame is observable; it is not counted toward the n.
+				nilImageOnce.Do(func() {
+					fmt.Fprintln(os.Stderr, "nyala: capture skipped a frame with no image")
+				})
 				continue
 			}
 			in, derr := drawCaptureFrame(st, frame, tee)
@@ -258,6 +293,46 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 	}
 }
 
+// waitForPaint blocks until the session's painted latch closes, then returns
+// ok=true. While waiting it drains and discards frames from the frames channel so
+// the engine's latest-wins slot does not stall on an unconsumed pre-paint frame;
+// these blank pre-paint frames are never counted or written. It bounds the wait
+// with a timer at paintWait. It returns ok=false with a reason when the paint
+// deadline fires ("first contentful paint timeout") or the frames channel closes
+// before paint ("frames channel closed before first contentful paint"). A nil
+// painted latch reads as never closed, so the deadline bounds the wait.
+func waitForPaint(session CaptureSession, frames <-chan render.Frame, paintWait time.Duration) (reason string, ok bool) {
+	if session == nil {
+		// No session means no paint gate (a unit test that bypasses it); proceed
+		// straight to the bounded loop. The production path always wires a session.
+		return "", true
+	}
+	painted := session.Painted()
+	timer := time.NewTimer(paintWait)
+	defer timer.Stop()
+	for {
+		// Check paint first with priority. A plain three-way select picks at random
+		// when paint is already signalled and a frame is also ready, which could
+		// discard a post-paint frame the bounded loop should count.
+		select {
+		case <-painted:
+			return "", true
+		default:
+		}
+		select {
+		case <-painted:
+			return "", true
+		case _, open := <-frames:
+			if !open {
+				return "frames channel closed before first contentful paint", false
+			}
+			// Discard the pre-paint frame: do not draw, count, or write it.
+		case <-timer.C:
+			return "first contentful paint timeout", false
+		}
+	}
+}
+
 // writeSession writes the engine-assembled cdp-session.json bytes into the
 // bundle. A nil session (no capture wiring, as in a fake-engine test) or empty
 // bytes leaves the placeholder untouched. A write error is dropped: the session
@@ -292,7 +367,11 @@ func drawCaptureFrame(st *State, frame render.Frame, tee io.Writer) (capture.Fra
 	if _, err := io.WriteString(counter, clearScreen); err != nil {
 		return capture.FrameInput{}, err
 	}
-	if err := st.RenderStreamFrame(frame, counter); err != nil {
+	// Count the renderer's output on its own so the sixel payload size excludes the
+	// clearScreen prefix. For the block path renderBytes is the SGR grid; only the
+	// sixel branch of capturePerf reads it.
+	renderCounter := metrics.NewCountingWriter(counter)
+	if err := st.RenderStreamFrame(frame, renderCounter); err != nil {
 		return capture.FrameInput{}, err
 	}
 	writeMS := msSince(writeStart)
@@ -301,7 +380,7 @@ func drawCaptureFrame(st *State, frame render.Frame, tee io.Writer) (capture.Fra
 		Frame: frame,
 		Meta:  frame.Meta,
 		Grid:  grid,
-		Perf:  capturePerf(st, frame, grid, counter.N, writeMS),
+		Perf:  capturePerf(st, frame, grid, counter.N, renderCounter.N, writeMS),
 	}, nil
 }
 
@@ -313,7 +392,7 @@ func drawCaptureFrame(st *State, frame render.Frame, tee io.Writer) (capture.Fra
 // compose timings stay zero here: the viewer draws through one RenderStreamFrame
 // call, so the write time is the measured phase and the finer splits are not
 // instrumented separately in this pass.
-func capturePerf(st *State, frame render.Frame, grid *block.Grid, terminalBytes int64, writeMS float64) capture.ViewerPerf {
+func capturePerf(st *State, frame render.Frame, grid *block.Grid, terminalBytes, renderBytes int64, writeMS float64) capture.ViewerPerf {
 	p := capture.ViewerPerf{
 		CellPxW:         st.W,
 		CellPxH:         st.H,
@@ -321,6 +400,12 @@ func capturePerf(st *State, frame render.Frame, grid *block.Grid, terminalBytes 
 		OverlayCells:    overlayCells(frame.Text),
 		TerminalBytes:   terminalBytes,
 		TerminalWriteMS: writeMS,
+	}
+	// The sixel renderer's output is the sixel payload, so record its byte count.
+	// The bundle serialises it only for the sixel backend; other backends leave it
+	// zero.
+	if st.Backend == BackendSixel {
+		p.SixelPayloadBytes = renderBytes
 	}
 	if frame.Img != nil {
 		b := frame.Img.Bounds()

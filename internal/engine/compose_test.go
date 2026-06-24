@@ -11,7 +11,7 @@ import (
 )
 
 // cancelledContext returns a context that is already cancelled, so the snapshot
-// inside composeFrame fails fast and takes the error-hold branch without
+// inside snapshotRuns fails fast and takes the error-hold branch without
 // launching a browser. It avoids passing a nil context, which staticcheck flags.
 func cancelledContext() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -21,8 +21,8 @@ func cancelledContext() context.Context {
 
 // TestComposeFrameCopiesMetaUnderCapture asserts composeFrame copies the
 // pendingFrame screencast metadata onto frame.Meta when capture is on, so the
-// metadata reaches the bundle. A cancelled ctx makes the snapshot fail fast, so
-// no browser is launched.
+// metadata reaches the bundle. A nil textSync gives a bitmap-only frame; the meta
+// copy is independent of the overlay.
 func TestComposeFrameCopiesMetaUnderCapture(t *testing.T) {
 	e := &ChromiumEngine{captureOn: true, backend: "block"}
 	ts := cdp.TimeSinceEpoch(time.Unix(0, int64(1500*float64(time.Millisecond))))
@@ -38,7 +38,7 @@ func TestComposeFrameCopiesMetaUnderCapture(t *testing.T) {
 			Timestamp:       &ts,
 		},
 	}
-	frame := e.composeFrame(cancelledContext(), pending)
+	frame := e.composeFrame(pending, nil)
 	if frame.Meta == nil {
 		t.Fatal("frame.Meta is nil under capture, want the screencast metadata copied")
 	}
@@ -56,41 +56,45 @@ func TestComposeFrameCopiesMetaUnderCapture(t *testing.T) {
 	}
 }
 
-// TestComposeFrameGraphicsBackendSkipsSnapshot asserts composeFrame skips the DOM
-// snapshot for the graphics backends (sixel, kitty) and runs it for block. The
-// graphics backends draw the bitmap alone and ignore Frame.Text, so the snapshot
-// over the full graphics viewport is wasted work that starves the first draw; the
-// skip lets the frame flow. The recorder's dom_snapshot event is the seam: block
-// records it (the snapshot ran, even though the cancelled ctx fails it fast),
-// while sixel and kitty record none and emit a frame with nil Text. No browser is
-// launched.
-func TestComposeFrameGraphicsBackendSkipsSnapshot(t *testing.T) {
-	cases := []struct {
-		backend      string
-		wantSnapshot bool
-	}{
-		{"block", true},
-		{"sixel", false},
-		{"kitty", false},
+// TestComposeFrameFoldsPublishedText asserts composeFrame folds the latest runs
+// the snapshot goroutine published into Frame.Text, without running any snapshot
+// itself. The snapshot is now decoupled onto its own goroutine; composeFrame only
+// reads the published set.
+func TestComposeFrameFoldsPublishedText(t *testing.T) {
+	e := &ChromiumEngine{backend: "block"}
+	ts := &textSync{}
+	want := decodedRuns
+	ts.store(want, 1.5)
+
+	frame := e.composeFrame(pendingFrame{img: image.NewRGBA(image.Rect(0, 0, 2, 2))}, ts)
+	if len(frame.Text) != len(want) || (len(want) > 0 && frame.Text[0].Text != want[0].Text) {
+		t.Errorf("frame.Text = %v, want the published runs %v", frame.Text, want)
 	}
-	for _, c := range cases {
-		t.Run(c.backend, func(t *testing.T) {
-			rec := &fakeRecorder{}
-			e := &ChromiumEngine{captureOn: true, backend: c.backend, recorder: rec}
-			pending := pendingFrame{img: image.NewRGBA(image.Rect(0, 0, 2, 2))}
+}
 
-			frame := e.composeFrame(cancelledContext(), pending)
+// TestSnapshotRunsRecordsForBlockOnly asserts snapshotRuns records a dom_snapshot
+// event when it runs (the block path), and that the graphics backends report
+// textOverlayBackend false so runTextSync skips the snapshot for them. The
+// graphics backends draw the bitmap alone and ignore the overlay, so the snapshot
+// over the full graphics viewport is wasted work that runTextSync skips. A
+// cancelled ctx fails the snapshot fast, so no browser is launched.
+func TestSnapshotRunsRecordsForBlockOnly(t *testing.T) {
+	// Block: snapshotRuns runs and records dom_snapshot even though the cancelled
+	// ctx fails it fast.
+	rec := &fakeRecorder{}
+	e := &ChromiumEngine{captureOn: true, backend: "block", recorder: rec}
+	e.snapshotRuns(cancelledContext(), overlayState{})
+	if !rec.has(captureEventDOMSnapshot) {
+		t.Error("block snapshotRuns did not record dom_snapshot")
+	}
 
-			if got := rec.has(captureEventDOMSnapshot); got != c.wantSnapshot {
-				t.Errorf("dom_snapshot recorded = %v, want %v for backend %q", got, c.wantSnapshot, c.backend)
-			}
-			if !c.wantSnapshot && frame.Text != nil {
-				t.Errorf("graphics backend %q emitted Text = %v, want nil", c.backend, frame.Text)
-			}
-			if frame.Img == nil {
-				t.Errorf("backend %q emitted a nil-image frame, want the bitmap", c.backend)
-			}
-		})
+	// Graphics: runTextSync gates on textOverlayBackend, which must be false, so the
+	// snapshot is skipped for sixel and kitty.
+	for _, backend := range []string{"sixel", "kitty"} {
+		ge := &ChromiumEngine{captureOn: true, backend: backend}
+		if ge.textOverlayBackend() {
+			t.Errorf("backend %q reports textOverlayBackend true, want false (snapshot skipped)", backend)
+		}
 	}
 }
 
@@ -102,7 +106,7 @@ func TestComposeFrameLeavesMetaNilOffCapture(t *testing.T) {
 		img:  image.NewRGBA(image.Rect(0, 0, 2, 2)),
 		meta: &page.ScreencastFrameMetadata{ScrollOffsetY: 240},
 	}
-	frame := e.composeFrame(cancelledContext(), pending)
+	frame := e.composeFrame(pending, nil)
 	if frame.Meta != nil {
 		t.Errorf("frame.Meta = %+v off capture, want nil", frame.Meta)
 	}

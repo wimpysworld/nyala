@@ -43,6 +43,76 @@ func (r *ackRecorder) sortedIDs() []int64 {
 	return out
 }
 
+// TestAckFrameEnqueuesInsteadOfRunningInline proves the production ack path never
+// calls chromedp.Run on the listener goroutine: ackFrame enqueues the SessionID
+// onto the pump channel, and a separate pump goroutine runs the real ack off the
+// event goroutine. Running the ack inline is the chromedp #920 self-deadlock, so
+// this guards the headline invariant. No browser is involved: the test reads the
+// id straight off the channel.
+func TestAckFrameEnqueuesInsteadOfRunningInline(t *testing.T) {
+	t.Parallel()
+	acks := make(chan int64, ackBufferDepth)
+	e := &ChromiumEngine{acks: acks}
+
+	// ackFrame must return at once (no chromedp.Run, no browser) and leave the id
+	// on the pump channel for the pump to drain.
+	e.ackFrame(42)
+
+	select {
+	case got := <-acks:
+		if got != 42 {
+			t.Fatalf("pump channel carried %d, want 42", got)
+		}
+	default:
+		t.Fatal("ackFrame did not enqueue the SessionID onto the pump channel")
+	}
+}
+
+// TestAckFrameNilChannelDrops checks ackFrame drops the ack without blocking when
+// the session is torn down (a nil acks channel). The drain on Close acks a held
+// frame through this path after teardownSession cleared e.acks, so it must not
+// park the caller.
+func TestAckFrameNilChannelDrops(t *testing.T) {
+	t.Parallel()
+	e := &ChromiumEngine{} // acks is nil
+
+	done := make(chan struct{})
+	go func() {
+		e.ackFrame(1)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ackFrame on a nil channel blocked, want a silent drop")
+	}
+}
+
+// TestAckFrameFullChannelDrops checks the select-with-default enqueue drops the
+// ack rather than blocking when the pump channel is full, so a transient pump
+// stall never parks the listener goroutine.
+func TestAckFrameFullChannelDrops(t *testing.T) {
+	t.Parallel()
+	acks := make(chan int64, 1)
+	acks <- 99 // fill it
+	e := &ChromiumEngine{acks: acks}
+
+	done := make(chan struct{})
+	go func() {
+		e.ackFrame(100)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ackFrame on a full channel blocked, want a silent drop")
+	}
+	// The pre-loaded id is still there; the dropped ack did not displace it.
+	if got := <-acks; got != 99 {
+		t.Fatalf("full channel carried %d, want the original 99", got)
+	}
+}
+
 // TestFrameSlotPutOnEmptyDefersAck checks the first put stores the frame and
 // does not ack it: an unconsumed frame stays unacked until consume or replace.
 // A regression that acked on every put would fail here.
