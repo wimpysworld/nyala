@@ -16,9 +16,10 @@ import (
 
 // TestRenderStreamFrameGraphicsNoSecondDownscale asserts the graphics path treats
 // frame.Img as final: the engine sized the bitmap, so RenderStreamFrame encodes it
-// at its exact dimensions with no second Downscale. A frame.Img whose size already
-// fills the grid decodes back at the same dimensions; a second downscale would
-// resize it and the decoded extent would differ.
+// at its exact dimensions with no second Downscale. The image height is chosen so
+// the fit's own GraphicsCaptureSize rounds to a different height (160, not 170), so
+// the pre-2.4 double-downscale would resize the bitmap to 320x160 and the decoded
+// extent would differ from the engine-sized 320x170.
 func TestRenderStreamFrameGraphicsNoSecondDownscale(t *testing.T) {
 	const cols, rows = 40, 20
 	const cellW, cellH = 8, 16
@@ -27,10 +28,10 @@ func TestRenderStreamFrameGraphicsNoSecondDownscale(t *testing.T) {
 	st.SetEnabled([]Backend{BackendSixel, BackendBlock})
 	st.Backend = BackendSixel
 
-	// The engine sizes the graphics bitmap to the full grid pixel extent, so the
-	// image fills the grid and the fit offset is zero. Treating it as final keeps
-	// these exact dimensions.
-	imgW, imgH := render.GraphicsCaptureSize(cols, rows, cellW, cellH)
+	// The engine sizes the graphics bitmap; the viewer must encode it as-is. 320x170
+	// fits to 40x10 cells, whose GraphicsCaptureSize is 320x160, so a second
+	// downscale would shrink the height. Treating the frame as final keeps 320x170.
+	const imgW, imgH = 320, 170
 	img := image.NewRGBA(image.Rect(0, 0, imgW, imgH))
 	// Fill with an opaque colour so the sixel encoder emits a non-empty raster; an
 	// all-transparent image can encode to nothing.
@@ -44,7 +45,13 @@ func TestRenderStreamFrameGraphicsNoSecondDownscale(t *testing.T) {
 	if err := st.RenderStreamFrame(frame, &out); err != nil {
 		t.Fatalf("RenderStreamFrame(sixel) = %v, want nil", err)
 	}
-	decoded, err := capture.DecodeSixel(out.Bytes())
+	// The letterboxed fit prefixes a cursor-position escape; slice from the sixel
+	// DCS introducer so DecodeSixel sees the raster alone.
+	raster := out.Bytes()
+	if i := bytes.Index(raster, []byte("\x1bPq")); i >= 0 {
+		raster = raster[i:]
+	}
+	decoded, err := capture.DecodeSixel(raster)
 	if err != nil {
 		t.Fatalf("DecodeSixel: %v", err)
 	}
