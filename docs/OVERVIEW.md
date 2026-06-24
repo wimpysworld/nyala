@@ -602,6 +602,26 @@ Verdict: port Carbonyl's quadrant compositor and closed-form colour maths as an 
 Nyala package; lean on uniseg and x/ansi from the Charm stack; lock the colour and
 quadrant logic with golden-frame tests because Carbonyl is dormant.
 
+#### Active Carbonyl forks
+
+Upstream `fathyb/carbonyl` is dormant, so two community forks are tracked as live
+references. Both keep Carbonyl's quadrant compositor, Rec.601 luma split, closed-form
+RGB to xterm-256, and per-cell diff unchanged, and both place text by cell origin
+with a one-cell advance per grapheme (no per-glyph geometry), so they confirm the
+lineage relies on Carbonyl's forced-monospace layout, not measured glyph x. Both read
+BGRA, the mirror of Nyala's RGBA, so their channel indexing must not be copied. Full
+review in `BLOCK-RESEARCH.md`.
+
+- **`carboxyl-rs/carboxyl`** (BSD-3-Clause; last commit 2026-06-14): a rebrand only.
+  The `src/output/` and `src/gfx/` trees are byte-identical to Carbonyl 0.0.3; the
+  only `src/` change is the ASCII logo. Nothing fork-specific to port.
+- **`jmagly/carbonyl`** (BSD-3-Clause; last commit 2026-06-23): an active fork, ported
+  from Chromium M111 to M147, the renderer god-module split into per-concern files.
+  Two ideas worth porting: a `UNIFORM_THRESHOLD` guard that collapses a near-uniform
+  (sub-JND) cell to a single full block, killing antialiasing mottle in the quadrant
+  binariser, and a colour-inversion toggle applied at SGR-emit time for an optional
+  high-contrast mode.
+
 ### Brow6el internals
 
 Brow6el is the third reference: a full terminal browser that embeds Chromium directly
@@ -1094,3 +1114,18 @@ Stage 0 is the image-based harness, and it is built. The record of the work done
   `docs/STAGE-1.md`).
 - **browsh** (Firefox + Marionette, Go): the thing we're improving on. Stagnant;
   its weakness is the Firefox dependency and fuzzy text.
+- **awrit** (CEF Chromium, C++): off-screen renders the viewport and blits it via the
+  Kitty graphics protocol. No half-block floor and no crisp text layer, so all text is
+  whatever the Kitty bitmap shows. ~1k stars, stalled.
+- **casty** (CDP screencast): streams a raw CDP screencast plus a hi-res
+  `Page.captureScreenshot`, drawn via Kitty graphics. Its hybrid low-res-detect then
+  hi-res-grab capture pacing is a useful note for the screencast loop. Pixel only, no
+  text on cells.
+- **kitweb** (Xvfb + ffmpeg): captures the page with `ffmpeg x11grab` over Xvfb and
+  draws native-resolution Kitty frames. Pixel only, no text on cells.
+- **termsurf** (embedded Chromium Content API): composites the page with Metal and
+  draws it as an image. Pixel only, no text on cells.
+
+The 2025-2026 trend (awrit, casty, kitweb, termsurf) is to drop the cell grid and
+stream pixels over a graphics protocol. None composite crisp Unicode text on cells, so
+Nyala's block-plus-text path stays the differentiator. See `BLOCK-RESEARCH.md`.
