@@ -51,6 +51,13 @@ linters:
       - common-false-positives
       - legacy
       - std-error-handling
+    rules:
+      # Test fixtures use credentialed proxy URLs to exercise credential
+      # stripping; they are not real secrets.
+      - path: _test\.go
+        text: "G101"
+        linters:
+          - gosec
     paths:
       - third_party$
       - builtin$

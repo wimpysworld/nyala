@@ -68,6 +68,8 @@ A bare host gains an `https://` scheme. The `http`, `https`, and `file` schemes 
 
 Nyala needs a Chromium executable at runtime. It resolves the path from `--browser`, then `NYALA_BROWSER`, then `CHROME_PATH`, then a `PATH` lookup. The Nix package ships its own Chromium.
 
+Behind a proxy? Nyala reads the standard proxy environment variables and routes Chromium through them. It honours `HTTPS_PROXY`, `HTTP_PROXY`, and `ALL_PROXY` (and their lowercase forms), with `NO_PROXY` for hosts to skip. A proxy URL with credentials works too: Nyala authenticates over the DevTools Protocol, so the credentials stay out of the process arguments.
+
 | Flag | Default | Description |
 |---|---|---|
 | `<url>` | required | Page to open. |

@@ -6,7 +6,7 @@ A browser for the terminal: a TTY web browser driving headless Chromium via the 
 
 - `cmd/nyala` - entrypoint; kong CLI wiring. `app.CLI` holds the flags.
 - `internal/render` - the `Frame`/`Renderer` seam, with backends in `block`, `sixel`, `kitty`, and glyph loading in `font`.
-- `internal/engine` - the `Engine` seam and `ChromiumEngine`: launches headless Chromium, streams the screencast, extracts the DOM text layer over CDP, and emits synced `render.Frame` values.
+- `internal/engine` - the `Engine` seam and `ChromiumEngine`: launches headless Chromium, streams the screencast, extracts the DOM text layer over CDP, and emits synced `render.Frame` values. It also reads the conventional proxy environment variables and drives Chromium's proxy (see the runtime note below).
 - `internal/capture` - rasterises a frame and decodes terminal output back to pixels.
 - `internal/metrics` - image and performance measures over a frame.
 - `internal/ocr` - text legibility scoring (see the OCR gotcha below).
@@ -24,7 +24,7 @@ Tools are pinned by the Nix flake. Enter the dev shell with `nix develop`, or le
 ## Build and test
 
 - `just build` - build the `nyala` binary.
-- `just run https://wimpys.world` - build `./nyala`, then run it against a URL. Prefer this harness when agents need to launch the browser for fenced or local debugging, because it handles `FENCE_SANDBOX=1` and proxy environment variables for that run.
+- `just run https://wimpys.world` - build `./nyala`, then run it against a URL. Prefer this harness when agents need to launch the browser for fenced or local debugging, because it handles `FENCE_SANDBOX=1` (no-sandbox) for that run.
 - `just capture=1 run https://wimpys.world` - run the same harness with `NYALA_CAPTURE=1`. The recipe also accepts `capture=` after the URL. It parses `backend=`, but the current recipe does not pass it through as an active backend selector.
 - `just test` - run the fast unit tests, the routine gate. It runs no corpus sweep, no calibration, and no rasteriser-driven full-corpus measurement, so the harness package finishes in seconds.
 - `just diagnostics` - run the heavy quality gate (`go test -tags diagnostics ./internal/harness/`) over the five committed fixtures (`linuxmatters.png` plus the four `testpage-*` pages) at a fixed 120x40 grid; the calibration runs over the four test pages only. It runs one corpus sweep and one calibration, shared across the tagged tests, writes its report JSON/CSV, summary, and artefact PNGs to `testdata/diagnostics/` (gitignored), gates against the committed baseline and thresholds, and runs the calibration, golden, and overlay-grade tracks. The overlay grade hard-gates the overlaid-grid golden and the matcher `CER == 0`, gates the WCAG low-contrast text-cell count against `baseline.json`, and reports the gosseract differentiator. It takes minutes, so run it deliberately, not on every change.
@@ -43,6 +43,8 @@ Tools are pinned by the Nix flake. Enter the dev shell with `nix develop`, or le
 The `nyala` binary opens the positional `<url>`. A bare host gains an `https://` scheme; `http`, `https`, and `file` are accepted, others are rejected. Its flags are `--browser` (path to the Chromium executable to drive), `--color` (auto, truecolor, 256, none; default auto), and `--version`. The viewer auto-detects terminal capability (Kitty, then Sixel, then Block) and Tab cycles the supported backends. The diagnostics sweep runs via `just diagnostics`; the golden archives regenerate via `just update-golden`.
 
 Chromium is a runtime dependency. The Nix dev shell adds it Linux-gated, and the wrapped binary sets `CHROME_PATH` to it. The binary discovers the executable via `--browser`, then `NYALA_BROWSER`, then `CHROME_PATH`, then a `PATH` lookup.
+
+Proxy config is environment-only; there is no proxy flag. At construction the engine reads the proxy environment variables once and applies them to the Chromium launch. It sets `--proxy-server` (credential-free) from the first set of `HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY`, `http_proxy`, `ALL_PROXY`, `all_proxy`, and sets `--proxy-bypass-list` from `NO_PROXY` then `no_proxy`. When the proxy URL carries credentials, the engine answers the proxy auth challenge over CDP (the Fetch domain), keeping credentials out of Chromium's process arguments. A malformed proxy URL fails loudly at launch, naming the source variable.
 
 When you change code, `just build`, `just test`, and `just lint` must pass; this is the routine pre-commit gate. `just diagnostics` is the heavier quality gate, run deliberately rather than on every change. `just check` runs the full local gate before considering any change done.
 
