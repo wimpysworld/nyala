@@ -94,7 +94,7 @@ func TestEngineStableAcrossRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first recognise: %v", err)
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		got, err := eng.Recognise(img, capPx)
 		if err != nil {
 			t.Fatalf("repeat recognise %d: %v", i, err)

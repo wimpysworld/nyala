@@ -10,8 +10,8 @@ import (
 // solid returns a width x height *image.RGBA filled with one opaque colour.
 func solid(w, h int, c color.RGBA) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			img.SetRGBA(x, y, c)
 		}
 	}
@@ -64,8 +64,8 @@ func TestPSNRKnown(t *testing.T) {
 func TestGMSDIdentical(t *testing.T) {
 	a := solid(16, 16, color.RGBA{R: 90, G: 90, B: 90, A: 255})
 	// Add a gradient feature so the gradient map is non-trivial.
-	for y := 0; y < 16; y++ {
-		for x := 0; x < 16; x++ {
+	for y := range 16 {
+		for x := range 16 {
 			v := uint8(x * 8 % 256)
 			a.SetRGBA(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
 		}
@@ -105,8 +105,8 @@ func TestGMSDKnown(t *testing.T) {
 	const w, h = 3, 3
 	a := image.NewRGBA(image.Rect(0, 0, w, h))
 	b := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			a.SetRGBA(x, y, color.RGBA{A: 255})
 			b.SetRGBA(x, y, color.RGBA{A: 255})
 		}
@@ -124,8 +124,8 @@ func TestGMSDKnown(t *testing.T) {
 // mean is 1.
 func TestSSIMIdentical(t *testing.T) {
 	a := image.NewRGBA(image.Rect(0, 0, 32, 24))
-	for y := 0; y < 24; y++ {
-		for x := 0; x < 32; x++ {
+	for y := range 24 {
+		for x := range 32 {
 			v := uint8((x*7 + y*3) % 256)
 			a.SetRGBA(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
 		}
@@ -143,8 +143,8 @@ func TestSSIMIdentical(t *testing.T) {
 func TestSSIMRange(t *testing.T) {
 	a := image.NewRGBA(image.Rect(0, 0, 32, 24))
 	b := image.NewRGBA(image.Rect(0, 0, 32, 24))
-	for y := 0; y < 24; y++ {
-		for x := 0; x < 32; x++ {
+	for y := range 24 {
+		for x := range 32 {
 			va := uint8((x * 8) % 256)
 			// b is a's plane plus a small uniform offset: a degraded but still
 			// positively correlated copy, so SSIM stays in 0..1.
@@ -168,8 +168,8 @@ func TestSSIMRange(t *testing.T) {
 func TestSSIMAntiCorrelatedBound(t *testing.T) {
 	a := image.NewRGBA(image.Rect(0, 0, 32, 24))
 	b := image.NewRGBA(image.Rect(0, 0, 32, 24))
-	for y := 0; y < 24; y++ {
-		for x := 0; x < 32; x++ {
+	for y := range 24 {
+		for x := range 32 {
 			va := uint8((x * 8) % 256)
 			vb := uint8((255 - x*8 + 256) % 256)
 			a.SetRGBA(x, y, color.RGBA{R: va, G: va, B: va, A: 255})
@@ -187,8 +187,8 @@ func TestSSIMAntiCorrelatedBound(t *testing.T) {
 func TestSSIMSymmetric(t *testing.T) {
 	a := image.NewRGBA(image.Rect(0, 0, 20, 16))
 	b := image.NewRGBA(image.Rect(0, 0, 20, 16))
-	for y := 0; y < 16; y++ {
-		for x := 0; x < 20; x++ {
+	for y := range 16 {
+		for x := range 20 {
 			va := uint8((x*5 + y*9) % 256)
 			vb := uint8((x*3 + y*11 + 40) % 256)
 			a.SetRGBA(x, y, color.RGBA{R: va, G: va, B: va, A: 255})
@@ -230,8 +230,8 @@ func TestSSIMFlatPair(t *testing.T) {
 // plane has enough structure for the multiscale path to exercise every scale.
 func gradientRGBA(w, h int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			v := uint8((x*5 + y*3) % 256)
 			img.SetRGBA(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
 		}
@@ -309,8 +309,8 @@ func TestMSSSIMSingleScale(t *testing.T) {
 func TestMSSSIMRange(t *testing.T) {
 	a := image.NewRGBA(image.Rect(0, 0, 64, 48))
 	b := image.NewRGBA(image.Rect(0, 0, 64, 48))
-	for y := 0; y < 48; y++ {
-		for x := 0; x < 64; x++ {
+	for y := range 48 {
+		for x := range 64 {
 			va := uint8((x * 4) % 256)
 			vb := uint8((x*4 + 16) % 256)
 			a.SetRGBA(x, y, color.RGBA{R: va, G: va, B: va, A: 255})
@@ -391,7 +391,7 @@ func TestGaussianKernel1D(t *testing.T) {
 		t.Errorf("kernel sum = %v, want 1.0", sum)
 	}
 	mid := (ssimWinSize - 1) / 2
-	for i := 0; i < mid; i++ {
+	for i := range mid {
 		if math.Abs(k[i]-k[ssimWinSize-1-i]) > 1e-15 {
 			t.Errorf("kernel not symmetric at tap %d", i)
 		}

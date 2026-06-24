@@ -104,8 +104,8 @@ func TestCellGlyphOverBackground(t *testing.T) {
 	}
 
 	foundFG := false
-	for y := 0; y < CellPxH; y++ {
-		for x := 0; x < CellPxW; x++ {
+	for y := range CellPxH {
+		for x := range CellPxW {
 			if img.RGBAAt(x, y) == fg {
 				foundFG = true
 			}

@@ -93,8 +93,8 @@ func (br *Renderer) FitGrid(imgW, imgH int, compose func(cols, rows int) Grid) G
 		return out
 	}
 	inner := compose(fit.FitCols, fit.FitRows)
-	for row := 0; row < inner.Rows; row++ {
-		for col := 0; col < inner.Cols; col++ {
+	for row := range inner.Rows {
+		for col := range inner.Cols {
 			dstCol := fit.OffsetCol + col
 			dstRow := fit.OffsetRow + row
 			if dstCol < 0 || dstCol >= out.Cols || dstRow < 0 || dstRow >= out.Rows {

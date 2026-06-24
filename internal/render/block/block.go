@@ -121,8 +121,8 @@ func (br *Renderer) Render(f render.Frame, w io.Writer) error {
 // compose pass.
 func (br *Renderer) renderGrid(grid Grid, w io.Writer) error {
 	bw := bufio.NewWriter(w)
-	for row := 0; row < grid.Rows; row++ {
-		for col := 0; col < grid.Cols; col++ {
+	for row := range grid.Rows {
+		for col := range grid.Cols {
 			c := grid.At(col, row)
 			if c.Wide {
 				// The lead cell's wide grapheme already paints both columns, so
@@ -182,8 +182,8 @@ func (br *Renderer) composeQuadrant(f render.Frame) Grid {
 		Rows:  br.Rows,
 		Cells: make([]Cell, br.Cols*br.Rows),
 	}
-	for row := 0; row < g.Rows; row++ {
-		for col := 0; col < g.Cols; col++ {
+	for row := range g.Rows {
+		for col := range g.Cols {
 			x, y, z, wq := sampleQuadrant(f.Img, col, row)
 			glyph, fg, bg := binarizeQuadrant(x, y, z, wq)
 			*g.At(col, row) = Cell{Glyph: glyph, FG: fg, BG: bg}
@@ -202,8 +202,8 @@ func (br *Renderer) composeHalfBlock(f render.Frame) Grid {
 		Rows:  br.Rows,
 		Cells: make([]Cell, br.Cols*br.Rows),
 	}
-	for row := 0; row < g.Rows; row++ {
-		for col := 0; col < g.Cols; col++ {
+	for row := range g.Rows {
+		for col := range g.Cols {
 			top, bottom := sampleHalfBlock(f.Img, col, row)
 			*g.At(col, row) = Cell{Glyph: lowerHalfBlock, FG: bottom, BG: top}
 		}
@@ -248,7 +248,7 @@ const quadColPxH = 2
 // opaque. Out-of-bound or nil pixels contribute opaque black.
 func avgBlock(img *image.RGBA, x0, y0 int) color.RGBA {
 	var rs, gs, bs int
-	for dy := 0; dy < quadColPxH; dy++ {
+	for dy := range quadColPxH {
 		r, g, b := pixel(img, x0, y0+dy)
 		rs += int(r)
 		gs += int(g)

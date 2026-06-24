@@ -16,8 +16,8 @@ import (
 // reference and render differ in a known, non-trivial way.
 func synthRGBA(w, h int, shift uint8) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			img.SetRGBA(x, y, color.RGBA{
 				R: uint8(x) + shift,
 				G: uint8(y),
@@ -33,8 +33,8 @@ func synthRGBA(w, h int, shift uint8) *image.RGBA {
 // the cell and quant maps have something to shade.
 func synthGrid(cols, rows int, fgShift uint8) block.Grid {
 	g := block.Grid{Cols: cols, Rows: rows, Cells: make([]block.Cell, cols*rows)}
-	for row := 0; row < rows; row++ {
-		for col := 0; col < cols; col++ {
+	for row := range rows {
+		for col := range cols {
 			*g.At(col, row) = block.Cell{
 				Glyph: 0x2588,
 				FG:    color.RGBA{R: uint8(col * 7), G: uint8(row * 9), B: fgShift, A: 0xff},

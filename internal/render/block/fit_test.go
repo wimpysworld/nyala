@@ -141,9 +141,9 @@ func TestFitGridLetterboxBlankCells(t *testing.T) {
 	}
 
 	blank := 0
-	for row := 0; row < rows; row++ {
+	for row := range rows {
 		inFill := row >= fit.OffsetRow && row < fit.OffsetRow+fit.FitRows
-		for col := 0; col < cols; col++ {
+		for col := range cols {
 			c := g.At(col, row)
 			if inFill {
 				if c.Glyph == ' ' {

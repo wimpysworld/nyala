@@ -57,7 +57,7 @@ func TestCycleBackendSkipsDisabled(t *testing.T) {
 func TestCycleBackendBlockOnly(t *testing.T) {
 	s := NewState(120, 40, 64, 64)
 	s.SetEnabled([]Backend{BackendBlock})
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if got := s.CycleBackend(); got != BackendBlock {
 			t.Fatalf("cycle %d: got %d, want BackendBlock", i, got)
 		}
@@ -702,7 +702,7 @@ func TestWriteGridRowsJoinedByCRLF(t *testing.T) {
 	if got := strings.Count(out, "\n"); got != g.Rows-1 {
 		t.Fatalf("line feed count = %d, want %d (one between each row)", got, g.Rows-1)
 	}
-	for i := 0; i < len(out); i++ {
+	for i := range len(out) {
 		if out[i] == '\n' && (i == 0 || out[i-1] != '\r') {
 			t.Fatalf("line feed at byte %d not preceded by carriage return", i)
 		}

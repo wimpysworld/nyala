@@ -7,6 +7,7 @@ linters:
     - errorlint
     - gocritic
     - gosec
+    - intrange
     - misspell
     - noctx
     - revive

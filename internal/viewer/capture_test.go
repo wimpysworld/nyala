@@ -564,7 +564,7 @@ func TestDrawCaptureFrameSplitsEncodeFromWrite(t *testing.T) {
 func TestCaptureLoopFullCaptureReturnsNil(t *testing.T) {
 	const n = 3
 	ch := make(chan render.Frame, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		ch <- blockFrame()
 	}
 	eng := &fakeCaptureEngine{frames: ch}
@@ -633,7 +633,7 @@ func TestCaptureLoopDiscardsPrePaintFrames(t *testing.T) {
 		ch <- blockFrame()
 		close(painted)
 		// n post-paint frames the bounded loop must count.
-		for i := 0; i < n; i++ {
+		for range n {
 			ch <- blockFrame()
 		}
 	}()
@@ -710,7 +710,7 @@ func TestCaptureLoopSteadyStreamDoesNotTripIdle(t *testing.T) {
 	var tty bytes.Buffer
 
 	go func() {
-		for i := 0; i < n; i++ {
+		for range n {
 			ch <- blockFrame()
 			time.Sleep(idle / 10)
 		}
@@ -736,7 +736,7 @@ func TestCaptureLoopChannelCloseBeforeNWritesPartial(t *testing.T) {
 	const k = 2
 	const n = 5
 	ch := make(chan render.Frame, k)
-	for i := 0; i < k; i++ {
+	for range k {
 		ch <- blockFrame()
 	}
 	close(ch)
@@ -816,7 +816,7 @@ func TestCaptureLoopTeeMirrorsClearAndRenderOnly(t *testing.T) {
 	const n = 2
 	frame := blockFrame()
 	ch := make(chan render.Frame, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		ch <- frame
 	}
 	eng := &fakeCaptureEngine{frames: ch}

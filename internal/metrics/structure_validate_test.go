@@ -69,8 +69,8 @@ const (
 func ssimValidationFixture() (a, b *image.RGBA) {
 	a = image.NewRGBA(image.Rect(0, 0, ssimFixtureW, ssimFixtureH))
 	b = image.NewRGBA(image.Rect(0, 0, ssimFixtureW, ssimFixtureH))
-	for y := 0; y < ssimFixtureH; y++ {
-		for x := 0; x < ssimFixtureW; x++ {
+	for y := range ssimFixtureH {
+		for x := range ssimFixtureW {
 			checker := 0
 			if (x/4+y/4)%2 == 1 {
 				checker = 40

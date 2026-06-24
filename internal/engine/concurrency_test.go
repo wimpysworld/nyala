@@ -24,7 +24,7 @@ func TestEngineFieldsRaceFree(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			e.Resize(80+i%40, 24+i%20)
 			e.SetBackend("block")
 			e.SendKey(Key{Code: "ArrowDown"})
@@ -38,7 +38,7 @@ func TestEngineFieldsRaceFree(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			e.mu.Lock()
 			e.captureW, e.captureH = 640+i, 480+i
 			e.scrollX, e.scrollY = i, i*2

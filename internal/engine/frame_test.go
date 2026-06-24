@@ -34,8 +34,8 @@ func encodeBase64JPEG(t *testing.T) string {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
 	red := color.RGBA{R: 200, G: 10, B: 20, A: 0xff}
-	for y := 0; y < 8; y++ {
-		for x := 0; x < 8; x++ {
+	for y := range 8 {
+		for x := range 8 {
 			img.Set(x, y, red)
 		}
 	}

@@ -129,7 +129,7 @@ func TestLadderStableAcrossRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ladder: %v", err)
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		got, err := Ladder(src, spec, rec, 0.1)
 		if err != nil {
 			t.Fatalf("repeat Ladder %d: %v", i, err)

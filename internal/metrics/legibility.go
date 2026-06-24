@@ -120,8 +120,8 @@ func LaplacianVariance(img *image.RGBA) float64 {
 func Crop(img *image.RGBA, rect image.Rectangle) *image.RGBA {
 	r := rect.Intersect(img.Bounds())
 	out := image.NewRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
-	for y := 0; y < r.Dy(); y++ {
-		for x := 0; x < r.Dx(); x++ {
+	for y := range r.Dy() {
+		for x := range r.Dx() {
 			out.SetRGBA(x, y, img.RGBAAt(r.Min.X+x, r.Min.Y+y))
 		}
 	}
@@ -209,7 +209,7 @@ func otsuSplit(hist []int, total int) int {
 	var sumB, wB float64
 	var best float64
 	bestT := 0
-	for t := 0; t < 256; t++ {
+	for t := range 256 {
 		wB += float64(hist[t])
 		if wB == 0 {
 			continue

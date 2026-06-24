@@ -84,8 +84,8 @@ func NewRasteriser() (*Rasteriser, error) {
 // yields a byte-identical image across runs. Channel order is RGBA.
 func (r *Rasteriser) Rasterise(g block.Grid) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, g.Cols*CellPxW, g.Rows*CellPxH))
-	for row := 0; row < g.Rows; row++ {
-		for col := 0; col < g.Cols; col++ {
+	for row := range g.Rows {
+		for col := range g.Cols {
 			c := g.At(col, row)
 			r.drawCell(img, col, row, *c)
 		}

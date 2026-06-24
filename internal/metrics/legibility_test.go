@@ -56,7 +56,7 @@ func TestWCAGGridBelowCount(t *testing.T) {
 	grey := color.RGBA{R: 0xaa, G: 0xaa, B: 0xaa, A: 255} // grey on white < 4.5:1
 
 	g := block.Grid{Cols: 5, Rows: 1, Cells: make([]block.Cell, 5)}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		g.Cells[i] = block.Cell{Glyph: 'X', FG: black, BG: white}
 	}
 	for i := 3; i < 5; i++ {
@@ -97,8 +97,8 @@ func TestLaplacianVarianceSharperRises(t *testing.T) {
 	const w, h = 16, 16
 
 	sharp := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			v := uint8(0)
 			if x >= w/2 {
 				v = 255
@@ -108,8 +108,8 @@ func TestLaplacianVarianceSharperRises(t *testing.T) {
 	}
 
 	smooth := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			v := uint8(x * 255 / (w - 1))
 			smooth.SetRGBA(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
 		}

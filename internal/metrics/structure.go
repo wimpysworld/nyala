@@ -42,8 +42,8 @@ func luma(img *image.RGBA) (plane []float64, w, h int) {
 	b := img.Bounds()
 	w, h = b.Dx(), b.Dy()
 	plane = make([]float64, w*h)
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			c := img.RGBAAt(b.Min.X+x, b.Min.Y+y)
 			plane[y*w+x] = lumaBT601(c.R, c.G, c.B)
 		}
@@ -253,7 +253,7 @@ func MSSSIM(a, b *image.RGBA) (value float64, scales int) {
 	// geometric mean stays a proper mean when fewer than five scales run.
 	weights := make([]float64, scales)
 	var wsum float64
-	for i := 0; i < scales; i++ {
+	for i := range scales {
 		weights[i] = msssimWeights[i]
 		wsum += weights[i]
 	}
@@ -264,7 +264,7 @@ func MSSSIM(a, b *image.RGBA) (value float64, scales int) {
 	curA, curB := pa, pb
 	cw, ch := wa, ha
 	value = 1.0
-	for i := 0; i < scales; i++ {
+	for i := range scales {
 		ssim, cs := ssimAndCS(curA, curB, cw, ch)
 		// Fine scales contribute the CS term; the coarsest scale (the last one
 		// run) contributes the full SSIM, per Wang et al. 2003 equation 7. Clamp
@@ -294,8 +294,8 @@ func MSSSIM(a, b *image.RGBA) (value float64, scales int) {
 func downsample2x(plane []float64, w, h int) []float64 {
 	ow, oh := w/2, h/2
 	out := make([]float64, ow*oh)
-	for y := 0; y < oh; y++ {
-		for x := 0; x < ow; x++ {
+	for y := range oh {
+		for x := range ow {
 			sx, sy := x*2, y*2
 			s := plane[sy*w+sx] + plane[sy*w+sx+1] +
 				plane[(sy+1)*w+sx] + plane[(sy+1)*w+sx+1]
@@ -334,8 +334,8 @@ func gaussianKernel1D(size int, sigma float64) []float64 {
 func gaussianFilter(plane []float64, w, h int, kernel []float64) []float64 {
 	radius := (len(kernel) - 1) / 2
 	tmp := make([]float64, w*h)
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			var acc float64
 			for t := -radius; t <= radius; t++ {
 				acc += kernel[t+radius] * plane[y*w+reflectIndex(x+t, w)]
@@ -344,8 +344,8 @@ func gaussianFilter(plane []float64, w, h int, kernel []float64) []float64 {
 		}
 	}
 	out := make([]float64, w*h)
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			var acc float64
 			for t := -radius; t <= radius; t++ {
 				acc += kernel[t+radius] * tmp[reflectIndex(y+t, h)*w+x]
@@ -394,8 +394,8 @@ func prewittMagnitude(plane []float64, w, h int) []float64 {
 		}
 		return plane[y*w+x]
 	}
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			tl, tc, tr := at(x-1, y-1), at(x, y-1), at(x+1, y-1)
 			ml, mr := at(x-1, y), at(x+1, y)
 			bl, bc, br := at(x-1, y+1), at(x, y+1), at(x+1, y+1)

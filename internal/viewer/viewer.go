@@ -437,11 +437,11 @@ func schemePixels(scheme block.Scheme, cols, rows int) (pxW, pxH int) {
 // block.Renderer.Render does not carry.
 func writeGrid(g block.Grid, mode ColourMode, w io.Writer) error {
 	var sb strings.Builder
-	for row := 0; row < g.Rows; row++ {
+	for row := range g.Rows {
 		if row > 0 {
 			sb.WriteString("\r\n")
 		}
-		for col := 0; col < g.Cols; col++ {
+		for col := range g.Cols {
 			c := g.At(col, row)
 			if c.Wide {
 				// The lead cell's wide grapheme already paints both columns, so

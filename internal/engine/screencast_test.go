@@ -94,7 +94,7 @@ func TestRunTextSyncCoalescesBurst(t *testing.T) {
 	<-entered
 	// Burst many triggers while that snapshot is in flight; the capacity-1 trigger
 	// drops all but one, so only one coalesced wake survives.
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		select {
 		case trigger <- struct{}{}:
 		default:
@@ -327,7 +327,7 @@ func TestFrameSlotInterleavedAckedExactlyOnce(t *testing.T) {
 		}
 	}
 
-	for i := 0; i < n; i++ {
+	for range n {
 		doPut() // store
 		doPut() // replace the one above (acks it)
 		doPut() // replace again (acks it)
@@ -466,11 +466,11 @@ func TestFrameSlotConcurrentPutsAckedExactlyOnce(t *testing.T) {
 	}()
 
 	var wg sync.WaitGroup
-	for p := 0; p < producers; p++ {
+	for p := range producers {
 		wg.Add(1)
 		go func(base int) {
 			defer wg.Done()
-			for i := 0; i < perProducer; i++ {
+			for i := range perProducer {
 				slot.put(pendingFrame{ack: int64(base + i + 1)}, rec.ack)
 			}
 		}(p * perProducer)

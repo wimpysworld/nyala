@@ -235,12 +235,12 @@ func fillRGBA(w, h int, c color.RGBA) *image.RGBA {
 // is the foreground, so the glyph fills the upper half.
 func TestComposeTwoColourCell(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, cellPxW, cellPxH))
-	for y := 0; y < cellPxH; y++ {
+	for y := range cellPxH {
 		c := bright
 		if y >= cellPxH/2 {
 			c = dark
 		}
-		for x := 0; x < cellPxW; x++ {
+		for x := range cellPxW {
 			i := img.PixOffset(x, y)
 			img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = c.R, c.G, c.B, c.A
 		}
