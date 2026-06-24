@@ -9,6 +9,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/chromedp/cdproto/domsnapshot"
+	"github.com/chromedp/chromedp"
 	"github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
 
@@ -20,9 +21,16 @@ import (
 // and the shared string table that the document indices refer to. The pure
 // decodeGlyphRuns maps that pair to glyph runs without a browser.
 func captureSnapshot(ctx context.Context) (documents []*domsnapshot.DocumentSnapshot, strings []string, err error) {
-	return domsnapshot.CaptureSnapshot([]string{"color"}).
-		WithIncludePaintOrder(true).
-		Do(ctx)
+	action := domsnapshot.CaptureSnapshot([]string{"color"}).
+		WithIncludePaintOrder(true)
+	// chromedp.Run injects the cdproto executor into the context; calling the
+	// action's Do directly returns "invalid context" because the bare session
+	// context carries no executor.
+	err = chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {
+		documents, strings, err = action.Do(runCtx)
+		return err
+	}))
+	return documents, strings, err
 }
 
 // decodeGlyphRuns maps a DOM snapshot to crisp text runs without any browser
