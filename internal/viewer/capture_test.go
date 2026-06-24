@@ -501,6 +501,63 @@ func TestDrawCaptureFrameRecordsSixelPayloadBytes(t *testing.T) {
 	}
 }
 
+// TestDrawCaptureFrameSplitsEncodeFromWrite asserts the encode phase is timed and
+// recorded apart from the terminal write for the graphics backends, and that the
+// block backend routes its cost to BlockComposeMS while leaving BackendEncodeMS
+// zero. A graphics encode (sixel palette plus bands, kitty zlib plus base64) over
+// a non-trivial bitmap takes measurable time, so BackendEncodeMS is positive;
+// because the buffered bytes copy to a bytes.Buffer tee, the write stays distinct
+// from the encode rather than folding into it.
+func TestDrawCaptureFrameSplitsEncodeFromWrite(t *testing.T) {
+	// A non-trivial opaque bitmap so each encoder emits a real payload and the
+	// encode span is long enough to register above zero.
+	const imgW, imgH = 320, 170
+	frame := func() render.Frame {
+		img := image.NewRGBA(image.Rect(0, 0, imgW, imgH))
+		for i := range img.Pix {
+			img.Pix[i] = 0xff
+		}
+		return render.Frame{Img: img}
+	}
+
+	for _, b := range []Backend{BackendSixel, BackendKitty} {
+		st := NewState(40, 20, 8, 16)
+		st.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
+		st.Backend = b
+		var tee bytes.Buffer
+
+		in, err := drawCaptureFrame(&st, frame(), &tee)
+		if err != nil {
+			t.Fatalf("drawCaptureFrame(%v) = %v, want nil", b, err)
+		}
+		if in.Perf.BackendEncodeMS <= 0 {
+			t.Errorf("%v BackendEncodeMS = %v, want > 0; the encode must be timed", b, in.Perf.BackendEncodeMS)
+		}
+		if in.Perf.BlockComposeMS != 0 {
+			t.Errorf("%v BlockComposeMS = %v, want 0 for a graphics backend", b, in.Perf.BlockComposeMS)
+		}
+		// The write must not absorb the encode: the buffered render bytes copy to
+		// the tee separately, so terminal_write_ms reflects only the io.Write.
+		if in.Perf.TerminalWriteMS < 0 {
+			t.Errorf("%v TerminalWriteMS = %v, want non-negative", b, in.Perf.TerminalWriteMS)
+		}
+	}
+
+	// The block backend has no image encode, so its cost lands in BlockComposeMS
+	// and BackendEncodeMS stays zero.
+	st := blockState()
+	in, err := drawCaptureFrame(st, frame(), &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("drawCaptureFrame(block) = %v, want nil", err)
+	}
+	if in.Perf.BackendEncodeMS != 0 {
+		t.Errorf("block BackendEncodeMS = %v, want 0; block has no image encode", in.Perf.BackendEncodeMS)
+	}
+	if in.Perf.BlockComposeMS <= 0 {
+		t.Errorf("block BlockComposeMS = %v, want > 0; the compose cost must be recorded", in.Perf.BlockComposeMS)
+	}
+}
+
 // TestCaptureLoopFullCaptureReturnsNil covers exit condition 1: n scripted frames
 // deliver, so the loop draws n, finalises a full bundle, and returns nil (task
 // 3.4). It buffers all n frames so the loop never waits on the idle timer.
