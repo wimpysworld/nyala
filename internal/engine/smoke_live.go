@@ -28,9 +28,15 @@ func SmokeStaticFrame(w io.Writer, url, browserFlag string, cols, rows int) (run
 	}
 	defer e.Close()
 
-	var f render.Frame
+	var (
+		f  render.Frame
+		ok bool
+	)
 	select {
-	case f = <-e.Frames():
+	case f, ok = <-e.Frames():
+		if !ok {
+			return 0, fmt.Errorf("engine: frame channel closed before first frame")
+		}
 	case <-time.After(10 * time.Second):
 		return 0, fmt.Errorf("engine: await first frame: timed out")
 	}
