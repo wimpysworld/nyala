@@ -64,6 +64,17 @@ func (e *ChromiumEngine) captureSize(cols, rows int) (pxW, pxH int) {
 	return render.GraphicsCaptureSize(cols, rows, e.cellW, e.cellH)
 }
 
+// textOverlayBackend reports whether the active backend consumes the crisp
+// DOM-text overlay. Only the block backend folds Frame.Text onto its cell grid;
+// the graphics backends (sixel, kitty) draw the bitmap alone and ignore the
+// overlay, so composeFrame skips the DOM snapshot for them. It takes e.mu because
+// the frame loop calls it off the mu-holding viewer goroutines that set e.backend.
+func (e *ChromiumEngine) textOverlayBackend() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.backend == "block"
+}
+
 // newAllocator builds a chromedp ExecAllocator for the resolved executable,
 // sized to capW x capH. It sets the launch --window-size from the capture size
 // and pins the device scale factor to 1. The window size matters because

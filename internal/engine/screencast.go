@@ -225,15 +225,22 @@ func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, fram
 }
 
 // composeFrame turns one consumed screencast bitmap into a synced render.Frame.
-// It captures the DOM snapshot synchronously so the text reflects the page state
-// of the frame in hand, decodes the inline text boxes to glyph runs, and folds
-// the synced runs onto Frame.Text. The sync seam routes the bitmap and snapshot
-// scroll offsets through the pure syncDecision: within tolerance it folds the
-// fresh runs on, on divergence it holds the last-matched text, and on a snapshot
-// read error it also holds the last-matched text so a frame is never emitted with
-// stale-but-wrong text.
+// On the block path it captures the DOM snapshot synchronously so the text
+// reflects the page state of the frame in hand, decodes the inline text boxes to
+// glyph runs, and folds the synced runs onto Frame.Text. The sync seam routes the
+// bitmap and snapshot scroll offsets through the pure syncDecision: within
+// tolerance it folds the fresh runs on, on divergence it holds the last-matched
+// text, and on a snapshot read error it also holds the last-matched text so a
+// frame is never emitted with stale-but-wrong text. The graphics backends draw
+// the bitmap alone and ignore Frame.Text, so this skips the snapshot entirely for
+// them: the snapshot runs over the full graphics viewport and would starve the
+// first draw without producing any consumed text.
 func (e *ChromiumEngine) composeFrame(ctx context.Context, pending pendingFrame) render.Frame {
-	runs, snapshotMS := e.syncedRuns(ctx, pending.meta)
+	var runs []render.GlyphRun
+	var snapshotMS float64
+	if e.textOverlayBackend() {
+		runs, snapshotMS = e.syncedRuns(ctx, pending.meta)
+	}
 	frame := render.Frame{Img: pending.img, Text: runs}
 	if e.captureOn {
 		frame.Stats = &render.FrameStats{
