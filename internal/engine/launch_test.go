@@ -3,9 +3,12 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
+	"github.com/chromedp/cdproto/fetch"
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
@@ -72,6 +75,259 @@ func TestResolveExecutableNoneResolves(t *testing.T) {
 	got, err := resolveExecutable("")
 	if err == nil {
 		t.Fatalf("resolveExecutable(\"\") = %q, want error", got)
+	}
+}
+
+func TestProxyFlagsCredentialFreeServer(t *testing.T) {
+	// A credentialed URL must yield a proxy-server flag whose value is the
+	// credential-free Server, with no user:pass@ in any flag value. This is the
+	// process-arg guard: credentials must never reach a Chromium command-line flag.
+	clearProxyEnv(t, map[string]string{"HTTPS_PROXY": "http://user:pass@host:3128"})
+
+	cfg, err := parseProxyEnv()
+	if err != nil {
+		t.Fatalf("parseProxyEnv() error: %v", err)
+	}
+	pairs := proxyFlags(cfg)
+	if len(pairs) != 1 {
+		t.Fatalf("proxyFlags = %v, want one proxy-server pair", pairs)
+	}
+	if pairs[0][0] != "proxy-server" {
+		t.Errorf("flag name = %q, want %q", pairs[0][0], "proxy-server")
+	}
+	if pairs[0][1] != "http://host:3128" {
+		t.Errorf("proxy-server value = %q, want %q", pairs[0][1], "http://host:3128")
+	}
+	// No flag value may carry credentials, in any form.
+	for _, pair := range pairs {
+		v := pair[1]
+		if strings.Contains(v, "user") || strings.Contains(v, "pass") || strings.Contains(v, "@") {
+			t.Errorf("flag %q value %q leaks credentials", pair[0], v)
+		}
+	}
+}
+
+func TestProxyFlagsServerOnly(t *testing.T) {
+	// HTTPS_PROXY alone, no NO_PROXY, must yield a single proxy-server flag with
+	// the verbatim server and no bypass flag.
+	clearProxyEnv(t, map[string]string{"HTTPS_PROXY": "http://host:3128"})
+
+	cfg, err := parseProxyEnv()
+	if err != nil {
+		t.Fatalf("parseProxyEnv() error: %v", err)
+	}
+	pairs := proxyFlags(cfg)
+	want := [][2]string{{"proxy-server", "http://host:3128"}}
+	if !reflect.DeepEqual(pairs, want) {
+		t.Errorf("proxyFlags = %v, want %v", pairs, want)
+	}
+}
+
+func TestProxyFlagsWithBypass(t *testing.T) {
+	// A bypass value with a proxy set must yield both flags, the bypass verbatim.
+	const bypass = ".internal,10.0.0.0/8,localhost"
+	clearProxyEnv(t, map[string]string{"HTTPS_PROXY": "http://host:3128", "NO_PROXY": bypass})
+
+	cfg, err := parseProxyEnv()
+	if err != nil {
+		t.Fatalf("parseProxyEnv() error: %v", err)
+	}
+	pairs := proxyFlags(cfg)
+	want := [][2]string{
+		{"proxy-server", "http://host:3128"},
+		{"proxy-bypass-list", bypass},
+	}
+	if !reflect.DeepEqual(pairs, want) {
+		t.Errorf("proxyFlags = %v, want %v", pairs, want)
+	}
+}
+
+func TestProxyFlagsStrayBypassNoProxy(t *testing.T) {
+	// A NO_PROXY with no proxy var set must yield neither flag: the bypass is
+	// gated on a Server, so a stray NO_PROXY alone adds nothing.
+	clearProxyEnv(t, map[string]string{"NO_PROXY": "localhost,127.0.0.1"})
+
+	cfg, err := parseProxyEnv()
+	if err != nil {
+		t.Fatalf("parseProxyEnv() error: %v", err)
+	}
+	if pairs := proxyFlags(cfg); len(pairs) != 0 {
+		t.Errorf("proxyFlags = %v, want no flags for a stray NO_PROXY", pairs)
+	}
+}
+
+func TestProxyFlagsNoProxy(t *testing.T) {
+	// Nothing set must yield no proxy flags at all.
+	clearProxyEnv(t, nil)
+
+	cfg, err := parseProxyEnv()
+	if err != nil {
+		t.Fatalf("parseProxyEnv() error: %v", err)
+	}
+	if pairs := proxyFlags(cfg); pairs != nil {
+		t.Errorf("proxyFlags = %v, want nil for no proxy", pairs)
+	}
+}
+
+func TestLaunchReturnsProxyErrorBeforeResolve(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH lookup semantics differ on windows")
+	}
+	// launch returns the stored proxy parse error before resolveExecutable, so a
+	// malformed proxy fails loudly and never connects direct. The seam: build a
+	// real engine via New with a malformed proxy env, then drive launch with no
+	// resolvable browser. The error must name the source variable, not the
+	// resolveExecutable "no Chromium found" message, proving the guard fires first.
+	// A control byte in the host forces a real url.Parse failure; the embedded
+	// token stands in for a leaked credential.
+	const secret = "leaktoken"
+	clearProxyEnv(t, map[string]string{"HTTPS_PROXY": "http://user:" + secret + "@host\x7f:3128"})
+	// No browser is resolvable: empty flag, unset browser envs, empty PATH. The
+	// guard must still surface the proxy error before any executable lookup.
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("NYALA_BROWSER", "")
+	t.Setenv("CHROME_PATH", "")
+
+	e := New("")
+	err := e.launch("")
+	if err == nil {
+		t.Fatal("launch() = nil, want the stored proxy parse error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "HTTPS_PROXY") {
+		t.Errorf("launch error %q does not name the source variable HTTPS_PROXY", msg)
+	}
+	if strings.Contains(msg, "no Chromium found") {
+		t.Errorf("launch error %q is the resolveExecutable error; the proxy guard must fire first", msg)
+	}
+	if strings.Contains(msg, secret) {
+		t.Errorf("launch error %q leaks the credential value", msg)
+	}
+}
+
+func TestProxyAuthDecisionFirstProxyChallenge(t *testing.T) {
+	// A Proxy-source EventAuthRequired, first seen for a request id, must answer
+	// continueWithAuth with ProvideCredentials and the parsed user and password.
+	cfg := ProxyConfig{User: "user", Password: "pass", HasCredentials: true}
+	answered := make(map[fetch.RequestID]bool)
+	ev := &fetch.EventAuthRequired{
+		RequestID:     fetch.RequestID("req-1"),
+		AuthChallenge: &fetch.AuthChallenge{Source: fetch.AuthChallengeSourceProxy},
+	}
+
+	action := proxyAuthDecision(ev, answered, cfg)
+	if action.Kind != proxyAuthContinueWithAuth {
+		t.Fatalf("Kind = %d, want proxyAuthContinueWithAuth", action.Kind)
+	}
+	if action.RequestID != ev.RequestID {
+		t.Errorf("RequestID = %q, want %q", action.RequestID, ev.RequestID)
+	}
+	if action.Resp == nil {
+		t.Fatal("Resp = nil, want an AuthChallengeResponse")
+	}
+	if action.Resp.Response != fetch.AuthChallengeResponseResponseProvideCredentials {
+		t.Errorf("Response = %q, want ProvideCredentials", action.Resp.Response)
+	}
+	if action.Resp.Username != "user" || action.Resp.Password != "pass" {
+		t.Errorf("credentials = %q/%q, want user/pass", action.Resp.Username, action.Resp.Password)
+	}
+}
+
+func TestProxyAuthDecisionRepeatAnswersDefault(t *testing.T) {
+	// A repeat challenge for the same request id must answer Default, the loop
+	// guard: a second ProvideCredentials with wrong credentials would loop. The
+	// transition depends on the answered map, which the first call populates.
+	cfg := ProxyConfig{User: "user", Password: "pass", HasCredentials: true}
+	answered := make(map[fetch.RequestID]bool)
+	ev := &fetch.EventAuthRequired{
+		RequestID:     fetch.RequestID("req-1"),
+		AuthChallenge: &fetch.AuthChallenge{Source: fetch.AuthChallengeSourceProxy},
+	}
+
+	first := proxyAuthDecision(ev, answered, cfg)
+	if first.Resp.Response != fetch.AuthChallengeResponseResponseProvideCredentials {
+		t.Fatalf("first Response = %q, want ProvideCredentials", first.Resp.Response)
+	}
+	if !answered[ev.RequestID] {
+		t.Fatal("answered map not updated after the first challenge")
+	}
+
+	repeat := proxyAuthDecision(ev, answered, cfg)
+	if repeat.Kind != proxyAuthContinueWithAuth {
+		t.Errorf("repeat Kind = %d, want proxyAuthContinueWithAuth", repeat.Kind)
+	}
+	if repeat.Resp == nil || repeat.Resp.Response != fetch.AuthChallengeResponseResponseDefault {
+		t.Errorf("repeat Response = %v, want Default", repeat.Resp)
+	}
+	// Default must carry no credentials, so a wrong-credential loop cannot leak.
+	if repeat.Resp.Username != "" || repeat.Resp.Password != "" {
+		t.Errorf("repeat carries credentials %q/%q, want empty", repeat.Resp.Username, repeat.Resp.Password)
+	}
+}
+
+func TestProxyAuthDecisionRequestPaused(t *testing.T) {
+	// EventRequestPaused must answer continueRequest, the drain arm that releases
+	// the pause enabling Fetch with handleAuthRequests creates.
+	cfg := ProxyConfig{User: "user", Password: "pass", HasCredentials: true}
+	answered := make(map[fetch.RequestID]bool)
+	ev := &fetch.EventRequestPaused{RequestID: fetch.RequestID("req-2")}
+
+	action := proxyAuthDecision(ev, answered, cfg)
+	if action.Kind != proxyAuthContinueRequest {
+		t.Errorf("Kind = %d, want proxyAuthContinueRequest", action.Kind)
+	}
+	if action.RequestID != ev.RequestID {
+		t.Errorf("RequestID = %q, want %q", action.RequestID, ev.RequestID)
+	}
+}
+
+func TestProxyAuthDecisionNonProxySource(t *testing.T) {
+	// A non-Proxy auth source (server auth) is out of scope, so the policy answers
+	// Default and lets Chromium's net stack handle it. No credentials are sent.
+	cfg := ProxyConfig{User: "user", Password: "pass", HasCredentials: true}
+	answered := make(map[fetch.RequestID]bool)
+	ev := &fetch.EventAuthRequired{
+		RequestID:     fetch.RequestID("req-3"),
+		AuthChallenge: &fetch.AuthChallenge{Source: fetch.AuthChallengeSourceServer},
+	}
+
+	action := proxyAuthDecision(ev, answered, cfg)
+	if action.Kind != proxyAuthContinueWithAuth {
+		t.Fatalf("Kind = %d, want proxyAuthContinueWithAuth", action.Kind)
+	}
+	if action.Resp == nil || action.Resp.Response != fetch.AuthChallengeResponseResponseDefault {
+		t.Errorf("Response = %v, want Default for a server-source challenge", action.Resp)
+	}
+	if action.Resp.Username != "" || action.Resp.Password != "" {
+		t.Errorf("server challenge carries credentials %q/%q, want empty", action.Resp.Username, action.Resp.Password)
+	}
+}
+
+func TestProxyAuthDecisionTrackerFreshPerSession(t *testing.T) {
+	// A fresh answered map is empty per session, so the same request id seen in a
+	// new map gets ProvideCredentials again. This is what gives each rebuilt
+	// session its own first-vs-repeat state, with no leak across sessions.
+	cfg := ProxyConfig{User: "user", Password: "pass", HasCredentials: true}
+	ev := &fetch.EventAuthRequired{
+		RequestID:     fetch.RequestID("req-1"),
+		AuthChallenge: &fetch.AuthChallenge{Source: fetch.AuthChallengeSourceProxy},
+	}
+
+	first := make(map[fetch.RequestID]bool)
+	if proxyAuthDecision(ev, first, cfg).Resp.Response != fetch.AuthChallengeResponseResponseProvideCredentials {
+		t.Fatal("first session: want ProvideCredentials on first challenge")
+	}
+	if proxyAuthDecision(ev, first, cfg).Resp.Response != fetch.AuthChallengeResponseResponseDefault {
+		t.Fatal("first session: want Default on repeat in the same map")
+	}
+
+	// A new session starts with a fresh, empty map: the same id is first again.
+	second := make(map[fetch.RequestID]bool)
+	if len(second) != 0 {
+		t.Fatalf("new session map = %v, want empty", second)
+	}
+	if proxyAuthDecision(ev, second, cfg).Resp.Response != fetch.AuthChallengeResponseResponseProvideCredentials {
+		t.Error("second session: want ProvideCredentials again with a fresh map")
 	}
 }
 

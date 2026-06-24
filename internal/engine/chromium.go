@@ -48,6 +48,12 @@ type ChromiumEngine struct {
 	slot     *frameSlot        // latest-wins single-frame backpressure slot
 	lastText []render.GlyphRun // last text matched to a bitmap
 
+	// Proxy config parsed once in New, read-only afterwards. Unlike the
+	// mutex-guarded group above, these are set before any goroutine starts and
+	// never written again, so they need no mu guard.
+	proxy    ProxyConfig // parsed proxy settings for the launch path
+	proxyErr error       // proxy parse error, returned later by launch
+
 	// Lifecycle. The supervisor goroutine owns the engine lifetime: it starts
 	// each browser session, watches for a crash or a lost connection, rebuilds
 	// from held state, and closes frames when Close stops it. closing signals a
@@ -62,15 +68,19 @@ type ChromiumEngine struct {
 var _ Engine = (*ChromiumEngine)(nil)
 
 // New returns a ChromiumEngine that discovers its executable from browserFlag,
-// then the NYALA_BROWSER and CHROME_PATH environment variables, then PATH. The
-// caller sets the backend and cell px (SetBackend, SetCellPx) and the grid
-// (Resize) before Navigate, since the engine sizes the screencast capture from
-// them.
+// then the NYALA_BROWSER and CHROME_PATH environment variables, then PATH. It
+// parses the proxy environment once and stores the config and any parse error
+// for the launch path. The caller sets the backend and cell px (SetBackend,
+// SetCellPx) and the grid (Resize) before Navigate, since the engine sizes the
+// screencast capture from them.
 func New(browserFlag string) *ChromiumEngine {
+	proxy, proxyErr := parseProxyEnv()
 	return &ChromiumEngine{
 		backend:     "block",
 		browserFlag: browserFlag,
 		closing:     make(chan struct{}),
+		proxy:       proxy,
+		proxyErr:    proxyErr,
 	}
 }
 
