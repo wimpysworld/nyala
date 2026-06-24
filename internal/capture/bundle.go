@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/chromedp/cdproto/page"
-
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
@@ -185,7 +183,7 @@ type FrameInput struct {
 	Frame render.Frame
 	// Meta is the screencast frame metadata. WriteFrame serialises it without the
 	// image bytes. It may be nil.
-	Meta *page.ScreencastFrameMetadata
+	Meta *render.ScreencastMeta
 	// Grid is the composed letterbox grid for a block capture, the same grid the
 	// viewer drew. It is nil for a graphics backend, which writes no cell grid.
 	Grid *block.Grid
@@ -308,12 +306,33 @@ func isGraphics(backend Backend) bool {
 
 // cdpPayloadView is the JSON view written to cdp-payload.json: the screencast
 // frame metadata only, never the frame image bytes or any base64 payload. A nil
-// metadata yields an empty object.
-func cdpPayloadView(meta *page.ScreencastFrameMetadata) any {
+// metadata yields an empty object. The keys are snake_case so the file reads
+// cleanly.
+func cdpPayloadView(meta *render.ScreencastMeta) any {
 	if meta == nil {
 		return struct{}{}
 	}
-	return meta
+	return cdpPayloadDoc{
+		OffsetTop:       meta.OffsetTop,
+		PageScaleFactor: meta.PageScaleFactor,
+		DeviceWidth:     meta.DeviceWidth,
+		DeviceHeight:    meta.DeviceHeight,
+		ScrollOffsetX:   meta.ScrollOffsetX,
+		ScrollOffsetY:   meta.ScrollOffsetY,
+		Timestamp:       meta.Timestamp,
+	}
+}
+
+// cdpPayloadDoc is the explicit JSON view written to cdp-payload.json: the
+// screencast frame metadata fields under snake_case keys, with no image bytes.
+type cdpPayloadDoc struct {
+	OffsetTop       float64 `json:"offset_top"`
+	PageScaleFactor float64 `json:"page_scale_factor"`
+	DeviceWidth     float64 `json:"device_width"`
+	DeviceHeight    float64 `json:"device_height"`
+	ScrollOffsetX   float64 `json:"scroll_offset_x"`
+	ScrollOffsetY   float64 `json:"scroll_offset_y"`
+	Timestamp       float64 `json:"timestamp"`
 }
 
 // writeJSON marshals v as indented JSON and writes it to path. It fails if the

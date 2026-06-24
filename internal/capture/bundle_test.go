@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chromedp/cdproto/page"
-
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
@@ -59,7 +57,7 @@ func blockFrameInput() FrameInput {
 				DOMSnapshotMS:          2.5,
 			},
 		},
-		Meta: &page.ScreencastFrameMetadata{
+		Meta: &render.ScreencastMeta{
 			OffsetTop:       0,
 			PageScaleFactor: 1,
 			DeviceWidth:     800,
@@ -229,8 +227,54 @@ func TestCDPPayloadCarriesNoImageBytes(t *testing.T) {
 		}
 	}
 	// The metadata fields must be present, proving it is the screencast metadata.
-	if _, ok := payload["scrollOffsetY"]; !ok {
-		t.Errorf("cdp-payload.json missing screencast metadata field scrollOffsetY")
+	if _, ok := payload["scroll_offset_y"]; !ok {
+		t.Errorf("cdp-payload.json missing screencast metadata field scroll_offset_y")
+	}
+}
+
+// TestCDPPayloadCarriesScreencastMeta asserts a frame whose FrameInput.Meta is
+// set writes a cdp-payload.json carrying the scroll offset and page scale values
+// under snake_case keys, not an empty object, and still no image bytes.
+func TestCDPPayloadCarriesScreencastMeta(t *testing.T) {
+	b, err := NewBundle(blockMeta(1))
+	if err != nil {
+		t.Fatalf("NewBundle: %v", err)
+	}
+	in := blockFrameInput()
+	in.Meta = &render.ScreencastMeta{
+		PageScaleFactor: 2,
+		DeviceWidth:     1024,
+		DeviceHeight:    768,
+		ScrollOffsetX:   33,
+		ScrollOffsetY:   240,
+	}
+	if werr := b.WriteFrame(in); werr != nil {
+		t.Fatalf("WriteFrame: %v", werr)
+	}
+	raw, err := os.ReadFile(filepath.Join(b.Path(), "frames", "frame-000001", "cdp-payload.json"))
+	if err != nil {
+		t.Fatalf("read cdp-payload.json: %v", err)
+	}
+	if strings.TrimSpace(string(raw)) == "{}" {
+		t.Fatalf("cdp-payload.json is empty object, want the screencast metadata")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal cdp-payload.json: %v", err)
+	}
+	if got := payload["scroll_offset_y"]; got != float64(240) {
+		t.Errorf("cdp-payload.json scroll_offset_y = %v, want 240", got)
+	}
+	if got := payload["scroll_offset_x"]; got != float64(33) {
+		t.Errorf("cdp-payload.json scroll_offset_x = %v, want 33", got)
+	}
+	if got := payload["page_scale_factor"]; got != float64(2) {
+		t.Errorf("cdp-payload.json page_scale_factor = %v, want 2", got)
+	}
+	for _, banned := range []string{"data", "Data"} {
+		if _, ok := payload[banned]; ok {
+			t.Errorf("cdp-payload.json carries image field %q", banned)
+		}
 	}
 }
 

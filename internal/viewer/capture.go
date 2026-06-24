@@ -33,10 +33,11 @@ const captureIdle = 5 * time.Second
 // loop and the forced-backend rejection path stay testable without writing a
 // bundle to disk. The driver opens the bundle, hands the engine its
 // cdp-events.ndjson sink before Navigate, writes each drawn frame, writes the
-// cdp-session.json bytes after navigation, finalises full on success or partial
-// on a rejection, timeout, or early channel close, and reads the raw-file handle
-// and the bundle path. The driver mirrors the engine mu discipline: it never
-// holds a lock across a channel send, and these methods do no channel work.
+// cdp-session.json bytes at finalise (after fillSession has run during
+// navigation), finalises full on success or partial on a rejection, timeout, or
+// early channel close, and reads the raw-file handle and the bundle path. The
+// driver mirrors the engine mu discipline: it never holds a lock across a
+// channel send, and these methods do no channel work.
 type bundleWriter interface {
 	// RawFile returns the open terminal-stream.raw handle the per-frame tee
 	// mirrors the drawn bytes into. It is an io.Writer so a fake can hand back a
@@ -52,8 +53,8 @@ type bundleWriter interface {
 	// timer.
 	WriteFrame(in capture.FrameInput) error
 	// WriteSession writes the cdp-session.json bytes the engine assembled during
-	// navigation. The driver calls it once after Navigate returns, before
-	// finalise. Empty bytes leave the placeholder untouched.
+	// navigation. The driver calls it once at finalise, after fillSession has run,
+	// before each finalise. Empty bytes leave the placeholder untouched.
 	WriteSession(data []byte) error
 	// FinaliseFull writes the full-bundle root files and closes the bundle after
 	// n frames drew.
@@ -180,19 +181,29 @@ func captureMeta(url string, st *State, mode string, n int) capture.Meta {
 func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundleWriter, session CaptureSession, n int, idle time.Duration) (err error) {
 	defer func() { fmt.Fprintf(tty, "capture bundle: %s\r\n", bundle.Path()) }()
 
+	// finaliseFull and finalisePartial write the cdp-session.json bytes the engine
+	// assembled during navigation, then finalise. Navigate dispatches navigation
+	// asynchronously and returns before fillSession populates the session, so the
+	// session write must wait until finalise, after frames have flowed or the run
+	// timed out. Funnelling every exit through these two helpers writes the session
+	// exactly once before each finalise, on every full and partial path.
+	finaliseFull := func() error {
+		writeSession(bundle, session)
+		return bundle.FinaliseFull()
+	}
+	finalisePartial := func(reason string) error {
+		writeSession(bundle, session)
+		return bundle.FinalisePartial(reason)
+	}
+
 	navigated := make(chan error, 1)
 	go func() {
 		navigated <- eng.Navigate(url)
 	}()
 	if nerr := <-navigated; nerr != nil {
-		writeSession(bundle, session)
-		_ = bundle.FinalisePartial(fmt.Sprintf("navigate: %v", nerr))
+		_ = finalisePartial(fmt.Sprintf("navigate: %v", nerr))
 		return ErrPartialBundle
 	}
-
-	// The engine assembled the cdp-session.json bytes during navigation; write
-	// them into the bundle now that Navigate returned.
-	writeSession(bundle, session)
 
 	// Arm the timer exactly when Navigate returns nil, the first-draw deadline.
 	timer := time.NewTimer(idle)
@@ -205,7 +216,7 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 		select {
 		case frame, ok := <-frames:
 			if !ok {
-				_ = bundle.FinalisePartial(fmt.Sprintf("frames channel closed after %d of %d", drawn, n))
+				_ = finalisePartial(fmt.Sprintf("frames channel closed after %d of %d", drawn, n))
 				return ErrPartialBundle
 			}
 			if frame.Img == nil {
@@ -213,16 +224,16 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 			}
 			in, derr := drawCaptureFrame(st, frame, tee)
 			if derr != nil {
-				_ = bundle.FinalisePartial(fmt.Sprintf("draw frame %d of %d: %v", drawn+1, n, derr))
+				_ = finalisePartial(fmt.Sprintf("draw frame %d of %d: %v", drawn+1, n, derr))
 				return ErrPartialBundle
 			}
 			if werr := bundle.WriteFrame(in); werr != nil {
-				_ = bundle.FinalisePartial(fmt.Sprintf("write frame %d of %d: %v", drawn+1, n, werr))
+				_ = finalisePartial(fmt.Sprintf("write frame %d of %d: %v", drawn+1, n, werr))
 				return ErrPartialBundle
 			}
 			drawn++
 			if drawn >= n {
-				if ferr := bundle.FinaliseFull(); ferr != nil {
+				if ferr := finaliseFull(); ferr != nil {
 					return ferr
 				}
 				return nil
@@ -241,7 +252,7 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 			if drawn > 0 {
 				reason = fmt.Sprintf("per-frame idle timeout after %d of %d", drawn, n)
 			}
-			_ = bundle.FinalisePartial(reason)
+			_ = finalisePartial(reason)
 			return ErrPartialBundle
 		}
 	}
@@ -288,6 +299,7 @@ func drawCaptureFrame(st *State, frame render.Frame, tee io.Writer) (capture.Fra
 
 	return capture.FrameInput{
 		Frame: frame,
+		Meta:  frame.Meta,
 		Grid:  grid,
 		Perf:  capturePerf(st, frame, grid, counter.N, writeMS),
 	}, nil

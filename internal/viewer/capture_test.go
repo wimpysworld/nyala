@@ -21,12 +21,15 @@ import (
 // partial-bundle path without touching disk. Wave 10 reuses it for the
 // four-exit-condition matrix.
 type fakeBundle struct {
-	raw      bytes.Buffer
-	events   bytes.Buffer
-	frames   []capture.FrameInput
-	session  []byte
-	finalise string // "full", or "partial: <reason>", empty until finalised
-	writeErr error  // when set, WriteFrame returns it instead of recording
+	raw           bytes.Buffer
+	events        bytes.Buffer
+	frames        []capture.FrameInput
+	session       []byte
+	sessionBefore bool // true when WriteSession ran before any finalise
+	finalised     bool // set once the first finalise ran
+	onWriteFrame  func()
+	finalise      string // "full", or "partial: <reason>", empty until finalised
+	writeErr      error  // when set, WriteFrame returns it instead of recording
 }
 
 func (b *fakeBundle) RawFile() io.Writer       { return &b.raw }
@@ -34,6 +37,9 @@ func (b *fakeBundle) CDPEventsFile() io.Writer { return &b.events }
 func (b *fakeBundle) Path() string             { return "/tmp/nyala-capture-fake" }
 
 func (b *fakeBundle) WriteFrame(in capture.FrameInput) error {
+	if b.onWriteFrame != nil {
+		b.onWriteFrame()
+	}
 	if b.writeErr != nil {
 		return b.writeErr
 	}
@@ -43,17 +49,39 @@ func (b *fakeBundle) WriteFrame(in capture.FrameInput) error {
 
 func (b *fakeBundle) WriteSession(data []byte) error {
 	b.session = data
+	if !b.finalised {
+		b.sessionBefore = true
+	}
 	return nil
 }
 
 func (b *fakeBundle) FinaliseFull() error {
+	b.finalised = true
 	b.finalise = "full"
 	return nil
 }
 
 func (b *fakeBundle) FinalisePartial(reason string) error {
+	b.finalised = true
 	b.finalise = "partial: " + reason
 	return nil
+}
+
+// fakeSession is the CaptureSession the session-timing test drives. SessionJSON
+// returns nil until filled flips true, simulating the engine's fillSession
+// running during navigation: the bytes are empty right after Navigate and
+// populated only once a frame has flowed. The test flips filled on the first
+// WriteFrame so the populated bytes exist at finalise but not before.
+type fakeSession struct {
+	filled bool
+	data   []byte
+}
+
+func (s *fakeSession) SessionJSON() []byte {
+	if !s.filled {
+		return nil
+	}
+	return s.data
 }
 
 // fakeCaptureEngine is the viewer.Engine the capture-driver tests drive. It
@@ -266,6 +294,91 @@ func TestRunCaptureFullReturnsNilPartialReturnsSentinel(t *testing.T) {
 // blockState cell px so the block compose has a non-empty grid.
 func blockFrame() render.Frame {
 	return render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}
+}
+
+// TestCaptureLoopWritesSessionAtFinalise asserts captureLoop writes the session
+// at finalise, after frames have flowed, not right after Navigate. The fake
+// session is empty until the first WriteFrame flips it, simulating the engine's
+// fillSession running during navigation. So an early write (right after Navigate)
+// would capture empty bytes; only a finalise-time write reaches the populated
+// bytes. The test asserts the populated bytes reach WriteSession and that the
+// write ran before the finalise.
+func TestCaptureLoopWritesSessionAtFinalise(t *testing.T) {
+	want := []byte(`{"navigation_url":"https://example.test"}`)
+	sess := &fakeSession{data: want}
+
+	ch := make(chan render.Frame, 1)
+	ch <- blockFrame()
+	eng := &fakeCaptureEngine{frames: ch}
+	bundle := &fakeBundle{onWriteFrame: func() { sess.filled = true }}
+	var tty bytes.Buffer
+
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, 1, captureIdle)
+	if err != nil {
+		t.Fatalf("captureLoop err = %v, want nil for a full capture", err)
+	}
+	if string(bundle.session) != string(want) {
+		t.Fatalf("bundle session = %q, want the populated bytes %q (write must run at finalise, not right after Navigate)", bundle.session, want)
+	}
+	if !bundle.sessionBefore {
+		t.Error("WriteSession ran after finalise, want it before FinaliseFull")
+	}
+}
+
+// TestCaptureLoopWritesSessionOnPartialExit asserts captureLoop writes the
+// session before a partial finalise too. The frames channel closes before n, so
+// the loop finalises partial; the session, populated by then, must still reach
+// WriteSession before the finalise.
+func TestCaptureLoopWritesSessionOnPartialExit(t *testing.T) {
+	want := []byte(`{"navigation_result":"ok"}`)
+	sess := &fakeSession{data: want, filled: true}
+
+	ch := make(chan render.Frame)
+	close(ch)
+	eng := &fakeCaptureEngine{frames: ch}
+	bundle := &fakeBundle{}
+	var tty bytes.Buffer
+
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, 3, captureIdle)
+	if !errors.Is(err, ErrPartialBundle) {
+		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
+	}
+	if string(bundle.session) != string(want) {
+		t.Fatalf("bundle session = %q, want %q written before the partial finalise", bundle.session, want)
+	}
+	if !bundle.sessionBefore {
+		t.Error("WriteSession ran after finalise, want it before FinalisePartial")
+	}
+}
+
+// TestDrawCaptureFrameCopiesMeta asserts drawCaptureFrame copies frame.Meta into
+// the returned FrameInput.Meta, so the screencast metadata reaches the bundle. A
+// frame with a non-nil Meta must yield a non-nil FrameInput.Meta carrying the
+// same values; a frame with a nil Meta yields a nil FrameInput.Meta.
+func TestDrawCaptureFrameCopiesMeta(t *testing.T) {
+	st := blockState()
+	frame := blockFrame()
+	frame.Meta = &render.ScreencastMeta{PageScaleFactor: 2, ScrollOffsetY: 240}
+	var buf bytes.Buffer
+
+	in, err := drawCaptureFrame(st, frame, &buf)
+	if err != nil {
+		t.Fatalf("drawCaptureFrame err = %v, want nil", err)
+	}
+	if in.Meta == nil {
+		t.Fatal("FrameInput.Meta is nil, want frame.Meta copied through")
+	}
+	if in.Meta.ScrollOffsetY != 240 || in.Meta.PageScaleFactor != 2 {
+		t.Errorf("FrameInput.Meta = %+v, want scroll 240 scale 2", in.Meta)
+	}
+
+	noMeta, err := drawCaptureFrame(blockState(), blockFrame(), &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("drawCaptureFrame (no meta) err = %v, want nil", err)
+	}
+	if noMeta.Meta != nil {
+		t.Errorf("FrameInput.Meta = %+v with a nil frame.Meta, want nil", noMeta.Meta)
+	}
 }
 
 // TestCaptureLoopFullCaptureReturnsNil covers exit condition 1: n scripted frames
