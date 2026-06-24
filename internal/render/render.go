@@ -36,12 +36,36 @@ type FrameStats struct {
 	DOMSnapshotMS float64
 }
 
+// ScreencastMeta is the neutral screencast frame metadata the capture bundle
+// records: the scroll offset, page scale, and device size of the frame, with no
+// image bytes. It mirrors the fields of the CDP page.ScreencastFrameMetadata
+// without importing the chromedp type, so the render seam stays free of any
+// chromedp dependency. The engine fills it only under capture; it is nil on the
+// production path.
+type ScreencastMeta struct {
+	// OffsetTop is the top offset in device-independent pixels.
+	OffsetTop float64
+	// PageScaleFactor is the page zoom scale factor.
+	PageScaleFactor float64
+	// DeviceWidth is the device screen width in device-independent pixels.
+	DeviceWidth float64
+	// DeviceHeight is the device screen height in device-independent pixels.
+	DeviceHeight float64
+	// ScrollOffsetX is the horizontal scroll offset in CSS pixels.
+	ScrollOffsetX float64
+	// ScrollOffsetY is the vertical scroll offset in CSS pixels.
+	ScrollOffsetY float64
+	// Timestamp is the frame timestamp.
+	Timestamp float64
+}
+
 // Frame is one viewport image plus any text overlay. Text stays empty until the
 // overlay path is wired.
 type Frame struct {
-	Img   *image.RGBA // the viewport bitmap, already at or above cell resolution
-	Text  []GlyphRun  // empty until the text overlay path is wired
-	Stats *FrameStats // engine-phase timings, nil off the capture path
+	Img   *image.RGBA     // the viewport bitmap, already at or above cell resolution
+	Text  []GlyphRun      // empty until the text overlay path is wired
+	Stats *FrameStats     // engine-phase timings, nil off the capture path
+	Meta  *ScreencastMeta // screencast frame metadata, nil off the capture path
 }
 
 // Renderer emits a Frame to a writer. Each backend renders the same Frame in a

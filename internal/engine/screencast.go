@@ -241,6 +241,12 @@ func (e *ChromiumEngine) composeFrame(ctx context.Context, pending pendingFrame)
 			ScreencastDecodeMS:     pending.decodeMS,
 			DOMSnapshotMS:          snapshotMS,
 		}
+		// Copy the screencast metadata onto a neutral render.ScreencastMeta so the
+		// bundle records it without the render seam importing the page type. Off the
+		// capture path frame.Meta stays nil, so production pays zero cost.
+		if pending.meta != nil {
+			frame.Meta = screencastMeta(pending.meta)
+		}
 	}
 	return frame
 }
@@ -282,6 +288,27 @@ func (e *ChromiumEngine) syncedRuns(ctx context.Context, meta *page.ScreencastFr
 	emit, lastMatched := syncDecision(bitmap, snapshotScrollOffset(documents), metaPageScaleFactor(meta), decoded, e.lastText)
 	e.lastText = lastMatched
 	return emit, snapshotMS
+}
+
+// screencastMeta copies the CDP screencast frame metadata into a neutral
+// render.ScreencastMeta, so the bundle records the scroll offset, page scale, and
+// device size without the render seam importing the page type. The timestamp is
+// the frame swap time as float64 seconds since the Unix epoch, or 0 when absent.
+func screencastMeta(meta *page.ScreencastFrameMetadata) *render.ScreencastMeta {
+	var ts float64
+	if meta.Timestamp != nil {
+		t := time.Time(*meta.Timestamp)
+		ts = float64(t.UnixNano()) / float64(time.Second)
+	}
+	return &render.ScreencastMeta{
+		OffsetTop:       meta.OffsetTop,
+		PageScaleFactor: meta.PageScaleFactor,
+		DeviceWidth:     meta.DeviceWidth,
+		DeviceHeight:    meta.DeviceHeight,
+		ScrollOffsetX:   meta.ScrollOffsetX,
+		ScrollOffsetY:   meta.ScrollOffsetY,
+		Timestamp:       ts,
+	}
 }
 
 // bitmapScrollOffset reads the bitmap's CSS-pixel scroll offset from the
