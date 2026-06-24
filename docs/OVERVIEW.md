@@ -704,6 +704,20 @@ Verdict: quadrant (2x2) default, half-block (1x2) floor, adaptive promotion to o
 only where the terminal and font prove Unicode 16 support; sextant is an opt-in tier,
 braille an explicit line-art/accessibility mode.
 
+Sextant (2x3) research spike (unscheduled): add sextant as a font-gated tier above
+quadrant and measure it before committing. It raises vertical resolution by 50%, the
+scarce axis, since cells are about 1:2. The catch: six sub-cells still share one
+foreground and one background, so colour quantisation error per cell rises as shape
+detail rises. Unicode 13 (2020) font support is narrower than quadrant, so it can never
+replace the floor; GNU Unifont covers the range, so the existing Unifont fallback tier
+may reach it. The generalisation is mechanical: a `SchemeSextant`, a `sampleSextant`
+and `binarizeSextant` (direct extensions of the quadrant pair), a coverage check like
+`QuadrantSupport`, and a 60-entry pattern-to-rune table. The value band is narrow,
+terminals with sextant glyphs but no Sixel or Kitty, so gate the spike on the
+diagnostics harness: score quality, cost, and legibility against quadrant on the
+committed fixtures, and keep it only if the gain clears the added complexity. Octant
+(2x4) is the next rung behind the same tiering, newer and less supported.
+
 ### Go half-block / cell-art modules
 
 No published Go module delivers the full path: a composable cell grid, text overlay,
