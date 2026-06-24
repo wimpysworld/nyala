@@ -92,6 +92,60 @@ func blockState() *State {
 	return &st
 }
 
+// kittyState builds a State whose detection confirms kitty, sixel, then block,
+// simulating wezterm. SetEnabled resolves the active backend to kitty, the
+// highest-fidelity entry. A forced block must override that active backend, so
+// this is the fixture for the forced-backend pinning tests. It injects the
+// detection result via SetEnabled, the same seam configureBackends fills, so the
+// test needs no real terminal.
+func kittyState() *State {
+	st := NewState(8, 4, 16, 16)
+	st.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
+	return &st
+}
+
+// TestCaptureForcedBlockOverridesDetectedKitty asserts the capture path pins the
+// forced --backend even when detection advertised kitty. It mirrors the Capture
+// flow at the seams: a kitty-enabled state, validate then force block, build the
+// bundle meta, then run the bounded loop. The manifest meta must record backend
+// block, and the drawn frame must carry a non-nil Grid so the real bundle writes
+// terminal-model.json (the block path), not omit it as a graphics backend would.
+func TestCaptureForcedBlockOverridesDetectedKitty(t *testing.T) {
+	st := kittyState()
+
+	// Mirror the Capture ordering: validation gates forcing, forcing precedes
+	// captureMeta so the manifest records the forced backend.
+	if err := ValidateForcedBackend(ModeBlock, st.Enabled); err != nil {
+		t.Fatalf("ValidateForcedBackend(block) = %v, want nil", err)
+	}
+	applyForcedBackend(st, ModeBlock)
+
+	meta := captureMeta("https://example.test", st, ModeBlock, 1)
+	if meta.Backend != capture.Backend("block") {
+		t.Fatalf("meta backend = %q, want block; the manifest must record the forced backend", meta.Backend)
+	}
+
+	ch := make(chan render.Frame, 1)
+	ch <- blockFrame()
+	eng := &fakeCaptureEngine{frames: ch}
+	bundle := &fakeBundle{}
+	var tty bytes.Buffer
+
+	err := runCapture(eng, "https://example.test", st, &tty, bundle, ModeBlock, 1, captureIdle)
+	if err != nil {
+		t.Fatalf("runCapture err = %v, want nil for a full forced-block capture", err)
+	}
+	if bundle.finalise != "full" {
+		t.Fatalf("bundle finalise = %q, want full", bundle.finalise)
+	}
+	if len(bundle.frames) != 1 {
+		t.Fatalf("bundle wrote %d frames, want 1", len(bundle.frames))
+	}
+	if bundle.frames[0].Grid == nil {
+		t.Fatal("drawn frame Grid is nil; want the block path so terminal-model.json is written, not omitted")
+	}
+}
+
 // TestRunCaptureForcedSixelRejectedWritesPartial asserts that forcing sixel on a
 // block-only detection result writes a partial bundle, prints the bundle path,
 // and returns ErrPartialBundle before any Navigate (task 7.2).

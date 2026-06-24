@@ -44,3 +44,31 @@ func ValidateForcedBackend(mode string, enabled []Backend) error {
 	}
 	return fmt.Errorf("viewer: backend %q is not supported by this terminal", mode)
 }
+
+// forcedBackend maps a named --backend mode to the Backend it pins. It returns
+// ok=false for ModeAuto and any unnamed mode, meaning no forcing: auto leaves
+// the detected cycle in charge. The three named modes map to their backend.
+func forcedBackend(mode string) (Backend, bool) {
+	switch mode {
+	case ModeBlock:
+		return BackendBlock, true
+	case ModeKitty:
+		return BackendKitty, true
+	case ModeSixel:
+		return BackendSixel, true
+	default:
+		return 0, false
+	}
+}
+
+// applyForcedBackend pins the active backend and the Tab cycle to a named
+// --backend mode. For a named mode it calls st.SetEnabled with the forced
+// backend alone, so st.Backend becomes that backend and the cycle holds only it.
+// ModeAuto and any unnamed mode leave the detected cycle untouched. Call it only
+// after ValidateForcedBackend passes, so a forced graphics backend the terminal
+// cannot run never reaches here.
+func applyForcedBackend(st *State, mode string) {
+	if forced, ok := forcedBackend(mode); ok {
+		st.SetEnabled([]Backend{forced})
+	}
+}

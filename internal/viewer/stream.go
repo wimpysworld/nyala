@@ -85,6 +85,12 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode string) (err 
 	if verr := ValidateForcedBackend(mode, st.Enabled); verr != nil {
 		return verr
 	}
+	// Pin the active backend to a named --backend mode now that validation
+	// passed, so a forced block overrides a higher-fidelity detected backend.
+	// setupViewer handed the engine the detected backend; re-notify it so the
+	// engine sizes its capture for the forced backend, not the detected one.
+	applyForcedBackend(st, mode)
+	eng.SetBackend(backendName(st.Backend))
 
 	if _, err := io.WriteString(tty, enterFullScreen); err != nil {
 		return err
