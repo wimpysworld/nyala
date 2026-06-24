@@ -31,8 +31,9 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	scrollX, scrollY := e.scrollX, e.scrollY
 	cx := float64(e.cols*e.cellW) / 2
 	cy := float64(e.rows*e.cellH) / 2
-	// The screencast cap is the real pixel surface, the per-backend pixel target;
-	// the engine downscales the block frame to the sub-cell captureSize client-side.
+	// The screencast cap is the real pixel surface size, so Chromium emits real
+	// pixels; the engine downscales the block frame to the sub-cell captureSize
+	// client-side.
 	capW, capH := e.surfaceSize(e.cols, e.rows)
 	e.mu.Unlock()
 
