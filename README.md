@@ -74,5 +74,18 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 |---|---|---|
 | `<url>` | required | Page to open. |
 | `--browser` | auto | Path to the Chromium executable to drive. |
+| `--backend` | `auto` | Renderer backend: `auto`, `block`, `kitty`, or `sixel`. `auto` picks the terminal's best supported backend. A named backend forces one renderer and fails fast if the terminal cannot run it. |
 | `--color` | `auto` | Viewer colour mode: `auto`, `truecolor`, `256`, or `none`. |
 | `--version` | | Print the version and exit. |
+
+### Capture mode
+
+`NYALA_CAPTURE=n` records a run to disk for diagnosis. This is diagnostic capture, not benchmarking.
+
+```bash
+NYALA_CAPTURE=30 nyala example.com
+```
+
+Unset or `0` is off. `1` writes a first-frame bundle. A positive `n` draws `n` usable frames, writes one `nyala-capture-*` directory, prints its path, then exits. A full capture exits 0; a partial run (a timeout, a forced backend the terminal cannot run, or the engine closing early) writes what it has and exits non-zero. Pair it with `--backend` to pin the renderer under test.
+
+The bundle holds the rendered viewport image, the text overlay, the terminal byte stream, per-frame timings, and the recorded CDP session and events. It can contain page pixels, page text, URLs, and proxy details, so review it before you share it.

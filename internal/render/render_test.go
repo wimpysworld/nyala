@@ -24,3 +24,12 @@ func TestStubRendererSatisfiesRenderer(t *testing.T) {
 		t.Fatalf("Render() = %v, want nil", err)
 	}
 }
+
+// TestZeroFrameStatsNil asserts the zero Frame carries no stats, so the
+// production path stays free of capture timing.
+func TestZeroFrameStatsNil(t *testing.T) {
+	var f Frame
+	if f.Stats != nil {
+		t.Fatalf("zero Frame.Stats = %v, want nil", f.Stats)
+	}
+}

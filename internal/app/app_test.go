@@ -81,6 +81,28 @@ func TestParseColorInvalid(t *testing.T) {
 	}
 }
 
+func TestParseBackendDefault(t *testing.T) {
+	cli := parse(t, "example.com")
+	if cli.Backend != "auto" {
+		t.Errorf("Backend = %q, want %q by default", cli.Backend, "auto")
+	}
+}
+
+func TestParseBackendOverrides(t *testing.T) {
+	for _, mode := range []string{"auto", "block", "kitty", "sixel"} {
+		cli := parse(t, "--backend", mode, "example.com")
+		if cli.Backend != mode {
+			t.Errorf("--backend %s: Backend = %q, want %q", mode, cli.Backend, mode)
+		}
+	}
+}
+
+func TestParseBackendInvalid(t *testing.T) {
+	if _, err := tryParse("--backend", "bogus", "example.com"); err == nil {
+		t.Errorf("--backend bogus: want a parse error, got nil")
+	}
+}
+
 func TestNormaliseURL(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -142,6 +164,74 @@ func TestRunValidURLPassesValidation(t *testing.T) {
 				t.Errorf("Run(%q): err = %v, want the not-a-terminal guard", raw, err)
 			}
 		})
+	}
+}
+
+// TestRunCaptureUnsetReachesStream asserts that with NYALA_CAPTURE unset, Run
+// reaches viewer.Stream. A pipe read end is not a terminal, so the
+// not-a-terminal guard fires inside the viewer, proving selection reached it
+// without launching a browser.
+func TestRunCaptureUnsetReachesStream(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+	if _, set := os.LookupEnv("NYALA_CAPTURE"); set {
+		t.Setenv("NYALA_CAPTURE", "")
+		os.Unsetenv("NYALA_CAPTURE")
+	}
+	err = Run(CLI{URL: "example.com", Backend: "auto"}, r)
+	if err == nil {
+		t.Fatalf("Run capture unset: want the not-a-terminal error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a terminal") {
+		t.Errorf("Run capture unset: err = %v, want the not-a-terminal guard", err)
+	}
+}
+
+// TestRunCaptureEnabledReachesCapture asserts that with NYALA_CAPTURE=1, Run
+// reaches viewer.Capture. The pipe read end is not a terminal, so the guard
+// inside Capture fires, proving selection reached it without launching a
+// browser. t.Setenv isolates NYALA_CAPTURE from other tests.
+func TestRunCaptureEnabledReachesCapture(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+	t.Setenv("NYALA_CAPTURE", "1")
+	err = Run(CLI{URL: "example.com", Backend: "block"}, r)
+	if err == nil {
+		t.Fatalf("Run capture=1: want the not-a-terminal error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a terminal") {
+		t.Errorf("Run capture=1: err = %v, want the not-a-terminal guard", err)
+	}
+}
+
+// TestRunCaptureParseErrorReturnsBeforeViewer asserts a NYALA_CAPTURE parse
+// error returns before any viewer call. The error names NYALA_CAPTURE, not the
+// not-a-terminal guard, so Run failed at the parse, not in the viewer.
+func TestRunCaptureParseErrorReturnsBeforeViewer(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+	t.Setenv("NYALA_CAPTURE", "abc")
+	err = Run(CLI{URL: "example.com", Backend: "block"}, r)
+	if err == nil {
+		t.Fatalf("Run capture=abc: want a parse error, got nil")
+	}
+	if !strings.Contains(err.Error(), "NYALA_CAPTURE") {
+		t.Errorf("Run capture=abc: err = %v, want it to name NYALA_CAPTURE", err)
+	}
+	if strings.Contains(err.Error(), "not a terminal") {
+		t.Errorf("Run capture=abc: err = %v, want the parse error before any viewer call", err)
 	}
 }
 

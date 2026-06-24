@@ -54,6 +54,15 @@ type ChromiumEngine struct {
 	proxy    ProxyConfig // parsed proxy settings for the launch path
 	proxyErr error       // proxy parse error, returned later by launch
 
+	// Capture wiring set once by EnableCapture before Navigate, read-only
+	// afterwards. Like proxy above, the caller sets these before any goroutine
+	// starts and never writes them again, so the listener and supervisor
+	// goroutines read them without a mu guard. captureOn gates the phase timing
+	// in composeFrame; recorder is the event sink the emit sites use behind a
+	// nil check. Both stay unset on the production path, so it pays zero cost.
+	captureOn bool            // true once EnableCapture turned capture on
+	recorder  captureRecorder // event sink, nil off the capture path
+
 	// Lifecycle. The supervisor goroutine owns the engine lifetime: it starts
 	// each browser session, watches for a crash or a lost connection, rebuilds
 	// from held state, and closes frames when Close stops it. closing signals a
@@ -82,6 +91,18 @@ func New(browserFlag string) *ChromiumEngine {
 		proxy:       proxy,
 		proxyErr:    proxyErr,
 	}
+}
+
+// EnableCapture turns on engine-phase timing and event recording, setting rec
+// as the event sink. The caller sets it before Navigate, so the capture flag
+// and recorder take the same set-once treatment as the proxy config: written
+// once before any goroutine starts and read-only afterwards, so the listener
+// and supervisor goroutines need no mu guard. Off the capture path EnableCapture
+// is never called, so captureOn stays false, the recorder stays nil, and
+// Frame.Stats stays nil. A nil rec leaves the recorder unset.
+func (e *ChromiumEngine) EnableCapture(rec captureRecorder) {
+	e.captureOn = true
+	e.recorder = rec
 }
 
 // SetCellPx records the resolved terminal cell pixel size. The engine uses it to
@@ -238,6 +259,12 @@ func (e *ChromiumEngine) Close() error {
 	supDone := e.supDone
 	supervised := e.supervised
 	e.mu.Unlock()
+	// Emit one stop at the clean session end so the event stream shows a tidy
+	// close. Crash rebuilds tear down through teardownSession without this, so
+	// only the real shutdown records a stop.
+	if e.recorder != nil {
+		e.recorder.Record(captureEvent{Type: captureEventScreencastControl, Action: "stop"})
+	}
 	if closing != nil {
 		e.closeOnce.Do(func() { close(closing) })
 	}

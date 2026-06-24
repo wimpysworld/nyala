@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/chromedp/cdproto/input"
@@ -62,9 +63,43 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 // close the frame channel; they do not trap the raw-mode viewer before its key
 // reader starts.
 func (e *ChromiumEngine) navigateAsync(ctx context.Context, url string) {
-	if err := dispatchNavigate(ctx, url); err != nil {
+	err := dispatchNavigate(ctx, url)
+	if e.recorder != nil {
+		result := "ok"
+		if err != nil {
+			result = err.Error()
+		}
+		e.recorder.Record(captureEvent{Type: captureEventNavigate, URL: url, Result: result})
+		e.fillSession(url, result)
+	}
+	if err != nil {
 		e.teardownSession()
 	}
+}
+
+// fillSession assembles the cdp-session.json bytes from held engine state and
+// stores them on the recorder when it is an exported *Recorder, so the viewer
+// reads them after Navigate. It runs only on the capture path. It reads the
+// capture size under mu, then builds and marshals outside the lock, so it never
+// holds mu across the assemble. The launch flags derive from proxyFlags, which
+// carries only the credential-free Server, so the proxy user and password never
+// reach the file. Browser version and target id stay empty: the engine holds no
+// live CDP handle to query them without a browser, and the proposal's secret and
+// whitelist guarantees do not depend on them.
+func (e *ChromiumEngine) fillSession(navURL, navResult string) {
+	rec, ok := e.recorder.(*Recorder)
+	if !ok {
+		return
+	}
+	e.mu.Lock()
+	capW, capH := e.captureW, e.captureH
+	e.mu.Unlock()
+	session := buildCDPSession("", e.browserFlag, "", navURL, navResult, capW, capH, e.proxy)
+	data, err := json.MarshalIndent(session, "", "  ")
+	if err != nil {
+		return
+	}
+	rec.setSession(data)
 }
 
 // finishStartup marks the supervisor as live after startup has a session. If
@@ -131,6 +166,9 @@ func (e *ChromiumEngine) watchCrash(crashed chan struct{}) {
 	var once boolFlag
 	chromedp.ListenTarget(ctx, func(ev any) {
 		if _, ok := ev.(*target.EventTargetCrashed); ok && once.set() {
+			if e.recorder != nil {
+				e.recorder.Record(captureEvent{Type: captureEventTargetCrashed})
+			}
 			close(crashed)
 		}
 	})

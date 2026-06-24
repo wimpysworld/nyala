@@ -22,6 +22,14 @@ import (
 // forwards scroll keys by their code and wheel deltas in CSS pixels, and the
 // engine owns the offset.
 type Engine interface {
+	// EnableCapture turns on engine-phase capture for this run and wires the
+	// bundle's cdp-events.ndjson sink into the engine before Navigate. The caller
+	// passes the open ndjson writer; the returned CaptureSession exposes the
+	// cdp-session.json bytes the engine assembles during navigation, read after
+	// Navigate returns. Stream never calls it, so the interactive path pays no
+	// capture cost. The adapter constructs the engine recorder, so the viewer
+	// never imports the engine package.
+	EnableCapture(ndjson io.Writer) CaptureSession
 	// SetBackend names the active backend (block, sixel, kitty) so the engine
 	// sizes the capture: sub-cell for block, cell-pixel for the graphics
 	// backends. When streaming it restarts the stream at the new size.
@@ -44,6 +52,17 @@ type Engine interface {
 	Close() error
 }
 
+// CaptureSession exposes the cdp-session.json bytes the engine assembles during
+// navigation. The capture driver obtains it from Engine.EnableCapture and reads
+// SessionJSON after Navigate returns to write cdp-session.json into the bundle.
+// It is the one viewer-side seam onto the engine recorder, so the viewer never
+// imports the engine package.
+type CaptureSession interface {
+	// SessionJSON returns the assembled cdp-session.json bytes, or nil before
+	// navigation fills them.
+	SessionJSON() []byte
+}
+
 // Stream runs the interactive viewer on tty, drawing the live frames eng pushes,
 // until the user quits. It puts the terminal into raw mode, detects which
 // backends the terminal supports, hands the resolved backend and cell px to the
@@ -53,36 +72,19 @@ type Engine interface {
 // wheel to the engine, cycles the backend on Tab, and restores the terminal on
 // exit. It returns an error only on a setup or I/O failure; a clean quit returns
 // nil. colourFlag is the --color intent; configureBackends resolves it against
-// NO_COLOR and detection.
-func Stream(eng Engine, url string, tty *os.File, colourFlag string) (err error) {
-	fd := tty.Fd()
-	if !cterm.IsTerminal(fd) {
-		return fmt.Errorf("viewer: %s is not a terminal", tty.Name())
-	}
-	cols, rows, err := cterm.GetSize(fd)
+// NO_COLOR and detection. mode is the --backend mode: auto and block always
+// pass, and a forced graphics backend is rejected before navigation when
+// detection did not confirm it.
+func Stream(eng Engine, url string, tty *os.File, colourFlag, mode string) (err error) {
+	fd, st, restore, err := setupViewer(eng, tty, colourFlag)
 	if err != nil {
-		return fmt.Errorf("viewer: terminal size: %w", err)
+		return err
 	}
+	defer restore()
 
-	oldState, err := cterm.MakeRaw(fd)
-	if err != nil {
-		return fmt.Errorf("viewer: raw mode: %w", err)
+	if verr := ValidateForcedBackend(mode, st.Enabled); verr != nil {
+		return verr
 	}
-	defer func() { _ = cterm.Restore(fd, oldState) }()
-
-	// The image size is unknown until the first frame; NewState seeds a square
-	// and each drawn frame updates ImgW/ImgH before Fit and the block compose.
-	st := NewState(cols, rows, 1, 1)
-
-	// Detection runs in raw mode but before the full-screen switch and the key
-	// reader, so the handshake replies are not consumed by the key goroutine.
-	configureBackends(&st, tty, cols, rows, colourFlag)
-
-	// Hand the resolved backend and cell px to the engine before Navigate; the
-	// engine sizes the screencast capture from them.
-	eng.SetCellPx(st.W, st.H)
-	eng.SetBackend(backendName(st.Backend))
-	eng.Resize(cols, rows)
 
 	if _, err := io.WriteString(tty, enterFullScreen); err != nil {
 		return err
@@ -110,7 +112,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag string) (err error)
 	keySender := newKeySender(eng)
 	defer keySender.close()
 
-	s := &streamSession{eng: eng, st: &st, tty: tty, fd: fd, keySender: keySender}
+	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender}
 	keys := readKeys(tty, done)
 	navigated := make(chan error, 1)
 	go func() {
@@ -120,6 +122,46 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag string) (err error)
 		return nerr
 	}
 	return s.loop(winch, keys)
+}
+
+// setupViewer performs the shared viewer setup both Stream and the capture
+// driver need: it checks tty is a terminal, reads the grid size, puts the
+// terminal into raw mode, builds the State, runs backend and colour detection,
+// and hands the resolved backend and cell px to the engine before Navigate so
+// the engine sizes its screencast capture. It returns the tty fd, the State, and
+// a restore closure the caller must defer to leave raw mode. It does not enter
+// the full-screen mode or write the loading cue, because the capture driver must
+// not mirror those bytes into its terminal-stream capture.
+func setupViewer(eng Engine, tty *os.File, colourFlag string) (fd uintptr, st *State, restore func(), err error) {
+	fd = tty.Fd()
+	if !cterm.IsTerminal(fd) {
+		return 0, nil, nil, fmt.Errorf("viewer: %s is not a terminal", tty.Name())
+	}
+	cols, rows, err := cterm.GetSize(fd)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("viewer: terminal size: %w", err)
+	}
+
+	oldState, err := cterm.MakeRaw(fd)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("viewer: raw mode: %w", err)
+	}
+
+	// The image size is unknown until the first frame; NewState seeds a square
+	// and each drawn frame updates ImgW/ImgH before Fit and the block compose.
+	state := NewState(cols, rows, 1, 1)
+
+	// Detection runs in raw mode but before the full-screen switch and the key
+	// reader, so the handshake replies are not consumed by the key goroutine.
+	configureBackends(&state, tty, cols, rows, colourFlag)
+
+	// Hand the resolved backend and cell px to the engine before Navigate; the
+	// engine sizes the screencast capture from them.
+	eng.SetCellPx(state.W, state.H)
+	eng.SetBackend(backendName(state.Backend))
+	eng.Resize(cols, rows)
+
+	return fd, &state, func() { _ = cterm.Restore(fd, oldState) }, nil
 }
 
 // streamSession bundles the per-run viewer state the push loop mutates: the

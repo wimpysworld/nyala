@@ -19,11 +19,29 @@ type GlyphRun struct {
 	FG       color.RGBA // foreground colour
 }
 
+// FrameStats holds the engine-phase timings and sizes captured while building
+// one Frame. The engine fills it only when capture is enabled; it is nil on the
+// production path. Timings are wall-clock durations in milliseconds and are
+// never negative. Viewer draw-phase timing lives on a separate viewer-owned
+// struct, not here.
+type FrameStats struct {
+	// ScreencastPayloadBytes is the byte size of the screencast frame payload
+	// the engine decoded for this Frame.
+	ScreencastPayloadBytes int64
+	// ScreencastDecodeMS is the time spent decoding the screencast frame image,
+	// in milliseconds.
+	ScreencastDecodeMS float64
+	// DOMSnapshotMS is the time spent capturing the DOM text snapshot, in
+	// milliseconds.
+	DOMSnapshotMS float64
+}
+
 // Frame is one viewport image plus any text overlay. Text stays empty until the
 // overlay path is wired.
 type Frame struct {
-	Img  *image.RGBA // the viewport bitmap, already at or above cell resolution
-	Text []GlyphRun  // empty until the text overlay path is wired
+	Img   *image.RGBA // the viewport bitmap, already at or above cell resolution
+	Text  []GlyphRun  // empty until the text overlay path is wired
+	Stats *FrameStats // engine-phase timings, nil off the capture path
 }
 
 // Renderer emits a Frame to a writer. Each backend renders the same Frame in a
