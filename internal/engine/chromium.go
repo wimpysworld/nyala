@@ -70,6 +70,21 @@ type ChromiumEngine struct {
 	// latest decoded runs, the frame loop reads them. It decouples the DOM snapshot
 	// from the frame-emit goroutine. Reset per session by teardownSession.
 	text *textSync
+	// reSnap pokes the snapshot goroutine for an immediate re-snapshot on a resize
+	// or backend switch (restartStream). reflow pokes it for a debounced
+	// networkAlmostIdle late reflow. Both are capacity-1 latest-wins, goroutine-
+	// scoped to one session, so a burst coalesces to one wake and ctx cancellation
+	// stops the goroutine without a channel reset. Reset per session by
+	// teardownSession.
+	reSnap chan struct{}
+	reflow chan struct{}
+	// reEmit pokes the frame loop to re-push its held bitmap recomposed with the
+	// freshly published text, so a static page that delivers no new screencast frame
+	// after the snapshot still repaints with text. The snapshot goroutine pokes it
+	// after each publish; the frame loop folds the latest text onto the held frame.
+	// It is capacity-1 latest-wins and session-scoped, reset per session by
+	// teardownSession.
+	reEmit chan struct{}
 	// snapshot is the per-iteration snapshot function runTextSync calls, defaulting
 	// to snapshotRuns. The unit test swaps in a counter to assert the snapshot is
 	// gated to about one call per delivered frame without launching a browser; it is
@@ -88,12 +103,10 @@ type ChromiumEngine struct {
 	// goroutines read them without a mu guard. captureOn gates the phase timing
 	// in composeFrame; recorder is the event sink the emit sites use behind a
 	// nil check. Both stay unset on the production path, so it pays zero cost.
-	captureOn     bool            // true once EnableCapture turned capture on
-	recorder      captureRecorder // event sink, nil off the capture path
-	painted       chan struct{}   // closed on the first contentful paint (or load) under capture
-	paintedOnce   sync.Once       // guards painted against a double close
-	textReady     chan struct{}   // closed when the first DOM snapshot publishes under capture
-	textReadyOnce sync.Once       // guards textReady against a double close
+	captureOn   bool            // true once EnableCapture turned capture on
+	recorder    captureRecorder // event sink, nil off the capture path
+	painted     chan struct{}   // closed on the first contentful paint (or load) under capture
+	paintedOnce sync.Once       // guards painted against a double close
 
 	// Lifecycle. The supervisor goroutine owns the engine lifetime: it starts
 	// each browser session, watches for a crash or a lost connection, rebuilds
@@ -147,42 +160,22 @@ func (e *ChromiumEngine) EnableCapture(rec captureRecorder) {
 	// sees the closed channel. The exported recorder relays it to the viewer's
 	// CaptureSession, so the viewer never imports the engine package.
 	e.painted = make(chan struct{})
-	// The textReady latch lets the capture driver fold the text layer onto the
-	// first usable frame: the snapshot goroutine publishes its runs only after a
-	// frame is consumed, so the first delivered frame carries empty runs until the
-	// first snapshot lands. The driver waits on this latch, bounded by a grace,
-	// before it counts the first usable frame. Created here, before any goroutine
-	// starts, like painted above. markTextReady closes it on the first published
-	// snapshot; a late reader still sees it closed.
-	e.textReady = make(chan struct{})
 	if r, ok := rec.(*Recorder); ok {
 		r.setPainted(e.painted)
-		r.setTextReady(e.textReady)
 	}
 }
 
-// markPainted closes the painted latch on the first paint signal (first contentful
-// paint, load, or frame-stopped-loading), so a late reader still sees it closed.
-// paintedOnce guards the close because several signals may arrive and a crash
-// rebuild re-registers the listener. It is a no-op off the capture path, where
-// painted stays nil.
+// markPainted closes the painted latch, so a late reader still sees it closed. The
+// primary fire source is the watchPaint listener on the Page.lifecycleEvent whose
+// Name is "firstContentfulPaint"; navigateAsync calls it again on navigate-return
+// as the bounded timeout backstop. paintedOnce guards the close because both
+// sources may fire and a crash rebuild re-registers the listener. It is a no-op
+// off the capture path, where painted stays nil.
 func (e *ChromiumEngine) markPainted() {
 	if e.painted == nil {
 		return
 	}
 	e.paintedOnce.Do(func() { close(e.painted) })
-}
-
-// markTextReady closes the textReady latch on the first published DOM snapshot,
-// so a late reader still sees it closed. textReadyOnce guards the close because
-// the snapshot goroutine publishes on every iteration and a crash rebuild starts
-// a fresh goroutine. It is a no-op off the capture path, where textReady stays
-// nil.
-func (e *ChromiumEngine) markTextReady() {
-	if e.textReady == nil {
-		return
-	}
-	e.textReadyOnce.Do(func() { close(e.textReady) })
 }
 
 // SetCellPx records the resolved terminal cell pixel size. The engine uses it to

@@ -10,8 +10,6 @@ import (
 
 	"github.com/chromedp/cdproto/domsnapshot"
 	"github.com/chromedp/chromedp"
-	"github.com/mattn/go-runewidth"
-	"github.com/rivo/uniseg"
 
 	"github.com/wimpysworld/nyala/internal/render"
 )
@@ -89,7 +87,7 @@ func appendDocumentRuns(runs []render.GlyphRun, doc *domsnapshot.DocumentSnapsho
 		col := int(math.Floor(px / float64(cellW)))
 		row := int(math.Floor(py / float64(cellH)))
 		maxCells := int(math.Floor(bw / float64(cellW)))
-		clipped := clipToCells(text, maxCells)
+		clipped := render.ClipToCells(text, maxCells)
 		if clipped == "" {
 			continue
 		}
@@ -153,39 +151,6 @@ func stringAt(strings []string, idx int) string {
 	return strings[idx]
 }
 
-// clipToCells trims text to at most maxCells display cells, measuring each
-// grapheme cluster with the Stage 2 width rule. A width-2 cluster that would
-// exceed the budget is dropped whole, never half-emitted. A non-positive
-// maxCells yields the empty string.
-func clipToCells(text string, maxCells int) string {
-	if maxCells <= 0 {
-		return ""
-	}
-	var b strings.Builder
-	used := 0
-	gr := uniseg.NewGraphemes(text)
-	for gr.Next() {
-		cluster := gr.Str()
-		w := cellWidth(cluster)
-		if used+w > maxCells {
-			break
-		}
-		b.WriteString(cluster)
-		used += w
-	}
-	return b.String()
-}
-
-// cellWidth measures the display width of one grapheme cluster, clamped to 1 or
-// 2, mirroring the Stage 2 block overlay rule so the clip budget and the
-// downstream cell binning agree. A width-0 cluster counts as 1.
-func cellWidth(grapheme string) int {
-	if runewidth.StringWidth(grapheme) >= 2 {
-		return 2
-	}
-	return 1
-}
-
 // parseCSSColour parses a serialised CSS colour from a computed style into RGBA.
 // Computed color serialises as rgb(r, g, b) or rgba(r, g, b, a); the alpha is a
 // 0..1 float scaled to 0..255. An unrecognised value returns opaque black.
@@ -202,9 +167,9 @@ func parseCSSColour(s string) color.RGBA {
 		return color.RGBA{A: 0xff}
 	}
 	out := color.RGBA{A: 0xff}
-	out.R = clampByte(fields[0])
-	out.G = clampByte(fields[1])
-	out.B = clampByte(fields[2])
+	out.R = parseColourByte(fields[0])
+	out.G = parseColourByte(fields[1])
+	out.B = parseColourByte(fields[2])
 	if len(fields) >= 4 {
 		if a, err := strconv.ParseFloat(fields[3], 64); err == nil {
 			out.A = uint8(math.Round(math.Max(0, math.Min(1, a)) * 255))
@@ -213,9 +178,9 @@ func parseCSSColour(s string) color.RGBA {
 	return out
 }
 
-// clampByte parses a numeric CSS colour channel and clamps it to 0..255. A
+// parseColourByte parses a numeric CSS colour channel and clamps it to 0..255. A
 // fractional value (some serialisers emit floats) rounds to nearest.
-func clampByte(s string) uint8 {
+func parseColourByte(s string) uint8 {
 	v, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return 0

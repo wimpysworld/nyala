@@ -20,6 +20,7 @@ import (
 	"image/color"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	cterm "github.com/charmbracelet/x/term"
@@ -88,6 +89,70 @@ type State struct {
 	// bytes and the serialised grid from one compose with no drift. Off the
 	// capture path it stays nil and renderBlock writes nothing to it.
 	captureGrid *block.Grid
+
+	// diff is the live-path cell differ. It defaults nil. The interactive stream
+	// session sets it so renderBlock emits only the cells that changed since the
+	// previous frame, with CUP and SGR coalescing. When nil (the capture path and
+	// the static-image path) renderBlock writes the full grid via writeGrid, so
+	// those paths keep their byte output. The viewer live path is not golden-
+	// pinned, so the diffed output may differ from a full rewrite while the
+	// rendered result matches.
+	diff *block.GridDiff
+
+	// scratch holds the reusable per-frame buffers for the live diff path: the
+	// downscale destination, the inner compose grid, the fit-and-letterbox output
+	// grid, and the buffered tty writer. It is used only when diff is set, which
+	// is the single-goroutine interactive draw path, so the buffers never alias
+	// across goroutines. Off the diff path (capture and static image) it stays
+	// untouched and those paths keep their fresh-allocation byte output.
+	scratch frameScratch
+}
+
+// frameScratch is the live diff path's reusable per-frame buffers. Each draw
+// fully overwrites the downscale pixels and recomposes both grids, so reuse
+// carries no stale content. dstW and dstH record the downscale size so the
+// destination reallocates only when the grid or scheme changes the pixel extent.
+// bw buffers the tty writer so each frame Resets and Flushes one held writer
+// rather than allocating a new bufio.Writer. The zero value is unset; renderBlock
+// lazily fills it on the first diff draw.
+type frameScratch struct {
+	dst        *image.RGBA   // reused downscale destination
+	dstW, dstH int           // current downscale pixel extent
+	inner      block.Grid    // reused inner compose grid
+	out        block.Grid    // reused fit-and-letterbox output grid
+	bw         *bufio.Writer // reused buffered tty writer
+}
+
+// downscaleDst returns a width x height *image.RGBA, reusing the held destination
+// when the extent is unchanged and reallocating only on a size change. The block
+// downscale fully overwrites every pixel, so a reused destination carries no
+// stale content.
+func (f *frameScratch) downscaleDst(width, height int) *image.RGBA {
+	if f.dst == nil || f.dstW != width || f.dstH != height {
+		f.dst = image.NewRGBA(image.Rect(0, 0, width, height))
+		f.dstW, f.dstH = width, height
+	}
+	return f.dst
+}
+
+// writer returns the held bufio.Writer reset onto w, allocating it once. The live
+// diff path wraps the tty so the differ's many small writes coalesce into one
+// syscall, and the held writer is reset per frame rather than reallocated.
+func (f *frameScratch) writer(w io.Writer) *bufio.Writer {
+	if f.bw == nil {
+		f.bw = bufio.NewWriter(w)
+	} else {
+		f.bw.Reset(w)
+	}
+	return f.bw
+}
+
+// SetDiff sets the live-path cell differ. The interactive stream session passes a
+// pointer to a block.GridDiff once before the draw loop; renderBlock then emits
+// only the cells that changed since the previous frame. Pass nil to fall back to
+// the full-grid writeGrid path. It is a no-op for the graphics backends.
+func (s *State) SetDiff(d *block.GridDiff) {
+	s.diff = d
 }
 
 // SetCaptureGrid sets the capture-only grid sink. The capture driver passes a
@@ -353,6 +418,31 @@ func (s *State) renderBlock(src *image.RGBA, text []render.GlyphRun, w io.Writer
 	// One block.Renderer value drives both FitGrid and the inner Compose, so the
 	// grid size and scheme come from a single source.
 	br := block.Renderer{Cols: s.Cols, Rows: s.Rows, Scheme: s.Scheme}
+
+	// The live diff path is single-goroutine, so it reuses the per-frame buffers:
+	// the downscale destination, both grids, and the buffered tty writer. The
+	// capture and static-image paths (diff nil) keep the fresh-allocation path so
+	// their byte output stays identical.
+	if s.diff != nil {
+		grid := br.FitGridInto(&s.scratch.out, s.ImgW, s.ImgH, func(cols, rows int) *block.Grid {
+			pxW, pxH := schemePixels(s.Scheme, cols, rows)
+			sub := metrics.DownscaleInto(s.scratch.downscaleDst(pxW, pxH), src)
+			inner := block.Renderer{Cols: cols, Rows: rows, Scheme: s.Scheme}
+			return inner.ComposeInto(&s.scratch.inner, render.Frame{Img: sub, Text: text})
+		})
+		if s.captureGrid != nil {
+			// Copy the cells, never alias: the live scratch grid is reused next frame,
+			// so the capture sink must own an independent backing array to serialise.
+			s.captureGrid.Cols, s.captureGrid.Rows = grid.Cols, grid.Rows
+			s.captureGrid.Cells = append(s.captureGrid.Cells[:0], grid.Cells...)
+		}
+		bw := s.scratch.writer(w)
+		if err := s.diff.Emit(bw, *grid, fgSGRFunc(s.Colour), bgSGRFunc(s.Colour)); err != nil {
+			return err
+		}
+		return bw.Flush()
+	}
+
 	grid := br.FitGrid(s.ImgW, s.ImgH, func(cols, rows int) block.Grid {
 		pxW, pxH := schemePixels(s.Scheme, cols, rows)
 		sub := metrics.Downscale(src, pxW, pxH)
@@ -443,23 +533,8 @@ func writeGrid(g block.Grid, mode ColourMode, w io.Writer) error {
 		}
 		for col := range g.Cols {
 			c := g.At(col, row)
-			if c.Wide {
-				// The lead cell's wide grapheme already paints both columns, so
-				// the trailing cell emits no SGR and no rune, matching the block
-				// renderer.
-				continue
-			}
-			sb.WriteString(fgSGR(c.FG, mode))
-			sb.WriteString(bgSGR(c.BG, mode))
-			// Stage 2 feeds the viewer no overlay (the overlay demo is
-			// harness-only), so a Text cell never reaches here yet; the branch
-			// readies Stage 3. A Text cell draws its overlay grapheme over the
-			// bitmap glyph; otherwise the bitmap glyph wins.
-			switch {
-			case c.Text != "":
-				sb.WriteString(c.Text)
-			default:
-				sb.WriteRune(c.Glyph)
+			if err := block.WriteCell(&sb, c, fgSGR(c.FG, mode), bgSGR(c.BG, mode)); err != nil {
+				return err
 			}
 		}
 		sb.WriteString(sgrReset)
@@ -475,7 +550,7 @@ func fgSGR(c color.RGBA, mode ColourMode) string {
 	case ColourMono:
 		return ""
 	case ColourXTerm256:
-		return fmt.Sprintf(fg256Format, block.XTerm256(c))
+		return sgr256(fg256Prefix, block.XTerm256(c))
 	default:
 		return block.TrueColorFG(c)
 	}
@@ -488,10 +563,34 @@ func bgSGR(c color.RGBA, mode ColourMode) string {
 	case ColourMono:
 		return ""
 	case ColourXTerm256:
-		return fmt.Sprintf(bg256Format, block.XTerm256(c))
+		return sgr256(bg256Prefix, block.XTerm256(c))
 	default:
 		return block.TrueColorBG(c)
 	}
+}
+
+// sgr256 builds an xterm-256 SGR escape, prefix + index + "m", with
+// strconv.AppendInt into a stack buffer instead of fmt.Sprintf. The index is a
+// uint8, so the escape never exceeds the buffer. One string allocation remains
+// for the return value; the change drops the fmt reflection path.
+func sgr256(prefix string, idx uint8) string {
+	var buf [16]byte
+	b := append(buf[:0], prefix...)
+	b = strconv.AppendInt(b, int64(idx), 10)
+	b = append(b, 'm')
+	return string(b)
+}
+
+// fgSGRFunc binds a colour mode into a block.SGRFunc for the cell differ, so the
+// differ stays colour-mode neutral while reusing the viewer's fg SGR rules.
+func fgSGRFunc(mode ColourMode) block.SGRFunc {
+	return func(c color.RGBA) string { return fgSGR(c, mode) }
+}
+
+// bgSGRFunc binds a colour mode into a block.SGRFunc for the cell differ, so the
+// differ stays colour-mode neutral while reusing the viewer's bg SGR rules.
+func bgSGRFunc(mode ColourMode) block.SGRFunc {
+	return func(c color.RGBA) string { return bgSGR(c, mode) }
 }
 
 // cupFormat is the CUP escape that moves the cursor to a 1-based row;column
@@ -502,16 +601,45 @@ const cupFormat = "\x1b[%d;%dH"
 // run.
 const sgrReset = "\x1b[0m"
 
-// fg256Format and bg256Format are the xterm-256 foreground and background SGR
-// escapes (ESC [ 38;5;n m and ESC [ 48;5;n m). They take the palette index.
+// fg256Prefix and bg256Prefix are the xterm-256 foreground and background SGR
+// prefixes (ESC [ 38;5; and ESC [ 48;5;). sgr256 appends the palette index and
+// the trailing "m".
 const (
-	fg256Format = "\x1b[38;5;%dm"
-	bg256Format = "\x1b[48;5;%dm"
+	fg256Prefix = "\x1b[38;5;"
+	bg256Prefix = "\x1b[48;5;"
 )
 
+// framePrefix returns the cursor escape the steady and capture draw paths emit
+// before a frame's render bytes, and seeds the differ for the first draw. The
+// first draw returns the full clearScreen and resets diff so it full-repaints
+// against the blank screen; every later draw returns cursorHome only, so the
+// render overwrites each cell in place with no per-frame full clear. diff may be
+// nil (the graphics backends carry none), in which case no seed runs. Both the
+// live stream draw and the capture draw call it, so the only allowed difference
+// between a live and a captured draw is which writer the bytes land on.
+func framePrefix(firstDrawn bool, diff *block.GridDiff) string {
+	if firstDrawn {
+		return cursorHome
+	}
+	if diff != nil {
+		// The first draw clears the loading cue (live) or the prior terminal state
+		// (capture), so the differ must full-repaint against the blank screen, not a
+		// retained grid.
+		diff.Reset()
+	}
+	return clearScreen
+}
+
 // clearScreen homes the cursor and clears the terminal so the next frame draws
-// from the top-left without stale cells.
+// from the top-left without stale cells. The draw path uses it for the first
+// draw and on resize; the steady path homes the cursor with cursorHome and
+// overwrites every cell in place, so the full erase is not needed per frame.
 const clearScreen = "\x1b[H\x1b[2J"
+
+// cursorHome homes the cursor without erasing, so the steady draw path overwrites
+// every cell in place. Auto-wrap is off and each cell is rewritten, so nothing
+// stale remains after the overwrite.
+const cursorHome = "\x1b[H"
 
 // kittyDeleteAll deletes every Kitty image and frees its data (a=d,d=A). The
 // viewer writes it before a kitty redraw because clearScreen erases text but

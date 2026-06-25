@@ -4,7 +4,6 @@ import (
 	"image"
 	"image/color"
 
-	"github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
 
 	"github.com/wimpysworld/nyala/internal/render"
@@ -29,9 +28,11 @@ func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 			continue
 		}
 		col := run.Col
-		for _, cluster := range graphemeCells(run.Text) {
+		gr := uniseg.NewGraphemes(run.Text)
+		for gr.Next() {
+			cluster := gr.Str()
 			if col < 0 {
-				col += cellWidth(cluster)
+				col += render.CellWidth(cluster)
 				continue
 			}
 			if col >= g.Cols {
@@ -39,7 +40,7 @@ func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 			}
 			bg := cellBGAverage(f.Img, col, row, scheme)
 			cell := g.At(col, row)
-			if cellWidth(cluster) == 2 {
+			if render.CellWidth(cluster) == 2 {
 				if col+1 >= g.Cols {
 					// A wide glyph in the last column would cross the right edge;
 					// write a background space instead of half-emitting it.
@@ -89,18 +90,6 @@ func graphemeCells(text string) []string {
 	return cells
 }
 
-// cellWidth measures the display width of one grapheme cluster with
-// mattn/go-runewidth, clamped to 1 or 2. A width-0 cluster (a standalone
-// combining mark uniseg did not fold into a preceding cluster) is treated as
-// width 1, so it still occupies a cell.
-func cellWidth(grapheme string) int {
-	w := runewidth.StringWidth(grapheme)
-	if w >= 2 {
-		return 2
-	}
-	return 1
-}
-
 // cellBGAverage averages the whole source footprint of cell (col, row) into one
 // RGBA colour, in RGBA channel order. The footprint is the scheme's per-cell
 // source block: 2x4 (cellPxW x cellPxH) for the quadrant scheme, 1x2
@@ -113,12 +102,20 @@ func cellBGAverage(img *image.RGBA, col, row int, scheme Scheme) color.RGBA {
 	}
 	x0 := col * pxW
 	y0 := row * pxH
-	samples := make([]color.RGBA, 0, pxW*pxH)
+	var rs, gs, bs int
 	for dy := range pxH {
 		for dx := range pxW {
 			r, gc, b := pixel(img, x0+dx, y0+dy)
-			samples = append(samples, color.RGBA{R: r, G: gc, B: b, A: 0xff})
+			rs += int(r)
+			gs += int(gc)
+			bs += int(b)
 		}
 	}
-	return avgRGBA(samples...)
+	n := pxW * pxH
+	return color.RGBA{
+		R: clampByte(rs / n),
+		G: clampByte(gs / n),
+		B: clampByte(bs / n),
+		A: 0xff,
+	}
 }

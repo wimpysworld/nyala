@@ -26,3 +26,14 @@ func Downscale(src image.Image, width, height int) *image.RGBA {
 	AlignFilter.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
 	return dst
 }
+
+// DownscaleInto resizes src into dst using the pinned AlignFilter, returning the
+// same dst. It is the allocation-free twin of Downscale for the live draw path,
+// which reuses one destination across frames: the caller sizes dst to the render
+// grid once and passes it back each frame. The scaler fully overwrites every
+// destination pixel, so a reused dst carries no stale content. dst's bounds set
+// the output size.
+func DownscaleInto(dst *image.RGBA, src image.Image) *image.RGBA {
+	AlignFilter.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
+	return dst
+}

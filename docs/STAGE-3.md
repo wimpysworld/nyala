@@ -59,10 +59,11 @@ Out of scope, deferred, each with the bar to promote it:
   frames with no CDP hop. It bakes Chromium into the binary, needs C/C++ bindings
   against the cgo-free stack, and gives no text geometry. Promote only if the
   post-build FPS spike shows CDP cannot hold an acceptable frame rate.
-- **Damage-rectangle partial emission.** Full-frame redraw is the Stage 3 baseline.
-  Promote when sustained per-frame terminal write latency exceeds the frame budget
-  at the target FPS (33 ms at 30 FPS as the provisional default), with
-  `bytesPerFrame` as the secondary signal.
+- **Graphics-backend damage-rectangle (sub-image) emission.** The block path diffs
+  the grid and emits only changed cells; the Sixel and Kitty backends still redraw
+  the full image per frame. Promote sub-image emission when sustained per-frame
+  terminal write latency exceeds the frame budget at the target FPS (33 ms at 30 FPS
+  as the provisional default), with `bytesPerFrame` as the secondary signal.
 - **Remote attach (`NewRemoteAllocator`).** Launch is the only model, because the
   browser-side flags (DSF 1, window size) apply only to a process Nyala starts.
   Promote when a locked-down host needs to drive an already-running browser.
@@ -130,7 +131,15 @@ never outlives a session.
 `color` style and the paint order in one round-trip. The snapshot runs on its own
 goroutine (`runTextSync`), decoupled from the frame-emit loop, so snapshot latency
 never withholds acks or stalls frame emission; `composeFrame` reads the latest
-published runs. The pure `decodeGlyphRuns` maps the snapshot documents and the shared
+published runs. The snapshot clock is decoupled from frame delivery: the first
+snapshot fires off the `painted` latch (the `firstContentfulPaint` lifecycle
+event), not off a screencast frame. Three triggers re-snapshot after that:
+navigation (single-shot), a resize or backend switch (at once), and a debounced
+late reflow on `networkAlmostIdle` (250 ms debounce reusing `holdStalenessLimit`,
+capped at one extra snapshot per second). The published runs are sticky state
+carried across frames: when text publishes and no new screencast frame is pending,
+the engine re-emits the held bitmap recomposed with the new text, so a static page
+shows its overlay rather than drawing bitmap-only. The pure `decodeGlyphRuns` maps the snapshot documents and the shared
 string table to `[]render.GlyphRun` with no browser dependency, so it is unit-testable
 on canned structs. It walks every inline text box, converts each box's device-pixel
 bounds to CSS pixels by dividing by the device pixel ratio, places each run at the
@@ -179,7 +188,13 @@ re-applies the held offset after re-navigate.
 `internal/viewer/stream.go` is the push consumer. `Stream` enters raw mode, runs
 `configureBackends`, hands the resolved backend and cell px to the engine, writes a
 plain-text `loading <url>` cue, navigates, then draws each `Frames()` value through
-the reused `State`, `RenderStreamFrame`, and `writeGrid`. It restarts the stream on
+the reused `State`, `RenderStreamFrame`, and `writeGrid`. The steady block draw
+emits cursor-home and overwrites in place; the full clear (`\x1b[2J`) is kept only
+for the first draw and a resize. A previous-grid cell diff emits only the changed
+cells, with SGR and cursor (CUP) coalescing, which removes the per-frame flicker and
+the slow scroll refresh. Live and capture share one draw-prefix helper
+(`framePrefix`) and the same differ, and queued frames coalesce to one paint per
+window. It restarts the stream on
 SIGWINCH at the recomputed capture size, forwards scroll keys and the wheel to the
 engine, cycles the backend on Tab, and restores the terminal on exit. A dedicated
 control goroutine runs the engine restarts (Resize, SetBackend), off the consumer
@@ -241,8 +256,10 @@ from the `init` lifecycle event, buffers pre-loaderID events, matches the top fr
 and finishes on the matched load signal. The held scroll offset is re-applied only
 after that load signal, so the document exists before the wheel lands. A navigate
 errorText renders the browser's own error page rather than tearing the session down,
-so the supervisor never rebuilds on a failed URL. On the capture path the load
-signal fires the paint latch. The supervisor is the single
+so the supervisor never rebuilds on a failed URL. The paint latch fires from a
+`Page.lifecycleEvent` `firstContentfulPaint` subscription (`watchPaint` in
+`recovery.go`); the navigate-return load signal stays only as a bounded backstop,
+guarded by `sync.Once` so the latch closes once. The supervisor is the single
 owner of the session fields, so no teardown races with `Close`. `Frames()` is
 created once in `Navigate` and closed exactly once, by the supervisor, on `Close`;
 it survives a rebuild, so the consumer keeps reading across a recovery. `Close`
@@ -358,8 +375,12 @@ reviews it.
 - **JPEG screencast at quality 90.** The bitmap downsamples into 2-colour cells, so
   JPEG loss sits below cell visibility, and the smaller payload suits the moving
   viewport. PNG stays a diagnostics-only A/B for the damage diff.
-- **Capture snapshot per consumed frame, not on a timer.** The cost tracks the draw
-  rate, the geometry matches the bitmap, and it keys the sync cleanly.
+- **Snapshot off paint, not per frame or on a timer.** The first snapshot fires off
+  the `firstContentfulPaint` latch, decoupled from screencast frames, then re-runs on
+  navigation, resize, and a debounced `networkAlmostIdle` reflow. The published runs
+  are sticky, so a static page that delivers no new frame still composites text by
+  re-emitting the held bitmap. This fixes the prior defect where a static page drew
+  with no overlay.
 - **Place text by the snapshot's own scroll, not match by scroll equality.** The
   bitmap and the snapshot share no frame id, so the snapshot goroutine decodes each
   run at the snapshot's own scroll offset and `composeFrame` folds the latest runs on.
@@ -420,9 +441,11 @@ reviews it.
 - **Channel and goroutine leaks on `Close`.** Resolved. `drain` acks any held frame
   and unblocks a parked consumer, the context cancel releases the send select, the
   supervisor closes `Frames()` exactly once, and `closeOnce` guards a double `Close`.
-- **JPEG chroma noise read as spurious cell damage.** Resolved by scope. Full-frame
-  redraw is the Stage 3 baseline, so the cell diff is not used for emission;
-  damage-rect partial emission is deferred.
+- **JPEG chroma noise read as spurious cell damage.** Resolved. The block path now
+  diffs the previous grid and emits only changed cells with SGR/CUP coalescing; a
+  cell whose only change is sub-visible chroma noise still re-emits, but the bounded
+  byte cost is acceptable. Graphics-backend damage-rectangle (sub-image) emission
+  stays deferred.
 - **Frame-sync tolerance and overlay staleness unmeasured.** Resolved structurally,
   carried forward to tune. `holdStalenessLimit` (250 milliseconds) bounds the error
   hold and `scrollMatchTolerancePx` (set to 1) stays the pure compare helper; the live

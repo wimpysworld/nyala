@@ -69,14 +69,16 @@ type Engine interface {
 }
 ```
 
-Stage 3 resolves the text layer to one synced channel. The engine populates `Frame.Text`
-after the frame-sync match, so consumers receive bitmap and crisp text already keyed to
-the same frame, never two cadences to reconcile. A separate text channel may return in
-Stage 4 for link-hint geometry. See `docs/STAGE-3.md`.
+Stage 3 resolves the text layer to one synced channel. The engine places the text by
+the snapshot's own scroll offset and folds it onto `Frame.Text`, so consumers receive
+bitmap and crisp text on one channel, never two cadences to reconcile. The text is
+sticky state carried across frames, so a static page still composites its overlay. A
+separate text channel may return in Stage 4 for link-hint geometry. See
+`docs/STAGE-3.md`.
 
 - **Engine #1: `ChromiumEngine` (chromedp).** Frames via `Page.startScreencast`;
-  text layer via CDP DOM queries, folded into `Frame.Text` after the sync match. This is
-  the only engine to build now.
+  text layer via CDP DOM queries, placed by the snapshot's scroll and folded into
+  `Frame.Text`. This is the only engine to build now.
 - **Future engines** (e.g. WPE WebKit, CEF) implement the same interface. No other code
   changes. Do not build these yet; the seam keeps the option open.
 - **CEF (gated future engine).** CEF embeds Chromium in-process and hands back BGRA
@@ -211,8 +213,10 @@ is reversible.
   `color`) in one round-trip, so geometry and colour arrive together. The accessibility
   tree exposes no pixel boxes and drops decorative or non-semantic text; manual DOM
   traversal needs one `DOM.getBoxModel` per node, an O(n) round-trip cost that does not
-  hold up per frame. Capture once per committed paint (tie to `Page.screencastFrame`),
-  not on a timer, so cost tracks real visual change. Caveats: snapshot bounds are device
+  hold up per frame. Capture off the first paint (`firstContentfulPaint`), then
+  re-snapshot on navigation, resize, and a debounced `networkAlmostIdle` reflow,
+  decoupled from the screencast frame, not on a timer, so cost tracks real visual
+  change. Caveats: snapshot bounds are device
   pixels (divide by the device pixel ratio), ignore scroll offset (add `scrollOffsetX/Y`
   back), and the layout box layout is explicitly unstable between versions, so treat
   exact boxes as advisory. Source: CDP DOMSnapshot domain spec and
@@ -998,14 +1002,15 @@ tests.
   score) and a photo fixture (banding) before enabling per-region.
 - What CDP source gives accurate per-glyph pixel boxes cheaply per frame: `DOMSnapshot`
   (batched), the accessibility tree, or DOM traversal? Resolved: `DOMSnapshot.captureSnapshot`,
-  captured once per committed paint rather than on a fixed clock. It is the only candidate
+  captured off the first paint then on navigation, resize, and a debounced reflow rather
+  than on a fixed clock or per screencast frame. It is the only candidate
   returning per-text-run bounding boxes and computed colour in a single batched call:
   `textBoxes` carries absolute box bounds with character start and length, `layout.styles`
   carries the requested `color`, and `includePaintOrder` resolves overlap. Coverage is
   whole-document and post-layout, so off-screen and clipped text are included (filter by
   viewport after). The accessibility tree has no pixel boxes; DOM traversal plus
-  `getBoxModel` costs one round-trip per node and cannot keep up. Tie the capture to
-  `Page.screencastFrame` so cost tracks real change. Caveats: divide bounds by the device
+  `getBoxModel` costs one round-trip per node and cannot keep up. Drive the capture off
+  the paint and reflow triggers above so cost tracks real change. Caveats: divide bounds by the device
   pixel ratio, re-add scroll offset, treat boxes as advisory (spec calls them unstable
   across versions). Sources: CDP DOMSnapshot spec, `chromedp/cdproto/domsnapshot`, the
   browser-use `enhanced_snapshot.py` DPR-scaling pattern. See the matching Architecture

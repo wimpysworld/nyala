@@ -124,18 +124,7 @@ func (br *Renderer) renderGrid(grid Grid, w io.Writer) error {
 	for row := range grid.Rows {
 		for col := range grid.Cols {
 			c := grid.At(col, row)
-			if c.Wide {
-				// The lead cell's wide grapheme already paints both columns, so
-				// the trailing cell emits no SGR and no rune.
-				continue
-			}
-			if _, err := bw.WriteString(TrueColorFG(c.FG)); err != nil {
-				return err
-			}
-			if _, err := bw.WriteString(TrueColorBG(c.BG)); err != nil {
-				return err
-			}
-			if err := writeCellText(bw, c); err != nil {
+			if err := WriteCell(bw, c, TrueColorFG(c.FG), TrueColorBG(c.BG)); err != nil {
 				return err
 			}
 		}
@@ -146,15 +135,27 @@ func (br *Renderer) renderGrid(grid Grid, w io.Writer) error {
 	return bw.Flush()
 }
 
-// writeCellText writes a cell's drawable text to bw: the overlay grapheme when
-// Text is set, otherwise the bitmap glyph rune. renderGrid skips a Wide trailing
-// cell before reaching here, so this writes one column per call.
-func writeCellText(bw *bufio.Writer, c *Cell) error {
-	if c.Text != "" {
-		_, err := bw.WriteString(c.Text)
+// WriteCell writes one composed cell to w: its foreground and background SGR
+// (the caller supplies the strings, so it owns the colour mode), then the cell's
+// drawable text, the overlay grapheme when Text is set, otherwise the bitmap
+// glyph rune. It emits nothing for a Wide trailing cell, because the lead cell's
+// width-2 grapheme already paints both columns; this Wide-skip rule lives here
+// alone, so every grid emitter shares it.
+func WriteCell(w io.Writer, c *Cell, fgSGR, bgSGR string) error {
+	if c.Wide {
+		return nil
+	}
+	if _, err := io.WriteString(w, fgSGR); err != nil {
 		return err
 	}
-	_, err := bw.WriteRune(c.Glyph)
+	if _, err := io.WriteString(w, bgSGR); err != nil {
+		return err
+	}
+	if c.Text != "" {
+		_, err := io.WriteString(w, c.Text)
+		return err
+	}
+	_, err := io.WriteString(w, string(c.Glyph))
 	return err
 }
 
@@ -172,6 +173,36 @@ func (br *Renderer) Compose(f render.Frame) Grid {
 	return g
 }
 
+// ComposeInto is the allocation-reusing twin of Compose for the live draw path.
+// It composes f into dst, reusing dst's Cells backing array when it already holds
+// at least Cols*Rows cells, and grows it only on a size change. compose fully
+// overwrites every cell it visits, so a reused buffer carries no stale content.
+// It returns the same dst.
+func (br *Renderer) ComposeInto(dst *Grid, f render.Frame) *Grid {
+	reuseGrid(dst, br.Cols, br.Rows)
+	if br.Scheme == SchemeHalfBlock {
+		br.composeHalfBlockInto(dst, f)
+	} else {
+		br.composeQuadrantInto(dst, f)
+	}
+	applyOverlay(dst, f, br.Scheme)
+	return dst
+}
+
+// reuseGrid sizes g to cols x rows, reusing its Cells backing array when it is
+// long enough and allocating only when it must grow. It is the shared resize
+// helper for the *Into compose and fit paths, which reuse one grid per frame.
+func reuseGrid(g *Grid, cols, rows int) {
+	n := cols * rows
+	if cap(g.Cells) < n {
+		g.Cells = make([]Cell, n)
+	} else {
+		g.Cells = g.Cells[:n]
+	}
+	g.Cols = cols
+	g.Rows = rows
+}
+
 // composeQuadrant binarises the frame image onto a fresh Cols x Rows quadrant
 // grid. Each cell samples a 2x4 source block; an empty or nil image yields an
 // all-black grid (every quadrant black, a flat 0000 mask, so the full-block
@@ -182,6 +213,14 @@ func (br *Renderer) composeQuadrant(f render.Frame) Grid {
 		Rows:  br.Rows,
 		Cells: make([]Cell, br.Cols*br.Rows),
 	}
+	br.composeQuadrantInto(&g, f)
+	return g
+}
+
+// composeQuadrantInto binarises the frame image onto g, which the caller has
+// already sized to Cols x Rows. It is the shared body of composeQuadrant (fresh
+// grid) and ComposeInto (reused grid), so both fill cells the same way.
+func (br *Renderer) composeQuadrantInto(g *Grid, f render.Frame) {
 	for row := range g.Rows {
 		for col := range g.Cols {
 			x, y, z, wq := sampleQuadrant(f.Img, col, row)
@@ -189,7 +228,6 @@ func (br *Renderer) composeQuadrant(f render.Frame) Grid {
 			*g.At(col, row) = Cell{Glyph: glyph, FG: fg, BG: bg}
 		}
 	}
-	return g
 }
 
 // composeHalfBlock maps the frame image onto a fresh Cols x Rows half-block grid.
@@ -202,13 +240,20 @@ func (br *Renderer) composeHalfBlock(f render.Frame) Grid {
 		Rows:  br.Rows,
 		Cells: make([]Cell, br.Cols*br.Rows),
 	}
+	br.composeHalfBlockInto(&g, f)
+	return g
+}
+
+// composeHalfBlockInto maps the frame image onto g, which the caller has already
+// sized to Cols x Rows. It is the shared body of composeHalfBlock (fresh grid)
+// and ComposeInto (reused grid).
+func (br *Renderer) composeHalfBlockInto(g *Grid, f render.Frame) {
 	for row := range g.Rows {
 		for col := range g.Cols {
 			top, bottom := sampleHalfBlock(f.Img, col, row)
 			*g.At(col, row) = Cell{Glyph: lowerHalfBlock, FG: bottom, BG: top}
 		}
 	}
-	return g
 }
 
 // sampleHalfBlock reads the two source pixels of cell (col, row) for the half-

@@ -80,17 +80,43 @@ var blankCell = Cell{Glyph: ' '}
 // into a full Cols x Rows grid centred by the fit offsets. Every cell outside the
 // filled region is a blank letterbox cell. The image is never stretched.
 func (br *Renderer) FitGrid(imgW, imgH int, compose func(cols, rows int) Grid) Grid {
-	fit := FitImage(imgW, imgH, br.Cols, br.Rows)
 	out := Grid{
 		Cols:  br.Cols,
 		Rows:  br.Rows,
 		Cells: make([]Cell, br.Cols*br.Rows),
 	}
+	var inner Grid
+	br.fitGridInto(&out, imgW, imgH, func(cols, rows int) *Grid {
+		inner = compose(cols, rows)
+		return &inner
+	})
+	return out
+}
+
+// FitGridInto is the allocation-reusing twin of FitGrid for the live draw path.
+// It composes the frame onto out, reusing out's Cells backing array across
+// frames and asking compose to fill the inner sub-grid in place. out is sized to
+// Cols x Rows and its filled region is overwritten each frame; the letterbox
+// margin is re-blanked, so a reused buffer carries no stale content. compose
+// receives the fit extent and returns the composed inner grid (the caller reuses
+// its buffer too). It returns the same out.
+func (br *Renderer) FitGridInto(out *Grid, imgW, imgH int, compose func(cols, rows int) *Grid) *Grid {
+	reuseGrid(out, br.Cols, br.Rows)
+	br.fitGridInto(out, imgW, imgH, compose)
+	return out
+}
+
+// fitGridInto fills out (already sized to Cols x Rows) with the fit-and-letterbox
+// placement: it blanks every cell, then copies the composed inner sub-grid into
+// the centred filled region. compose returns a pointer to the inner grid so the
+// reuse path avoids a copy. It is the shared body of FitGrid and FitGridInto.
+func (br *Renderer) fitGridInto(out *Grid, imgW, imgH int, compose func(cols, rows int) *Grid) {
+	fit := FitImage(imgW, imgH, br.Cols, br.Rows)
 	for i := range out.Cells {
 		out.Cells[i] = blankCell
 	}
 	if fit.FitCols <= 0 || fit.FitRows <= 0 {
-		return out
+		return
 	}
 	inner := compose(fit.FitCols, fit.FitRows)
 	for row := range inner.Rows {
@@ -103,5 +129,4 @@ func (br *Renderer) FitGrid(imgW, imgH int, compose func(cols, rows int) Grid) G
 			*out.At(dstCol, dstRow) = *inner.At(col, row)
 		}
 	}
-	return out
 }

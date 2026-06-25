@@ -39,19 +39,6 @@ func TestGraphemeCells(t *testing.T) {
 	}
 }
 
-// TestCellWidth asserts ASCII is width 1, a CJK ideograph and an emoji width 2.
-func TestCellWidth(t *testing.T) {
-	if w := cellWidth("a"); w != 1 {
-		t.Fatalf("ASCII width = %d, want 1", w)
-	}
-	if w := cellWidth("世"); w != 2 {
-		t.Fatalf("CJK width = %d, want 2", w)
-	}
-	if w := cellWidth("\U0001F600"); w != 2 {
-		t.Fatalf("emoji width = %d, want 2", w)
-	}
-}
-
 // overlaySrc builds a cols*cellPxW x rows*cellPxH image filled with one colour,
 // the quadrant source footprint for a cols x rows grid.
 func overlaySrc(cols, rows int, c color.RGBA) *image.RGBA {

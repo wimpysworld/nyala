@@ -8,7 +8,46 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"strings"
+
+	"github.com/mattn/go-runewidth"
+	"github.com/rivo/uniseg"
 )
+
+// CellWidth measures the display width of one grapheme cluster, clamped to 1 or
+// 2. This is the shared Stage 2 width rule: a cluster of measured width 2 or
+// more claims two cells, everything else (including a width-0 standalone
+// combining mark) claims one. The clip budget and the cell binning both use it
+// so a width-2 cluster is never half-emitted.
+func CellWidth(grapheme string) int {
+	if runewidth.StringWidth(grapheme) >= 2 {
+		return 2
+	}
+	return 1
+}
+
+// ClipToCells trims text to at most maxCells display cells, measuring each
+// grapheme cluster with CellWidth. A width-2 cluster that would exceed the
+// budget is dropped whole, never half-emitted. A non-positive maxCells yields
+// the empty string.
+func ClipToCells(text string, maxCells int) string {
+	if maxCells <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	used := 0
+	gr := uniseg.NewGraphemes(text)
+	for gr.Next() {
+		cluster := gr.Str()
+		w := CellWidth(cluster)
+		if used+w > maxCells {
+			break
+		}
+		b.WriteString(cluster)
+		used += w
+	}
+	return b.String()
+}
 
 // GlyphRun is a run of one or more graphemes at a cell position, drawn in a
 // single foreground colour. The text overlay path is not wired yet, so no
