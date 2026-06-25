@@ -90,6 +90,22 @@ run url="https://wimpys.world" *flags: build
         script -qec "$wrapped" /dev/null
     fi
 
+# Capture every corpus fixture on the block backend for a text-layout sweep
+corpus:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    root="$(pwd)/testdata/corpus"
+    fail=0
+    for dir in "$root"/layout-*/; do
+        name="$(basename "$dir")"
+        printf '== %s ==\n' "$name"
+        if ! just capture=1 run "file://${dir}index.html" backend=block; then
+            printf 'capture failed: %s\n' "$name" >&2
+            fail=1
+        fi
+    done
+    exit "$fail"
+
 # Run all local checks
 check:
     @just tidy-check
