@@ -96,3 +96,17 @@ holdStalenessLimit
 surfaceSize
 applySizing
 enableLifecycle
+Licence
+Noto
+SIL
+Stressor
+LTR
+CJK
+px
+labelled
+base64
+stressor
+rasterised
+bidi
+artefact
+artefacts

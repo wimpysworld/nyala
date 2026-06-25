@@ -1,0 +1,21 @@
+{
+  "id": "layout-03-cjk-vertical-ruby",
+  "title": "CJK horizontal, vertical, and ruby layout",
+  "stressor": "CJK horizontal and vertical writing modes, ruby annotations",
+  "origin": "original",
+  "source_url": null,
+  "license": "BlueOak-1.0.0",
+  "attribution": null,
+  "fonts": [
+    {
+      "family": "NyalaCJK",
+      "embedded": true,
+      "format": "woff2",
+      "source": "Noto Sans CJK JP (NotoSansCJK-VF.otf.ttc, face 0), variable font instanced at wght=400, then subset to only the glyphs used on this page with fontTools pyftsubset",
+      "subset": true,
+      "license": "OFL-1.1"
+    }
+  ],
+  "self_contained": true,
+  "notes": "Original Japanese and Simplified Chinese sentences authored for this fixture. Designed for 960x640, white background, dark text. Three CJK blocks: a horizontal Japanese paragraph (default writing-mode), a vertical Japanese block (writing-mode: vertical-rl, right-to-left flow), and a ruby line with <rt> furigana over kanji, plus a short Simplified Chinese line for Han coverage. English <h1>/<h2> headings label each block. The embedded NyalaCJK webfont is a subset of Noto Sans CJK JP covering every CJK and kana glyph on the page, so headless Chromium renders real glyphs rather than tofu without relying on a system CJK font. CSS is inline, the font is base64 @font-face, and there are no external URLs, no <script>, and no @import. Verified by capture: screenshot.png shows correct CJK glyphs, vertical-rl flow, and ruby furigana, with no tofu boxes."
+}

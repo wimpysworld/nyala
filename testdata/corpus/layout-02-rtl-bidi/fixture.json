@@ -1,0 +1,15 @@
+{
+  "id": "layout-02-rtl-bidi",
+  "title": "Right-to-left scripts (Arabic, Hebrew) and bidi reordering",
+  "stressor": "right-to-left scripts (Arabic, Hebrew) and bidi reordering with embedded LTR",
+  "origin": "original",
+  "source_url": null,
+  "license": "BlueOak-1.0.0",
+  "attribution": null,
+  "fonts": [
+    "NotoNaskhArabic-Regular (OFL-1.1, subset to woff, base64-embedded)",
+    "NotoSansHebrew-Regular (OFL-1.1, subset to woff, base64-embedded)"
+  ],
+  "self_contained": true,
+  "notes": "Arabic and Hebrew paragraphs use dir=\"rtl\"; the mixed line embeds Latin (Nyala, RTL) and digits (1024) inside Arabic to exercise bidi reordering. Fonts are subset from Noto faces shipped with mullvad-browser in the Nix store (NotoNaskhArabic-Regular.ttf, NotoSansHebrew-Regular.ttf, both OFL-1.1), subset with pyftsubset to only the sample glyphs, output as woff (zlib; woff2 unavailable, no brotli python ext), and base64-embedded in @font-face. Glyphs were confirmed to render as real Arabic/Hebrew script (no tofu boxes) in the captured screenshot.png. The embedded fonts make rendering deterministic and independent of system Arabic/Hebrew fonts."
+}

@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<title>Ubuntu Podcast: episodes, facts, and feedback form</title>
+<style>
+  html {
+    background: #ffffff;
+    color: #1a1a1a;
+  }
+  body {
+    margin: 0;
+    padding: 16px 24px;
+    width: 912px;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 21px;
+  }
+  h1 {
+    margin: 0 0 4px 0;
+    font-size: 30px;
+    line-height: 36px;
+    font-weight: 700;
+  }
+  h2 {
+    margin: 18px 0 8px 0;
+    font-size: 20px;
+    line-height: 26px;
+    font-weight: 700;
+    border-bottom: 2px solid #1a1a1a;
+    padding-bottom: 3px;
+  }
+  p {
+    margin: 0 0 8px 0;
+  }
+  .intro {
+    margin: 0 0 6px 0;
+    max-width: 600px;
+    font-size: 15px;
+    line-height: 21px;
+  }
+
+  /* Infobox floated to the right. */
+  .infobox {
+    float: right;
+    width: 256px;
+    margin: 0 0 12px 20px;
+    border: 2px solid #1a1a1a;
+    background: #f4f4f4;
+    font-size: 14px;
+    line-height: 19px;
+  }
+  .infobox .ib-title {
+    margin: 0;
+    padding: 8px 10px;
+    background: #1a1a1a;
+    color: #ffffff;
+    font-size: 16px;
+    line-height: 20px;
+    font-weight: 700;
+    text-align: center;
+  }
+  .infobox table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .infobox th,
+  .infobox td {
+    border-top: 1px solid #c4c4c4;
+    padding: 5px 10px;
+    vertical-align: top;
+    text-align: left;
+  }
+  .infobox th {
+    width: 92px;
+    color: #444444;
+    font-weight: 700;
+  }
+
+  /* Episodes data table. */
+  table.episodes {
+    border-collapse: collapse;
+    width: 600px;
+    font-size: 14px;
+    line-height: 19px;
+  }
+  table.episodes caption {
+    caption-side: top;
+    text-align: left;
+    font-size: 13px;
+    line-height: 18px;
+    color: #555555;
+    padding: 0 0 5px 0;
+  }
+  table.episodes th,
+  table.episodes td {
+    border: 1px solid #444444;
+    padding: 5px 8px;
+    text-align: left;
+    vertical-align: top;
+  }
+  table.episodes thead th {
+    background: #1a1a1a;
+    color: #ffffff;
+    font-weight: 700;
+  }
+  table.episodes tbody tr:nth-child(even) td {
+    background: #f0f0f0;
+  }
+  td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Feedback form. */
+  form.feedback {
+    max-width: 600px;
+  }
+  .field {
+    margin: 0 0 10px 0;
+  }
+  .field label {
+    display: inline-block;
+    width: 150px;
+    font-weight: 700;
+    vertical-align: top;
+  }
+  .field input[type="text"],
+  .field input[type="email"],
+  .field select {
+    width: 300px;
+    font-size: 14px;
+    line-height: 20px;
+    padding: 3px 5px;
+    border: 1px solid #888888;
+  }
+  .field.check label {
+    width: auto;
+    font-weight: 400;
+  }
+  .field.check input {
+    margin-right: 6px;
+  }
+  .actions {
+    margin-top: 12px;
+  }
+  button[type="submit"] {
+    font-size: 15px;
+    line-height: 20px;
+    padding: 7px 18px;
+    border: 2px solid #1a1a1a;
+    background: #1a1a1a;
+    color: #ffffff;
+    font-weight: 700;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+  <h1>The Ubuntu Podcast</h1>
+  <p class="intro">A weekly Linux and open-source chat from the Ubuntu UK community,
+  recorded by three presenters in their own homes and released every Thursday.
+  Below you will find a season overview, the show facts, and a feedback form.</p>
+
+  <aside class="infobox">
+    <p class="ib-title">Ubuntu Podcast</p>
+    <table>
+      <tbody>
+        <tr><th>Format</th><td>Talk show on Linux and free software</td></tr>
+        <tr><th>Presenters</th><td>Alan Pope, Mark Johnson, Martin Wimpress</td></tr>
+        <tr><th>Language</th><td>English</td></tr>
+        <tr><th>Audio</th><td>MP3 (Ogg Vorbis until Series 10)</td></tr>
+        <tr><th>Years active</th><td>March 2008 to September 2021</td></tr>
+        <tr><th>Seasons</th><td>Fourteen, roughly forty episodes each</td></tr>
+        <tr><th>Schedule</th><td>Weekly, recorded Tuesday, out Thursday</td></tr>
+        <tr><th>Based in</th><td>England, United Kingdom</td></tr>
+      </tbody>
+    </table>
+  </aside>
+
+  <h2>A few notable seasons</h2>
+  <table class="episodes">
+    <caption>Selected seasons and the running line-up of presenters.</caption>
+    <thead>
+      <tr>
+        <th>Season</th>
+        <th>Year started</th>
+        <th>Presenters</th>
+        <th>Episodes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="num">1</td>
+        <td>2008</td>
+        <td>Alan Pope, Laura Cowen, Tony Whitmore</td>
+        <td class="num">40</td>
+      </tr>
+      <tr>
+        <td class="num">8</td>
+        <td>2015</td>
+        <td>Alan Pope, Mark Johnson, Laura Cowen</td>
+        <td class="num">39</td>
+      </tr>
+      <tr>
+        <td class="num">10</td>
+        <td>2017</td>
+        <td>Alan Pope, Mark Johnson, Martin Wimpress</td>
+        <td class="num">41</td>
+      </tr>
+      <tr>
+        <td class="num">12</td>
+        <td>2019</td>
+        <td>Alan Pope, Mark Johnson, Martin Wimpress</td>
+        <td class="num">40</td>
+      </tr>
+      <tr>
+        <td class="num">14</td>
+        <td>2021</td>
+        <td>Alan Pope, Mark Johnson, Martin Wimpress</td>
+        <td class="num">38</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Send the show your feedback</h2>
+  <form class="feedback" action="#" method="post">
+    <div class="field">
+      <label for="name">Your name</label>
+      <input type="text" id="name" name="name" value="A friendly listener">
+    </div>
+    <div class="field">
+      <label for="email">Email address</label>
+      <input type="email" id="email" name="email" value="listener@example.org">
+    </div>
+    <div class="field">
+      <label for="topic">Favourite topic</label>
+      <select id="topic" name="topic">
+        <option>Command-line tools</option>
+        <option selected>Community news</option>
+        <option>Listener questions</option>
+        <option>Upcoming events</option>
+      </select>
+    </div>
+    <div class="field check">
+      <label><input type="checkbox" name="readout" checked> Read my message out on the show</label>
+    </div>
+    <div class="actions">
+      <button type="submit">Send feedback</button>
+    </div>
+  </form>
+</body>
+</html>
