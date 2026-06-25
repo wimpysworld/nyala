@@ -14,7 +14,7 @@ require (
 	github.com/chromedp/chromedp v0.15.1
 	github.com/fogleman/gg v1.3.0
 	github.com/lucasb-eyer/go-colorful v1.4.0
-	github.com/mattn/go-runewidth v0.0.23
+	github.com/mattn/go-runewidth v0.0.24
 	github.com/mattn/go-sixel v0.0.11
 	github.com/otiai10/gosseract/v2 v2.4.1
 	github.com/raf555/pixelmatch v1.0.1
