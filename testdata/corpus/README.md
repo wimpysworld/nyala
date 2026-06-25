@@ -61,6 +61,9 @@ text-bearing frame deterministically. A static file page emits few screencast
 frames then idles; the gate keeps the blank pre-paint frame out, so `n>1` is no
 longer needed. To re-render an existing bundle, run `just rasterise <frame-dir>`.
 
+`just placement-score <frame-dir>` reports per-box horizontal placement error from
+the captured geometry, for before/after measurement of the block renderer.
+
 ## Committed artefacts
 
 Resolved: the corpus commits pre-rendered reference artefacts per fixture,

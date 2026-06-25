@@ -17,6 +17,10 @@ type GlyphRun struct {
 	Col, Row int        // cell position
 	Text     string     // one or more graphemes
 	FG       color.RGBA // foreground colour
+	X        float64    // box left, CSS pixels, on-screen (scroll subtracted)
+	Y        float64    // box top, CSS pixels, on-screen (scroll subtracted)
+	W        float64    // box width, CSS pixels
+	H        float64    // box height, CSS pixels
 }
 
 // FrameStats holds the engine-phase timings and sizes captured while building
