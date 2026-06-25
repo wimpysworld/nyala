@@ -2,7 +2,8 @@ package engine
 
 import (
 	"context"
-	"sort"
+	"image"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,43 +12,51 @@ import (
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
-// TestRunTextSyncGatedToFrames proves the snapshot goroutine snapshots about once
-// per delivered frame and does zero snapshots when no frames arrive, the runaway
-// hot-loop fix. It injects a counting snapshot fn and drives the trigger directly,
-// so no browser is involved. Feed K signals one at a time, draining the count
-// after each, then stop signalling and confirm the count holds: a free-spinning
-// loop would run far past K.
-func TestRunTextSyncGatedToFrames(t *testing.T) {
+// TestRunTextSyncSnapshotsOncePerPaint proves the snapshot goroutine takes its
+// first snapshot off the painted latch, not off frame delivery, and then holds: a
+// static page that produces no further frames and no re-snapshot triggers
+// publishes its text once and stops (AC 1). It injects a counting snapshot fn that
+// returns a real run and a closed painted latch, so no browser is involved. It
+// asserts the published run reaches textSync, so a later frame can fold it on, and
+// that a free-spinning loop (which would run far past one) does not occur.
+func TestRunTextSyncSnapshotsOncePerPaint(t *testing.T) {
 	t.Parallel()
 	var snaps int64
-	e := &ChromiumEngine{backend: "block"}
+	want := []render.GlyphRun{{Col: 2, Row: 1, Text: "hi"}}
+	painted := make(chan struct{})
+	close(painted) // paint already happened
+	e := &ChromiumEngine{backend: "block", painted: painted}
 	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState) {
 		atomic.AddInt64(&snaps, 1)
-		return nil, 0, overlayState{}
+		return want, 0, overlayState{}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	trigger := make(chan struct{}, 1)
+	reSnap := make(chan struct{}, 1)
+	reflow := make(chan struct{}, 1)
+	reEmit := make(chan struct{}, 1)
+	ts := &textSync{}
 	done := make(chan struct{})
 	go func() {
-		e.runTextSync(ctx, &textSync{}, trigger)
+		e.runTextSync(ctx, ts, reSnap, reflow, reEmit)
 		close(done)
 	}()
 
-	const k = 5
-	for i := 1; i <= k; i++ {
-		trigger <- struct{}{}
-		// Wait for this frame's snapshot to land before sending the next, so the
-		// one-snapshot-per-frame gate is asserted deterministically.
-		waitForCount(t, &snaps, int64(i))
+	// The first snapshot fires off paint with no frame ever delivered.
+	waitForCount(t, &snaps, 1)
+
+	// No triggers: the goroutine must park, not spin. Give it time to misbehave,
+	// then confirm the count is unchanged.
+	time.Sleep(50 * time.Millisecond)
+	if got := atomic.LoadInt64(&snaps); got != 1 {
+		t.Fatalf("snapshots = %d on a static page after paint, want 1 (loop is free-spinning)", got)
 	}
 
-	// No more signals: the goroutine must block on the trigger, not spin. Give it
-	// time to misbehave, then confirm the count is unchanged.
-	time.Sleep(50 * time.Millisecond)
-	if got := atomic.LoadInt64(&snaps); got != k {
-		t.Fatalf("snapshots = %d with no further frames, want %d (loop is free-spinning)", got, k)
+	// The single post-paint snapshot published its runs to textSync as sticky state,
+	// so a later frame folds them on without re-snapshotting.
+	if got, _ := ts.latest(); len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("published runs = %v, want %v", got, want)
 	}
 
 	cancel()
@@ -58,56 +67,106 @@ func TestRunTextSyncGatedToFrames(t *testing.T) {
 	}
 }
 
-// TestRunTextSyncCoalescesBurst proves a burst of triggers that arrive while a
-// snapshot is in flight coalesces to far fewer snapshots than triggers: the
-// capacity-1 latest-wins trigger holds at most one pending wake. A blocking
-// snapshot fn lets the test pile triggers up behind one in-flight snapshot, then
-// release it; the gated loop runs at most two snapshots (the in-flight one plus
-// one coalesced wake), never one per trigger.
-func TestRunTextSyncCoalescesBurst(t *testing.T) {
+// TestRunFrameLoopReEmitsHeldFrameWithText proves AC 2 at the engine boundary: once
+// the snapshot goroutine has published text and no new screencast frame is pending,
+// runFrameLoop re-pushes its held bitmap recomposed with the new text layer. It
+// feeds one frame through the slot, drains it, then publishes runs into textSync and
+// pokes reEmit. The re-emitted frame must carry the same non-nil bitmap and the
+// folded runs. No browser is involved: the slot and channels are driven directly.
+func TestRunFrameLoopReEmitsHeldFrameWithText(t *testing.T) {
+	t.Parallel()
+	bitmap := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	slot := newFrameSlot()
+	var rec ackRecorder
+	e := &ChromiumEngine{backend: "block"}
+	ts := &textSync{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	frames := make(chan render.Frame, 1)
+	reEmit := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		e.runFrameLoop(ctx, slot, frames, ts, reEmit)
+		close(done)
+	}()
+
+	// One screencast frame arrives before any text is published. The loop holds it
+	// and emits it with a nil text layer.
+	slot.put(pendingFrame{img: bitmap, ack: 1}, rec.ack)
+	first := recvFrame(t, frames)
+	if first.Img != bitmap {
+		t.Fatalf("first frame bitmap = %p, want the put bitmap %p", first.Img, bitmap)
+	}
+	if len(first.Text) != 0 {
+		t.Fatalf("first frame folded %d runs before any publish, want 0", len(first.Text))
+	}
+
+	// Text lands with no new screencast frame pending. The poke must re-emit the held
+	// bitmap recomposed with the published runs.
+	runs := []render.GlyphRun{{Col: 1, Row: 0, Text: "ok"}}
+	ts.store(runs, 0)
+	reEmit <- struct{}{}
+
+	reframe := recvFrame(t, frames)
+	if reframe.Img != bitmap {
+		t.Fatalf("re-emitted frame bitmap = %p, want the held bitmap %p", reframe.Img, bitmap)
+	}
+	if len(reframe.Text) != 1 || reframe.Text[0] != runs[0] {
+		t.Fatalf("re-emitted frame text = %v, want %v folded in", reframe.Text, runs)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runFrameLoop did not return after context cancel")
+	}
+}
+
+// recvFrame takes one frame off the channel or fails on a deadline, so a re-emit
+// assertion does not race the frame loop.
+func recvFrame(t *testing.T, frames <-chan render.Frame) render.Frame {
+	t.Helper()
+	select {
+	case f := <-frames:
+		return f
+	case <-time.After(time.Second):
+		t.Fatal("no frame delivered before deadline")
+		return render.Frame{}
+	}
+}
+
+// TestRunTextSyncReSnapTriggers proves an immediate reSnap poke (resize or backend
+// switch) drives one more snapshot past the first-after-paint snapshot. It uses a
+// closed painted latch and a counting snapshot fn, so no browser is involved.
+func TestRunTextSyncReSnapTriggers(t *testing.T) {
 	t.Parallel()
 	var snaps int64
-	release := make(chan struct{})
-	entered := make(chan struct{}, 1)
-	e := &ChromiumEngine{backend: "block"}
+	painted := make(chan struct{})
+	close(painted)
+	e := &ChromiumEngine{backend: "block", painted: painted}
 	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState) {
-		select {
-		case entered <- struct{}{}:
-		default:
-		}
-		<-release // hold the first snapshot in flight
 		atomic.AddInt64(&snaps, 1)
 		return nil, 0, overlayState{}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	trigger := make(chan struct{}, 1)
+	reSnap := make(chan struct{}, 1)
+	reflow := make(chan struct{}, 1)
+	reEmit := make(chan struct{}, 1)
 	done := make(chan struct{})
 	go func() {
-		e.runTextSync(ctx, &textSync{}, trigger)
+		e.runTextSync(ctx, &textSync{}, reSnap, reflow, reEmit)
 		close(done)
 	}()
 
-	// Kick the first snapshot and wait until it is parked inside the fn.
-	trigger <- struct{}{}
-	<-entered
-	// Burst many triggers while that snapshot is in flight; the capacity-1 trigger
-	// drops all but one, so only one coalesced wake survives.
-	for range 20 {
-		select {
-		case trigger <- struct{}{}:
-		default:
-		}
-	}
-	close(release) // let snapshots run
-
-	// Two snapshots is the gated ceiling: the in-flight one plus the single
-	// coalesced wake. Settle, then assert the count never reached the burst size.
-	time.Sleep(50 * time.Millisecond)
-	if got := atomic.LoadInt64(&snaps); got > 2 {
-		t.Fatalf("snapshots = %d after a 20-trigger burst, want <= 2 (burst not coalesced)", got)
-	}
+	// First snapshot off paint.
+	waitForCount(t, &snaps, 1)
+	// A reSnap poke drives a second snapshot.
+	reSnap <- struct{}{}
+	waitForCount(t, &snaps, 2)
 
 	cancel()
 	select {
@@ -162,7 +221,7 @@ func (r *ackRecorder) sortedIDs() []int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := append([]int64(nil), r.ids...)
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	slices.Sort(out)
 	return out
 }
 

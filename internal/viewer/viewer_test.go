@@ -1032,3 +1032,218 @@ func solidImage(c color.RGBA) *image.RGBA {
 	}
 	return img
 }
+
+// benchStreamImage builds a w x h RGBA viewport bitmap with a deterministic
+// non-uniform pattern, so the block downscale and compose do real work rather
+// than collapsing a flat fill. The pattern is a fixed function of the pixel
+// coordinates, so the bitmap is identical run to run.
+func benchStreamImage(w, h int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			i := img.PixOffset(x, y)
+			img.Pix[i] = uint8((x * 5) & 0xff)
+			img.Pix[i+1] = uint8((y * 3) & 0xff)
+			img.Pix[i+2] = uint8((x + y) & 0xff)
+			img.Pix[i+3] = 0xff
+		}
+	}
+	return img
+}
+
+// benchStreamRuns builds a deterministic crisp-text overlay: a row of short text
+// runs down the left of the grid, so the block compose folds a representative
+// overlay rather than drawing the bitmap alone.
+func benchStreamRuns(rows int) []render.GlyphRun {
+	fg := color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+	runs := make([]render.GlyphRun, 0, rows)
+	for row := range rows {
+		runs = append(runs, render.GlyphRun{
+			Col: 0, Row: row, Text: "nyala line", FG: fg,
+			X: 0, Y: float64(row * 16), W: 80, H: 16,
+		})
+	}
+	return runs
+}
+
+// benchStreamFrame builds the representative text-bearing block frame the
+// RenderStreamFrame benchmark drives, sized to the 120x40 diagnostics grid at the
+// 8x16 cell default (960x640 px). It is deterministic, so the benchmark is stable
+// run to run.
+func benchStreamFrame() render.Frame {
+	return render.Frame{
+		Img:  benchStreamImage(120*capture.CellPxW, 40*capture.CellPxH),
+		Text: benchStreamRuns(40),
+	}
+}
+
+// BenchmarkRenderStreamFrameUnchanged is the live-path allocation baseline that
+// gates P2-8. It drives State.RenderStreamFrame on the block backend through the
+// cell differ at the fixed 120x40 grid, redrawing the same text-bearing frame.
+// The differ is primed with one draw outside the timed loop, so each measured
+// iteration is the diffed steady-state path: an unchanged frame that emits no
+// terminal bytes but still composes the grid. b.ReportAllocs reports allocs/op
+// and B/op. P2-8 must lower the unchanged-frame allocs/op against this baseline.
+func BenchmarkRenderStreamFrameUnchanged(b *testing.B) {
+	s := NewState(120, 40, 120*capture.CellPxW, 40*capture.CellPxH)
+	s.SetEnabled([]Backend{BackendBlock})
+	var d block.GridDiff
+	s.SetDiff(&d)
+	frame := benchStreamFrame()
+
+	// Prime the differ so the timed loop measures the unchanged-frame steady state,
+	// not the first full repaint.
+	if err := s.RenderStreamFrame(frame, io.Discard); err != nil {
+		b.Fatalf("prime RenderStreamFrame: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if err := s.RenderStreamFrame(frame, io.Discard); err != nil {
+			b.Fatalf("RenderStreamFrame: %v", err)
+		}
+	}
+}
+
+// BenchmarkRenderStreamFrameChanged is the full-repaint companion to the
+// unchanged-frame baseline. It resets the differ each iteration, so every draw is
+// a first-frame full repaint against a blank screen. It is not the P2-8 gate; it
+// frames the cost of the worst case beside the steady-state baseline.
+func BenchmarkRenderStreamFrameChanged(b *testing.B) {
+	s := NewState(120, 40, 120*capture.CellPxW, 40*capture.CellPxH)
+	s.SetEnabled([]Backend{BackendBlock})
+	var d block.GridDiff
+	s.SetDiff(&d)
+	frame := benchStreamFrame()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		d.Reset()
+		if err := s.RenderStreamFrame(frame, io.Discard); err != nil {
+			b.Fatalf("RenderStreamFrame: %v", err)
+		}
+	}
+}
+
+// diffGridOf builds a cols x rows block grid filled with one cell value, for the
+// viewer-side cell-diff tests.
+func diffGridOf(cols, rows int, fill block.Cell) block.Grid {
+	g := block.Grid{Cols: cols, Rows: rows, Cells: make([]block.Cell, cols*rows)}
+	for i := range g.Cells {
+		g.Cells[i] = fill
+	}
+	return g
+}
+
+// TestRenderStreamFrameRoutesThroughDiff asserts the viewer routes block frames
+// through the cell differ once SetDiff is set: a second identical frame emits no
+// bytes, the diff's defining behaviour, where a full rewrite would re-emit every
+// cell.
+func TestRenderStreamFrameRoutesThroughDiff(t *testing.T) {
+	s := NewState(8, 4, 16, 16)
+	s.SetEnabled([]Backend{BackendBlock})
+	var d block.GridDiff
+	s.SetDiff(&d)
+
+	frame := render.Frame{Img: solidImage(color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})}
+
+	var first bytes.Buffer
+	if err := s.RenderStreamFrame(frame, &first); err != nil {
+		t.Fatalf("first RenderStreamFrame: %v", err)
+	}
+	if first.Len() == 0 {
+		t.Fatal("first frame emitted nothing through the differ")
+	}
+	var second bytes.Buffer
+	if err := s.RenderStreamFrame(frame, &second); err != nil {
+		t.Fatalf("second RenderStreamFrame: %v", err)
+	}
+	if second.Len() != 0 {
+		t.Fatalf("unchanged frame re-emitted through the differ: %q", second.String())
+	}
+}
+
+// TestViewerDiffChangedCellCountDrivesEmit pins AC 4 on the viewer's differ path:
+// one changed cell emits escapes for that cell only, not the whole grid. It drives
+// the viewer's own GridDiff with the viewer's colour funcs in monochrome, so the
+// only escape is the single cell's CUP.
+func TestViewerDiffChangedCellCountDrivesEmit(t *testing.T) {
+	var d block.GridDiff
+	fg, bg := fgSGRFunc(ColourMono), bgSGRFunc(ColourMono)
+	g := diffGridOf(6, 3, block.Cell{Glyph: 'a'})
+	if err := d.Emit(&bytes.Buffer{}, g, fg, bg); err != nil {
+		t.Fatal(err)
+	}
+	g.At(4, 2).Glyph = 'z'
+	var out bytes.Buffer
+	if err := d.Emit(&out, g, fg, bg); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if n := strings.Count(got, "\x1b["); n != 1 {
+		t.Fatalf("want one CUP for the single changed cell, got %d: %q", n, got)
+	}
+	if strings.Contains(got, "a") {
+		t.Fatalf("emitted an unchanged cell: %q", got)
+	}
+	if !strings.HasSuffix(got, "z") {
+		t.Fatalf("changed glyph not last byte: %q", got)
+	}
+}
+
+// TestViewerDiffUniformRowOneSGRPair pins AC 5 on the viewer's differ path: a
+// uniform-colour changed row sends one truecolour SGR pair, not one per cell.
+func TestViewerDiffUniformRowOneSGRPair(t *testing.T) {
+	var d block.GridDiff
+	fg, bg := fgSGRFunc(ColourTrue), bgSGRFunc(ColourTrue)
+	g := diffGridOf(5, 1, block.Cell{
+		Glyph: 'a',
+		FG:    color.RGBA{R: 0x10, G: 0x20, B: 0x30, A: 0xff},
+		BG:    color.RGBA{R: 0x40, G: 0x50, B: 0x60, A: 0xff},
+	})
+	if err := d.Emit(&bytes.Buffer{}, g, fg, bg); err != nil {
+		t.Fatal(err)
+	}
+	for col := range 5 {
+		g.At(col, 0).Glyph = 'z'
+	}
+	var out bytes.Buffer
+	if err := d.Emit(&out, g, fg, bg); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if n := strings.Count(got, "\x1b[38;2;"); n != 1 {
+		t.Fatalf("want one fg SGR for the uniform row, got %d: %q", n, got)
+	}
+	if n := strings.Count(got, "\x1b[48;2;"); n != 1 {
+		t.Fatalf("want one bg SGR for the uniform row, got %d: %q", n, got)
+	}
+}
+
+// TestViewerDiffContiguousRunOneCUP pins AC 6 on the viewer's differ path: a
+// contiguous changed run emits a single CUP for the run. Monochrome removes SGR
+// noise, so every escape in the stream is a CUP.
+func TestViewerDiffContiguousRunOneCUP(t *testing.T) {
+	var d block.GridDiff
+	fg, bg := fgSGRFunc(ColourMono), bgSGRFunc(ColourMono)
+	g := diffGridOf(6, 1, block.Cell{Glyph: 'a'})
+	if err := d.Emit(&bytes.Buffer{}, g, fg, bg); err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range []int{1, 2, 3} {
+		g.At(col, 0).Glyph = 'z'
+	}
+	var out bytes.Buffer
+	if err := d.Emit(&out, g, fg, bg); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if n := strings.Count(got, "\x1b["); n != 1 {
+		t.Fatalf("want one CUP for the contiguous run, got %d: %q", n, got)
+	}
+	if n := strings.Count(got, "z"); n != 3 {
+		t.Fatalf("want 3 changed glyphs in the run, got %d: %q", n, got)
+	}
+}

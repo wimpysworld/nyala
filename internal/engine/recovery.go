@@ -8,6 +8,7 @@ import (
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/input"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -39,6 +40,7 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 
 	crashed = make(chan struct{})
 	e.watchCrash(crashed)
+	e.watchPaint()
 	slot := newFrameSlot()
 	// acks is the buffered ack channel the ack pump drains. It is created before
 	// startScreencast so the listener's first enqueue lands, and the pump runs off
@@ -47,25 +49,33 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// or the slot's displaced-frame ack.
 	acks := make(chan int64, ackBufferDepth)
 	ts := &textSync{}
-	// snapTrigger gates the snapshot goroutine to about one snapshot per delivered
-	// frame: the frame loop pokes it (latest-wins, non-blocking) after each consumed
-	// frame, and runTextSync wakes once per poke. Capacity 1 coalesces a burst to one
-	// wake; on a static page with no frames the snapshot goroutine blocks on it and
-	// does zero snapshots. It is goroutine-scoped to this session, so ctx cancellation
-	// stops both goroutines and the channel needs no teardown reset.
-	snapTrigger := make(chan struct{}, 1)
+	// reSnap and reflow clock the snapshot goroutine off the page, not off frame
+	// delivery: reSnap fires an immediate re-snapshot on resize or backend switch
+	// (restartStream), reflow carries the debounced networkAlmostIdle late reflow
+	// (watchPaint). Each is capacity 1 latest-wins, so a burst coalesces to one wake.
+	// Both are goroutine-scoped to this session, so ctx cancellation stops the
+	// goroutines and the channels need no teardown reset beyond clearing the fields.
+	reSnap := make(chan struct{}, 1)
+	reflow := make(chan struct{}, 1)
+	// reEmit carries the held-frame re-emit poke from the snapshot goroutine to the
+	// frame loop, so a static page repaints with text once the snapshot publishes.
+	// Capacity 1 latest-wins, so a burst of publishes coalesces to one re-emit.
+	reEmit := make(chan struct{}, 1)
 	e.mu.Lock()
 	e.slot = slot
 	e.acks = acks
 	e.text = ts
+	e.reSnap = reSnap
+	e.reflow = reflow
+	e.reEmit = reEmit
 	e.mu.Unlock()
 	if err = e.startScreencast(ctx, slot, capW, capH); err != nil {
 		e.teardownSession()
 		return nil, fmt.Errorf("engine: start screencast: %w", err)
 	}
 	go e.ackPump(ctx, acks)
-	go e.runTextSync(ctx, ts, snapTrigger)
-	go e.runFrameLoop(ctx, slot, frames, ts, snapTrigger)
+	go e.runTextSync(ctx, ts, reSnap, reflow, reEmit)
+	go e.runFrameLoop(ctx, slot, frames, ts, reEmit)
 
 	// Navigate and the held-scroll restore run on one ordered path: navigateAsync
 	// drives the load waiter, then restores the held offset only after the load
@@ -91,9 +101,11 @@ type scrollRestore struct {
 // signal; lifecycle events are enabled per session so it can match. Running it
 // here, off the launch path, keeps startup non-blocking so the raw-mode viewer
 // keeps Ctrl-C live during launch (Decision 1). The waiter's completion is the
-// load signal: it closes the capture paint latch. A navigate errorText renders
-// the browser's own error page rather than tearing the session down (Decision 1),
-// so the supervisor never rebuilds on a failed URL.
+// bounded timeout backstop for the paint latch: watchPaint fires markPainted on
+// the firstContentfulPaint lifecycle event, and this navigate-return call is the
+// backstop so a page that never fires that event still closes the latch. A
+// navigate errorText renders the browser's own error page rather than tearing the
+// session down (Decision 1), so the supervisor never rebuilds on a failed URL.
 func (e *ChromiumEngine) navigateAsync(ctx context.Context, url string, restore scrollRestore) {
 	err := chromedp.Run(ctx, chromedp.Navigate(url))
 	if e.recorder != nil {
@@ -113,8 +125,10 @@ func (e *ChromiumEngine) navigateAsync(ctx context.Context, url string, restore 
 			WithDeltaY(float64(restore.y))
 		_ = chromedp.Run(ctx, wheel)
 	}
-	// The load signal fires the capture paint latch, whether the page loaded or the
-	// browser rendered an error page. markPainted is a no-op off the capture path.
+	// Backstop the paint latch on navigate-return, whether the page loaded or the
+	// browser rendered an error page, so a page that never fires firstContentfulPaint
+	// still closes it. paintedOnce makes this a no-op once watchPaint has fired, and
+	// markPainted is a no-op off the capture path.
 	e.markPainted()
 }
 
@@ -238,6 +252,55 @@ func (e *ChromiumEngine) watchCrash(crashed chan struct{}) {
 	})
 }
 
+// watchPaint registers a ListenTarget handler on the Page.lifecycleEvent stream
+// with two arms. On "firstContentfulPaint" it fires markPainted, the primary
+// paint-gate fire source, which the snapshot goroutine reads as its first-snapshot
+// clock. On "networkAlmostIdle" it pokes the reflow channel for a debounced late
+// re-snapshot, catching a reflow that lands without navigation or resize (web fonts
+// loading, async content). SetLifecycleEventsEnabled is on per session (launch), so
+// both events are delivered. paintedOnce latches the paint close, so a repeat event
+// or the navigate-return backstop is a no-op; the reflow poke is latest-wins and
+// rate-capped on the snapshot goroutine, so a chatty page cannot drive it. The
+// listener attaches before navigation, mirroring watchCrash, so no event is missed.
+// It reads e.reflow at event time, not at registration, because startSession sets
+// the channel after this attaches.
+func (e *ChromiumEngine) watchPaint() {
+	e.mu.Lock()
+	ctx := e.ctx
+	e.mu.Unlock()
+	chromedp.ListenTarget(ctx, func(ev any) {
+		le, ok := ev.(*page.EventLifecycleEvent)
+		if !ok {
+			return
+		}
+		switch le.Name {
+		case "firstContentfulPaint":
+			e.markPainted()
+		case "networkAlmostIdle":
+			e.pokeReflow()
+		}
+	})
+}
+
+// pokeReflow signals the snapshot goroutine for a debounced late re-snapshot. The
+// send is latest-wins (select-with-default on a capacity-1 channel), so a burst of
+// networkAlmostIdle events collapses to one pending wake and the event goroutine
+// never blocks. It reads e.reflow under mu because watchPaint may fire before
+// startSession sets the channel and teardownSession clears it; a nil channel drops
+// the poke, which the no-backstop trigger tolerates.
+func (e *ChromiumEngine) pokeReflow() {
+	e.mu.Lock()
+	reflow := e.reflow
+	e.mu.Unlock()
+	if reflow == nil {
+		return
+	}
+	select {
+	case reflow <- struct{}{}:
+	default:
+	}
+}
+
 // teardownSession tears down the live session without closing the frames
 // channel, so it is safe on both a crash rebuild and Close. It drains the slot
 // (acking any held frame and releasing the frame loop parked on it) then cancels
@@ -249,6 +312,7 @@ func (e *ChromiumEngine) teardownSession() {
 	slot := e.slot
 	cancel := e.cancel
 	e.ctx, e.cancel, e.slot, e.acks, e.text = nil, nil, nil, nil, nil
+	e.reSnap, e.reflow, e.reEmit = nil, nil, nil
 	e.windowID = 0
 	e.mu.Unlock()
 	if slot != nil {

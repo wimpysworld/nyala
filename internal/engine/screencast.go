@@ -113,6 +113,42 @@ func (s *frameSlot) consume(ctx context.Context, ack ackFunc) (pendingFrame, boo
 	}
 }
 
+// readyC returns the buffered wake channel a put signals, so a caller that must
+// also select on another source (the re-emit poke) can park on the slot's wake
+// alongside it rather than block in consume. A receive on it is only a hint that a
+// frame may be waiting; the caller takes it with tryConsume, which re-checks under
+// the lock.
+func (s *frameSlot) readyC() <-chan struct{} {
+	return s.ready
+}
+
+// tryConsume takes the held frame without blocking, acking it via ack, and returns
+// ok=true when one was present. It returns ok=false on an empty or drained slot, so
+// a caller woken by readyC that finds nothing waiting (a spurious or drained wake)
+// loops back to its select rather than parking. It mirrors consume's take-and-ack
+// under the lock, so the ack accounting stays exactly once per frame.
+func (s *frameSlot) tryConsume(ack ackFunc) (pendingFrame, bool) {
+	s.mu.Lock()
+	if !s.full {
+		s.mu.Unlock()
+		return pendingFrame{}, false
+	}
+	frame := s.held
+	s.held = pendingFrame{}
+	s.full = false
+	s.mu.Unlock()
+	ack(frame.ack)
+	return frame, true
+}
+
+// drained reports whether the slot has been drained, so a caller woken by readyC
+// that found no frame can tell a teardown wake (exit) from a spurious wake (re-park).
+func (s *frameSlot) drained() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dropped
+}
+
 // drain marks the slot dropped and acks any frame still held, so Close leaves no
 // frame unacked and unblocks a consumer parked on ready. After drain, put acks
 // and discards, and consume returns ok=false.
@@ -238,12 +274,14 @@ func (e *ChromiumEngine) ackPump(ctx context.Context, acks <-chan int64) {
 }
 
 // overlayState is the text-sync state the snapshot goroutine threads across its
-// iterations. It holds the last-matched runs and the wall-clock start of the
-// current snapshot-failure run. The snapshot goroutine owns it, so the hold is
-// single-goroutine and lock-free; the snapshot read runs outside any lock.
+// iterations. It holds the last-matched runs, the wall-clock start of the current
+// snapshot-failure run, and the wall-clock time of the last debounced re-snapshot.
+// The snapshot goroutine owns it, so the hold is single-goroutine and lock-free;
+// the snapshot read runs outside any lock.
 type overlayState struct {
 	lastText     []render.GlyphRun // last text matched to a bitmap
 	failingSince time.Time         // start of the current snapshot-failure run, zero when not failing
+	lastReSnap   time.Time         // wall-clock time of the last networkAlmostIdle re-snapshot, zero before the first
 }
 
 // textSync publishes the latest decoded overlay runs from the snapshot goroutine
@@ -280,19 +318,31 @@ func (t *textSync) latest() ([]render.GlyphRun, float64) {
 // it does not spin while there is no text to decode.
 const noSnapshotBackoff = 50 * time.Millisecond
 
+// reSnapshotMinInterval caps the debounced networkAlmostIdle re-snapshot to at
+// most one extra snapshot per second per session. A late reflow that lands inside
+// this window keeps the navigation and resize clocked text rather than forcing a
+// fresh layout read, so a chatty page cannot drive the snapshot goroutine.
+const reSnapshotMinInterval = time.Second
+
 // runTextSync runs the DOM snapshot loop on its own goroutine, off the frame-emit
 // goroutine, so snapshot latency never stalls frame emission or withholds acks. It
-// gates on the per-frame trigger: it waits for the frame loop to signal a new
-// delivered frame, then captures exactly one snapshot, decodes the runs at the
-// snapshot's own scroll, routes them through the bounded holdDecision, and
-// publishes the emitted set to ts. A burst of frames while a snapshot is in flight
-// coalesces to one wake, so it snapshots about once per delivered frame and never
-// free-spins; on a static page with no frames it blocks on the trigger and does
-// zero snapshots. It owns the overlayState, so the hold is single-goroutine and
-// lock-free. It runs only the block path's snapshot; on a graphics backend it
-// publishes nil and backs off without consuming the trigger, since those backends
-// ignore the overlay. It exits when ctx is cancelled (session teardown).
-func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, trigger <-chan struct{}) {
+// is clocked by the page, not by frame delivery: it takes the first snapshot when
+// the painted latch closes (firstContentfulPaint), then re-snapshots only on a real
+// trigger. So a static page that produces no further frames still publishes its
+// text once after paint, and the frame loop folds the published runs onto every
+// frame as sticky state. The re-snapshot triggers arrive on two channels: reSnap
+// fires an immediate re-snapshot on resize or backend switch (restartStream), and
+// reflow carries the networkAlmostIdle late-reflow pokes, which this loop debounces
+// to one trailing snapshot per holdStalenessLimit quiet window and caps to one per
+// reSnapshotMinInterval. Each snapshot decodes the runs at the snapshot's own
+// scroll, routes them through the bounded holdDecision, and publishes the emitted
+// set to ts, then pokes reEmit so the frame loop re-paints its held bitmap with the
+// new text on a static page that delivers no new frame. It owns the overlayState, so
+// the hold and the re-snapshot timestamp are single-goroutine and lock-free. It runs
+// only the block path's snapshot; on a graphics backend it publishes nil and backs
+// off, since those backends ignore the overlay. It exits when ctx is cancelled
+// (session teardown).
+func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, reflow <-chan struct{}, reEmit chan<- struct{}) {
 	if ctx == nil || ts == nil {
 		return
 	}
@@ -301,77 +351,124 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, trigger 
 		snapshot = e.snapshotRuns
 	}
 	var state overlayState
-	// Under capture only, publish one eager snapshot after paint so the first
-	// usable frame carries its text runs without consuming a countable frame. The
-	// production trigger fires only after a frame is consumed, so the first
-	// delivered frame would otherwise carry empty runs; on a static page few frames
-	// arrive, so draining one to drive the snapshot could starve the capture. This
-	// branch is gated on captureOn and a textOverlayBackend, so production (captureOn
-	// false) keeps the exact trigger-only cadence below.
-	if e.captureOn && e.textOverlayBackend() {
-		runs, snapshotMS, next := e.firstSnapshotAfterPaint(ctx, snapshot, state)
-		state = next
-		if ctx.Err() != nil {
-			return
-		}
-		ts.store(runs, snapshotMS)
-		e.markTextReady()
+	if !e.waitForFirstSnapshot(ctx, ts) {
+		return
 	}
+	// First snapshot on the painted latch: the navigation trigger, single-shot per
+	// session, and the new reader of the painted latch replacing firstSnapshotAfterPaint.
+	state = e.publishSnapshot(ctx, snapshot, ts, state)
+	pokeReEmit(reEmit)
+
+	// debounce arms a trailing timer per reflow quiet window. A nil channel means no
+	// reflow is pending; the timer is armed on a reflow poke and cleared on fire.
+	var debounce *time.Timer
+	var debounceC <-chan time.Time
 	for {
-		if ctx.Err() != nil {
-			return
-		}
-		if !e.textOverlayBackend() {
-			ts.store(nil, 0)
-			if sleepCtx(ctx, noSnapshotBackoff) {
-				return
-			}
-			continue
-		}
-		// Wait for the frame loop to signal a delivered frame. The signal is a
-		// capacity-1 latest-wins channel, so a burst of frames coalesces to one
-		// wake and one snapshot; a static page with no frames blocks here and does
-		// zero snapshots. A nil trigger blocks forever (no frames ever arrive), so
-		// callers always pass the per-session trigger.
 		select {
-		case <-trigger:
 		case <-ctx.Done():
 			return
-		}
-		var runs []render.GlyphRun
-		var snapshotMS float64
-		runs, snapshotMS, state = snapshot(ctx, state)
-		ts.store(runs, snapshotMS)
-		// Close the capture text latch on the first published snapshot, so the
-		// driver folds these runs onto the first usable frame. It is a no-op off the
-		// capture path.
-		e.markTextReady()
-		if ctx.Err() != nil {
-			return
+		case <-reSnap:
+			// Resize or backend switch: re-snapshot at once, no debounce, no cap.
+			state = e.publishSnapshot(ctx, snapshot, ts, state)
+			pokeReEmit(reEmit)
+		case <-reflow:
+			// Late reflow: arm or reset the trailing debounce timer so a burst of
+			// networkAlmostIdle events collapses to one trailing snapshot.
+			debounce = armDebounce(debounce, holdStalenessLimit)
+			debounceC = debounce.C
+		case <-debounceC:
+			debounceC = nil
+			state = e.reSnapshotCapped(ctx, snapshot, ts, state)
+			pokeReEmit(reEmit)
 		}
 	}
 }
 
-// firstSnapshotAfterPaint blocks until the paint latch closes, then runs one
-// snapshot and returns its runs, time, and the updated hold state. It runs on the
-// capture path only, before the trigger loop, so the first delivered frame carries
-// text without the driver consuming a countable frame to drive the snapshot. It
-// returns early with the unchanged state on context cancel or when no paint latch
-// is set, so it never blocks a session teardown. snapshot is the per-iteration
-// snapshot function the caller resolved (snapshotRuns in production, a test fake
-// otherwise).
-func (e *ChromiumEngine) firstSnapshotAfterPaint(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState), state overlayState) ([]render.GlyphRun, float64, overlayState) {
+// waitForFirstSnapshot blocks until the active backend takes the overlay and the
+// painted latch has closed, the gate the first post-paint snapshot fires on. A
+// graphics backend publishes nil and backs off rather than reading layout it
+// ignores; this runs before the painted gate so a non-block launch does not block
+// on paint. Under capture painted closes on firstContentfulPaint; in production
+// painted is nil so it proceeds at once. It returns false when ctx is cancelled, so
+// the caller exits without snapshotting.
+func (e *ChromiumEngine) waitForFirstSnapshot(ctx context.Context, ts *textSync) bool {
+	for !e.textOverlayBackend() {
+		ts.store(nil, 0)
+		if sleepCtx(ctx, noSnapshotBackoff) {
+			return false
+		}
+	}
 	if e.painted != nil {
 		select {
 		case <-e.painted:
 		case <-ctx.Done():
-			return nil, 0, state
+			return false
 		}
 	}
-	if ctx.Err() != nil {
-		return nil, 0, state
+	return ctx.Err() == nil
+}
+
+// reSnapshotCapped runs one late-reflow re-snapshot if the rate cap allows, then
+// records the time. The cap holds it to one per reSnapshotMinInterval, so a chatty
+// page cannot drive the snapshot goroutine; a capped poke keeps the navigation and
+// resize clocked text. It returns the updated hold state.
+func (e *ChromiumEngine) reSnapshotCapped(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState), ts *textSync, state overlayState) overlayState {
+	now := time.Now()
+	if !state.lastReSnap.IsZero() && now.Sub(state.lastReSnap) < reSnapshotMinInterval {
+		return state
 	}
-	return snapshot(ctx, state)
+	state = e.publishSnapshot(ctx, snapshot, ts, state)
+	state.lastReSnap = now
+	return state
+}
+
+// pokeReEmit signals the frame loop to re-push its held bitmap recomposed with the
+// freshly published text. The send is latest-wins on a capacity-1 channel, so it
+// never blocks and a burst of publishes collapses to one re-emit. A nil channel (no
+// session) drops the poke.
+func pokeReEmit(reEmit chan<- struct{}) {
+	if reEmit == nil {
+		return
+	}
+	select {
+	case reEmit <- struct{}{}:
+	default:
+	}
+}
+
+// armDebounce starts or resets a trailing timer to fire after d, draining a stale
+// fire so a reset never leaves a spurious tick on the channel. It returns the live
+// timer so the caller threads it across iterations.
+func armDebounce(t *time.Timer, d time.Duration) *time.Timer {
+	if t == nil {
+		return time.NewTimer(d)
+	}
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+	t.Reset(d)
+	return t
+}
+
+// publishSnapshot runs one snapshot and publishes its runs and time to ts. It
+// returns the updated hold state. It is the single snapshot-and-publish step the
+// first-after-paint and re-snapshot triggers share, so the publish stays in one
+// place. A graphics backend takes no overlay, so it publishes nil and skips the
+// layout read rather than snapshot the full viewport it ignores.
+func (e *ChromiumEngine) publishSnapshot(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState), ts *textSync, state overlayState) overlayState {
+	if !e.textOverlayBackend() {
+		ts.store(nil, 0)
+		return state
+	}
+	runs, snapshotMS, next := snapshot(ctx, state)
+	// snapshotRuns rebuilds the hold fields and drops the re-snapshot timestamp, so
+	// carry it forward here: the cap clock lives in runTextSync, not the snapshot.
+	next.lastReSnap = state.lastReSnap
+	ts.store(runs, snapshotMS)
+	return next
 }
 
 // sleepCtx sleeps for d or returns true early when ctx is cancelled, so the
@@ -391,36 +488,66 @@ func sleepCtx(ctx context.Context, d time.Duration) (cancelled bool) {
 // the slot is drained, builds a synced render.Frame for each, and pushes it on
 // the frames channel. It runs in its own goroutine started per session; a crash
 // or Close drains the slot and cancels the context to stop it. The DOM snapshot
-// runs on a separate goroutine (runTextSync), so this loop reads the latest
-// published overlay runs without ever blocking on a snapshot read. After each
-// consumed frame it pokes the snapshot trigger with a non-blocking latest-wins
-// send, so the snapshot goroutine wakes about once per delivered frame and idles
-// when no frames arrive; a full trigger drops the poke, coalescing a burst to one
-// wake. It does not close frames: the channel outlives one session so consumers
-// keep reading across a crash recovery, and only the supervisor closes it on
-// Close. The send selects on the context so the goroutine cannot leak when the
-// consumer stops.
-func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, frames chan render.Frame, ts *textSync, trigger chan<- struct{}) {
+// runs on a separate goroutine (runTextSync) clocked by the page, not by frame
+// delivery, so this loop reads the latest published overlay runs as sticky state
+// and folds them onto every frame without ever poking the snapshot or blocking on
+// a snapshot read. It also parks on the re-emit poke the snapshot goroutine sends
+// after each publish: on a poke it re-pushes its last consumed bitmap recomposed
+// with the freshly published text, so a static page that delivers no new screencast
+// frame still repaints with text. The re-emit reuses the held bitmap and never
+// re-feeds the slot, so the slot's exactly-once ack accounting is untouched. It does
+// not close frames: the channel outlives one session so consumers keep reading
+// across a crash recovery, and only the supervisor closes it on Close. The send
+// selects on the context so the goroutine cannot leak when the consumer stops.
+func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, frames chan render.Frame, ts *textSync, reEmit <-chan struct{}) {
 	if ctx == nil || slot == nil || frames == nil {
 		return
 	}
+	var held pendingFrame
+	var haveHeld bool
 	for {
-		pending, ok := slot.consume(ctx, e.ackFrame)
-		if !ok {
-			return
-		}
-		frame := e.composeFrame(pending, ts)
-		if trigger != nil {
-			select {
-			case trigger <- struct{}{}:
-			default:
-			}
-		}
 		select {
-		case frames <- frame:
 		case <-ctx.Done():
 			return
+		case <-reEmit:
+			// Text published with no new frame in flight: re-push the held bitmap so
+			// the viewer repaints with the fresh text. Before the first frame there is
+			// nothing to re-push, so the poke is a no-op; the first frame carries it.
+			if !haveHeld {
+				continue
+			}
+			if !e.emitFrame(ctx, frames, ts, held) {
+				return
+			}
+		case <-slot.readyC():
+			pending, ok := slot.tryConsume(e.ackFrame)
+			if !ok {
+				// A drained slot wakes readyC with no frame; exit on drain, otherwise the
+				// wake was spurious and the select re-parks.
+				if slot.drained() {
+					return
+				}
+				continue
+			}
+			held, haveHeld = pending, true
+			if !e.emitFrame(ctx, frames, ts, pending) {
+				return
+			}
 		}
+	}
+}
+
+// emitFrame composes one pending bitmap with the latest published text and pushes
+// it on the frames channel, selecting on ctx so the send cannot leak when the
+// consumer stops. It returns false when ctx is cancelled mid-send, so the caller
+// exits the loop.
+func (e *ChromiumEngine) emitFrame(ctx context.Context, frames chan render.Frame, ts *textSync, pending pendingFrame) bool {
+	frame := e.composeFrame(pending, ts)
+	select {
+	case frames <- frame:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -538,6 +665,7 @@ func (e *ChromiumEngine) restartStream() error {
 	ctx := e.ctx
 	slot := e.slot
 	windowID := e.windowID
+	reSnap := e.reSnap
 	surfW, surfH := e.surfaceSize(e.cols, e.rows)
 	e.mu.Unlock()
 	if ctx == nil || slot == nil {
@@ -545,6 +673,16 @@ func (e *ChromiumEngine) restartStream() error {
 	}
 	if e.recorder != nil {
 		e.recorder.Record(captureEvent{Type: captureEventScreencastControl, Action: "restart"})
+	}
+	// Poke the snapshot goroutine for an immediate re-snapshot: a resize or backend
+	// switch changes the layout viewport, so the prior text no longer maps to the
+	// new grid. The send is latest-wins so it never blocks. A graphics backend
+	// publishes nil through the same poke.
+	if reSnap != nil {
+		select {
+		case reSnap <- struct{}{}:
+		default:
+		}
 	}
 	_ = chromedp.Run(ctx, page.StopScreencast())
 	if err := applySizing(ctx, windowID, surfW, surfH); err != nil {

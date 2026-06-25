@@ -11,6 +11,7 @@ import (
 	cterm "github.com/charmbracelet/x/term"
 
 	"github.com/wimpysworld/nyala/internal/render"
+	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
 // Engine is the frame source the viewer draws. The viewer declares the methods
@@ -66,11 +67,6 @@ type CaptureSession interface {
 	// frames, so a blank pre-paint frame is never one of the n. A nil channel reads
 	// as never closed, so the driver's paint deadline bounds the wait.
 	Painted() <-chan struct{}
-	// TextReady returns a channel the engine closes on the first published DOM
-	// snapshot. The capture driver waits on it, bounded by a grace, before counting
-	// the first usable frame, so the painted frame carries its text runs. A nil
-	// channel reads as never closed, so the driver's grace bounds the wait.
-	TextReady() <-chan struct{}
 }
 
 // Stream runs the interactive viewer on tty, drawing the live frames eng pushes,
@@ -134,7 +130,14 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode string) (err 
 	ctl := newControl(eng, done)
 	defer ctl.close()
 
-	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, ctl: ctl}
+	// The cell differ drives the live block paint: each draw emits only the cells
+	// that changed since the previous frame, with CUP and SGR coalescing. It is
+	// reset on every full clear (first draw and resize) so a diff never skips a
+	// cell the clear blanked. The graphics backends ignore it.
+	diff := &block.GridDiff{}
+	st.SetDiff(diff)
+
+	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, ctl: ctl, diff: diff}
 	keys := readKeys(tty, done)
 	navigated := make(chan error, 1)
 	go func() {
@@ -146,6 +149,49 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode string) (err 
 	return s.loop(winch, keys)
 }
 
+// coalescingWorker runs one handler serially off a producer loop. It holds a
+// one-slot work channel; submit sends non-blocking, so a fresh item supersedes
+// an unprocessed older one and the producer never blocks (latest-wins-drop). The
+// goroutine selects on the work channel and a done channel and exits when done
+// closes. Both the control restart queue and the key sender route through it.
+type coalescingWorker[T any] struct {
+	work chan T
+	done <-chan struct{}
+	fn   func(T)
+}
+
+// startCoalescingWorker starts the goroutine and returns the worker handle the
+// producer submits on. done stops the goroutine; fn runs each submitted item
+// serially. The work channel is buffered one, so submit drops on full.
+func startCoalescingWorker[T any](done <-chan struct{}, fn func(T)) *coalescingWorker[T] {
+	w := &coalescingWorker[T]{work: make(chan T, 1), done: done, fn: fn}
+	go w.run()
+	return w
+}
+
+// submit enqueues one item with a non-blocking send. If an item is already
+// queued the new one is dropped, so the producer loop never blocks on a wedged
+// handler. The drop is safe wherever a fresh item supersedes the queued one.
+func (w *coalescingWorker[T]) submit(item T) {
+	select {
+	case w.work <- item:
+	default:
+	}
+}
+
+// run processes items serially until done closes. Running them here, not on the
+// producer loop, keeps that loop responsive while a handler blocks.
+func (w *coalescingWorker[T]) run() {
+	for {
+		select {
+		case item := <-w.work:
+			w.fn(item)
+		case <-w.done:
+			return
+		}
+	}
+}
+
 // control runs engine restarts off the viewer consumer loop. The loop enqueues a
 // resize or a backend switch with a non-blocking send; this goroutine runs the
 // engine call (which may block in restartStream) serially, so a slow restart
@@ -154,17 +200,14 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode string) (err 
 // responsive: a coalesced restart is fine because each request re-reads the
 // current size and backend from the engine state.
 type control struct {
-	eng  Engine
-	reqs chan func(Engine)
-	done <-chan struct{}
+	eng    Engine
+	worker *coalescingWorker[func(Engine)]
 }
 
 // newControl starts the control goroutine and returns the handle the loop
 // enqueues restarts on. done stops the goroutine when Stream returns.
 func newControl(eng Engine, done <-chan struct{}) *control {
-	c := &control{eng: eng, reqs: make(chan func(Engine), 1), done: done}
-	go c.run()
-	return c
+	return &control{eng: eng, worker: startCoalescingWorker(done, func(fn func(Engine)) { fn(eng) })}
 }
 
 // submit enqueues one engine restart for the control goroutine. The send is
@@ -172,30 +215,13 @@ func newControl(eng Engine, done <-chan struct{}) *control {
 // the queued one will re-read the latest size and backend when it runs. So the
 // consumer loop never blocks on a wedged restart.
 func (c *control) submit(fn func(Engine)) {
-	select {
-	case c.reqs <- fn:
-	default:
-	}
+	c.worker.submit(fn)
 }
 
 // close lets the goroutine drain through the shared done channel; it is a no-op
 // placeholder so the caller can defer a symmetric close beside the other viewer
 // goroutines. The goroutine exits on done.
 func (c *control) close() {}
-
-// run processes restarts serially until done closes. Running them here, not on
-// the consumer loop, is the interactive-hang fix: the loop keeps drawing and
-// handling quit while a restart blocks.
-func (c *control) run() {
-	for {
-		select {
-		case fn := <-c.reqs:
-			fn(c.eng)
-		case <-c.done:
-			return
-		}
-	}
-}
 
 // setupViewer performs the shared viewer setup both Stream and the capture
 // driver need: it checks tty is a terminal, reads the grid size, puts the
@@ -248,6 +274,7 @@ type streamSession struct {
 	fd           uintptr
 	keySender    *keySender
 	ctl          *control
+	diff         *block.GridDiff
 	firstDrawn   bool
 	nilImageOnce sync.Once // guards the one-shot nil-image diagnostic
 	resizeOnce   sync.Once // guards the one-shot dropped-resize diagnostic
@@ -271,6 +298,16 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			if !ok {
 				return nil
 			}
+			// Coalesce a queued burst to one paint: drain any frames already waiting
+			// and keep only the newest, so a scroll burst draws once with the latest
+			// frame instead of painting every stale frame. Channel close mid-drain
+			// stops the loop, matching the main receive. The differ stays correct
+			// because it compares the drawn frame against the previous drawn grid, so
+			// skipped frames do not corrupt its state.
+			frame, ok = drainFrames(frames, frame)
+			if !ok {
+				return nil
+			}
 			if err := s.draw(frame); err != nil {
 				return err
 			}
@@ -281,6 +318,25 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			if s.handleKey(ev) {
 				return nil
 			}
+		}
+	}
+}
+
+// drainFrames keeps only the newest immediately-available frame, given the one
+// already received. It pulls any further queued frames non-blocking and returns
+// the last, coalescing a burst to one paint. The bool is false when the channel
+// closed mid-drain, so the caller stops the loop the same way the main receive
+// does; otherwise it is true with the newest frame.
+func drainFrames(frames <-chan render.Frame, latest render.Frame) (render.Frame, bool) {
+	for {
+		select {
+		case f, ok := <-frames:
+			if !ok {
+				return latest, false
+			}
+			latest = f
+		default:
+			return latest, true
 		}
 	}
 }
@@ -315,9 +371,11 @@ func startupQuit(ev keyEvent) bool {
 	return ev.scroll == ScrollNone && (ev.b == 'q' || ev.b == 'Q' || ev.b == keyQuitCtrlC)
 }
 
-// draw renders one pushed frame. It updates the image size from the frame, clears
-// the loading cue (or the prior frame) so a resized or smaller frame leaves no
-// stale cells, then draws with the crisp DOM-text overlay folded on. A nil-image
+// draw renders one pushed frame. It updates the image size from the frame, then
+// draws with the crisp DOM-text overlay folded on. The first draw emits the full
+// clearScreen to wipe the loading cue; steady draws emit cursorHome only and
+// overwrite every cell in place, because auto-wrap is off and each cell is
+// rewritten, so nothing stale remains. Resize re-emits the full clear. A nil-image
 // frame is skipped with a one-shot diagnostic so the dropped frame is observable.
 func (s *streamSession) draw(frame render.Frame) error {
 	if frame.Img == nil {
@@ -328,7 +386,8 @@ func (s *streamSession) draw(frame render.Frame) error {
 	}
 	b := frame.Img.Bounds()
 	s.st.ImgW, s.st.ImgH = b.Dx(), b.Dy()
-	if _, err := io.WriteString(s.tty, clearScreen); err != nil {
+	prefix := framePrefix(s.firstDrawn, s.diff)
+	if _, err := io.WriteString(s.tty, prefix); err != nil {
 		return err
 	}
 	s.firstDrawn = true
@@ -356,6 +415,9 @@ func (s *streamSession) resize() error {
 	if !s.firstDrawn {
 		return nil
 	}
+	// The resize clears the screen, so the differ full-repaints the next frame
+	// even when the grid dimensions are unchanged.
+	s.diff.Reset()
 	_, err = io.WriteString(s.tty, clearScreen)
 	return err
 }
@@ -388,49 +450,33 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 }
 
 // keySender serialises forwarded browser keys away from the input loop. The
-// one-slot buffer keeps quit keys responsive if a browser scroll call stalls.
+// one-slot buffer keeps quit keys responsive if a browser scroll call stalls. It
+// owns its done channel and closes it once on close, stopping the worker.
 type keySender struct {
-	eng  Engine
-	keys chan string
-	done chan struct{}
-	once sync.Once
+	worker *coalescingWorker[string]
+	done   chan struct{}
+	once   sync.Once
 }
 
 func newKeySender(eng Engine) *keySender {
-	s := &keySender{
-		eng:  eng,
-		keys: make(chan string, 1),
-		done: make(chan struct{}),
+	done := make(chan struct{})
+	return &keySender{
+		worker: startCoalescingWorker(done, eng.SendKey),
+		done:   done,
 	}
-	go s.run()
-	return s
 }
 
 func (s *keySender) send(code string) {
 	if code == "" {
 		return
 	}
-	select {
-	case s.keys <- code:
-	default:
-	}
+	s.worker.submit(code)
 }
 
 func (s *keySender) close() {
 	s.once.Do(func() {
 		close(s.done)
 	})
-}
-
-func (s *keySender) run() {
-	for {
-		select {
-		case code := <-s.keys:
-			s.eng.SendKey(code)
-		case <-s.done:
-			return
-		}
-	}
 }
 
 // backendName maps a Backend to the engine's backend string. The engine sizes
