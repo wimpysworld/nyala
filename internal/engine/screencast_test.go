@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/page"
+
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
@@ -35,11 +37,12 @@ func TestRunTextSyncSnapshotsOncePerPaint(t *testing.T) {
 	defer cancel()
 	reSnap := make(chan struct{}, 1)
 	reflow := make(chan struct{}, 1)
+	scroll := make(chan struct{}, 1)
 	reEmit := make(chan struct{}, 1)
 	ts := &textSync{}
 	done := make(chan struct{})
 	go func() {
-		e.runTextSync(ctx, ts, reSnap, reflow, reEmit)
+		e.runTextSync(ctx, ts, reSnap, reflow, scroll, reEmit)
 		close(done)
 	}()
 
@@ -84,10 +87,11 @@ func TestRunFrameLoopReEmitsHeldFrameWithText(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	frames := make(chan render.Frame, 1)
+	scroll := make(chan struct{}, 1)
 	reEmit := make(chan struct{}, 1)
 	done := make(chan struct{})
 	go func() {
-		e.runFrameLoop(ctx, slot, frames, ts, reEmit)
+		e.runFrameLoop(ctx, slot, frames, ts, scroll, reEmit)
 		close(done)
 	}()
 
@@ -155,10 +159,11 @@ func TestRunTextSyncReSnapTriggers(t *testing.T) {
 	defer cancel()
 	reSnap := make(chan struct{}, 1)
 	reflow := make(chan struct{}, 1)
+	scroll := make(chan struct{}, 1)
 	reEmit := make(chan struct{}, 1)
 	done := make(chan struct{})
 	go func() {
-		e.runTextSync(ctx, &textSync{}, reSnap, reflow, reEmit)
+		e.runTextSync(ctx, &textSync{}, reSnap, reflow, scroll, reEmit)
 		close(done)
 	}()
 
@@ -173,6 +178,115 @@ func TestRunTextSyncReSnapTriggers(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("runTextSync did not return after context cancel")
+	}
+}
+
+// TestRunTextSyncScrollTriggers proves a scroll poke drives one debounced
+// re-snapshot past the first-after-paint snapshot, uncapped, so the overlay tracks
+// the page as it scrolls. It uses a closed painted latch and a counting snapshot
+// fn, so no browser is involved. The debounce is holdStalenessLimit; the test waits
+// for the trailing snapshot.
+func TestRunTextSyncScrollTriggers(t *testing.T) {
+	t.Parallel()
+	var snaps int64
+	painted := make(chan struct{})
+	close(painted)
+	e := &ChromiumEngine{backend: "block", painted: painted}
+	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState) {
+		atomic.AddInt64(&snaps, 1)
+		return nil, 0, overlayState{}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reSnap := make(chan struct{}, 1)
+	reflow := make(chan struct{}, 1)
+	scroll := make(chan struct{}, 1)
+	reEmit := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		e.runTextSync(ctx, &textSync{}, reSnap, reflow, scroll, reEmit)
+		close(done)
+	}()
+
+	// First snapshot off paint.
+	waitForCount(t, &snaps, 1)
+	// A scroll poke arms the trailing debounce; the snapshot fires once it settles.
+	scroll <- struct{}{}
+	waitForCount(t, &snaps, 2)
+	// The re-snapshot pokes reEmit so the held frame repaints with the new text.
+	select {
+	case <-reEmit:
+	case <-time.After(time.Second):
+		t.Fatal("scroll re-snapshot did not poke reEmit")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runTextSync did not return after context cancel")
+	}
+}
+
+// TestRunFrameLoopPokesScrollOnOffsetChange proves the frame loop pokes the scroll
+// channel when a consumed frame's scroll offset differs from the last, and does not
+// poke when it is unchanged. No browser is involved: the slot is driven directly.
+func TestRunFrameLoopPokesScrollOnOffsetChange(t *testing.T) {
+	t.Parallel()
+	bitmap := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	slot := newFrameSlot()
+	var rec ackRecorder
+	e := &ChromiumEngine{backend: "block"}
+	ts := &textSync{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	frames := make(chan render.Frame, 4)
+	scroll := make(chan struct{}, 1)
+	reEmit := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		e.runFrameLoop(ctx, slot, frames, ts, scroll, reEmit)
+		close(done)
+	}()
+
+	meta := func(y float64) *page.ScreencastFrameMetadata {
+		return &page.ScreencastFrameMetadata{ScrollOffsetY: y}
+	}
+
+	// First frame establishes the baseline offset; it must not poke (no prior offset).
+	slot.put(pendingFrame{img: bitmap, meta: meta(0), ack: 1}, rec.ack)
+	recvFrame(t, frames)
+	select {
+	case <-scroll:
+		t.Fatal("first frame poked scroll, want no poke on the baseline offset")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// A frame at a new offset pokes scroll.
+	slot.put(pendingFrame{img: bitmap, meta: meta(120), ack: 2}, rec.ack)
+	recvFrame(t, frames)
+	select {
+	case <-scroll:
+	case <-time.After(time.Second):
+		t.Fatal("scroll-offset change did not poke scroll")
+	}
+
+	// A frame at the same offset does not poke again.
+	slot.put(pendingFrame{img: bitmap, meta: meta(120), ack: 3}, rec.ack)
+	recvFrame(t, frames)
+	select {
+	case <-scroll:
+		t.Fatal("unchanged offset poked scroll, want no poke")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runFrameLoop did not return after context cancel")
 	}
 }
 

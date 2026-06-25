@@ -330,19 +330,23 @@ const reSnapshotMinInterval = time.Second
 // the painted latch closes (firstContentfulPaint), then re-snapshots only on a real
 // trigger. So a static page that produces no further frames still publishes its
 // text once after paint, and the frame loop folds the published runs onto every
-// frame as sticky state. The re-snapshot triggers arrive on two channels: reSnap
-// fires an immediate re-snapshot on resize or backend switch (restartStream), and
+// frame as sticky state. The re-snapshot triggers arrive on three channels: reSnap
+// fires an immediate re-snapshot on resize or backend switch (restartStream),
 // reflow carries the networkAlmostIdle late-reflow pokes, which this loop debounces
 // to one trailing snapshot per holdStalenessLimit quiet window and caps to one per
-// reSnapshotMinInterval. Each snapshot decodes the runs at the snapshot's own
-// scroll, routes them through the bounded holdDecision, and publishes the emitted
-// set to ts, then pokes reEmit so the frame loop re-paints its held bitmap with the
-// new text on a static page that delivers no new frame. It owns the overlayState, so
-// the hold and the re-snapshot timestamp are single-goroutine and lock-free. It runs
-// only the block path's snapshot; on a graphics backend it publishes nil and backs
-// off, since those backends ignore the overlay. It exits when ctx is cancelled
-// (session teardown).
-func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, reflow <-chan struct{}, reEmit chan<- struct{}) {
+// reSnapshotMinInterval, and scroll carries the scroll-offset-change pokes the frame
+// loop sends, which this loop debounces to one trailing snapshot per
+// holdStalenessLimit quiet window but does NOT cap: the debounce alone throttles a
+// continuous scroll to one snapshot once it settles, and the 1s reflow cap would
+// otherwise freeze the overlay during a sustained scroll. Each snapshot decodes the
+// runs at the snapshot's own scroll, routes them through the bounded holdDecision,
+// and publishes the emitted set to ts, then pokes reEmit so the frame loop re-paints
+// its held bitmap with the new text on a static page that delivers no new frame. It
+// owns the overlayState, so the hold and the re-snapshot timestamp are
+// single-goroutine and lock-free. It runs only the block path's snapshot; on a
+// graphics backend it publishes nil and backs off, since those backends ignore the
+// overlay. It exits when ctx is cancelled (session teardown).
+func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, reflow, scroll <-chan struct{}, reEmit chan<- struct{}) {
 	if ctx == nil || ts == nil {
 		return
 	}
@@ -359,10 +363,13 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 	state = e.publishSnapshot(ctx, snapshot, ts, state)
 	pokeReEmit(reEmit)
 
-	// debounce arms a trailing timer per reflow quiet window. A nil channel means no
-	// reflow is pending; the timer is armed on a reflow poke and cleared on fire.
+	// debounce arms a trailing timer per reflow quiet window; scrollDebounce does the
+	// same for scroll. A nil channel means none is pending; each timer is armed on its
+	// poke and cleared on fire.
 	var debounce *time.Timer
 	var debounceC <-chan time.Time
+	var scrollDebounce *time.Timer
+	var scrollDebounceC <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -379,6 +386,17 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 		case <-debounceC:
 			debounceC = nil
 			state = e.reSnapshotCapped(ctx, snapshot, ts, state)
+			pokeReEmit(reEmit)
+		case <-scroll:
+			// Scroll: arm or reset the trailing debounce timer so a continuous scroll
+			// collapses to one trailing snapshot once it settles.
+			scrollDebounce = armDebounce(scrollDebounce, holdStalenessLimit)
+			scrollDebounceC = scrollDebounce.C
+		case <-scrollDebounceC:
+			scrollDebounceC = nil
+			// Snapshot unconditionally, no cap: the debounce already throttles a
+			// continuous scroll, and the reflow cap would freeze the overlay mid-scroll.
+			state = e.publishSnapshot(ctx, snapshot, ts, state)
 			pokeReEmit(reEmit)
 		}
 	}
@@ -495,16 +513,26 @@ func sleepCtx(ctx context.Context, d time.Duration) (cancelled bool) {
 // after each publish: on a poke it re-pushes its last consumed bitmap recomposed
 // with the freshly published text, so a static page that delivers no new screencast
 // frame still repaints with text. The re-emit reuses the held bitmap and never
-// re-feeds the slot, so the slot's exactly-once ack accounting is untouched. It does
-// not close frames: the channel outlives one session so consumers keep reading
-// across a crash recovery, and only the supervisor closes it on Close. The send
-// selects on the context so the goroutine cannot leak when the consumer stops.
-func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, frames chan render.Frame, ts *textSync, reEmit <-chan struct{}) {
+// re-feeds the slot, so the slot's exactly-once ack accounting is untouched. On
+// each consumed frame it compares the frame's scroll offset against the last seen
+// one and pokes the scroll channel on any change, so the snapshot goroutine
+// re-snapshots the text at the new scroll once a scroll settles. The latest-wins
+// slot may drop intermediate frames during a fast scroll, but a scroll always
+// delivers a final settled frame, so the offset change is seen and the overlay
+// catches up. It does not close frames: the channel outlives one session so
+// consumers keep reading across a crash recovery, and only the supervisor closes
+// it on Close. The send selects on the context so the goroutine cannot leak when
+// the consumer stops.
+func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, frames chan render.Frame, ts *textSync, scroll chan<- struct{}, reEmit <-chan struct{}) {
 	if ctx == nil || slot == nil || frames == nil {
 		return
 	}
 	var held pendingFrame
 	var haveHeld bool
+	// lastScroll tracks the scroll offset of the last consumed frame so a change
+	// pokes a re-snapshot. It lives on this goroutine, so the tracking is lock-free.
+	var lastScroll scrollOffset
+	var haveScroll bool
 	for {
 		select {
 		case <-ctx.Done():
@@ -530,10 +558,43 @@ func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, fram
 				continue
 			}
 			held, haveHeld = pending, true
+			if off, ok := frameScrollOffset(pending); ok {
+				if !haveScroll || off != lastScroll {
+					if haveScroll {
+						pokeScroll(scroll)
+					}
+					lastScroll, haveScroll = off, true
+				}
+			}
 			if !e.emitFrame(ctx, frames, ts, pending) {
 				return
 			}
 		}
+	}
+}
+
+// frameScrollOffset reads the page scroll offset from a consumed frame's
+// screencast metadata in CSS pixels, returning ok=false when the frame carries no
+// metadata. The listener sets meta on every frame, so ok is true in production;
+// the false branch only guards a metadata-less test frame.
+func frameScrollOffset(p pendingFrame) (scrollOffset, bool) {
+	if p.meta == nil {
+		return scrollOffset{}, false
+	}
+	return scrollOffset{X: p.meta.ScrollOffsetX, Y: p.meta.ScrollOffsetY}, true
+}
+
+// pokeScroll signals the snapshot goroutine that the page scroll offset changed,
+// so it re-snapshots the text at the new scroll once the scroll settles. The send
+// is latest-wins on a capacity-1 channel, so a burst of scroll frames collapses to
+// one wake and the frame loop never blocks. A nil channel drops the poke.
+func pokeScroll(scroll chan<- struct{}) {
+	if scroll == nil {
+		return
+	}
+	select {
+	case scroll <- struct{}{}:
+	default:
 	}
 }
 
