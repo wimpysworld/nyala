@@ -49,8 +49,8 @@ func blockFrameInput() FrameInput {
 		Frame: render.Frame{
 			Img: testImage(24, 32),
 			Text: []render.GlyphRun{
-				{Col: 0, Row: 0, Text: "Hi", FG: color.RGBA{A: 0xff}},
-				{Col: 1, Row: 1, Text: "Z", FG: color.RGBA{A: 0xff}},
+				{Col: 0, Row: 0, Text: "Hi", FG: color.RGBA{A: 0xff}, X: 1, Y: 2, W: 16, H: 16},
+				{Col: 1, Row: 1, Text: "Z", FG: color.RGBA{A: 0xff}, X: 8, Y: 16, W: 8, H: 16},
 			},
 			Stats: &render.FrameStats{
 				ScreencastPayloadBytes: 4096,
@@ -300,6 +300,9 @@ func TestTextMapSerialisesGlyphRuns(t *testing.T) {
 	}
 	if runs[0].Text != "Hi" || runs[0].Col != 0 || runs[0].Row != 0 {
 		t.Errorf("text-map.json run 0 = %+v", runs[0])
+	}
+	if runs[0].X != 1 || runs[0].Y != 2 || runs[0].W != 16 || runs[0].H != 16 {
+		t.Errorf("text-map.json run 0 geometry = (X %v, Y %v, W %v, H %v), want (1, 2, 16, 16)", runs[0].X, runs[0].Y, runs[0].W, runs[0].H)
 	}
 }
 

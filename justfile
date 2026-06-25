@@ -133,6 +133,10 @@ overlay:
 rasterise path:
     @go run ./tools/rasterise {{path}}
 
+# Score horizontal text placement error from a captured text-map.json (or frame dir)
+placement-score path:
+    @go run ./tools/placement-score {{path}}
+
 # Print the KMSCON quadrant test card to the TTY (owner-verified, off CI)
 kmscon-testcard:
     @go run ./tools/kmscon-testcard

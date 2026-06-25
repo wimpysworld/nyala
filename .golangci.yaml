@@ -59,9 +59,9 @@ linters:
         text: "G101"
         linters:
           - gosec
-      # The rasterise dev tool opens an operator-supplied path by design: the
-      # operator names the terminal-model.json or frame directory to render.
-      - path: tools/rasterise/main\.go
+      # The rasterise and placement-score dev tools open an operator-supplied path
+      # by design: the operator names the model, text-map, or frame directory.
+      - path: tools/(rasterise|placement-score)/main\.go
         text: "G703"
         linters:
           - gosec

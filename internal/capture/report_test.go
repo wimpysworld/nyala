@@ -37,6 +37,8 @@ func TestReportContainsEverySection(t *testing.T) {
 		"## Backend and terminal capability",
 		"## Navigation",
 		"## Frames",
+		"## Artefacts",
+		"## text-map.json schema",
 		"## Manifest",
 		"## Notes",
 	}

@@ -221,6 +221,29 @@ func TestDecodeGlyphRunsClip(t *testing.T) {
 	}
 }
 
+// TestDecodeGlyphRunsGeometry checks the per-box CSS-pixel geometry: X and Y are
+// the box top-left with DPR divided and scroll subtracted (on-screen), W and H are
+// the box width and height with DPR divided. The capture text-map carries these so
+// placement can be prototyped offline. A wrong DPR divide or a dropped scroll
+// subtract would move X/Y; the hand-computed values catch it.
+func TestDecodeGlyphRunsGeometry(t *testing.T) {
+	// Box at (200, 100) device px, size 320x48 device px, DPR 2, scroll (10, 4).
+	//   X = 200/2 - 10 = 90
+	//   Y = 100/2 - 4  = 46
+	//   W = 320/2      = 160
+	//   H = 48/2       = 24
+	bounds := domsnapshot.Rectangle{200, 100, 320, 48}
+	doc, strs := cannedDoc("A", "rgb(0, 0, 0)", bounds, 1)
+	runs := decodeGlyphRuns([]*domsnapshot.DocumentSnapshot{doc}, strs, 2, 10, 4, 8, 16)
+	if len(runs) != 1 {
+		t.Fatalf("want 1 run, got %d", len(runs))
+	}
+	r := runs[0]
+	if r.X != 90 || r.Y != 46 || r.W != 160 || r.H != 24 {
+		t.Fatalf("geometry = (X %v, Y %v, W %v, H %v), want (90, 46, 160, 24)", r.X, r.Y, r.W, r.H)
+	}
+}
+
 // TestDecodeGlyphRunsColour checks that the computed color maps to GlyphRun.FG
 // in RGBA channel order. A channel swap (the RGBA-vs-BGRA gotcha) would put the
 // red value in B, which this catches by asserting each channel separately.

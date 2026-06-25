@@ -84,9 +84,11 @@ func appendDocumentRuns(runs []render.GlyphRun, doc *domsnapshot.DocumentSnapsho
 		// at scroll 0.
 		px := bounds[0]/dpr - scrollX
 		py := bounds[1]/dpr - scrollY
+		bw := bounds[2] / dpr
+		bh := bounds[3] / dpr
 		col := int(math.Floor(px / float64(cellW)))
 		row := int(math.Floor(py / float64(cellH)))
-		maxCells := int(math.Floor((bounds[2] / dpr) / float64(cellW)))
+		maxCells := int(math.Floor(bw / float64(cellW)))
 		clipped := clipToCells(text, maxCells)
 		if clipped == "" {
 			continue
@@ -96,6 +98,10 @@ func appendDocumentRuns(runs []render.GlyphRun, doc *domsnapshot.DocumentSnapsho
 			Row:  row,
 			Text: clipped,
 			FG:   layoutColour(layout, strings, layoutIdx),
+			X:    px,
+			Y:    py,
+			W:    bw,
+			H:    bh,
 		})
 	}
 	return runs
