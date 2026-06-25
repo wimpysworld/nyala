@@ -151,6 +151,13 @@ type Recorder struct {
 	// engine closes it on the first contentful paint (or load fallback); the viewer
 	// reads it via Painted to wait for a painted page before counting usable frames.
 	painted <-chan struct{}
+
+	// textReady is the engine's text latch, set once by the engine in EnableCapture
+	// before any goroutine starts and read-only afterwards, so it needs no mu. The
+	// engine closes it on the first published DOM snapshot; the viewer reads it via
+	// TextReady to fold the text layer onto the first usable frame, bounded by a
+	// grace so a text-less page still proceeds.
+	textReady <-chan struct{}
 }
 
 // Ensure Recorder satisfies captureRecorder.
@@ -213,6 +220,22 @@ func (r *Recorder) setPainted(painted <-chan struct{}) {
 // driver's paint deadline then bounds the wait.
 func (r *Recorder) Painted() <-chan struct{} {
 	return r.painted
+}
+
+// setTextReady records the engine's text latch. The engine calls it once in
+// EnableCapture before any goroutine starts; the viewer reads the channel with
+// TextReady. It is set-once and read-only afterwards, so it takes no lock.
+func (r *Recorder) setTextReady(textReady <-chan struct{}) {
+	r.textReady = textReady
+}
+
+// TextReady returns the engine's text latch, closed on the first published DOM
+// snapshot under capture. The capture driver waits on it, bounded by a grace,
+// before counting the first usable frame, so the painted frame carries its text
+// runs. A nil latch (no engine wiring, as in a fake) reads as a never-closed
+// channel; the driver's grace then bounds the wait.
+func (r *Recorder) TextReady() <-chan struct{} {
+	return r.textReady
 }
 
 // cdpSession is the run-metadata view serialised to cdp-session.json. It records

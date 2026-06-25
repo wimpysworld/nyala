@@ -66,6 +66,11 @@ type CaptureSession interface {
 	// frames, so a blank pre-paint frame is never one of the n. A nil channel reads
 	// as never closed, so the driver's paint deadline bounds the wait.
 	Painted() <-chan struct{}
+	// TextReady returns a channel the engine closes on the first published DOM
+	// snapshot. The capture driver waits on it, bounded by a grace, before counting
+	// the first usable frame, so the painted frame carries its text runs. A nil
+	// channel reads as never closed, so the driver's grace bounds the wait.
+	TextReady() <-chan struct{}
 }
 
 // Stream runs the interactive viewer on tty, drawing the live frames eng pushes,
