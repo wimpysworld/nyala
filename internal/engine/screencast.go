@@ -279,9 +279,10 @@ func (e *ChromiumEngine) ackPump(ctx context.Context, acks <-chan int64) {
 // The snapshot goroutine owns it, so the hold is single-goroutine and lock-free;
 // the snapshot read runs outside any lock.
 type overlayState struct {
-	lastText     []render.GlyphRun // last text matched to a bitmap
-	failingSince time.Time         // start of the current snapshot-failure run, zero when not failing
-	lastReSnap   time.Time         // wall-clock time of the last networkAlmostIdle re-snapshot, zero before the first
+	lastText       []render.GlyphRun // last text matched to a bitmap
+	failingSince   time.Time         // start of the current snapshot-failure run, zero when not failing
+	lastReSnap     time.Time         // wall-clock time of the last networkAlmostIdle re-snapshot, zero before the first
+	lastScrollSnap time.Time         // wall-clock time of the last mid-scroll re-snapshot, zero before the first
 }
 
 // textSync publishes the latest decoded overlay runs from the snapshot goroutine
@@ -324,6 +325,18 @@ const noSnapshotBackoff = 50 * time.Millisecond
 // fresh layout read, so a chatty page cannot drive the snapshot goroutine.
 const reSnapshotMinInterval = time.Second
 
+// scrollCadence is the minimum gap between mid-scroll re-snapshots, the leading
+// throttle on the scroll trigger. During a continuous scroll the overlay
+// re-snapshots at most once per scrollCadence (about 6-7 per second at 150 ms), so
+// the crisp text tracks the page as it scrolls rather than freezing until the
+// scroll settles. 150 ms balances overlay tracking against the per-snapshot cost: a
+// captureSnapshot forces a synchronous layout read, so a tighter cadence would tax
+// the page during a fast scroll for little extra legibility, and a looser one would
+// let the text lag the bitmap visibly. The trailing holdStalenessLimit debounce
+// lands one final snapshot on settle, so the overlay always ends on the resting
+// scroll position regardless of the cadence phase.
+const scrollCadence = 150 * time.Millisecond
+
 // runTextSync runs the DOM snapshot loop on its own goroutine, off the frame-emit
 // goroutine, so snapshot latency never stalls frame emission or withholds acks. It
 // is clocked by the page, not by frame delivery: it takes the first snapshot when
@@ -335,10 +348,13 @@ const reSnapshotMinInterval = time.Second
 // reflow carries the networkAlmostIdle late-reflow pokes, which this loop debounces
 // to one trailing snapshot per holdStalenessLimit quiet window and caps to one per
 // reSnapshotMinInterval, and scroll carries the scroll-offset-change pokes the frame
-// loop sends, which this loop debounces to one trailing snapshot per
-// holdStalenessLimit quiet window but does NOT cap: the debounce alone throttles a
-// continuous scroll to one snapshot once it settles, and the 1s reflow cap would
-// otherwise freeze the overlay during a sustained scroll. Each snapshot decodes the
+// loop sends, which this loop handles as a leading throttle plus a trailing
+// debounce: each poke re-snapshots at once when at least scrollCadence has elapsed
+// since the last scroll snapshot, so the overlay tracks the page during a continuous
+// scroll (about 6-7 snapshots per second at 150 ms), and every poke also re-arms the
+// holdStalenessLimit trailing debounce so one final snapshot lands on settle. The
+// scroll path is not capped by the 1s reflow cap; scrollCadence is its only throttle.
+// Each snapshot decodes the
 // runs at the snapshot's own scroll, routes them through the bounded holdDecision,
 // and publishes the emitted set to ts, then pokes reEmit so the frame loop re-paints
 // its held bitmap with the new text on a static page that delivers no new frame. It
@@ -388,15 +404,18 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 			state = e.reSnapshotCapped(ctx, snapshot, ts, state)
 			pokeReEmit(reEmit)
 		case <-scroll:
-			// Scroll: arm or reset the trailing debounce timer so a continuous scroll
-			// collapses to one trailing snapshot once it settles.
+			// Scroll: leading throttle plus trailing debounce. Snapshot now when the
+			// cadence allows, so the overlay tracks mid-scroll, and always re-arm the
+			// trailing timer so a final snapshot lands once the scroll settles.
+			state = e.scrollSnap(ctx, snapshot, ts, state, reEmit)
 			scrollDebounce = armDebounce(scrollDebounce, holdStalenessLimit)
 			scrollDebounceC = scrollDebounce.C
 		case <-scrollDebounceC:
 			scrollDebounceC = nil
-			// Snapshot unconditionally, no cap: the debounce already throttles a
-			// continuous scroll, and the reflow cap would freeze the overlay mid-scroll.
+			// Settle snapshot: the scroll stopped, so land the final scroll position.
+			// Uncapped by the 1s reflow cap; the cadence throttled the mid-scroll fires.
 			state = e.publishSnapshot(ctx, snapshot, ts, state)
+			state.lastScrollSnap = time.Now()
 			pokeReEmit(reEmit)
 		}
 	}
@@ -437,6 +456,30 @@ func (e *ChromiumEngine) reSnapshotCapped(ctx context.Context, snapshot func(con
 	}
 	state = e.publishSnapshot(ctx, snapshot, ts, state)
 	state.lastReSnap = now
+	return state
+}
+
+// scrollSnapDue reports whether a mid-scroll re-snapshot is due: the first scroll
+// poke (lastScrollSnap zero) always fires, and a later poke fires once cadence has
+// elapsed since the last scroll snapshot. It is the pure leading-throttle decision,
+// factored out so it is unit-tested without a wall-clock sleep.
+func scrollSnapDue(last, now time.Time, cadence time.Duration) bool {
+	return last.IsZero() || now.Sub(last) >= cadence
+}
+
+// scrollSnap runs one mid-scroll re-snapshot when the leading throttle allows, then
+// records the time, so a continuous scroll re-snapshots at most once per
+// scrollCadence. A throttled poke leaves the state unchanged; the trailing debounce
+// still lands the settle snapshot. It returns the updated hold state and pokes
+// reEmit on a fire so the held frame repaints with the new scroll's text.
+func (e *ChromiumEngine) scrollSnap(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState), ts *textSync, state overlayState, reEmit chan<- struct{}) overlayState {
+	now := time.Now()
+	if !scrollSnapDue(state.lastScrollSnap, now, scrollCadence) {
+		return state
+	}
+	state = e.publishSnapshot(ctx, snapshot, ts, state)
+	state.lastScrollSnap = now
+	pokeReEmit(reEmit)
 	return state
 }
 
@@ -482,9 +525,10 @@ func (e *ChromiumEngine) publishSnapshot(ctx context.Context, snapshot func(cont
 		return state
 	}
 	runs, snapshotMS, next := snapshot(ctx, state)
-	// snapshotRuns rebuilds the hold fields and drops the re-snapshot timestamp, so
-	// carry it forward here: the cap clock lives in runTextSync, not the snapshot.
+	// snapshotRuns rebuilds the hold fields and drops the cadence timestamps, so carry
+	// them forward here: the re-snapshot caps live in runTextSync, not the snapshot.
 	next.lastReSnap = state.lastReSnap
+	next.lastScrollSnap = state.lastScrollSnap
 	ts.store(runs, snapshotMS)
 	return next
 }
