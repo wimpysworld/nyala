@@ -23,9 +23,28 @@ Tools are pinned by the Nix flake. Enter the dev shell with `nix develop`, or le
 
 ## Build and test
 
-- `just build` - build the `nyala` binary.
-- `just run https://wimpys.world` - build `./nyala`, then run it against a URL. This is the harness for launching the browser. Always use it; never hand-roll `./nyala`, `script`, or sandbox flags. It owns the launch. It sets Chromium's no-sandbox flag when `fence` exposes `FENCE_SANDBOX`. When no TTY is present it wraps the run in `script` to allocate a pty, so the viewer and capture work headless. Behind a synthetic pty only the block backend works, because graphics probes get no reply. `fence` exposes `FENCE_SANDBOX` itself; do not set it by hand.
+### Launching nyala
+
+`just run` and `just corpus` are the only supported way to run nyala. Use them for every run, above all when you capture metrics or data. Never hand-roll: do not run `./nyala` directly, and do not hand-roll `script`, `stty`, sandbox flags, or `NYALA_CAPTURE`.
+
+The recipe owns the launch, and a bare run misses every step below:
+
+- It allocates a pty with `script` when no TTY is present, so the viewer and capture work headless. Without it a headless run has no terminal.
+- It fixes a deterministic grid with `stty rows`/`cols` from `LINES`/`COLUMNS` (default 40x120). Without it the grid varies, so capture data is not comparable across runs.
+- It sets Chromium's no-sandbox flag only from `FENCE_SANDBOX`; `fence` exposes that variable itself, so never set it by hand.
+- It gates the capture lifecycle through `NYALA_CAPTURE` (see below). Hand-rolling the variable skips the recipe's wrapping and yields a broken bundle.
+
+Behind a synthetic pty only the block backend works, because graphics probes get no reply, so a hand-rolled run silently falls back to block. A hand-rolled run yields broken or non-comparable capture data.
+
+Recipes:
+
+- `just run https://wimpys.world` - build `./nyala`, then run it against a URL.
 - `just capture=1 run https://wimpys.world` - run the same harness with `NYALA_CAPTURE=1`, which writes a one-frame bundle whose frame is the painted, text-bearing page (see `NYALA_CAPTURE` below for the bounded-capture lifecycle and `n>1`). The recipe also accepts `capture=` and `backend=` after the URL; `backend=block` forwards `--backend=block` to force the renderer.
+- `just corpus` - capture every `testdata/corpus` fixture on the block backend in one sweep (each via `just capture=1 run ... backend=block`), each as its own bundle, for comparing each fixture's `screenshot.png` against its `block-render.png`. It continues past a failed capture and exits non-zero if any fixture fails.
+
+### Recipes
+
+- `just build` - build the `nyala` binary.
 - `just rasterise <terminal-model.json | frame-dir>` - rasterise a captured block grid to `block-render.png` beside it, for comparing against the frame's source `screenshot.png`. A block capture writes this PNG automatically; this recipe re-renders an existing bundle on demand.
 - `just test` - run the fast unit tests, the routine gate. It runs no corpus sweep, no calibration, and no rasteriser-driven full-corpus measurement, so the harness package finishes in seconds.
 - `just diagnostics` - run the heavy quality gate (`go test -tags diagnostics ./internal/harness/`) over the five committed fixtures (`linuxmatters.png` plus the four `testpage-*` pages) at a fixed 120x40 grid; the calibration runs over the four test pages only. It runs one corpus sweep and one calibration, shared across the tagged tests, writes its report JSON/CSV, summary, and artefact PNGs to `testdata/diagnostics/` (gitignored), gates against the committed baseline and thresholds, and runs the calibration, golden, and overlay-grade tracks. The overlay grade hard-gates the overlaid-grid golden and the matcher `CER == 0`, gates the WCAG low-contrast text-cell count against `baseline.json`, and reports the gosseract differentiator. It takes minutes, so run it deliberately, not on every change.
