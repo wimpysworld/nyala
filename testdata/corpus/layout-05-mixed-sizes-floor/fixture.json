@@ -1,0 +1,12 @@
+{
+  "id": "layout-05-mixed-sizes-floor",
+  "title": "Type specimen: a size ladder to the legibility floor",
+  "stressor": "mixed font sizes from display heading to small text near the 10px legibility floor",
+  "origin": "original",
+  "source_url": null,
+  "license": "BlueOak-1.0.0",
+  "attribution": null,
+  "fonts": ["UA default sans"],
+  "self_contained": true,
+  "notes": "Self-contained single page, all CSS inline, no script, no network URLs. Designed for a 960x640 viewport (120x40 at 8x16). A type specimen that repeats one pangram down a descending size ladder: 60px display heading, 34px heading, 24px subhead, 18px body, 14px, 11px, and a 9px caption. Each row is labelled with its px size. The ladder walks through and below Nyala's bitmap legibility floor (about 10px capital height; 8px illegible) so the crisp text overlay can be measured against the block path. White background, dark text. Prose is the standard pangram; copy is original."
+}

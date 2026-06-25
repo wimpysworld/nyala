@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<title>Overlapping placement: absolute positioning, z-index and coloured panels</title>
+<style>
+  html {
+    background: #f4f4f0;
+    color: #1a1a1a;
+  }
+  body {
+    margin: 0;
+    padding: 0;
+    font-family: Arial, Helvetica, sans-serif;
+    /* The viewport is 960x640; the stage matches it exactly. */
+    width: 960px;
+    height: 640px;
+    position: relative;
+    overflow: hidden;
+  }
+  .box {
+    position: absolute;
+    font-size: 18px;
+    line-height: 24px;
+    padding: 6px 10px;
+    box-sizing: border-box;
+  }
+  /* A large background block; the lowest layer. */
+  #base {
+    left: 60px;
+    top: 60px;
+    width: 420px;
+    height: 220px;
+    background: #cfe3ff;
+    color: #102a55;
+    z-index: 1;
+    font-size: 16px;
+    line-height: 22px;
+  }
+  /* Foreground text that overlaps the base block from above. */
+  #front {
+    left: 200px;
+    top: 150px;
+    width: 360px;
+    height: 150px;
+    background: #ffd27f;
+    color: #3a2400;
+    z-index: 3;
+    border: 2px solid #8a5a00;
+  }
+  /* A solid dark panel with light text for high contrast. */
+  #panel-dark {
+    left: 560px;
+    top: 70px;
+    width: 320px;
+    height: 160px;
+    background: #1e1e2e;
+    color: #f0f0ff;
+    z-index: 2;
+    font-size: 18px;
+    line-height: 26px;
+  }
+  /* A saturated red panel with white text. */
+  #panel-red {
+    left: 620px;
+    top: 200px;
+    width: 280px;
+    height: 120px;
+    background: #b3261e;
+    color: #ffffff;
+    z-index: 4;
+    font-size: 17px;
+    line-height: 24px;
+  }
+  /* A green panel with dark text, overlapping the red panel's corner. */
+  #panel-green {
+    left: 520px;
+    top: 300px;
+    width: 240px;
+    height: 110px;
+    background: #2e7d32;
+    color: #eaffea;
+    z-index: 3;
+    font-size: 17px;
+    line-height: 24px;
+  }
+  /* Deliberately non-cell-aligned offset to stress sub-cell binning. */
+  #offset {
+    left: 13px;
+    top: 27px;
+    width: 300px;
+    height: 30px;
+    background: #efe6ff;
+    color: #3a0a66;
+    font-size: 15px;
+    line-height: 20px;
+    z-index: 5;
+    border: 1px solid #6a3aa6;
+  }
+  /* A second non-aligned label sitting over two layers. */
+  #drift {
+    left: 333px;
+    top: 411px;
+    width: 250px;
+    height: 28px;
+    background: rgba(255, 255, 255, 0.85);
+    color: #102a55;
+    font-size: 15px;
+    line-height: 20px;
+    z-index: 6;
+    border: 1px solid #6688bb;
+  }
+  /* Low banner on a coloured strip, mid frame. */
+  #strip {
+    left: 40px;
+    top: 470px;
+    width: 880px;
+    height: 60px;
+    background: #102a55;
+    color: #ffe7a0;
+    z-index: 2;
+    font-size: 20px;
+    line-height: 48px;
+    text-align: center;
+  }
+  /* A label that overlaps the strip from above with an offset. */
+  #strip-tag {
+    left: 77px;
+    top: 483px;
+    width: 200px;
+    height: 34px;
+    background: #ffe7a0;
+    color: #102a55;
+    z-index: 3;
+    font-size: 16px;
+    line-height: 22px;
+    border: 1px solid #102a55;
+  }
+  /* Footer caption near the bottom edge. */
+  #footer {
+    left: 0;
+    top: 596px;
+    width: 960px;
+    height: 44px;
+    background: #e6e6df;
+    color: #444444;
+    z-index: 1;
+    font-size: 14px;
+    line-height: 32px;
+    text-align: center;
+    padding: 6px 0;
+  }
+</style>
+</head>
+<body>
+  <div class="box" id="base">Background block. This light blue panel sits at the back and is partly covered by the panels stacked above it.</div>
+  <div class="box" id="front">Foreground text. This amber box overlaps the blue block and proves the higher z-index wins.</div>
+  <div class="box" id="panel-dark">Dark panel, light text. High contrast for a legible reading of pale glyphs on a near-black field.</div>
+  <div class="box" id="panel-red">Red panel, white text. Low luminance background, bright foreground.</div>
+  <div class="box" id="panel-green">Green panel. Pale text on a mid-green field.</div>
+  <div class="box" id="offset">Offset label at 13px, 27px. Not on the cell grid.</div>
+  <div class="box" id="drift">Drift label at 333px, 411px. Crosses two layers.</div>
+  <div class="box" id="strip">Coloured strip banner across the lower third</div>
+  <div class="box" id="strip-tag">Tag over strip</div>
+  <div class="box" id="footer">Acid-style placement stress for Nyala. Absolute positions, overlap and z-index, text over coloured panels.</div>
+</body>
+</html>

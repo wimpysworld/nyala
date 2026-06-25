@@ -1,0 +1,12 @@
+{
+  "id": "layout-01-dense-prose",
+  "title": "The Ubuntu Podcast: a thirteen-year run in British Linux audio",
+  "stressor": "dense paragraph prose, multiple heading levels, references, search form",
+  "origin": "adapted",
+  "source_url": "https://en.wikipedia.org/wiki/Ubuntu_Podcast",
+  "license": "BlueOak-1.0.0",
+  "attribution": "Original prose authored for the Nyala corpus; facts drawn from the Ubuntu Podcast Wikipedia page.",
+  "fonts": ["UA default serif"],
+  "self_contained": true,
+  "notes": "Self-contained single page, all CSS inline, no script, no network URLs. Designed for a 960x640 viewport (120x40 at 8x16). Fills the top region with an h1, three h2 sections, three h3 subheadings, dense serif paragraphs at 15px/22px, a short references list, and a labelled search form (input plus button). White background, dark text. Prose is original; no Wikipedia text copied verbatim."
+}

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<title>Reading the grid: how terminals turn pixels into legible text</title>
+<style>
+  html {
+    background: #ffffff;
+    color: #1a1a1a;
+  }
+  body {
+    margin: 0;
+    padding: 16px 24px;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 15px;
+    line-height: 22px;
+    width: 912px;
+  }
+  .page {
+    column-count: 3;
+    column-gap: 28px;
+    column-rule: 1px solid #cccccc;
+  }
+  h1 {
+    column-span: all;
+    font-size: 30px;
+    line-height: 36px;
+    margin: 0 0 4px 0;
+    font-weight: 700;
+  }
+  .lede {
+    column-span: all;
+    font-size: 16px;
+    line-height: 24px;
+    color: #333333;
+    margin: 0 0 14px 0;
+  }
+  h2 {
+    font-size: 19px;
+    line-height: 25px;
+    margin: 0 0 6px 0;
+    font-weight: 700;
+    break-after: avoid;
+  }
+  p {
+    margin: 0 0 10px 0;
+    text-align: justify;
+    hyphens: auto;
+    -webkit-hyphens: auto;
+  }
+  p.first {
+    margin-top: 0;
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <h1>Reading the grid: how terminals turn pixels into legible text</h1>
+    <p class="lede">A terminal cell is a tiny canvas. Within a few pixels it must carry a letter, a colour and a shape that the eye can read at speed. The craft of terminal rendering is the craft of spending those pixels well, and of knowing when a clever trick helps the reader and when it merely flatters the renderer.</p>
+
+    <h2>The cell as a unit</h2>
+    <p class="first">Every character grid begins with a single rule: the screen is divided into rows and columns of equal cells, and each cell holds one glyph. This simple constraint shapes everything that follows. A wide character must claim two cells, a tall one cannot spill past its row, and a careless space can shove a whole line out of true. The renderer earns its keep by honouring the grid while still letting type breathe.</p>
+    <p>Spacing within the cell matters more than newcomers expect. Pack the ink too tightly and adjacent letters smear into one dark smudge; leave too much air and the word loses its shape. The best results sit in a narrow band, where stems stay distinct yet the word reads as a single unit rather than a row of separate marks.</p>
+
+    <h2>Justification and the ragged edge</h2>
+    <p class="first">Justified text squares both margins by stretching the gaps between words. On paper, with fine control over spacing and the help of hyphenation, the result is calm and even. Without that control the same method opens rivers of white that wander down the column and tug at the reader's attention. Hyphenation tames the worst of it by breaking long words across lines, so the spacing never has to stretch too far.</p>
+    <p>The trade is real. A ragged right margin keeps word spacing constant and steady, which many readers find easier, while a justified column looks tidy and formal. Neither is wrong. The choice depends on the column width, the typeface and how much the layout values a crisp edge over an even rhythm of spaces.</p>
+
+    <h2>Columns and the wandering eye</h2>
+    <p class="first">Narrow columns let the eye sweep each line in a short, comfortable arc and then drop cleanly to the next. A line that runs the full width of a wide page forces a long return journey, and somewhere on that trek the reader can lose their place. Splitting the text into several columns keeps each line short and the return brief, which is why newspapers and journals have leaned on the form for centuries.</p>
+    <p>Columns bring their own demands. A gap too thin lets one column bleed into the next; too wide and the page feels sparse and disconnected. A faint rule between columns can help, marking the boundary without shouting. Headings that span every column give the reader a clear landmark and stop the eye from straying sideways across the gap by mistake.</p>
+
+    <h2>Hierarchy without colour</h2>
+    <p class="first">A page needs a hierarchy so the reader knows where to look first. Size, weight and space do most of this work. A large bold heading announces a new section, a smaller one marks a turn within it, and the body text settles into a steady rhythm beneath them both. Even in a single dark ink on a white ground, that scale of sizes guides the eye without a word of instruction.</p>
+    <p>Restraint is the discipline that holds it together. Too many sizes and weights, and the hierarchy collapses into noise where nothing stands out because everything tries to. A handful of clear steps, used the same way each time, lets the structure speak quietly and lets the words themselves carry the meaning.</p>
+  </div>
+</body>
+</html>

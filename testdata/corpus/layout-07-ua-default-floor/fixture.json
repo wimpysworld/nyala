@@ -1,0 +1,12 @@
+{
+  "id": "layout-07-ua-default-floor",
+  "title": "On reading plain pages",
+  "stressor": "browser default UA styles, single-column running prose, baseline legibility",
+  "origin": "original",
+  "source_url": null,
+  "license": "BlueOak-1.0.0",
+  "attribution": null,
+  "fonts": ["UA default serif"],
+  "self_contained": true,
+  "notes": "Self-contained single page, no script, no network URLs, no embedded font. Mirrors the motherfuckingwebsite.com baseline: the browser default user-agent styles do all the typographic work. The only CSS is one rule constraining the body to a readable max-width (42em, centred) and a base font-size of 18px. Designed for a 960x640 viewport (120x40 at 8x16): an h1, two h2 sections, several paragraphs of original running prose, a ul list, a blockquote, and a link, all in the default UA serif. This is the legibility floor: if text placement fails here, it fails everywhere."
+}

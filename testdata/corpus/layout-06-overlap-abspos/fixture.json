@@ -1,0 +1,12 @@
+{
+  "id": "layout-06-overlap-abspos",
+  "title": "Overlapping placement: absolute positioning, z-index and coloured panels",
+  "stressor": "absolutely-positioned overlapping text, z-index, text over coloured panels, non-cell-aligned offsets",
+  "origin": "original",
+  "source_url": null,
+  "license": "BlueOak-1.0.0",
+  "attribution": null,
+  "fonts": ["UA default sans-serif"],
+  "self_contained": true,
+  "notes": "Self-contained single page, all CSS inline, no script, no network URLs. Designed for a 960x640 viewport (120x40 at 8x16). An Acid2-style placement stress: ten absolutely-positioned text boxes at known px coordinates. Boxes overlap with explicit z-index ordering (a light blue background block under an amber foreground box), and text sits over solid coloured panels (dark, red, green, blue strip) so foreground-versus-background contrast varies. Two labels use deliberately non-cell-aligned offsets (left:13px/top:27px and left:333px/top:411px) to stress sub-cell binning. Short English labels make placement easy to verify. White-ish light background. Content is original."
+}

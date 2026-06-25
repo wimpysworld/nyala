@@ -1,0 +1,12 @@
+{
+  "id": "layout-04-multicolumn-justified",
+  "title": "Reading the grid: how terminals turn pixels into legible text",
+  "stressor": "multi-column layout, justified text with hyphenation, mixed heading sizes",
+  "origin": "original",
+  "source_url": null,
+  "license": "BlueOak-1.0.0",
+  "attribution": null,
+  "fonts": ["UA default serif"],
+  "self_contained": true,
+  "notes": "Self-contained single page, all CSS inline, no script, no network URLs. Designed for a 960x640 viewport (120x40 at 8x16). A three-column layout (column-count: 3, column-gap 28px, faint column-rule) with a column-spanning h1 and lede, and four in-column h2 subheadings. Body paragraphs use text-align: justify with hyphens: auto under lang=\"en\". Prose at 15px/22px fills all three columns. White background, dark text. Prose is original, authored for the Nyala corpus."
+}
