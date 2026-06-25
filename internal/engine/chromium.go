@@ -88,10 +88,12 @@ type ChromiumEngine struct {
 	// goroutines read them without a mu guard. captureOn gates the phase timing
 	// in composeFrame; recorder is the event sink the emit sites use behind a
 	// nil check. Both stay unset on the production path, so it pays zero cost.
-	captureOn   bool            // true once EnableCapture turned capture on
-	recorder    captureRecorder // event sink, nil off the capture path
-	painted     chan struct{}   // closed on the first contentful paint (or load) under capture
-	paintedOnce sync.Once       // guards painted against a double close
+	captureOn     bool            // true once EnableCapture turned capture on
+	recorder      captureRecorder // event sink, nil off the capture path
+	painted       chan struct{}   // closed on the first contentful paint (or load) under capture
+	paintedOnce   sync.Once       // guards painted against a double close
+	textReady     chan struct{}   // closed when the first DOM snapshot publishes under capture
+	textReadyOnce sync.Once       // guards textReady against a double close
 
 	// Lifecycle. The supervisor goroutine owns the engine lifetime: it starts
 	// each browser session, watches for a crash or a lost connection, rebuilds
@@ -145,8 +147,17 @@ func (e *ChromiumEngine) EnableCapture(rec captureRecorder) {
 	// sees the closed channel. The exported recorder relays it to the viewer's
 	// CaptureSession, so the viewer never imports the engine package.
 	e.painted = make(chan struct{})
+	// The textReady latch lets the capture driver fold the text layer onto the
+	// first usable frame: the snapshot goroutine publishes its runs only after a
+	// frame is consumed, so the first delivered frame carries empty runs until the
+	// first snapshot lands. The driver waits on this latch, bounded by a grace,
+	// before it counts the first usable frame. Created here, before any goroutine
+	// starts, like painted above. markTextReady closes it on the first published
+	// snapshot; a late reader still sees it closed.
+	e.textReady = make(chan struct{})
 	if r, ok := rec.(*Recorder); ok {
 		r.setPainted(e.painted)
+		r.setTextReady(e.textReady)
 	}
 }
 
@@ -160,6 +171,18 @@ func (e *ChromiumEngine) markPainted() {
 		return
 	}
 	e.paintedOnce.Do(func() { close(e.painted) })
+}
+
+// markTextReady closes the textReady latch on the first published DOM snapshot,
+// so a late reader still sees it closed. textReadyOnce guards the close because
+// the snapshot goroutine publishes on every iteration and a crash rebuild starts
+// a fresh goroutine. It is a no-op off the capture path, where textReady stays
+// nil.
+func (e *ChromiumEngine) markTextReady() {
+	if e.textReady == nil {
+		return
+	}
+	e.textReadyOnce.Do(func() { close(e.textReady) })
 }
 
 // SetCellPx records the resolved terminal cell pixel size. The engine uses it to

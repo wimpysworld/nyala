@@ -37,6 +37,17 @@ const captureIdle = 5 * time.Second
 // takes it as a parameter so tests inject a tiny value and run instantly.
 const capturePaintDeadline = 15 * time.Second
 
+// captureTextGrace bounds the wait for the first DOM snapshot to publish after
+// paint, before the driver counts the first usable frame. The snapshot goroutine
+// publishes its runs only after a frame is consumed, so the first delivered frame
+// carries empty runs until the first snapshot lands; this grace folds the text
+// layer on before the count. A page may legitimately have no text, so the wait is
+// bounded: when the grace elapses with no published snapshot the driver proceeds
+// with a text-less frame rather than hang. It sits well under the 5s first-draw
+// deadline so a never-publishing page still terminates. captureLoop takes it as a
+// parameter so tests inject a tiny value and run instantly.
+const captureTextGrace = 750 * time.Millisecond
+
 // bundleWriter is the capture-bundle sink the driver depends on. It is the seam
 // the real capture.Bundle satisfies and a fake stands in for, so the bounded
 // loop and the forced-backend rejection path stay testable without writing a
@@ -114,7 +125,7 @@ func Capture(eng Engine, url string, tty *os.File, colourFlag, mode string, n in
 		return fmt.Errorf("viewer: open capture bundle: %w", err)
 	}
 
-	return runCapture(eng, url, st, tty, bundleWriter(b), mode, n, capturePaintDeadline, captureIdle)
+	return runCapture(eng, url, st, tty, bundleWriter(b), mode, n, capturePaintDeadline, captureTextGrace, captureIdle)
 }
 
 // runCapture runs the capture flow below the not-a-terminal guard: it validates
@@ -128,8 +139,9 @@ func Capture(eng Engine, url string, tty *os.File, colourFlag, mode string, n in
 // and returns ErrPartialBundle before any browser launch, so validation runs
 // after detection and before Navigate; placing it later would launch the browser
 // before failing. ModeAuto and ModeBlock always pass. paintWait bounds the wait
-// for first contentful paint; idle is the per-frame deadline.
-func runCapture(eng Engine, url string, st *State, tty io.Writer, bundle bundleWriter, mode string, n int, paintWait, idle time.Duration) error {
+// for first contentful paint; textGrace bounds the wait for the first published
+// snapshot after paint; idle is the per-frame deadline.
+func runCapture(eng Engine, url string, st *State, tty io.Writer, bundle bundleWriter, mode string, n int, paintWait, textGrace, idle time.Duration) error {
 	if verr := ValidateForcedBackend(mode, st.Enabled); verr != nil {
 		_ = bundle.FinalisePartial(verr.Error())
 		fmt.Fprintf(tty, "capture bundle: %s\r\n", bundle.Path())
@@ -143,7 +155,7 @@ func runCapture(eng Engine, url string, st *State, tty io.Writer, bundle bundleW
 	// latch the loop waits on before counting usable frames.
 	session := eng.EnableCapture(bundle.CDPEventsFile())
 
-	return captureLoop(eng, url, st, tty, bundle, session, n, paintWait, idle)
+	return captureLoop(eng, url, st, tty, bundle, session, n, paintWait, textGrace, idle)
 }
 
 // captureMeta builds the bundle run metadata from the resolved state and the
@@ -177,6 +189,12 @@ func captureMeta(url string, st *State, mode string, n int) capture.Meta {
 // by paintWait; if the paint signal never fires the loop writes a partial bundle
 // reasoned "first contentful paint timeout".
 //
+// After paint it waits for the first DOM snapshot to publish so the first usable
+// frame carries its text runs, draining frames while it waits so the snapshot
+// goroutine wakes and publishes. This wait is bounded by textGrace: a page may
+// have no text, so when the grace elapses the loop proceeds with a text-less
+// frame rather than hang.
+//
 // Once painted, one time.Timer carries both per-frame deadlines: it arms at idle
 // on entry (first-draw deadline) and resets to idle on every drawn frame (per-frame
 // idle deadline). The loop returns on one of these outcomes:
@@ -196,7 +214,7 @@ func captureMeta(url string, st *State, mode string, n int) capture.Meta {
 // It prints the bundle path on every exit. The single select orders the frames
 // channel against the timer deterministically, so the timeout-after-frame and
 // channel-close cases stay distinct.
-func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundleWriter, session CaptureSession, n int, paintWait, idle time.Duration) (err error) {
+func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundleWriter, session CaptureSession, n int, paintWait, textGrace, idle time.Duration) (err error) {
 	defer func() { fmt.Fprintf(tty, "capture bundle: %s\r\n", bundle.Path()) }()
 
 	// finaliseFull and finalisePartial write the cdp-session.json bytes the engine
@@ -233,6 +251,15 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 	// pre-paint frames so the slot does not stall. A paint timeout or a closed
 	// channel writes a partial bundle.
 	if reason, ok := waitForPaint(session, frames, paintWait); !ok {
+		_ = finalisePartial(reason)
+		return ErrPartialBundle
+	}
+
+	// Fold the text layer before the first usable frame. The snapshot goroutine
+	// publishes only after a frame is consumed, so wait for the first snapshot,
+	// draining frames so the snapshot wakes, bounded by textGrace. A closed channel
+	// writes a partial bundle; the grace elapsing proceeds text-less.
+	if reason, ok := waitForText(session, frames, textGrace); !ok {
 		_ = finalisePartial(reason)
 		return ErrPartialBundle
 	}
@@ -330,6 +357,52 @@ func waitForPaint(session CaptureSession, frames <-chan render.Frame, paintWait 
 			// Discard the pre-paint frame: do not draw, count, or write it.
 		case <-timer.C:
 			return "first contentful paint timeout", false
+		}
+	}
+}
+
+// waitForText blocks until the session's text latch closes, then returns ok=true,
+// so the first usable frame carries the published text runs. While waiting it
+// drains and discards frames from the frames channel: each drained frame pokes
+// the engine's snapshot trigger, which drives the snapshot that closes the latch,
+// and the drain keeps the latest-wins slot from stalling. It bounds the wait with
+// a timer at textGrace, because a page may legitimately have no text; when the
+// grace elapses it returns ok=true so the loop proceeds with a text-less frame
+// rather than hang. It returns ok=false with a reason only when the frames
+// channel closes before the latch ("frames channel closed before first DOM
+// snapshot"). A nil session or a nil latch reads as never closed, so the grace
+// bounds the wait.
+func waitForText(session CaptureSession, frames <-chan render.Frame, textGrace time.Duration) (reason string, ok bool) {
+	if session == nil {
+		// No session means no text gate (a unit test that bypasses it); proceed
+		// straight to the bounded loop. The production path always wires a session.
+		return "", true
+	}
+	textReady := session.TextReady()
+	timer := time.NewTimer(textGrace)
+	defer timer.Stop()
+	for {
+		// Check the latch first with priority, mirroring waitForPaint: a plain select
+		// picks at random when the latch is already closed and a frame is also ready,
+		// which could discard a frame the bounded loop should count.
+		select {
+		case <-textReady:
+			return "", true
+		default:
+		}
+		select {
+		case <-textReady:
+			return "", true
+		case _, open := <-frames:
+			if !open {
+				return "frames channel closed before first DOM snapshot", false
+			}
+			// Discard the frame: do not draw, count, or write it. The drain pokes the
+			// snapshot trigger so the snapshot publishes and the latch closes.
+		case <-timer.C:
+			// The grace elapsed with no published snapshot. A text-less page is valid,
+			// so proceed rather than hang; the first usable frame carries no runs.
+			return "", true
 		}
 	}
 }

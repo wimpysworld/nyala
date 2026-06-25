@@ -301,6 +301,22 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, trigger 
 		snapshot = e.snapshotRuns
 	}
 	var state overlayState
+	// Under capture only, publish one eager snapshot after paint so the first
+	// usable frame carries its text runs without consuming a countable frame. The
+	// production trigger fires only after a frame is consumed, so the first
+	// delivered frame would otherwise carry empty runs; on a static page few frames
+	// arrive, so draining one to drive the snapshot could starve the capture. This
+	// branch is gated on captureOn and a textOverlayBackend, so production (captureOn
+	// false) keeps the exact trigger-only cadence below.
+	if e.captureOn && e.textOverlayBackend() {
+		runs, snapshotMS, next := e.firstSnapshotAfterPaint(ctx, snapshot, state)
+		state = next
+		if ctx.Err() != nil {
+			return
+		}
+		ts.store(runs, snapshotMS)
+		e.markTextReady()
+	}
 	for {
 		if ctx.Err() != nil {
 			return
@@ -326,10 +342,36 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, trigger 
 		var snapshotMS float64
 		runs, snapshotMS, state = snapshot(ctx, state)
 		ts.store(runs, snapshotMS)
+		// Close the capture text latch on the first published snapshot, so the
+		// driver folds these runs onto the first usable frame. It is a no-op off the
+		// capture path.
+		e.markTextReady()
 		if ctx.Err() != nil {
 			return
 		}
 	}
+}
+
+// firstSnapshotAfterPaint blocks until the paint latch closes, then runs one
+// snapshot and returns its runs, time, and the updated hold state. It runs on the
+// capture path only, before the trigger loop, so the first delivered frame carries
+// text without the driver consuming a countable frame to drive the snapshot. It
+// returns early with the unchanged state on context cancel or when no paint latch
+// is set, so it never blocks a session teardown. snapshot is the per-iteration
+// snapshot function the caller resolved (snapshotRuns in production, a test fake
+// otherwise).
+func (e *ChromiumEngine) firstSnapshotAfterPaint(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState), state overlayState) ([]render.GlyphRun, float64, overlayState) {
+	if e.painted != nil {
+		select {
+		case <-e.painted:
+		case <-ctx.Done():
+			return nil, 0, state
+		}
+	}
+	if ctx.Err() != nil {
+		return nil, 0, state
+	}
+	return snapshot(ctx, state)
 }
 
 // sleepCtx sleeps for d or returns true early when ctx is cancelled, so the

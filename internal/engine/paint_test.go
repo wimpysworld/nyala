@@ -38,3 +38,31 @@ func TestMarkPaintedNoOpOffCapture(t *testing.T) {
 	// Must not panic with a nil painted latch.
 	e.markPainted()
 }
+
+// TestMarkTextReadyClosesLatchOnce asserts markTextReady closes the capture text
+// latch and stays idempotent: the snapshot goroutine publishes on every iteration
+// and a crash rebuild starts a fresh goroutine, so a repeat call must not
+// double-close. The driver waits on this latch before counting the first usable
+// frame so the painted frame carries its text runs.
+func TestMarkTextReadyClosesLatchOnce(t *testing.T) {
+	e := &ChromiumEngine{textReady: make(chan struct{})}
+
+	e.markTextReady()
+	if !isClosed(e.textReady) {
+		t.Fatal("markTextReady did not close the latch")
+	}
+	// A repeat must not panic on a double close.
+	e.markTextReady()
+	if !isClosed(e.textReady) {
+		t.Fatal("latch reopened after a second markTextReady")
+	}
+}
+
+// TestMarkTextReadyNoOpOffCapture asserts markTextReady is a no-op when no latch
+// is set, so the production path (no EnableCapture) pays nothing and does not
+// panic.
+func TestMarkTextReadyNoOpOffCapture(t *testing.T) {
+	e := &ChromiumEngine{}
+	// Must not panic with a nil textReady latch.
+	e.markTextReady()
+}
