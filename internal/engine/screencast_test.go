@@ -181,11 +181,10 @@ func TestRunTextSyncReSnapTriggers(t *testing.T) {
 	}
 }
 
-// TestRunTextSyncScrollTriggers proves a scroll poke drives one debounced
-// re-snapshot past the first-after-paint snapshot, uncapped, so the overlay tracks
-// the page as it scrolls. It uses a closed painted latch and a counting snapshot
-// fn, so no browser is involved. The debounce is holdStalenessLimit; the test waits
-// for the trailing snapshot.
+// TestRunTextSyncScrollTriggers proves a scroll poke drives a re-snapshot past the
+// first-after-paint snapshot, so the overlay tracks the page as it scrolls. The
+// first poke fires the leading throttle at once (lastScrollSnap is zero). It uses a
+// closed painted latch and a counting snapshot fn, so no browser is involved.
 func TestRunTextSyncScrollTriggers(t *testing.T) {
 	t.Parallel()
 	var snaps int64
@@ -211,7 +210,7 @@ func TestRunTextSyncScrollTriggers(t *testing.T) {
 
 	// First snapshot off paint.
 	waitForCount(t, &snaps, 1)
-	// A scroll poke arms the trailing debounce; the snapshot fires once it settles.
+	// A scroll poke fires the leading throttle at once (no prior scroll snapshot).
 	scroll <- struct{}{}
 	waitForCount(t, &snaps, 2)
 	// The re-snapshot pokes reEmit so the held frame repaints with the new text.
@@ -220,6 +219,86 @@ func TestRunTextSyncScrollTriggers(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("scroll re-snapshot did not poke reEmit")
 	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runTextSync did not return after context cancel")
+	}
+}
+
+// TestScrollSnapDue proves the pure leading-throttle decision: the first poke
+// (zero last) always fires, a poke inside the cadence is suppressed, and a poke at
+// or past the cadence fires. This is the deterministic core of the mid-scroll
+// throttle, tested without a wall clock.
+func TestScrollSnapDue(t *testing.T) {
+	t.Parallel()
+	cadence := 150 * time.Millisecond
+	base := time.Now()
+	cases := []struct {
+		name string
+		last time.Time
+		now  time.Time
+		want bool
+	}{
+		{"first poke fires", time.Time{}, base, true},
+		{"inside cadence suppressed", base, base.Add(100 * time.Millisecond), false},
+		{"at cadence fires", base, base.Add(cadence), true},
+		{"past cadence fires", base, base.Add(300 * time.Millisecond), true},
+	}
+	for _, c := range cases {
+		if got := scrollSnapDue(c.last, c.now, cadence); got != c.want {
+			t.Errorf("%s: scrollSnapDue = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestRunTextSyncScrollCadence proves the mid-scroll cadence: a sustained burst of
+// scroll pokes spaced under scrollCadence drives more than one snapshot before the
+// scroll settles, so the overlay tracks mid-scroll rather than waiting for the
+// trailing debounce. It overrides scrollCadence-equivalent timing by driving real
+// pokes spaced just over the cadence, then asserts the burst alone (before any
+// settle) produced at least two snapshots past the first-after-paint one. The
+// counting snapshot fn keeps it browser-free.
+func TestRunTextSyncScrollCadence(t *testing.T) {
+	t.Parallel()
+	var snaps int64
+	painted := make(chan struct{})
+	close(painted)
+	e := &ChromiumEngine{backend: "block", painted: painted}
+	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState) {
+		atomic.AddInt64(&snaps, 1)
+		return nil, 0, overlayState{}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reSnap := make(chan struct{}, 1)
+	reflow := make(chan struct{}, 1)
+	scroll := make(chan struct{}, 1)
+	reEmit := make(chan struct{}, 16)
+	done := make(chan struct{})
+	go func() {
+		e.runTextSync(ctx, &textSync{}, reSnap, reflow, scroll, reEmit)
+		close(done)
+	}()
+
+	// First snapshot off paint.
+	waitForCount(t, &snaps, 1)
+
+	// A sustained scroll: pokes spaced just over scrollCadence keep the leading
+	// throttle firing, so the count climbs mid-scroll without waiting for settle. The
+	// first poke fires at once; each later poke past the cadence fires again. Drive a
+	// few cadence windows, staying under the holdStalenessLimit settle so these are
+	// mid-scroll fires, not the trailing one.
+	step := scrollCadence + 20*time.Millisecond
+	for range 3 {
+		scroll <- struct{}{}
+		time.Sleep(step)
+	}
+	// At least two mid-scroll snapshots past the first-after-paint one.
+	waitForCount(t, &snaps, 3)
 
 	cancel()
 	select {
