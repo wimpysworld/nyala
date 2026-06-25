@@ -204,7 +204,7 @@ func TestRunFrameLoopReturnsWhenSessionClearedBeforeStart(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		e.runFrameLoop(ctx, slot, frames, &textSync{}, nil)
+		e.runFrameLoop(ctx, slot, frames, &textSync{}, nil, nil)
 		close(done)
 	}()
 

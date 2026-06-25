@@ -214,9 +214,9 @@ is reversible.
   tree exposes no pixel boxes and drops decorative or non-semantic text; manual DOM
   traversal needs one `DOM.getBoxModel` per node, an O(n) round-trip cost that does not
   hold up per frame. Capture off the first paint (`firstContentfulPaint`), then
-  re-snapshot on navigation, resize, and a debounced `networkAlmostIdle` reflow,
-  decoupled from the screencast frame, not on a timer, so cost tracks real visual
-  change. Caveats: snapshot bounds are device
+  re-snapshot on navigation, resize, a debounced scroll-offset change, and a debounced
+  `networkAlmostIdle` reflow, decoupled from the screencast frame, not on a timer, so
+  cost tracks real visual change. Caveats: snapshot bounds are device
   pixels (divide by the device pixel ratio), ignore scroll offset (add `scrollOffsetX/Y`
   back), and the layout box layout is explicitly unstable between versions, so treat
   exact boxes as advisory. Source: CDP DOMSnapshot domain spec and

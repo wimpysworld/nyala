@@ -133,10 +133,13 @@ goroutine (`runTextSync`), decoupled from the frame-emit loop, so snapshot laten
 never withholds acks or stalls frame emission; `composeFrame` reads the latest
 published runs. The snapshot clock is decoupled from frame delivery: the first
 snapshot fires off the `painted` latch (the `firstContentfulPaint` lifecycle
-event), not off a screencast frame. Three triggers re-snapshot after that:
-navigation (single-shot), a resize or backend switch (at once), and a debounced
+event), not off a screencast frame. Four triggers re-snapshot after that:
+navigation (single-shot), a resize or backend switch (at once), a debounced
+scroll-offset change (so the overlay tracks the page on scroll), and a debounced
 late reflow on `networkAlmostIdle` (250 ms debounce reusing `holdStalenessLimit`,
-capped at one extra snapshot per second). The published runs are sticky state
+capped at one extra snapshot per second). The scroll trigger uses the same 250 ms
+debounce but snapshots unconditionally on settle, not the once-per-second reflow
+cap, so the overlay never freezes mid-scroll. The published runs are sticky state
 carried across frames: when text publishes and no new screencast frame is pending,
 the engine re-emits the held bitmap recomposed with the new text, so a static page
 shows its overlay rather than drawing bitmap-only. The pure `decodeGlyphRuns` maps the snapshot documents and the shared
@@ -377,7 +380,8 @@ reviews it.
   viewport. PNG stays a diagnostics-only A/B for the damage diff.
 - **Snapshot off paint, not per frame or on a timer.** The first snapshot fires off
   the `firstContentfulPaint` latch, decoupled from screencast frames, then re-runs on
-  navigation, resize, and a debounced `networkAlmostIdle` reflow. The published runs
+  navigation, resize, a debounced scroll-offset change, and a debounced
+  `networkAlmostIdle` reflow. The published runs
   are sticky, so a static page that delivers no new frame still composites text by
   re-emitting the held bitmap. This fixes the prior defect where a static page drew
   with no overlay.

@@ -49,14 +49,16 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// or the slot's displaced-frame ack.
 	acks := make(chan int64, ackBufferDepth)
 	ts := &textSync{}
-	// reSnap and reflow clock the snapshot goroutine off the page, not off frame
-	// delivery: reSnap fires an immediate re-snapshot on resize or backend switch
-	// (restartStream), reflow carries the debounced networkAlmostIdle late reflow
-	// (watchPaint). Each is capacity 1 latest-wins, so a burst coalesces to one wake.
-	// Both are goroutine-scoped to this session, so ctx cancellation stops the
+	// reSnap, reflow, and scroll clock the snapshot goroutine off the page, not off
+	// frame delivery: reSnap fires an immediate re-snapshot on resize or backend
+	// switch (restartStream), reflow carries the debounced networkAlmostIdle late
+	// reflow (watchPaint), and scroll carries the debounced scroll-offset change the
+	// frame loop detects. Each is capacity 1 latest-wins, so a burst coalesces to one
+	// wake. All are goroutine-scoped to this session, so ctx cancellation stops the
 	// goroutines and the channels need no teardown reset beyond clearing the fields.
 	reSnap := make(chan struct{}, 1)
 	reflow := make(chan struct{}, 1)
+	scroll := make(chan struct{}, 1)
 	// reEmit carries the held-frame re-emit poke from the snapshot goroutine to the
 	// frame loop, so a static page repaints with text once the snapshot publishes.
 	// Capacity 1 latest-wins, so a burst of publishes coalesces to one re-emit.
@@ -67,6 +69,7 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	e.text = ts
 	e.reSnap = reSnap
 	e.reflow = reflow
+	e.scroll = scroll
 	e.reEmit = reEmit
 	e.mu.Unlock()
 	if err = e.startScreencast(ctx, slot, capW, capH); err != nil {
@@ -74,8 +77,8 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 		return nil, fmt.Errorf("engine: start screencast: %w", err)
 	}
 	go e.ackPump(ctx, acks)
-	go e.runTextSync(ctx, ts, reSnap, reflow, reEmit)
-	go e.runFrameLoop(ctx, slot, frames, ts, reEmit)
+	go e.runTextSync(ctx, ts, reSnap, reflow, scroll, reEmit)
+	go e.runFrameLoop(ctx, slot, frames, ts, scroll, reEmit)
 
 	// Navigate and the held-scroll restore run on one ordered path: navigateAsync
 	// drives the load waiter, then restores the held offset only after the load
@@ -312,7 +315,7 @@ func (e *ChromiumEngine) teardownSession() {
 	slot := e.slot
 	cancel := e.cancel
 	e.ctx, e.cancel, e.slot, e.acks, e.text = nil, nil, nil, nil, nil
-	e.reSnap, e.reflow, e.reEmit = nil, nil, nil
+	e.reSnap, e.reflow, e.scroll, e.reEmit = nil, nil, nil, nil
 	e.windowID = 0
 	e.mu.Unlock()
 	if slot != nil {

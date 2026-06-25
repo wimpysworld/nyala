@@ -72,12 +72,14 @@ type ChromiumEngine struct {
 	text *textSync
 	// reSnap pokes the snapshot goroutine for an immediate re-snapshot on a resize
 	// or backend switch (restartStream). reflow pokes it for a debounced
-	// networkAlmostIdle late reflow. Both are capacity-1 latest-wins, goroutine-
-	// scoped to one session, so a burst coalesces to one wake and ctx cancellation
-	// stops the goroutine without a channel reset. Reset per session by
-	// teardownSession.
+	// networkAlmostIdle late reflow. scroll pokes it for a debounced re-snapshot
+	// after a scroll-offset change, so the text overlay tracks the page as it
+	// scrolls. All three are capacity-1 latest-wins, goroutine-scoped to one
+	// session, so a burst coalesces to one wake and ctx cancellation stops the
+	// goroutine without a channel reset. Reset per session by teardownSession.
 	reSnap chan struct{}
 	reflow chan struct{}
+	scroll chan struct{}
 	// reEmit pokes the frame loop to re-push its held bitmap recomposed with the
 	// freshly published text, so a static page that delivers no new screencast frame
 	// after the snapshot still repaints with text. The snapshot goroutine pokes it
