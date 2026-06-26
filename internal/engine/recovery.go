@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/target"
@@ -255,32 +256,47 @@ func (e *ChromiumEngine) watchCrash(crashed chan struct{}) {
 	})
 }
 
-// watchPaint registers a ListenTarget handler on the Page.lifecycleEvent stream
-// with two arms. On "firstContentfulPaint" it fires markPainted, the primary
-// paint-gate fire source, which the snapshot goroutine reads as its first-snapshot
-// clock. On "networkAlmostIdle" it pokes the reflow channel for a debounced late
-// re-snapshot, catching a reflow that lands without navigation or resize (web fonts
-// loading, async content). SetLifecycleEventsEnabled is on per session (launch), so
-// both events are delivered. paintedOnce latches the paint close, so a repeat event
-// or the navigate-return backstop is a no-op; the reflow poke is latest-wins and
-// rate-capped on the snapshot goroutine, so a chatty page cannot drive it. The
-// listener attaches before navigation, mirroring watchCrash, so no event is missed.
-// It reads e.reflow at event time, not at registration, because startSession sets
-// the channel after this attaches.
+// watchPaint registers a ListenTarget handler that watches the Page frame and
+// lifecycle event streams with three arms. On a Page.frameNavigated whose frame
+// has no parent it records the main frame id, the gate for the paint arm. On a
+// "firstContentfulPaint" lifecycle event it fires markPainted, the primary
+// paint-gate fire source the snapshot goroutine reads as its first-snapshot clock,
+// but only when the event's frame is the main frame; a subframe (iframe) painting
+// first must not close the latch early. On "networkAlmostIdle" it pokes the reflow
+// channel for a debounced late re-snapshot, catching a reflow that lands without
+// navigation or resize (web fonts loading, async content). SetLifecycleEventsEnabled
+// is on per session (launch), so the lifecycle events are delivered. paintedOnce
+// latches the paint close, so a repeat event or the navigate-return backstop is a
+// no-op; the reflow poke is latest-wins and rate-capped on the snapshot goroutine,
+// so a chatty page cannot drive it. The listener attaches before navigation,
+// mirroring watchCrash, so no event is missed. It reads e.reflow at event time, not
+// at registration, because startSession sets the channel after this attaches. The
+// main frame's own frameNavigated fires before its firstContentfulPaint in practice;
+// if a paint event ever beats it the arm drops, and the navigate-return backstop
+// still closes the latch.
 func (e *ChromiumEngine) watchPaint() {
 	e.mu.Lock()
 	ctx := e.ctx
 	e.mu.Unlock()
+	// mainFrame is closure-local and touched only from this listener. chromedp
+	// dispatches every ListenTarget callback for a target sequentially from one
+	// event goroutine, so the read and write need no extra locking.
+	var mainFrame cdp.FrameID
 	chromedp.ListenTarget(ctx, func(ev any) {
-		le, ok := ev.(*page.EventLifecycleEvent)
-		if !ok {
-			return
-		}
-		switch le.Name {
-		case "firstContentfulPaint":
-			e.markPainted()
-		case "networkAlmostIdle":
-			e.pokeReflow()
+		switch t := ev.(type) {
+		case *page.EventFrameNavigated:
+			if t.Frame != nil && t.Frame.ParentID == "" {
+				mainFrame = t.Frame.ID
+			}
+		case *page.EventLifecycleEvent:
+			switch t.Name {
+			case "firstContentfulPaint":
+				if mainFrame != "" && t.FrameID == mainFrame {
+					e.markPainted()
+				}
+			case "networkAlmostIdle":
+				e.pokeReflow()
+			}
 		}
 	})
 }
