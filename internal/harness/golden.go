@@ -23,14 +23,6 @@ UPDATE_GOLDEN=1 go test ./internal/harness/...
 // holds the encoded cell grid.
 const gridFileName = "grid"
 
-// GoldenCell is one cell of a golden grid: the block cell plus the text flag the
-// classifier assigned. The flag is separate because block.Cell carries no
-// classification of its own.
-type GoldenCell struct {
-	block.Cell      // glyph, fg, bg
-	Text       bool // true for a text cell, false for a bitmap cell
-}
-
 // EncodeGrid serialises a grid and its per-cell text flags to the deterministic
 // golden archive bytes for one page. flags must be nil or len Cols*Rows in
 // row-major order; a nil slice classifies every cell as a bitmap cell. The

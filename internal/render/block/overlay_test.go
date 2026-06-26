@@ -24,21 +24,6 @@ func TestCellZeroValueIsBitmap(t *testing.T) {
 	}
 }
 
-// TestGraphemeCells asserts an ASCII run splits one element per character and a
-// ZWJ emoji cluster stays a single element.
-func TestGraphemeCells(t *testing.T) {
-	got := graphemeCells("abc")
-	if len(got) != 3 || got[0] != "a" || got[2] != "c" {
-		t.Fatalf("ASCII run: got %v, want [a b c]", got)
-	}
-	// Family emoji: man + ZWJ + woman + ZWJ + girl, one grapheme cluster.
-	zwj := "\U0001F468\u200d\U0001F469\u200d\U0001F467"
-	got = graphemeCells(zwj)
-	if len(got) != 1 {
-		t.Fatalf("ZWJ cluster: got %d elements, want 1", len(got))
-	}
-}
-
 // overlaySrc builds a cols*cellPxW x rows*cellPxH image filled with one colour,
 // the quadrant source footprint for a cols x rows grid.
 func overlaySrc(cols, rows int, c color.RGBA) *image.RGBA {

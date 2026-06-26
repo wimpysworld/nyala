@@ -25,22 +25,6 @@
 // Sharing the mask keeps the ideal cell self-consistent and is the tightest
 // honest ceiling for the quadrant family the block backend renders.
 //
-// # Linear-light cell-mean floor
-//
-// The floor is a second, weaker oracle: each cell is one flat colour, the mean
-// of its 2x4 block taken in linear RGB (never sRGB) and converted back, with a
-// space glyph and no structure. It is the lower bound a block renderer that drew
-// no glyph could reach, so a real render scoring near the floor gained nothing
-// from glyph structure.
-//
-// # Best-of-small-shift positional floor
-//
-// Cell boundaries fall on a half-cell grid the source never aligns to. The
-// best-of-small-shift variant shifts the source by {-1, 0, +1} cells on each
-// axis, builds the ideal render for each shift, scores it, and keeps the best
-// score per metric. The (0, 0) shift is always a candidate, so the result never
-// scores worse than the no-shift case.
-//
 // Channel order is RGBA throughout.
 
 package metrics
@@ -105,21 +89,6 @@ func IdealGrid(src *image.RGBA, cols, rows int) block.Grid {
 	for row := range rows {
 		for col := range cols {
 			*g.At(col, row) = idealCell(src, col, row, 0, 0)
-		}
-	}
-	return g
-}
-
-// FloorGrid builds the linear-light cell-mean floor grid for a source image:
-// each cell is one flat colour, the mean of its 2x4 source block taken in
-// linear RGB, drawn with a space glyph and no structure. It is the lower bound a
-// block renderer that drew no glyph could reach. Channel order is RGBA.
-func FloorGrid(src *image.RGBA, cols, rows int) block.Grid {
-	g := block.Grid{Cols: cols, Rows: rows, Cells: make([]block.Cell, cols*rows)}
-	for row := range rows {
-		for col := range cols {
-			mean := linearMeanBlock(src, col*oracleCellW, row*oracleCellH, oracleCellW, oracleCellH)
-			*g.At(col, row) = block.Cell{Glyph: ' ', FG: mean, BG: mean}
 		}
 	}
 	return g
@@ -342,33 +311,6 @@ type MetricSet struct {
 	HistIntersection float64
 }
 
-// metricDir records one MetricSet field's optimisation direction together with
-// its accessor and setter, so the per-field "higher-better or lower-better?"
-// fact lives in one place rather than restated in bestOf's min/max calls. It is
-// the single source of truth the best-of-shift reduction reads.
-type metricDir struct {
-	// higherIsBetter is true for a similarity metric (SSIM, MSSSIM, PSNR,
-	// HistIntersection) and false for an error metric (MSE, GMSD, DeltaEMean,
-	// DeltaEP95).
-	higherIsBetter bool
-	// get reads the field from a MetricSet; set writes it into one.
-	get func(MetricSet) float64
-	set func(*MetricSet, float64)
-}
-
-// metricDirs lists every MetricSet field with its direction. bestOf reduces over
-// it, so the direction knowledge cannot drift from this one table.
-var metricDirs = []metricDir{
-	{false, func(m MetricSet) float64 { return m.MSE }, func(m *MetricSet, v float64) { m.MSE = v }},
-	{true, func(m MetricSet) float64 { return m.PSNR }, func(m *MetricSet, v float64) { m.PSNR = v }},
-	{false, func(m MetricSet) float64 { return m.GMSD }, func(m *MetricSet, v float64) { m.GMSD = v }},
-	{true, func(m MetricSet) float64 { return m.SSIM }, func(m *MetricSet, v float64) { m.SSIM = v }},
-	{true, func(m MetricSet) float64 { return m.MSSSIM }, func(m *MetricSet, v float64) { m.MSSSIM = v }},
-	{false, func(m MetricSet) float64 { return m.DeltaEMean }, func(m *MetricSet, v float64) { m.DeltaEMean = v }},
-	{false, func(m MetricSet) float64 { return m.DeltaEP95 }, func(m *MetricSet, v float64) { m.DeltaEP95 = v }},
-	{true, func(m MetricSet) float64 { return m.HistIntersection }, func(m *MetricSet, v float64) { m.HistIntersection = v }},
-}
-
 // ScorePair computes the full MetricSet between a render and a reference of the
 // same dimensions. It is the single scoring path the absolute and relative
 // scores both call, so the two scores stay comparable. Channel order is RGBA.
@@ -414,72 +356,4 @@ func Score(rast *capture.Rasteriser, render, src *image.RGBA, cols, rows int) Sc
 		Absolute: ScorePair(render, input),
 		Relative: ScorePair(render, ideal),
 	}
-}
-
-// shiftOffsets are the per-axis cell shifts the positional floor searches: one
-// cell each way and no shift. (0, 0) is always present, so the best-of-shift
-// result never scores worse than the no-shift ideal render.
-var shiftOffsets = []int{-1, 0, 1}
-
-// BestShiftRelative scores a render against the ideal render at the best of a
-// small positional shift (plus or minus one cell on each axis) and returns the
-// best MetricSet per metric. The (0, 0) shift is a candidate, so each returned
-// metric is at least as good as the no-shift relative score: error metrics are
-// minimised, similarity metrics maximised. It is the half-cell positional floor
-// the relative score should not be penalised below. Channel order is RGBA.
-func BestShiftRelative(rast *capture.Rasteriser, render, src *image.RGBA, cols, rows int) MetricSet {
-	b := render.Bounds()
-	w, h := b.Dx(), b.Dy()
-
-	var best MetricSet
-	first := true
-	for _, sy := range shiftOffsets {
-		for _, sx := range shiftOffsets {
-			ideal := rast.Rasterise(shiftedIdealGrid(src, cols, rows, sx*oracleCellW, sy*oracleCellH))
-			// Guard against a degenerate raster size mismatch; the ideal render
-			// is always cols*CellPxW by rows*CellPxH, matching a render built
-			// from the same grid, so this should hold for valid inputs.
-			if ideal.Bounds().Dx() != w || ideal.Bounds().Dy() != h {
-				continue
-			}
-			ms := ScorePair(render, ideal)
-			if first {
-				best = ms
-				first = false
-				continue
-			}
-			best = bestOf(best, ms)
-		}
-	}
-	return best
-}
-
-// shiftedIdealGrid builds the ideal grid with the source read at a pixel shift,
-// for the positional-floor search. The shift moves the 2x4 sampling window so a
-// cell boundary that fell mid-feature can land on it.
-func shiftedIdealGrid(src *image.RGBA, cols, rows, shiftX, shiftY int) block.Grid {
-	g := block.Grid{Cols: cols, Rows: rows, Cells: make([]block.Cell, cols*rows)}
-	for row := range rows {
-		for col := range cols {
-			*g.At(col, row) = idealCell(src, col, row, shiftX, shiftY)
-		}
-	}
-	return g
-}
-
-// bestOf returns the per-metric best of two MetricSets: the smaller value for
-// the error metrics and the larger for the similarity metrics. It reduces over
-// the metricDirs direction table, so the shift search keeps the best of each
-// metric independently and the direction lives in one place.
-func bestOf(a, b MetricSet) MetricSet {
-	var out MetricSet
-	for _, d := range metricDirs {
-		av, bv := d.get(a), d.get(b)
-		if d.higherIsBetter {
-			d.set(&out, max(av, bv))
-		} else {
-			d.set(&out, min(av, bv))
-		}
-	}
-	return out
 }

@@ -272,8 +272,9 @@ created once in `Navigate` and closed exactly once, by the supervisor, on `Close
 it survives a rebuild, so the consumer keeps reading across a recovery. `Close`
 signals the supervisor to stop rather than rebuild, guarded by a `sync.Once` so a
 second `Close` is a no-op. The one-shot `captureFrame` path was removed;
-`SmokeStaticFrame` (live tag, `smoke_live.go`) consumes one frame from `Frames()`
-and renders it once.
+`SmokeStaticFrame` (live tag, `smoke_live.go`) consumed one frame from `Frames()`
+and rendered it once (since removed: `SmokeStaticFrame` and `smoke_live.go` are
+gone, superseded by the live test `TestLiveSyncedFrame`, which is the live path now).
 
 ### Capture-size helper
 
@@ -423,7 +424,7 @@ reviews it.
 | Build, test, lint, tidy pass; cgo-free | `just build`, `go test ./...`, `golangci-lint` (0 issues), `gofmt`; `chromedp`/`cdproto` are pure Go |
 | `nyala host` prepends `https://`, accepts `http`/`https`/`file`, rejects others, no-arg errors | `app.normaliseURL`; `TestNormaliseURL`, `TestNormaliseURLUnsupportedScheme`, `TestParseURLRequired`, `TestRunInvalidURLReturnsSchemeError` |
 | Load failure shows Chromium's own error page | screencast renders the browser error page; no custom error UI in the engine |
-| One static end-to-end frame: navigate, snapshot, bin, composite, render | `SmokeStaticFrame` (live tag) consumes one frame from `Frames()` and renders it once |
+| One static end-to-end frame: navigate, snapshot, bin, composite, render | `SmokeStaticFrame` (live tag) consumed one frame from `Frames()` and rendered it once (since removed; superseded by `TestLiveSyncedFrame`) |
 | Stream does not stall; every frame acked exactly once | `frameSlot` ack-on-consume-or-replace; `TestFrameSlotInterleavedAckedExactlyOnce`, `TestFrameSlotConcurrentPutsAckedExactlyOnce` |
 | Box decode: DPR divide, place at snapshot scroll, clip to box width, no half wide cluster | `decodeGlyphRuns`; `TestDecodeGlyphRunsBinning`, `TestDecodeGlyphRunsClip`, `TestDecodeGlyphRunsColour` |
 | Sync: success emits fresh runs, failure holds last-matched then drops to bitmap-only past the bound | `holdDecision`; `TestHoldDecision*` |

@@ -18,9 +18,6 @@ func TestFitMatchedAspectFills(t *testing.T) {
 	if f.OffsetCol != 0 || f.OffsetRow != 0 {
 		t.Fatalf("offset: got (%d,%d), want (0,0)", f.OffsetCol, f.OffsetRow)
 	}
-	if n := f.LetterboxCells(); n != 0 {
-		t.Fatalf("letterbox cells: got %d, want 0", n)
-	}
 }
 
 // TestFitSquareLetterboxes asserts a square image in a square grid letterboxes
@@ -34,9 +31,6 @@ func TestFitSquareLetterboxes(t *testing.T) {
 	}
 	if f.OffsetCol != 0 || f.OffsetRow != 2 {
 		t.Fatalf("offset: got (%d,%d), want (0,2)", f.OffsetCol, f.OffsetRow)
-	}
-	if n := f.LetterboxCells(); n != 50 {
-		t.Fatalf("letterbox cells: got %d, want 50", n)
 	}
 }
 
@@ -52,9 +46,6 @@ func TestFitTallLetterboxesSides(t *testing.T) {
 	}
 	if f.OffsetCol != 7 || f.OffsetRow != 0 {
 		t.Fatalf("offset: got (%d,%d), want (7,0)", f.OffsetCol, f.OffsetRow)
-	}
-	if n := f.LetterboxCells(); n != 20*20-5*20 {
-		t.Fatalf("letterbox cells: got %d, want %d", n, 20*20-5*20)
 	}
 }
 
@@ -111,9 +102,6 @@ func TestFitImageDegenerate(t *testing.T) {
 	if f.FitCols != 0 || f.FitRows != 0 {
 		t.Fatalf("degenerate fit extent: got %dx%d, want 0x0", f.FitCols, f.FitRows)
 	}
-	if n := f.LetterboxCells(); n != 100 {
-		t.Fatalf("degenerate letterbox: got %d, want 100", n)
-	}
 }
 
 // TestFitGridLetterboxBlankCells composes a square image into a square grid and
@@ -157,7 +145,7 @@ func TestFitGridLetterboxBlankCells(t *testing.T) {
 			}
 		}
 	}
-	if want := fit.LetterboxCells(); blank != want {
+	if want := fit.Cols*fit.Rows - fit.FitCols*fit.FitRows; blank != want {
 		t.Fatalf("blank cell count: got %d, want %d", blank, want)
 	}
 }

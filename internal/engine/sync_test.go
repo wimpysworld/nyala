@@ -133,34 +133,3 @@ func TestSustainedScrollPlacesCurrentTextNotHeld(t *testing.T) {
 		t.Errorf("frame B emit = %v, want the current runsB %v placed by its own scroll", emitB, runsB)
 	}
 }
-
-func TestScrollOffsetsMatchWithinTolerance(t *testing.T) {
-	// Apart by exactly the tolerance on each axis: still a match.
-	a := scrollOffset{X: 100, Y: 200}
-	b := scrollOffset{X: 100 + scrollMatchTolerancePx, Y: 200 + scrollMatchTolerancePx}
-	if !scrollOffsetsMatch(a, b, 1) {
-		t.Errorf("offsets within tolerance reported as diverged")
-	}
-}
-
-func TestScrollOffsetsMatchDivergesPastTolerance(t *testing.T) {
-	// Apart by more than the tolerance on Y: diverged.
-	a := scrollOffset{X: 100, Y: 200}
-	b := scrollOffset{X: 100, Y: 200 + scrollMatchTolerancePx + 1}
-	if scrollOffsetsMatch(a, b, 1) {
-		t.Errorf("offsets past tolerance reported as matching")
-	}
-}
-
-func TestScrollOffsetsMatchPageScaleNormalises(t *testing.T) {
-	// Raw offsets differ by 4 on Y, which exceeds tolerance. Dividing by the scale
-	// of 4 shrinks the gap to 1 CSS pixel, equal to the tolerance, so it matches.
-	a := scrollOffset{X: 0, Y: 0}
-	b := scrollOffset{X: 0, Y: 4}
-	if scrollOffsetsMatch(a, b, 1) {
-		t.Fatal("raw offsets should diverge at scale 1; test setup is wrong")
-	}
-	if !scrollOffsetsMatch(a, b, 4) {
-		t.Error("offsets should match after normalising by the page scale factor")
-	}
-}

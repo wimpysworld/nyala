@@ -50,8 +50,9 @@ func ClipToCells(text string, maxCells int) string {
 }
 
 // GlyphRun is a run of one or more graphemes at a cell position, drawn in a
-// single foreground colour. The text overlay path is not wired yet, so no
-// renderer reads it.
+// single foreground colour. The engine builds these runs from the DOM text
+// snapshot and the block backend folds them onto the grid as the crisp text
+// overlay.
 type GlyphRun struct {
 	Col, Row int        // cell position
 	Text     string     // one or more graphemes
@@ -102,11 +103,11 @@ type ScreencastMeta struct {
 	Timestamp float64
 }
 
-// Frame is one viewport image plus any text overlay. Text stays empty until the
-// overlay path is wired.
+// Frame is one viewport image plus its text overlay. The engine fills Text from
+// the DOM text snapshot; it is empty when the page carries no text runs.
 type Frame struct {
 	Img   *image.RGBA     // the viewport bitmap, already at or above cell resolution
-	Text  []GlyphRun      // empty until the text overlay path is wired
+	Text  []GlyphRun      // text overlay runs, empty when the page has none
 	Stats *FrameStats     // engine-phase timings, nil off the capture path
 	Meta  *ScreencastMeta // screencast frame metadata, nil off the capture path
 }

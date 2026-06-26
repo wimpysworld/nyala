@@ -89,11 +89,6 @@ type manifest struct {
 	Note string `json:"note,omitempty"`
 }
 
-// reportPlaceholder is the stub report.md body written at bundle creation. Phase
-// 6 replaces it with the real report; the placeholder keeps the layout complete
-// so the bundle is well formed before that wiring lands.
-const reportPlaceholder = "# Nyala capture report\n\nPlaceholder. Populated by report.md generation.\n"
-
 // Bundle is one on-disk capture directory: a nyala-capture-* temp dir holding
 // the root manifest, report, performance record, terminal-stream tee, CDP files,
 // and per-frame artefacts. It holds the run metadata, the open raw-file handle,
@@ -111,8 +106,8 @@ type Bundle struct {
 	rasteriser *Rasteriser
 }
 
-// NewBundle creates a fresh nyala-capture-* temp directory, writes the root
-// report.md placeholder, opens terminal-stream.raw for the tee, and creates the
+// NewBundle creates a fresh nyala-capture-* temp directory, opens
+// terminal-stream.raw for the tee, and creates the
 // root cdp-session.json and cdp-events.ndjson placeholders so their root
 // placement is part of the layout from the start; their content lands via the
 // engine recorder. It records meta for the manifest written at finalise. It
@@ -121,9 +116,6 @@ func NewBundle(meta Meta) (*Bundle, error) {
 	dir, err := os.MkdirTemp("", "nyala-capture-*")
 	if err != nil {
 		return nil, fmt.Errorf("create bundle dir: %w", err)
-	}
-	if werr := os.WriteFile(filepath.Join(dir, "report.md"), []byte(reportPlaceholder), 0o644); werr != nil {
-		return nil, fmt.Errorf("write report placeholder: %w", werr)
 	}
 	// cdp-session.json and cdp-events.ndjson sit at the bundle root, not under a
 	// cdp/ directory. Create cdp-session.json empty here so the root layout is

@@ -78,18 +78,6 @@ func bitmapCell(img *image.RGBA, col, row int, scheme Scheme) Cell {
 	return Cell{Glyph: glyph, FG: fg, BG: bg}
 }
 
-// graphemeCells segments text into grapheme clusters with rivo/uniseg, so a
-// multi-rune cluster (for example a ZWJ emoji sequence) stays one element. The
-// result preserves order, one entry per cluster.
-func graphemeCells(text string) []string {
-	var cells []string
-	gr := uniseg.NewGraphemes(text)
-	for gr.Next() {
-		cells = append(cells, gr.Str())
-	}
-	return cells
-}
-
 // cellBGAverage averages the whole source footprint of cell (col, row) into one
 // RGBA colour, in RGBA channel order. The footprint is the scheme's per-cell
 // source block: 2x4 (cellPxW x cellPxH) for the quadrant scheme, 1x2
