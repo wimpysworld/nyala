@@ -6,7 +6,7 @@ Stage 2 builds the crisp text overlay on the block path. It composites positione
 
 Stage 2 is code-complete. The compositor, the matcher, the font fallback, the run-set fixtures, the four-measure harness grade, and the new `just` recipes are in the tree.
 
-Acceptance criteria are met. The compositor folds the overlay into `block.Compose`, grapheme-wins-the-cell, with the foreground from the run and the background from the whole-cell bitmap average. All three consumers (`capture.Rasteriser.Rasterise`, `block.Renderer.Render`, the viewer `writeGrid`) prefer `Cell.Text` over `Cell.Glyph`. The overlay grades through four measures with gating: the overlaid-grid golden hard-gates byte-exact, the matcher hard-gates `CER == 0`, the WCAG low-contrast text-cell count gates against `baseline.json`, and the gosseract differentiator is reported, not gated.
+Acceptance criteria are met. The compositor folds the overlay into `block.Compose`, grapheme-wins-the-cell, with the foreground from the run and the background from the whole-cell bitmap average. All three consumers (`capture.Rasteriser.Rasterise`, `block.Renderer.Render`, the viewer `writeGrid`) prefer `Cell.Text` over `Cell.Glyph`. The overlay grades through four measures with gating: the overlaid-grid golden hard-gates byte-exact, the matcher hard-gates `CER == 0`, the WCAG low-contrast text-cell count gates against `baseline.json`, and the gosseract differentiator was reported, not gated (since removed: the gosseract engine and this differentiator test are gone, so the matcher `CER == 0` gate is the live read-back check).
 
 The KMSCON quadrant fallback was verified by the owner on a real KMSCON TTY via `just kmscon-testcard` (an owner-eyeball check, like Stage 0's terminal verification, not an automated gate).
 
@@ -88,7 +88,7 @@ A width-2 glyph (CJK, emoji) claims two cells: its lead cell carries the graphem
 
 ## The exact-template matcher
 
-The exact-template nearest-glyph matcher (`internal/ocr/matcher.go`) reads the crisp overlay back from the rasterised PNG. It is pure Go and carries no build tag, so it builds and unit-tests under the routine gate; only the gosseract engine needs cgo.
+The exact-template nearest-glyph matcher (`internal/ocr/matcher.go`) reads the crisp overlay back from the rasterised PNG. It is pure Go and carries no build tag, so it builds and unit-tests under the routine gate. (At the time, only the gosseract engine needed cgo; since removed: the gosseract engine is gone, so the whole tree is cgo-free.)
 
 For each candidate grapheme it renders a template through `Rasteriser.RenderGlyphCell`, the same face path that draws the graded cells, then binarises it. To match a cell it binarises the cell by an adaptive Otsu split and picks the candidate with the nearest template by Hamming distance.
 
@@ -121,7 +121,7 @@ The harness grades the overlay through four measures, three gated and one report
 - **Overlaid-grid golden** (`TestOverlayGoldenTrack`): the composed `Grid` against a committed `txtar` archive per page (`testdata/golden/overlay/*.txtar`), byte-exact. It wires the per-cell text flag into the existing `CompareGolden`, so the archive records which cells are overlay text. Hard-gated.
 - **Matcher** (`TestOverlayMatcherRoundTrip`): rasterise the grid, recover the overlay text with the exact-template matcher, score CER against the run truth. Hard-gated on `CER == 0`.
 - **WCAG contrast** (`TestOverlayWCAGGate`): `LowContrastTextCells` counts the overlay text cells whose foreground-against-background contrast falls below the WCAG AA 4.5:1 bound. The count gates against the seeded overlay rows in `baseline.json`; a rise fails.
-- **Gosseract differentiator** (`TestOverlayGosseractDifferentiator`): build the OCR ladder twice, once as a crisp overlay grid and once as the Stage 0 bitmap-only floor, OCR both through one gosseract engine, and report the overlay CER against the bitmap CER. The overlay reads page text where the bitmap floor's 10 px limit fails, so the overlay CER should sit well below. Reported, never gated: Tesseract output varies and a tuned threshold would flake. It carries both the `diagnostics` and `ocr` tags and skips when no engine is present.
+- **Gosseract differentiator** (`TestOverlayGosseractDifferentiator`, since removed): built the OCR ladder twice, once as a crisp overlay grid and once as the Stage 0 bitmap-only floor, OCR'd both through one gosseract engine, and reported the overlay CER against the bitmap CER. The overlay reads page text where the bitmap floor's 10 px limit fails, so the overlay CER sat well below. Reported, never gated: Tesseract output varies and a tuned threshold would flake. It carried both the `diagnostics` and `ocr` tags and skipped when no engine was present. The gosseract engine and this test have since been removed; the matcher `CER == 0` gate remains the live read-back check.
 
 ## Decisions recorded with rationale
 
@@ -130,7 +130,7 @@ The harness grades the overlay through four measures, three gated and one report
 - Cell positions are the producer's contract. `GlyphRun.Col, Row` arrives as a cell address; the compositor does no binning. The `floor` rule lives upstream and uses floor, never round, to keep the partition monotonic.
 - Wide glyphs claim N cells and clip, never half-emit. A clipped wide glyph at the right edge writes a single background space, because terminals disagree on a half-clipped wide glyph.
 - The matcher is an exact-template placement-and-coverage check, not general OCR. Its candidate set is fixed (run graphemes plus the block glyphs), it is polarity-invariant, and it gates on `CER == 0`. This is the distinct role the matcher was deferred from Stage 0 to fill: it needs the crisp glyph cells the Stage 2 overlay provides.
-- Gate the deterministic measures, report the variable one. The golden, the matcher, and the WCAG count are deterministic and hard-gated; the gosseract differentiator varies and is reported.
+- Gate the deterministic measures, report the variable one. The golden, the matcher, and the WCAG count are deterministic and hard-gated; the gosseract differentiator varied and was reported (since removed).
 - Quadrant default, half-block floor, with a built font fallback and a manual KMSCON card. There is no automatic bleed probe on a bare TTY, so the fallback is decided from font coverage (`sfnt.GlyphIndex`) and the bleed is owner-verified on a real console.
 - The Sixel and Kitty overlay is block-path-only for Stage 2. Stage 2's risk is the grapheme-wins compositor, which lives on the block path (the KMSCON floor). The graphics backends carry no text risk in Stage 2, so they ignore `Frame.Text`, as all three did before. Burning glyphs into the bitmap is rejected permanently: it re-rasterises text into fuzzy pixels, the browsh failure mode Nyala exists to avoid. The `Frame.Text` seam keeps the deferred graphics-overlay path open at zero cost.
 - The viewer renders no overlay in Stage 2. The demo is harness-only; the viewer `writeGrid` branch is added now to ready Stage 3 but sees no text cells yet.
@@ -143,7 +143,7 @@ The harness grades the overlay through four measures, three gated and one report
 - The overlaid-grid golden matches byte-exact: met. `TestOverlayGoldenTrack` compares each fixture against its committed archive, with the amd64 skip the bitmap golden track uses.
 - The matcher recovers the overlay text at `CER == 0`: met. `TestOverlayMatcherRoundTrip` hard-gates zero CER over the five fixtures; `matcher_test.go` unit-tests the matcher.
 - The WCAG low-contrast text-cell count holds against the baseline: met. `TestOverlayWCAGGate` gates the count against the seeded overlay rows in `baseline.json`.
-- The gosseract differentiator shows the overlay beats the bitmap floor: met and reported. `TestOverlayGosseractDifferentiator` logs the overlay CER against the bitmap CER; it is not gated.
+- The gosseract differentiator shows the overlay beats the bitmap floor: met and reported (since removed). `TestOverlayGosseractDifferentiator` logged the overlay CER against the bitmap CER; it was not gated. The gosseract engine and this test have since been removed.
 - The KMSCON quadrant font fallback is built and unit-tested, and the test card is owner-verified: met. `font.Atlas.QuadrantSupport` plus `font_test.go`; `just kmscon-testcard` confirmed by the owner on a KMSCON TTY.
 
 ## Risks identified and how they were resolved or carried forward
@@ -151,5 +151,5 @@ The harness grades the overlay through four measures, three gated and one report
 - RGBA versus BGRA byte order: resolved. The whole-cell background average reads source pixels as RGBA, never BGRA, matching the repo-wide invariant.
 - KMSCON inter-row bleed with no pixel readback: resolved by split. The font fallback is decided from coverage (`sfnt.GlyphIndex`), and the bleed is owner-verified via `just kmscon-testcard`, since a bare TTY cannot be probed automatically.
 - arm64 floating-point divergence in the background average: carried forward as accepted. The bg-average rounds differently on arm64, so `TestOverlayGoldenTrack` keeps the amd64 skip the bitmap golden track uses; regenerate the overlay goldens on amd64 only.
-- cgo-free shipped binary: resolved. The compositor's new dependencies (`rivo/uniseg`, `mattn/go-runewidth`) are pure Go, and the matcher is pure Go; only the gosseract differentiator needs cgo, behind the `ocr` tag.
+- cgo-free shipped binary: resolved. The compositor's new dependencies (`rivo/uniseg`, `mattn/go-runewidth`) are pure Go, and the matcher is pure Go. (At the time, only the gosseract differentiator needed cgo, behind the `ocr` tag; since removed: it is gone, so the tree is cgo-free.)
 - Matcher false matches between similar glyphs: resolved by scope. The candidate set is fixed and small, the match is polarity-invariant, and the gate is `CER == 0`, so any collision fails the gate loudly rather than passing silently.

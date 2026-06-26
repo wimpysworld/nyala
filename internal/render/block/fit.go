@@ -65,12 +65,6 @@ func FitImage(imgW, imgH, cols, rows int) Fit {
 	return f
 }
 
-// LetterboxCells returns the number of grid cells outside the filled region,
-// the cells drawn blank to letterbox the remainder.
-func (f Fit) LetterboxCells() int {
-	return f.Cols*f.Rows - f.FitCols*f.FitRows
-}
-
 // blankCell is the cell drawn in the letterbox margin: an opaque-black space.
 var blankCell = Cell{Glyph: ' '}
 

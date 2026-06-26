@@ -27,14 +27,14 @@ In scope, all delivered:
 - Cycle backends at runtime by hotkey.
 - Fit the render to the terminal and re-fit on resize with `golang.org/x/image/draw`.
 - Closed-form RGB to xterm-256 plus truecolour SGR passthrough.
-- The diagnostics corpus sweep: capture, metrics, the `gosseract` OCR baseline, and the artefacts, at a fixed grid. (Then run via `nyala --diagnostics`; the sweep has since moved to a build-tagged test, run via `just diagnostics`.)
+- The diagnostics corpus sweep: capture, metrics, and the artefacts, at a fixed grid. (Then run via `nyala --diagnostics`; the sweep has since moved to a build-tagged test, run via `just diagnostics`.)
 
 Out of scope, deferred to later stages:
 
 - chromedp, screencast, and the frame ack loop (Stage 3).
 - Automatic capability detection (Stage 1); Stage 0 selects by flag and hotkey. A basic detector was added later, see `d4d44df`.
 - The text overlay (Stage 2); Stage 0 renders the bitmap only.
-- Full Bubble Tea chrome (Stage 4); a light-touch `WithoutRenderer` coexistence check is allowed earlier.
+- Full Bubble Tea chrome (Stage 4); a light-touch `WithoutRenderer` coexistence check was allowed earlier (since removed: the spike `internal/viewer/bubbletea_check.go` and the `charm.land/bubbletea/v2` dependency are gone, and the Stage 4 design rejected `WithoutRenderer`, see `docs/OVERVIEW.md:481`).
 
 Later-stage roadmap:
 
@@ -136,9 +136,9 @@ Alignment downscales the reference to the render grid with a fixed CatmullRom fi
 
 Dual scoring and the ideal-block oracle (`internal/metrics/oracle.go`): each metric is scored twice. The absolute score against the downscaled input is the cross-mode comparator and the "how lossy" number, not a renderer grade. The relative score against an ideal block render isolates the loss the real renderer adds over the block-format ceiling. The oracle reads each cell's 2x4 block, splits the four sub-cells by Otsu luma threshold, averages fg and bg in linear-light RGB, and picks the quadrant glyph from the same mask. It also builds a linear-light cell-mean floor (flat colour, space glyph) and a best-of-small-shift positional floor (shifts the source by `{-1, 0, +1}` cells per axis, keeps the best score). For Kitty the ideal equals the input, so absolute and relative collapse, which is correct. The per-cell split algorithm and the joint-versus-separate glyph choice are recorded in the `oracle.go` doc comment.
 
-OCR legibility (`internal/ocr`) is the make-or-break measure. The cgo Tesseract binding (`otiai10/gosseract`) lives in `tesseract.go` behind `//go:build ocr`, so the default build and the shipped binary stay cgo-free. The harness mirrors this with `sweep_ocr.go` (`ocr`) and `sweep_ocr_stub.go` (`!ocr`). The pure-Go path always builds: `ocr.go` and `condition.go` compute CER and WER via Levenshtein over runes and word-level edit distance. Conditioning is fixed for Stage 0 (greyscale BT.601, nearest-neighbour integer upscale 2x to 4x to about 32 px capital height, Otsu binarise, force dark-on-light, 16 px quiet zone, char whitelist), so CER tracks regressions, not parameter drift. The headline is the minimum legible size: each card carries a "Text Size NNpx" ladder from 8 to 28 px with a known string per line, and the harness reports the smallest size that round-trips under a CER bound per mode. The measured ladder (calibration `1340b1b`): 8 px is illegible (CER 0.23, WER 0.67); 10 px and up are legible; `minLegiblePx` is 10; 14 px shows a minor CER of 0.14. This minimum legible size is the floor the Stage 2 overlay must beat.
+Legibility scoring (`internal/ocr`) is the make-or-break measure. The package is pure Go and cgo-free: `ocr.go` and `condition.go` compute CER and WER via Levenshtein over runes and word-level edit distance. Conditioning is fixed for Stage 0 (greyscale BT.601, nearest-neighbour integer upscale 2x to 4x to about 32 px capital height, Otsu binarise, force dark-on-light, 16 px quiet zone, char whitelist), so CER tracks regressions, not parameter drift. The Stage 0 sweep emitted null OCR scores; the live legibility gate is the pure-Go nearest-glyph matcher, which grades the Stage 2 overlay against `ocr.CER`.
 
-No-reference co-signals (`internal/metrics/legibility.go`) back the OCR number: WCAG AA contrast at 4.5:1, with a count of low-contrast cells, plus Laplacian-variance sharpness on the text crop.
+No-reference co-signals (`internal/metrics/legibility.go`) back the legibility number: WCAG AA contrast at 4.5:1, with a count of low-contrast cells, plus Laplacian-variance sharpness on the text crop.
 
 Performance metrics (`internal/metrics/perf.go`): bytes per frame via a `CountingWriter`, compose and encode timing, FPS, allocations via `runtime/metrics`, and Linux real CPU time via `syscall.Getrusage`. Per-backend `testing.B` sub-benchmarks run over a golden frame with pinned GOMAXPROCS and GOGC, emitting `ns/op`, `B/op`, `allocs/op`, and `bytes/frame`.
 
@@ -150,7 +150,7 @@ The harness runs three tracks (`internal/harness`), and every threshold traces t
 
 - Golden track: stores the deterministic block cell grid (glyph, fg, bg, text flag) as one `golang.org/x/tools/txtar` archive per page, compared by a short stdlib helper behind `UPDATE_GOLDEN` with write-if-changed. The grid is text, so it diffs cleanly.
 - Metrics-sweep track: renders corpus x `{block, sixel, kitty}`, captures, scores, and writes `report.json`, `report.csv`, and a markdown summary. It loads `baseline.json` and `thresholds.json`, computes deltas, marks pass or fail, and exits non-zero on a breach. Quality metrics fail when they drop; cost metrics fail when they rise. The report is `schemaVersion` 1 with flat, stably keyed fields and nulls for not-applicable metrics, so two runs diff field by field.
-- A/B track: runs the sweep on base and head with at least 10 repeats, emits benchmark-format lines, and gates with `benchstat` (`golang.org/x/perf`) using the Mann-Whitney p-value to set thresholds above the noise floor.
+- A/B track: ran the sweep on base and head with at least 10 repeats, emitted benchmark-format lines, and gated with `benchstat` (`golang.org/x/perf`) using the Mann-Whitney p-value to set thresholds above the noise floor. (Since removed: this planned track was never wired, so the benchstat machinery and the `golang.org/x/perf` dependency are gone.)
 
 The block path is deterministic, so its intrinsic-noise floor is zero; global bands sit above zero and stay a small fraction of each metric range. The Sixel encoder is the exception. Its PSNR noise floor is measured as the standard deviation of PSNR across 64 repeated renders, worst over the corpus, quantised to one decimal place, and recorded as `sixelPsnrNoiseFloor` 0.2 dB. A `Modes` map on `Thresholds` plus a `thresholdFor` method give Sixel PSNR a 1.5 dB band against the global 0.5 dB, covering the two-sample regenerate-then-verify gap while staying above the 0.2 dB floor. Block and Kitty keep the tight band.
 
@@ -205,10 +205,10 @@ Cross-cutting decisions, with the reasoning kept short:
 
 - testdata layout: fixtures live in `testdata/`, goldens in `testdata/golden/*.txtar`, with `baseline.json` and `thresholds.json` committed. Small JSON and text goldens diff cleanly and stay stable across font and Chromium versions; pixel goldens bloat git and break across versions.
 - Single binary for the viewer and the sweep: in Stage 0 one `nyala` binary ran both, gated by `--diagnostics`, so there was no parallel CLI and one toolchain shipped. (The sweep has since moved to a build-tagged harness test, run via `just diagnostics`; the binary is now a viewer only.)
-- charmbracelet v2 stack plus the Bubble Tea coexistence check: `ansi/sixel`, `ansi/kitty`, and `x/vt` supply the backends and the oracle; a light-touch Bubble Tea v2 `WithoutRenderer` spike confirms the bitmap survives the cell renderer, de-risking Stage 4 early.
+- charmbracelet v2 stack plus the Bubble Tea coexistence check: `ansi/sixel`, `ansi/kitty`, and `x/vt` supply the backends and the oracle; a light-touch Bubble Tea v2 `WithoutRenderer` spike confirmed the bitmap survived the cell renderer, de-risking Stage 4 early. (Since removed: the spike `internal/viewer/bubbletea_check.go` and the `charm.land/bubbletea/v2` dependency are gone, and the Stage 4 design rejected `WithoutRenderer`, see `docs/OVERVIEW.md:481`.)
 - Port SSIM and MS-SSIM from the scikit-image reference rather than vendoring fennec, because fennec has an 8x8 window and an off-centre kernel bug; the port is validated against scikit-image, ImageMagick, and `kornelski/dssim`.
 - go-colorful dE scaling: `Lab` L and `DistanceCIEDE2000` are 0..1, so the code multiplies by 100, with a Sharma-table golden (skipping the two `L=50, a=2.5` rows go-colorful misses).
-- gosseract-only OCR in Stage 0, the matcher deferred to Stage 2: the bespoke nearest-glyph matcher's exact-match strength needs crisp glyph cells that Stage 0 block text does not provide, so it grades the Stage 2 overlay instead. One consistent OCR ruler keeps legibility a regression measure.
+- Legibility deferred to the Stage 2 matcher: the bespoke nearest-glyph matcher's exact-match strength needs crisp glyph cells that Stage 0 block text does not provide, so it grades the Stage 2 overlay instead. The pure-Go matcher and its `ocr.CER` gate are the live ruler; the gosseract OCR path that once measured legibility on the rendered image has since been removed.
 - Dynamic viewer sizing versus the fixed sweep grid: the interactive viewer best-fits the terminal, while the sweep pins 120x40 so golden frames and numbers stay reproducible.
 
 ## Acceptance criteria and how each was met
@@ -221,7 +221,7 @@ Cross-cutting decisions, with the reasoning kept short:
 ## Risks identified and how they were resolved or carried forward
 
 - RGBA versus BGRA byte order: resolved. RGBA holds across the render and metrics pipeline; channel order is asserted on known pixels and never swapped. This stays the repo-wide invariant.
-- cgo under Nix: resolved. Tesseract sits behind `//go:build ocr` with a stub for the default build; `flake.nix` provisions `tesseract` and `leptonica` for the ocr-tagged test build only, and the shipped `nyala` binary stays static and cgo-free.
+- cgo under Nix: resolved. The legibility package is pure Go, so the shipped `nyala` binary stays static and cgo-free. The gosseract OCR path that needed `tesseract` and `leptonica` has since been removed.
 - Oracle algorithm choice: resolved. The oracle splits sub-cells by Otsu luma and averages fg and bg in linear-light RGB; the choice and rationale are recorded in the `oracle.go` doc comment.
 - SSIM validation: resolved. The port is validated against scikit-image, ImageMagick, and `kornelski/dssim` to a fixed tolerance, gating every later structural threshold.
 - Half-cell positional floor: resolved. A best-of-small-shift variant (plus or minus one cell per axis) measures the floor directly instead of guessing a margin, and the half-block scheme stays available as the positional floor.

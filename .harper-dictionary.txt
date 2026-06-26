@@ -115,3 +115,11 @@ WindowID
 WithHeight
 WithPatterns
 WithWidth
+CER
+WER
+gosseract
+perf
+src
+genruns
+Nyala
+TTY

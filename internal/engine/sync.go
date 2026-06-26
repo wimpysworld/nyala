@@ -1,19 +1,10 @@
 package engine
 
 import (
-	"math"
 	"time"
 
 	"github.com/wimpysworld/nyala/internal/render"
 )
-
-// scrollMatchTolerancePx is the per-axis scroll-offset slack, in CSS pixels,
-// within which two scroll offsets count as the same page state. The placement
-// rewrite no longer matches bitmap-to-snapshot by scroll equality (it places runs
-// by the snapshot's own scroll), so this is no longer on the hot path, but it is
-// kept as the pure compare helper and the one knob the post-build tuning spike
-// measures, never a buried literal.
-const scrollMatchTolerancePx = 1
 
 // holdStalenessLimit bounds how long the overlay holds the last-matched text
 // while the DOM snapshot read keeps failing. Past it the frame drops to
@@ -66,20 +57,4 @@ func holdDecision(
 	// Past the bound: drop to a bitmap-only frame and forget the stale text, so a
 	// later success replaces it rather than the overlay flickering back to it.
 	return nil, nil, failingSince
-}
-
-// scrollOffsetsMatch reports whether two scroll offsets agree within
-// scrollMatchTolerancePx on both axes after normalising by pageScaleFactor. A
-// non-positive scale factor is treated as 1 so a missing or zero PageScaleFactor
-// compares the raw CSS-pixel offsets rather than dividing by zero. It is the pure
-// compare helper kept from the prior sync; the post-build sync-tolerance spike
-// reads it.
-func scrollOffsetsMatch(a, b scrollOffset, pageScaleFactor float64) bool {
-	scale := pageScaleFactor
-	if scale <= 0 {
-		scale = 1
-	}
-	dx := math.Abs(a.X/scale - b.X/scale)
-	dy := math.Abs(a.Y/scale - b.Y/scale)
-	return dx <= scrollMatchTolerancePx && dy <= scrollMatchTolerancePx
 }

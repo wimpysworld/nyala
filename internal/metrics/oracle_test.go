@@ -177,48 +177,6 @@ func TestScoreCollapsesWhenIdealEqualsInput(t *testing.T) {
 	}
 }
 
-// TestBestShiftNeverWorseThanNoShift asserts the positional floor never scores
-// worse than the no-shift relative score on any metric: errors do not rise,
-// similarities do not fall.
-func TestBestShiftNeverWorseThanNoShift(t *testing.T) {
-	rast := newTestRasteriser(t)
-	cols, rows := 8, 5
-	src := halfSplitImage(cols, rows)
-
-	// A real render that differs from the ideal, so there is room for a shift to
-	// help: render the floor grid (flat cells) instead of the ideal.
-	render := rast.Rasterise(FloorGrid(src, cols, rows))
-
-	noShift := ScorePair(render, IdealRender(rast, src, cols, rows))
-	best := BestShiftRelative(rast, render, src, cols, rows)
-
-	if best.MSE > noShift.MSE+1e-9 {
-		t.Errorf("best-shift MSE %g worse than no-shift %g", best.MSE, noShift.MSE)
-	}
-	if best.GMSD > noShift.GMSD+1e-9 {
-		t.Errorf("best-shift GMSD %g worse than no-shift %g", best.GMSD, noShift.GMSD)
-	}
-	if best.DeltaEMean > noShift.DeltaEMean+1e-9 {
-		t.Errorf("best-shift dE mean %g worse than no-shift %g", best.DeltaEMean, noShift.DeltaEMean)
-	}
-	if best.DeltaEP95 > noShift.DeltaEP95+1e-9 {
-		t.Errorf("best-shift dE p95 %g worse than no-shift %g", best.DeltaEP95, noShift.DeltaEP95)
-	}
-	if best.SSIM < noShift.SSIM-1e-9 {
-		t.Errorf("best-shift SSIM %g worse than no-shift %g", best.SSIM, noShift.SSIM)
-	}
-	if best.MSSSIM < noShift.MSSSIM-1e-9 {
-		t.Errorf("best-shift MSSSIM %g worse than no-shift %g", best.MSSSIM, noShift.MSSSIM)
-	}
-	if best.PSNR < noShift.PSNR-1e-9 {
-		t.Errorf("best-shift PSNR %g worse than no-shift %g", best.PSNR, noShift.PSNR)
-	}
-	if best.HistIntersection < noShift.HistIntersection-1e-9 {
-		t.Errorf("best-shift HistIntersection %g worse than no-shift %g",
-			best.HistIntersection, noShift.HistIntersection)
-	}
-}
-
 // TestIdealGridSplitMatchesGlyph checks the joint fg/bg-and-glyph choice: a
 // left-dark right-bright cell yields the right-half-block glyph with the bright
 // colour in the foreground.

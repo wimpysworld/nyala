@@ -141,6 +141,10 @@ placement-score path:
 kmscon-testcard:
     @go run ./tools/kmscon-testcard
 
+# Regenerate the committed testdata/overlay/*.runs fixtures
+genruns:
+    @go run ./tools/genruns
+
 # Rebuild the test page PNGs from the committed PDFs at 150 DPI for reproducibility
 regen-fixtures:
     #!/usr/bin/env bash

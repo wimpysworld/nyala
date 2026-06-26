@@ -22,22 +22,11 @@
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
       pkgsFor = system: import nixpkgs { inherit system; };
-      # Tesseract pinned to the eng and osd traineddata. It backs the OCR tests
-      # built under the "ocr" tag; the shipped nyala binary stays cgo-free.
-      tesseractFor =
-        system:
-        (pkgsFor system).tesseract.override {
-          enableLanguages = [
-            "eng"
-            "osd"
-          ];
-        };
       localPackage =
         system:
         let
           pkgs = pkgsFor system;
           buildGoModule = pkgs.buildGoModule.override { go = pkgs.go_1_26; };
-          tesseract = tesseractFor system;
           # Chromium is the Stage 3 runtime browser, Linux-only
           # (nixpkgs chromium is platforms = lib.platforms.linux). On Darwin
           # the build proceeds with no Chromium and no wrap.
@@ -48,19 +37,13 @@
           version = "0.0.0";
           src = nixpkgs.lib.cleanSource ./.;
           subPackages = [ "cmd/nyala" ];
-          vendorHash = "sha256-rtuzpZo3+oKDY+Bh0rBvYyFYky3hTrF2qENuXgo/DNM=";
-          # The shipped binary is static and cgo-free: the gosseract cgo lives
-          # behind the "ocr" tag, off here, and subPackages excludes it. The
-          # tesseract inputs only serve the OCR-tagged test build.
+          vendorHash = "sha256-O88cGgpqXU8JoD2iOYov4QZ0UHXXWdU6lOR/LO4zYEs=";
+          # The shipped binary is static and cgo-free.
           env.CGO_ENABLED = "0";
           nativeBuildInputs = [
             pkgs.pkg-config
           ]
           ++ pkgs.lib.optionals onLinux [ pkgs.makeWrapper ];
-          buildInputs = [
-            tesseract
-            pkgs.leptonica
-          ];
           ldflags = [
             "-s"
             "-w"
@@ -87,7 +70,6 @@
         system:
         let
           pkgs = pkgsFor system;
-          tesseract = tesseractFor system;
         in
         {
           default = pkgs.mkShell {
@@ -103,21 +85,12 @@
                 govulncheck
                 ineffassign
                 just
-                leptonica
                 pkg-config
                 poppler-utils
-                tesseract
               ])
               # Stage 3 runtime browser; Linux-only (nixpkgs chromium is
               # platforms = lib.platforms.linux).
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.chromium ];
-
-            # gosseract links libtesseract directly, so the OCR tests need
-            # TESSDATA_PREFIX to find the eng and osd traineddata. The tagged
-            # tests run with `go test -tags ocr ./...`.
-            shellHook = ''
-              export TESSDATA_PREFIX="${tesseract}/share/tessdata"
-            '';
           };
         }
       );
