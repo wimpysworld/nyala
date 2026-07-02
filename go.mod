@@ -18,7 +18,7 @@ require (
 	github.com/raf555/pixelmatch v1.0.1
 	github.com/rivo/uniseg v0.4.7
 	golang.org/x/sys v0.46.0
-	golang.org/x/tools v0.46.0
+	golang.org/x/tools v0.47.0
 	gonum.org/v1/plot v0.17.0
 )
 
