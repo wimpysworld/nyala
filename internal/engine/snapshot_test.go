@@ -731,11 +731,11 @@ func TestDecodeGlyphRunsScrollRowUnderLayoutScale(t *testing.T) {
 			}
 			got := runs[0].Row
 			if got != wantRow {
-				// The pure path is faulty: the row drifts with Z. Keep this test
-				// as a documented skip so the fast gate stays green; a later fix
-				// unskips it. drift is the observed error in rows.
+				// The row must be scale-invariant: the device-space bin is the
+				// ground truth for every Z. A drift here means the decode leaked Z
+				// into the row, the exact scroll/scale sync fault this test guards.
 				drift := got - wantRow
-				t.Skipf("row binning drifts with layout scale Z=%g: got row %d, want %d (drift %d rows); pure decode path faulty, fix and unskip", z, got, wantRow, drift)
+				t.Fatalf("row binning drifts with layout scale Z=%g: got row %d, want %d (drift %d rows)", z, got, wantRow, drift)
 			}
 		})
 	}

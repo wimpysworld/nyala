@@ -335,7 +335,14 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 				// scrolled frame as the bundle's last frame; a scroll failure writes a
 				// partial bundle. With no scroll, finalise the full bundle straight away.
 				if scrollPx > 0 {
-					if reason, ok := captureScrollFrame(eng, session, frames, tee, st, bundle, timer, scrollPx, settle, idle, drawn); !ok {
+					// The last drawn frame is the pre-injection baseline: the scrolled
+					// frame must advance past its offset, not merely read positive, so a
+					// page that loads already scrolled is not mistaken for the result.
+					var baseScrollY float64
+					if frame.Meta != nil {
+						baseScrollY = frame.Meta.ScrollOffsetY
+					}
+					if reason, ok := captureScrollFrame(eng, session, frames, tee, st, bundle, timer, scrollPx, settle, idle, drawn, baseScrollY); !ok {
 						_ = finalisePartial(reason)
 						return ErrPartialBundle
 					}
@@ -368,9 +375,11 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 // gate the drawn frame carries a stale text map; the gate holds the draw until the
 // settled overlay has published and the frame loop has re-emitted the held bitmap
 // with it. The settle signal is drained before the injection so a stale pre-scroll
-// poke does not satisfy the gate. A nil session or a nil settle channel (a
-// fake-engine test that scripts the scrolled frame directly) reads as settled at
-// once, so the hook falls back to the advanced-offset wait alone. nilImage frames
+// poke does not satisfy the gate. baseScrollY is the pre-injection scroll offset:
+// the scrolled bitmap must advance strictly past it, so a page that loaded already
+// scrolled is not mistaken for the injection result. A nil session or a nil settle
+// channel (a fake-engine test that scripts the scrolled frame directly) reads as
+// settled at once, so the hook falls back to the advanced-offset wait alone. nilImage frames
 // are skipped; the wait is bounded by the idle timer, already armed by the last
 // main-loop draw. It returns a reason on a draw or write failure, a scroll timeout,
 // or a closed frames channel; ok is true once the scrolled frame is drawn and
@@ -378,7 +387,7 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 // the right frame index. settle gates the settle wait: when false the hook skips it
 // and draws the first frame whose scroll offset advanced (the pre-settle state,
 // which the compose-time scroll compensation keeps glued to the scrolled bitmap).
-func captureScrollFrame(eng Engine, session CaptureSession, frames <-chan render.Frame, tee io.Writer, st *State, bundle bundleWriter, timer *time.Timer, scrollPx int, settle bool, idle time.Duration, drawn int) (reason string, ok bool) {
+func captureScrollFrame(eng Engine, session CaptureSession, frames <-chan render.Frame, tee io.Writer, st *State, bundle bundleWriter, timer *time.Timer, scrollPx int, settle bool, idle time.Duration, drawn int, baseScrollY float64) (reason string, ok bool) {
 	// Read the settle channel and drain any stale poke before the injection, so only a
 	// settle publish that lands after this scroll satisfies the gate. A nil session or
 	// a nil channel means no settle gate (a fake-engine test): treat it as settled at
@@ -436,12 +445,14 @@ func captureScrollFrame(eng Engine, session CaptureSession, frames <-chan render
 				}
 			}
 			// Wait for both the settled text publish and the scrolled bitmap. The
-			// scrolled frame's screencast metadata reports a non-zero vertical offset; a
-			// pre-scroll frame still shows offset zero and a frame with no metadata cannot
-			// confirm the scroll, so both are skipped. Until the settle poke lands, an
-			// advanced-offset frame still carries the stale pre-scroll overlay, so it is
-			// held back too.
-			if !settled || frame.Meta == nil || frame.Meta.ScrollOffsetY <= 0 {
+			// scrolled frame's screencast metadata reports a vertical offset past the
+			// pre-injection baseline; a pre-scroll frame still shows the baseline and a
+			// frame with no metadata cannot confirm the scroll, so both are skipped. The
+			// strict advance over baseScrollY, not a bare positive test, keeps a page
+			// that loaded already scrolled from finalising on a stale frame. Until the
+			// settle poke lands, an advanced-offset frame still carries the stale
+			// pre-scroll overlay, so it is held back too.
+			if !settled || frame.Meta == nil || frame.Meta.ScrollOffsetY <= baseScrollY {
 				continue
 			}
 			in, derr := drawCaptureFrame(st, frame, tee, true)
