@@ -26,16 +26,17 @@ const styleElementID = "nyala-font-forcing"
 // forces every element onto the monospace grid with a seed font-size of
 // cellW/advanceRatio and a line-height of cellH, disables kerning, ligatures,
 // and letter-spacing, left-aligns text, and de-sticks fixed and sticky
-// positioning to absolute. It runs via Page.addScriptToEvaluateOnNewDocument,
-// which fires when the new document's JS context is created, before
-// documentElement exists. The script appends the <style> as soon as
-// documentElement appears: immediately if it is already there, otherwise from a
-// MutationObserver on document that appends and disconnects the moment the root
-// element lands, so the first layout is forced. It applies to the first document
-// and every later one.
-func buildStylesheetScript(fontBytes []byte, cellW, cellH int) string {
+// positioning to absolute. cellW and cellH are the fractional CSS-pixel cell size
+// under the layout scale Z, so the seed and line-height keep sub-cell precision.
+// It runs via Page.addScriptToEvaluateOnNewDocument, which fires when the new
+// document's JS context is created, before documentElement exists. The script
+// appends the <style> as soon as documentElement appears: immediately if it is
+// already there, otherwise from a MutationObserver on document that appends and
+// disconnects the moment the root element lands, so the first layout is forced. It
+// applies to the first document and every later one.
+func buildStylesheetScript(fontBytes []byte, cellW, cellH float64) string {
 	dataURL := "data:font/ttf;base64," + base64.StdEncoding.EncodeToString(fontBytes)
-	seedPx := float64(cellW) / advanceRatio
+	seedPx := cellW / advanceRatio
 	css := fmt.Sprintf(`@font-face {
   font-family: "%s";
   src: url("%s") format("truetype");
@@ -43,7 +44,7 @@ func buildStylesheetScript(fontBytes []byte, cellW, cellH int) string {
 * {
   font-family: "%s", monospace !important;
   font-size: %gpx !important;
-  line-height: %dpx !important;
+  line-height: %gpx !important;
   font-kerning: none !important;
   letter-spacing: 0 !important;
   font-variant-ligatures: none !important;
@@ -93,13 +94,14 @@ func jsStringLiteral(s string) string {
 }
 
 // calibratedFontSize returns the corrected seed font-size that lands N graphemes
-// on N*cellW pixels, given the measured probe box width in CSS pixels. Font
-// advance scales linearly with font-size, so the correction is
-// seed * (N*cellW) / measuredBoxW. A zero or non-positive measured width yields
-// no correction and returns the seed unchanged.
-func calibratedFontSize(seed float64, n, cellW int, measuredBoxW float64) float64 {
+// on N*cellW pixels, given the measured probe box width in CSS pixels. cellW is the
+// fractional CSS-pixel cell width under the layout scale Z, so the probe target is
+// float64(n) * cellW. Font advance scales linearly with font-size, so the
+// correction is seed * (N*cellW) / measuredBoxW. A zero or non-positive measured
+// width yields no correction and returns the seed unchanged.
+func calibratedFontSize(seed float64, n int, cellW, measuredBoxW float64) float64 {
 	if measuredBoxW <= 0 {
 		return seed
 	}
-	return seed * (float64(n*cellW) / measuredBoxW)
+	return seed * (float64(n) * cellW / measuredBoxW)
 }

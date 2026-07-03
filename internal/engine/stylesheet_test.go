@@ -17,15 +17,16 @@ func TestSeedFontSize(t *testing.T) {
 	// and the font-size the emitted script carries for that cell width.
 	cases := []struct {
 		name  string
-		cellW int
+		cellW float64
 	}{
 		{"narrow cell", 6},
 		{"typical cell", 9},
 		{"wide cell", 12},
+		{"fractional cell under Z", 8.0 / 1.5},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			want := float64(c.cellW) / advanceRatio
+			want := c.cellW / advanceRatio
 			script := buildStylesheetScript([]byte("fake-ttf"), c.cellW, 18)
 			got := fontSizeFromScript(t, script)
 			if math.Abs(got-want) > floatEps {
@@ -45,16 +46,19 @@ func TestCalibratedFontSizeLandsTarget(t *testing.T) {
 		name        string
 		seed        float64
 		n           int
-		cellW       int
+		cellW       float64
 		measuredBox float64
 	}{
 		{"probe too wide, correct down", 14.625, 10, 9, 100.0},
 		{"probe too narrow, correct up", 14.625, 10, 9, 80.0},
 		{"probe on target, no change", 14.625, 10, 9, 90.0},
+		// Fractional cellW under Z: cellW = 8/1.5, seed = cellW/advanceRatio, a probe
+		// off target still lands N*cellW after correction with no int cast.
+		{"fractional cell corrects to target", 8.0 / 1.5 / advanceRatio, 20, 8.0 / 1.5, 100.0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			target := float64(c.n * c.cellW)
+			target := float64(c.n) * c.cellW
 			got := calibratedFontSize(c.seed, c.n, c.cellW, c.measuredBox)
 			// The corrected size scaled by the measured advance ratio lands the target.
 			landed := c.measuredBox * (got / c.seed)
@@ -99,7 +103,7 @@ func TestBuildStylesheetScriptContents(t *testing.T) {
 		{"fixed position selector", `position: fixed`},
 		{"sticky position selector", `position: sticky`},
 		{"seed font-size from cell width", fmt.Sprintf("font-size: %gpx !important", seedPx)},
-		{"line-height from cell height", fmt.Sprintf("line-height: %dpx !important", cellH)},
+		{"line-height from cell height", fmt.Sprintf("line-height: %gpx !important", float64(cellH))},
 		{"immediate-append guard on existing root", "if(document.documentElement){document.documentElement.appendChild(s);}"},
 		{"MutationObserver for pre-DOM append", "new MutationObserver"},
 		{"observer watches document childList", "o.observe(document,{childList:true})"},

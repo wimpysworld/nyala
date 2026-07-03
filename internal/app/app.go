@@ -17,6 +17,11 @@ import (
 	"github.com/wimpysworld/nyala/internal/viewer"
 )
 
+// defaultLayoutWidth is the target CSS-pixel layout width for the block backend.
+// A terminal wider than this lays out at this width via the block device scale, so
+// the default is recorded here in one place and referenced by the LayoutWidth flag.
+const defaultLayoutWidth = 1280
+
 // CLI is the parsed Nyala command line. cmd/nyala binds it to kong; the fields
 // carry the colour mode, the target URL, and an optional browser path.
 type CLI struct {
@@ -33,9 +38,24 @@ type CLI struct {
 	// to NYALA_BROWSER, CHROME_PATH, then a PATH lookup at launch.
 	Browser string `help:"Path to the Chromium executable to drive." name:"browser"`
 
+	// LayoutWidth is the target CSS-pixel width the block backend lays out at. A
+	// terminal wider than this shrinks its device scale so the page fits the target.
+	// It must be positive; Validate rejects a non-positive value. It defaults to
+	// defaultLayoutWidth.
+	LayoutWidth int `help:"Block backend target layout width in CSS pixels." name:"layout-width" default:"1280"`
+
 	// URL is the page to open. A bare host gains an https:// scheme; http,
 	// https, and file schemes are accepted, others are rejected.
 	URL string `arg:"" help:"URL to open."`
+}
+
+// Validate rejects a non-positive LayoutWidth. kong calls it after parsing; a
+// clear error stops the run before engine construction.
+func (c CLI) Validate() error {
+	if c.LayoutWidth <= 0 {
+		return fmt.Errorf("--layout-width must be positive, got %d", c.LayoutWidth)
+	}
+	return nil
 }
 
 // Run dispatches a parsed CLI on the given tty. It prepends https:// when the
@@ -56,9 +76,9 @@ func Run(cli CLI, tty *os.File) error {
 	}
 	eng := engineAdapter{engine.New(cli.Browser)}
 	if capture.Enabled {
-		return viewer.Capture(eng, target, tty, cli.Color, cli.Backend, capture.N)
+		return viewer.Capture(eng, target, tty, cli.Color, cli.Backend, cli.LayoutWidth, capture.N)
 	}
-	return viewer.Stream(eng, target, tty, cli.Color, cli.Backend)
+	return viewer.Stream(eng, target, tty, cli.Color, cli.Backend, cli.LayoutWidth)
 }
 
 // engineAdapter wraps a ChromiumEngine to satisfy viewer.Engine. The viewer

@@ -7,8 +7,61 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"math"
 	"testing"
 )
+
+// layoutScaleEps is the tolerance for the fractional layout-scale compare. The
+// image-maths note bars exact float equality; a small epsilon absorbs the residue.
+const layoutScaleEps = 1e-9
+
+// TestLayoutScale checks the pure block-only device scale Z = max(1, cols*cellW /
+// layoutWidth). A grid at or under the target width keeps Z == 1; a wider grid
+// shrinks by the continuous ratio. The 120- and 240-column cases are the criterion.
+func TestLayoutScale(t *testing.T) {
+	cases := []struct {
+		name        string
+		cols        int
+		cellW       int
+		layoutWidth int
+		want        float64
+	}{
+		// 120 cols * 8 = 960 <= 1280, so Z clamps to 1.
+		{"120 cols under target holds at 1", 120, 8, 1280, 1},
+		// 240 cols * 8 = 1920, so Z = 1920/1280 = 1.5.
+		{"240 cols over target scales to 1.5", 240, 8, 1280, 1.5},
+		// A grid exactly at the target keeps Z == 1, not a rounding step over.
+		{"grid at target holds at 1", 160, 8, 1280, 1},
+		// A non-positive target falls back to 1 rather than dividing by zero.
+		{"zero target falls back to 1", 240, 8, 0, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := layoutScale(c.cols, c.cellW, c.layoutWidth)
+			if math.Abs(got-c.want) > layoutScaleEps {
+				t.Errorf("layoutScale(%d, %d, %d) = %g, want %g", c.cols, c.cellW, c.layoutWidth, got, c.want)
+			}
+		})
+	}
+}
+
+// TestLayoutScaleBackendGate checks the engine method gates Z to the block
+// backend: a graphics backend returns 1 even on a wide grid, and the block backend
+// returns the pure layoutScale for the same grid.
+func TestLayoutScaleBackendGate(t *testing.T) {
+	const cols, cellW, layoutWidth = 240, 8, 1280
+
+	block := &ChromiumEngine{backend: "block", cols: cols, cellW: cellW, layoutWidth: layoutWidth}
+	if got := block.layoutScale(); math.Abs(got-1.5) > layoutScaleEps {
+		t.Errorf("block layoutScale = %g, want 1.5", got)
+	}
+	for _, backend := range []string{"sixel", "kitty"} {
+		g := &ChromiumEngine{backend: backend, cols: cols, cellW: cellW, layoutWidth: layoutWidth}
+		if got := g.layoutScale(); math.Abs(got-1) > layoutScaleEps {
+			t.Errorf("%s layoutScale = %g, want 1 (graphics stays at DSF 1)", backend, got)
+		}
+	}
+}
 
 // encodeBase64PNG builds a 2x2 image with a distinct red pixel at (0,0), encodes
 // it as PNG, and base64-encodes the bytes, the shape EventScreencastFrame.Data

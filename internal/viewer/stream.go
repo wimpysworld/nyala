@@ -38,6 +38,9 @@ type Engine interface {
 	// SetCellPx sets the resolved terminal cell pixel size the engine uses to
 	// size the graphics capture and to bin DOM text boxes to cells.
 	SetCellPx(w, h int)
+	// SetLayoutWidth sets the block-backend target layout width in CSS pixels the
+	// engine uses to compute the block device scale.
+	SetLayoutWidth(w int)
 	// Resize sets the terminal grid in cells; the engine recomputes the capture
 	// size and, when streaming, restarts the stream.
 	Resize(cols, rows int)
@@ -85,9 +88,10 @@ type CaptureSession interface {
 // nil. colourFlag is the --color intent; configureBackends resolves it against
 // NO_COLOR and detection. mode is the --backend mode: auto and block always
 // pass, and a forced graphics backend is rejected before navigation when
-// detection did not confirm it.
-func Stream(eng Engine, url string, tty *os.File, colourFlag, mode string) (err error) {
-	fd, st, restore, err := setupViewer(eng, tty, colourFlag)
+// detection did not confirm it. layoutWidth is the block-backend target layout
+// width in CSS pixels, handed to the engine before Navigate.
+func Stream(eng Engine, url string, tty *os.File, colourFlag, mode string, layoutWidth int) (err error) {
+	fd, st, restore, err := setupViewer(eng, tty, colourFlag, layoutWidth)
 	if err != nil {
 		return err
 	}
@@ -231,12 +235,13 @@ func (c *control) close() {}
 // setupViewer performs the shared viewer setup both Stream and the capture
 // driver need: it checks tty is a terminal, reads the grid size, puts the
 // terminal into raw mode, builds the State, runs backend and colour detection,
-// and hands the resolved backend and cell px to the engine before Navigate so
-// the engine sizes its screencast capture. It returns the tty fd, the State, and
+// and hands the resolved backend, cell px, and layout width to the engine before
+// Navigate so the engine sizes its screencast capture and block device scale. It
+// returns the tty fd, the State, and
 // a restore closure the caller must defer to leave raw mode. It does not enter
 // the full-screen mode or write the loading cue, because the capture driver must
 // not mirror those bytes into its terminal-stream capture.
-func setupViewer(eng Engine, tty *os.File, colourFlag string) (fd uintptr, st *State, restore func(), err error) {
+func setupViewer(eng Engine, tty *os.File, colourFlag string, layoutWidth int) (fd uintptr, st *State, restore func(), err error) {
 	fd = tty.Fd()
 	if !cterm.IsTerminal(fd) {
 		return 0, nil, nil, fmt.Errorf("viewer: %s is not a terminal", tty.Name())
@@ -259,9 +264,11 @@ func setupViewer(eng Engine, tty *os.File, colourFlag string) (fd uintptr, st *S
 	// reader, so the handshake replies are not consumed by the key goroutine.
 	configureBackends(&state, tty, cols, rows, colourFlag)
 
-	// Hand the resolved backend and cell px to the engine before Navigate; the
-	// engine sizes the screencast capture from them.
+	// Hand the resolved backend, cell px, and layout width to the engine before
+	// Navigate; the engine sizes the screencast capture and the block device scale
+	// from them.
 	eng.SetCellPx(state.W, state.H)
+	eng.SetLayoutWidth(layoutWidth)
 	eng.SetBackend(backendName(state.Backend))
 	eng.Resize(cols, rows)
 

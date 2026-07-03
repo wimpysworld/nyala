@@ -10,7 +10,9 @@
 // The argument is either a text-map.json file or a frame directory that contains
 // one; the tool resolves the directory case to the file. The cell size reads from
 // the bundle's performance.json cell_px, resolved from the frame directory, and
-// falls back to 8x16 when absent. The grid size reads from the frame's
+// falls back to 8x16 when absent. When performance.json carries a layout_scale Z,
+// the metric divides cell_px by Z to score against the text map's CSS-pixel box
+// geometry; cell_px keeps its terminal meaning. The grid size reads from the frame's
 // terminal-model.json; a graphics-backend bundle omits it, so the off-grid check
 // is skipped. The off-grid count is horizontal and negative escapes only (Col < 0,
 // Row < 0, Col >= cols); a row past the grid is legitimate below-fold content on a
@@ -71,10 +73,12 @@ type entry struct {
 }
 
 // perfDoc mirrors the fields of performance.json the tool reads: the first
-// frame's cell_px. The rest of the document is decoded but unused.
+// frame's cell_px and its optional layout_scale. The rest of the document is
+// decoded but unused. A nil LayoutScale (absent field) means Z=1.
 type perfDoc struct {
 	Frames []struct {
-		CellPx [2]int `json:"cell_px"`
+		CellPx      [2]int   `json:"cell_px"`
+		LayoutScale *float64 `json:"layout_scale"`
 	} `json:"frames"`
 }
 
@@ -192,14 +196,19 @@ func run(arg string, gc gateConfig) error {
 		return fmt.Errorf("decode %s: %w", mapName, err)
 	}
 	frameDir := filepath.Dir(mapPath)
-	cellW, cellH := readCellPx(frameDir)
+	cellW, cellH, scale := readCellPx(frameDir)
 	cols, rows := readGrid(frameDir)
 	boxes := make([]metrics.PlacementBox, len(entries))
 	for i, e := range entries {
 		boxes[i] = metrics.PlacementBox{X: e.X, Y: e.Y, W: e.W, H: e.H, Col: e.Col, Row: e.Row, Text: e.Text}
 	}
-	s := metrics.Placement(boxes, cellW, cellH, cols, rows)
+	cssW := float64(cellW) / scale
+	cssH := float64(cellH) / scale
+	s := metrics.Placement(boxes, cssW, cssH, cols, rows)
 	fmt.Printf("cell px:              %dx%d\n", cellW, cellH)
+	if scale != 1 {
+		fmt.Printf("css cell px:          %.3fx%.3f (layout_scale %.3f)\n", cssW, cssH, scale)
+	}
 	fmt.Printf("grid:                 %dx%d\n", cols, rows)
 	fmt.Printf("boxes:                %d\n", len(boxes))
 	fmt.Printf("mean right-edge err:  %.3f cells\n", s.MeanAbsRightEdgeErr)
@@ -236,28 +245,35 @@ func checkGate(s metrics.PlacementStats, gc gateConfig) error {
 	return nil
 }
 
-// readCellPx reads cell_px from the bundle-root performance.json, resolved from
-// the frame directory (its parent's parent, since frames live in frames/frame-*/).
-// It falls back to 8x16 when the file is absent, unreadable, or carries no frame
-// record. Only a present, positive pair overrides the fallback.
-func readCellPx(frameDir string) (int, int) {
+// readCellPx reads cell_px and the optional layout_scale from the bundle-root
+// performance.json, resolved from the frame directory (its parent's parent, since
+// frames live in frames/frame-*/). cell_px keeps its terminal meaning; the scale
+// is the forced device scale factor Z, so the CSS-pixel cell is cell_px/Z. It
+// falls back to 8x16 with scale 1 when the file is absent, unreadable, or carries
+// no frame record. Only a present, positive pair overrides the cell fallback, and
+// only a present, positive layout_scale overrides scale 1.
+func readCellPx(frameDir string) (int, int, float64) {
 	bundleRoot := filepath.Dir(filepath.Dir(frameDir))
 	raw, err := os.ReadFile(filepath.Join(bundleRoot, perfName))
 	if err != nil {
-		return fallbackCellW, fallbackCellH
+		return fallbackCellW, fallbackCellH, 1
 	}
 	var doc perfDoc
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return fallbackCellW, fallbackCellH
+		return fallbackCellW, fallbackCellH, 1
 	}
 	if len(doc.Frames) == 0 {
-		return fallbackCellW, fallbackCellH
+		return fallbackCellW, fallbackCellH, 1
+	}
+	scale := 1.0
+	if s := doc.Frames[0].LayoutScale; s != nil && *s > 0 {
+		scale = *s
 	}
 	w, h := doc.Frames[0].CellPx[0], doc.Frames[0].CellPx[1]
 	if w <= 0 || h <= 0 {
-		return fallbackCellW, fallbackCellH
+		return fallbackCellW, fallbackCellH, scale
 	}
-	return w, h
+	return w, h, scale
 }
 
 // readGrid reads cols and rows from the frame's terminal-model.json. It returns

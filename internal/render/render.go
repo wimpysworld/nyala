@@ -61,6 +61,9 @@ type GlyphRun struct {
 	Y        float64    // box top, CSS pixels, on-screen (scroll subtracted)
 	W        float64    // box width, CSS pixels
 	H        float64    // box height, CSS pixels
+	// CellW is the CSS-pixel cell width the run was snapped with. It is zero when
+	// unknown, which disables the sub-cell recompose for the run.
+	CellW float64
 }
 
 // FrameStats holds the engine-phase timings and sizes captured while building
@@ -78,6 +81,10 @@ type FrameStats struct {
 	// DOMSnapshotMS is the time spent capturing the DOM text snapshot, in
 	// milliseconds.
 	DOMSnapshotMS float64
+	// LayoutScale is the block-only layout scale Z for this frame, capture path
+	// only. It is max(1, cols*cellW / layoutWidth) on a block grid wider than the
+	// target layout width, and 1 otherwise.
+	LayoutScale float64
 }
 
 // ScreencastMeta is the neutral screencast frame metadata the capture bundle

@@ -21,7 +21,7 @@ type ChromiumEngine struct {
 	// viewer goroutine (Resize, SetBackend, SendKey, SendMouse, dispatchWheel)
 	// and the supervisor goroutine (startSession, teardownSession, launch,
 	// rebuild): ctx, cancel, slot, acks, text, captureW, captureH, cols, rows, scrollX,
-	// scrollY, backend, cellW, cellH, windowID, inputFailures, fontForcingID. Lock, copy the fields into locals or write
+	// scrollY, backend, cellW, cellH, layoutWidth, windowID, inputFailures, fontForcingID. Lock, copy the fields into locals or write
 	// the updates, unlock, then run the chromedp I/O on the locals. Never hold mu
 	// across a chromedp.Run or a channel send, or it deadlocks with the supervisor.
 	mu sync.Mutex
@@ -38,6 +38,7 @@ type ChromiumEngine struct {
 	// Resolved geometry from the Stage 1 cell px and the active backend.
 	cellW       int    // resolved cell width in pixels
 	cellH       int    // resolved cell height in pixels
+	layoutWidth int    // block-backend target layout width in CSS pixels
 	backend     string // active backend (block, sixel, kitty)
 	browserFlag string // --browser value, empty for env/PATH discovery
 	cols        int    // terminal grid width in cells
@@ -221,6 +222,16 @@ func (e *ChromiumEngine) markPainted() {
 func (e *ChromiumEngine) SetCellPx(w, h int) {
 	e.mu.Lock()
 	e.cellW, e.cellH = w, h
+	e.mu.Unlock()
+}
+
+// SetLayoutWidth records the block-backend target layout width in CSS pixels. The
+// engine uses it to compute the block device scale so a terminal wider than the
+// target lays out at the target width. The caller sets it before Navigate,
+// alongside the cell px and the grid.
+func (e *ChromiumEngine) SetLayoutWidth(w int) {
+	e.mu.Lock()
+	e.layoutWidth = w
 	e.mu.Unlock()
 }
 

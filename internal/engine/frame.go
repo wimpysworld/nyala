@@ -9,10 +9,6 @@ import (
 	_ "image/png"  // register the PNG decoder for image.Decode
 )
 
-// deviceScaleFactor is the device pixel ratio the engine pins via DSF 1, so
-// captured pixels equal CSS pixels and the DOM box decode divides by 1.
-const deviceScaleFactor = 1.0
-
 // screencastQuality is the JPEG compression quality for the screencast. The
 // bitmap is downsampled into 2-colour cells, so a high quality keeps JPEG loss
 // below cell visibility while keeping the payload small for the moving viewport.
@@ -31,19 +27,47 @@ const frameChannelBuffer = 2
 // dropping a real ack under normal cadence.
 const ackBufferDepth = 8
 
-// snapshotCellPx returns the layout pixels per terminal cell, the divisor
+// layoutScale is the pure, block-only continuous device scale Z. It returns
+// max(1, cols*cellW / layoutWidth), so a grid wider than the target layout width
+// shrinks by Z and lays out at the target; a grid at or under the target keeps
+// Z == 1. It is continuous (fractional), not stepped, and independent of the
+// backend; the ChromiumEngine.layoutScale method gates it to the block backend.
+func layoutScale(cols, cellW, layoutWidth int) float64 {
+	if layoutWidth <= 0 {
+		return 1
+	}
+	z := float64(cols*cellW) / float64(layoutWidth)
+	if z < 1 {
+		return 1
+	}
+	return z
+}
+
+// layoutScale returns the layout scale Z for the active backend, read under the
+// caller's existing e.mu hold. Only the block backend folds text onto the cell
+// grid and needs the shrink, so it returns 1 for a graphics backend and the pure
+// layoutScale(cols, cellW, layoutWidth) for block.
+func (e *ChromiumEngine) layoutScale() float64 {
+	if e.backend != "block" {
+		return 1
+	}
+	return layoutScale(e.cols, e.cellW, e.layoutWidth)
+}
+
+// snapshotCellPx returns the fractional CSS-pixel cell size, the divisor
 // decodeGlyphRuns rounds the DOM box bounds by. The CSS layout viewport is the
-// real surface (surfaceSize, set by SetDeviceMetricsOverride and SetContentsSize),
-// so the snapshot box bounds are in surface pixels; dividing the surface viewport
-// by the grid maps a box to its cell. This is the real cell px (cellW x cellH),
-// independent of the sub-cell client-side downscale the block frame undergoes. A
-// zero grid falls back to the resolved cell px.
-func (e *ChromiumEngine) snapshotCellPx() (cellW, cellH int) {
+// real surface (surfaceSize) divided by Z: under Z the page lays out at surf/Z
+// CSS pixels, so the snapshot box bounds are CSS pixels and dividing the CSS-pixel
+// viewport by the grid maps a box to its cell. The result is fractional so no
+// premature int cast reintroduces the sub-cell binning error; callers round only
+// at the final cell bin. A zero grid falls back to the resolved cell px.
+func (e *ChromiumEngine) snapshotCellPx() (cellW, cellH float64) {
 	if e.cols > 0 && e.rows > 0 {
 		surfW, surfH := e.surfaceSize(e.cols, e.rows)
-		return surfW / e.cols, surfH / e.rows
+		z := e.layoutScale()
+		return float64(surfW) / z / float64(e.cols), float64(surfH) / z / float64(e.rows)
 	}
-	return e.cellW, e.cellH
+	return float64(e.cellW), float64(e.cellH)
 }
 
 // decodeScreencastImage decodes one base64 screencast payload to an *image.RGBA

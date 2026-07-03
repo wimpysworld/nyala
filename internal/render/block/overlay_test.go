@@ -97,11 +97,31 @@ func TestComposeWideClaimsTrailingCell(t *testing.T) {
 	}
 }
 
-// TestComposeNarrowOverwriteClearsStaleWide places a width-2 grapheme at a cell,
-// then a width-1 grapheme at the same cell in a later run. The lead cell must hold
-// the ASCII Text, and the trailing cell must drop its stale Wide and return to a
-// plain bitmap cell.
-func TestComposeNarrowOverwriteClearsStaleWide(t *testing.T) {
+// TestComposeFirstWriterWinsNarrow places two width-1 runs at the same cell. The
+// first run's grapheme must survive; the second is skipped, so there is no weld
+// of the later run onto the claimed cell.
+func TestComposeFirstWriterWinsNarrow(t *testing.T) {
+	src := color.RGBA{R: 30, G: 40, B: 50, A: 0xff}
+	img := overlaySrc(2, 1, src)
+	br := &Renderer{Cols: 2, Rows: 1}
+	f := render.Frame{Img: img, Text: []render.GlyphRun{
+		{Col: 0, Row: 0, Text: "A", FG: color.RGBA{R: 0xff, A: 0xff}},
+		{Col: 0, Row: 0, Text: "B", FG: color.RGBA{B: 0xff, A: 0xff}},
+	}}
+	g := br.Compose(f)
+	cell := g.At(0, 0)
+	if cell.Text != "A" {
+		t.Fatalf("cell Text = %q, want A (first writer wins)", cell.Text)
+	}
+	if cell.FG != (color.RGBA{R: 0xff, A: 0xff}) {
+		t.Fatalf("cell FG = %v, want the first run's FG (no weld from the second)", cell.FG)
+	}
+}
+
+// TestComposeFirstWriterWinsWideLead places a width-2 run, then a second run over
+// its lead cell. The wide grapheme and its Wide trailing cell must survive; the
+// second run is skipped because the lead is claimed.
+func TestComposeFirstWriterWinsWideLead(t *testing.T) {
 	src := color.RGBA{R: 30, G: 40, B: 50, A: 0xff}
 	img := overlaySrc(3, 1, src)
 	br := &Renderer{Cols: 3, Rows: 1}
@@ -111,18 +131,15 @@ func TestComposeNarrowOverwriteClearsStaleWide(t *testing.T) {
 	}}
 	g := br.Compose(f)
 	lead := g.At(0, 0)
-	if lead.Text != "A" {
-		t.Fatalf("lead Text = %q, want A", lead.Text)
+	if lead.Text != "世" {
+		t.Fatalf("lead Text = %q, want 世 (first writer wins)", lead.Text)
 	}
 	trail := g.At(1, 0)
-	if trail.Wide {
-		t.Fatal("trailing cell Wide = true, want false (stale wide not cleared)")
+	if !trail.Wide {
+		t.Fatal("trailing cell Wide = false, want true (wide claim survives)")
 	}
 	if trail.Text != "" {
 		t.Fatalf("trailing Text = %q, want empty", trail.Text)
-	}
-	if want := bitmapCell(img, 1, 0, SchemeQuadrant); *trail != want {
-		t.Fatalf("trailing cell = %+v, want recomputed bitmap cell %+v", *trail, want)
 	}
 }
 
@@ -183,6 +200,170 @@ func TestComposeLeftEdgeClipAdvancesByWidth(t *testing.T) {
 	}
 	if t2 := g.At(2, 0).Text; t2 != "B" {
 		t.Fatalf("col 2 Text = %q, want B", t2)
+	}
+}
+
+// twoColumnQuadrant builds a one-cell quadrant source image whose left source
+// column is left and right source column is right, so a sub-column mask changes
+// the averaged background.
+func twoColumnQuadrant(left, right color.RGBA) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, cellPxW, cellPxH))
+	for y := range cellPxH {
+		img.SetRGBA(0, y, left)
+		img.SetRGBA(1, y, right)
+	}
+	return img
+}
+
+// twoColumnQuadrantAt builds a cols-wide quadrant source image, filling the cell
+// at column col with left/right source columns and every other column with fill,
+// so a sub-cell mask on that cell is measurable while its neighbours differ.
+func twoColumnQuadrantAt(cols, col int, left, right, fill color.RGBA) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, cols*cellPxW, cellPxH))
+	for c := range cols {
+		x0 := c * cellPxW
+		for y := range cellPxH {
+			if c == col {
+				img.SetRGBA(x0, y, left)
+				img.SetRGBA(x0+1, y, right)
+			} else {
+				img.SetRGBA(x0, y, fill)
+				img.SetRGBA(x0+1, y, fill)
+			}
+		}
+	}
+	return img
+}
+
+// TestCellBGAverageWholeCellIdentity pins the geometry-free path: a run with no
+// box geometry (W == 0) must reproduce the whole-cell mean byte for byte, the
+// value the pre-change function returned. The expected value is the arithmetic
+// mean of the two source columns, computed here independently of the function.
+func TestCellBGAverageWholeCellIdentity(t *testing.T) {
+	left := color.RGBA{R: 200, G: 100, B: 40, A: 0xff}
+	right := color.RGBA{R: 40, G: 60, B: 220, A: 0xff}
+	img := twoColumnQuadrant(left, right)
+	// Whole-cell mean over the 2x4 block: each column fills 4 rows, so the mean
+	// is (left+right)/2 per channel with the same integer rounding the function
+	// uses (sum over 8 pixels, integer divide by 8).
+	want := color.RGBA{
+		R: clampByte((int(left.R)*4 + int(right.R)*4) / 8),
+		G: clampByte((int(left.G)*4 + int(right.G)*4) / 8),
+		B: clampByte((int(left.B)*4 + int(right.B)*4) / 8),
+		A: 0xff,
+	}
+	// No geometry: run.W == 0, so cellCSSW is 0 and every column is uncovered.
+	got := cellBGAverage(img, 0, 0, SchemeQuadrant, render.GlyphRun{Col: 0, Row: 0, Text: "A"}, 0, 0)
+	if got != want {
+		t.Fatalf("geometry-free BG = %v, want whole-cell mean %v", got, want)
+	}
+}
+
+// TestCellBGAveragePartialCoverage proves the snapped anchoring: the box is
+// compared against the cell's snapped grid position ((Col+off)*cellCSSW), not
+// its own left edge. The cell sits at column 1, so its snapped left is 10; the
+// box spans [15, 20), covering the cell's right source column only. The average
+// must be the uncovered left column. The pre-repair anchoring set the cell left
+// to run.X (15), which covered the left column and returned the right one, so
+// this asserts the fix.
+func TestCellBGAveragePartialCoverage(t *testing.T) {
+	left := color.RGBA{R: 200, G: 100, B: 40, A: 0xff}
+	right := color.RGBA{R: 40, G: 60, B: 220, A: 0xff}
+	fill := color.RGBA{R: 10, G: 10, B: 10, A: 0xff}
+	img := twoColumnQuadrantAt(2, 1, left, right, fill)
+	cellCSSW := 10.0
+	// Cell at column 1 (snapped left 10); box [15, 20) covers source column 1.
+	run := render.GlyphRun{Col: 1, Row: 0, Text: "A", X: 15, W: 5}
+	got := cellBGAverage(img, 1, 0, SchemeQuadrant, run, 0, cellCSSW)
+	if got != left {
+		t.Fatalf("partial-coverage BG = %v, want uncovered left column %v", got, left)
+	}
+}
+
+// TestComposeBoundaryCellExcludesCoveredColumns proves the boundary recompose:
+// a run whose box residue spills into the neighbour cell the overlay never
+// wrote repaints that neighbour from its uncovered source columns only. The run
+// sits at column 1 (one grapheme, cellCSSW 10) with box [10, 25); the right
+// boundary cell is column 2 (snapped left 20, source columns [20,25) and
+// [25,30)). The box covers column 2's left source column, so its recomposed
+// background is the right source column alone, not the whole-cell blend.
+func TestComposeBoundaryCellExcludesCoveredColumns(t *testing.T) {
+	left := color.RGBA{R: 200, G: 100, B: 40, A: 0xff}
+	right := color.RGBA{R: 40, G: 60, B: 220, A: 0xff}
+	fill := color.RGBA{R: 10, G: 10, B: 10, A: 0xff}
+	// Column 2 carries the distinct left/right columns; the run is at column 1.
+	img := twoColumnQuadrantAt(4, 2, left, right, fill)
+	br := &Renderer{Cols: 4, Rows: 1}
+	run := render.GlyphRun{Col: 1, Row: 0, Text: "A", X: 10, W: 15, CellW: 10, FG: color.RGBA{A: 0xff}}
+	g := br.Compose(render.Frame{Img: img, Text: []render.GlyphRun{run}})
+	boundary := g.At(2, 0)
+	if boundary.Text != "" || boundary.Wide {
+		t.Fatalf("boundary cell claimed an overlay: Text=%q Wide=%v", boundary.Text, boundary.Wide)
+	}
+	if boundary.BG != right {
+		t.Fatalf("boundary BG = %v, want uncovered right column %v", boundary.BG, right)
+	}
+	// The unrelated far cell keeps its plain bitmap background (fill), untouched.
+	if far := g.At(3, 0); far.BG != fill {
+		t.Fatalf("far cell BG = %v, want untouched fill %v", far.BG, fill)
+	}
+}
+
+// TestComposeAnchorsWithCarriedCellW proves the overlay anchors on the exact
+// cell width the run carries, not one derived from the untrimmed box. The box is
+// one cell wider than its trimmed text: W = 3*cellW (a trailing space the engine
+// trimmed) while Text is two cells, so a W/display-cells derivation would inflate
+// the cell width to 1.5x. With CellW carried, the mask anchors at the true cell
+// width. The run sits at column 0 (cellCSSW 10, box [0, 30)); the right boundary
+// cell is column 2 (snapped left 20, source columns [20,25) and [25,30)), both
+// inside the box, so the recompose falls back to that neighbour's whole-cell
+// mean. The inflated 15px derivation would have anchored column 2 at snapped left
+// 30, outside the box, covering nothing and leaving the neighbour untouched.
+func TestComposeAnchorsWithCarriedCellW(t *testing.T) {
+	left := color.RGBA{R: 200, G: 100, B: 40, A: 0xff}
+	right := color.RGBA{R: 40, G: 60, B: 220, A: 0xff}
+	fill := color.RGBA{R: 10, G: 10, B: 10, A: 0xff}
+	img := twoColumnQuadrantAt(4, 2, left, right, fill)
+	br := &Renderer{Cols: 4, Rows: 1}
+	// Box "hi " (3 cells wide) trimmed to "hi" (2 cells); CellW is the true 10px.
+	run := render.GlyphRun{Col: 0, Row: 0, Text: "hi", X: 0, W: 30, CellW: 10, FG: color.RGBA{A: 0xff}}
+	g := br.Compose(render.Frame{Img: img, Text: []render.GlyphRun{run}})
+	boundary := g.At(2, 0)
+	if boundary.Text != "" || boundary.Wide {
+		t.Fatalf("boundary cell claimed an overlay: Text=%q Wide=%v", boundary.Text, boundary.Wide)
+	}
+	// Both of column 2's source columns lie inside the box [0, 30), so the mask is
+	// fully covered and averageUncovered falls back to the whole-cell mean.
+	want := color.RGBA{
+		R: clampByte((int(left.R)*4 + int(right.R)*4) / 8),
+		G: clampByte((int(left.G)*4 + int(right.G)*4) / 8),
+		B: clampByte((int(left.B)*4 + int(right.B)*4) / 8),
+		A: 0xff,
+	}
+	if boundary.BG != want {
+		t.Fatalf("boundary BG = %v, want whole-cell mean %v (box covers both source columns at the true cell width)", boundary.BG, want)
+	}
+}
+
+// TestCellBGAverageFullCoverageIdentity covers the whole cell and asserts the
+// background falls back to the whole-cell mean byte for byte, matching the
+// geometry-free identity.
+func TestCellBGAverageFullCoverageIdentity(t *testing.T) {
+	left := color.RGBA{R: 200, G: 100, B: 40, A: 0xff}
+	right := color.RGBA{R: 40, G: 60, B: 220, A: 0xff}
+	img := twoColumnQuadrant(left, right)
+	cellCSSW := 10.0
+	want := color.RGBA{
+		R: clampByte((int(left.R)*4 + int(right.R)*4) / 8),
+		G: clampByte((int(left.G)*4 + int(right.G)*4) / 8),
+		B: clampByte((int(left.B)*4 + int(right.B)*4) / 8),
+		A: 0xff,
+	}
+	// Box spans the whole cell: both source columns covered, fall back to mean.
+	run := render.GlyphRun{Col: 0, Row: 0, Text: "A", X: 0, W: cellCSSW}
+	got := cellBGAverage(img, 0, 0, SchemeQuadrant, run, 0, cellCSSW)
+	if got != want {
+		t.Fatalf("full-coverage BG = %v, want whole-cell mean %v", got, want)
 	}
 }
 

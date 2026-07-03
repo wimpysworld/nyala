@@ -272,7 +272,7 @@ func TestDecodeGlyphRunsBinning(t *testing.T) {
 		name                  string
 		x, y                  float64
 		dpr, scrollX, scrollY float64
-		cellW, cellH          int
+		cellW, cellH          float64
 		wantCol, wantRow      int
 	}{
 		{
@@ -517,6 +517,48 @@ func TestMapBoxToCellsWidthBudget(t *testing.T) {
 	}
 }
 
+// TestMapBoxToCellsFractionalCell checks the box-to-cell binning under a
+// fractional CSS-pixel cell size (Z = 1.5, cellW = 8/1.5). The bounds are already
+// CSS pixels here (dpr 1, zero scroll), so a box left edge at a known CSS-pixel
+// offset must bin to the expected column with no off-by-one from a premature int
+// cast: col = round(px / (8/1.5)). The wide box keeps the single grapheme unclipped
+// so this exercises position, not the clip budget.
+func TestMapBoxToCellsFractionalCell(t *testing.T) {
+	const cols = 240
+	cellW := 8.0 / 1.5 // 5.3333..., the fractional cell under Z = 1.5
+	cellH := 16.0 / 1.5
+
+	cases := []struct {
+		name    string
+		x       float64
+		wantCol int
+	}{
+		// px 0 bins to column 0.
+		{"origin bins to column 0", 0, 0},
+		// px = 5*cellW = 26.6667 bins exactly to column 5.
+		{"five cells in bins to column 5", 5 * (8.0 / 1.5), 5},
+		// A sub-cell inset below the half-cell mark rounds down: 12/5.3333 = 2.25 -> 2.
+		{"inset below half rounds down", 12, 2},
+		// A sub-cell inset above the half-cell mark rounds up: 14.5/5.3333 = 2.72 -> 3.
+		{"inset above half rounds up", 14.5, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bounds := []float64{tc.x, 0, 1000, cellH}
+			col, row, clipped := mapBoxToCells(bounds, 1, 0, 0, cellW, cellH, cols, "A")
+			if col != tc.wantCol {
+				t.Fatalf("col = %d, want %d (px %g / cellW %g)", col, tc.wantCol, tc.x, cellW)
+			}
+			if row != 0 {
+				t.Fatalf("row = %d, want 0", row)
+			}
+			if clipped != "A" {
+				t.Fatalf("clipped = %q, want %q", clipped, "A")
+			}
+		})
+	}
+}
+
 // TestSnapshotStyleIndexMapping pins the style whitelist order to the index
 // constants. The order is load-bearing: the decode reads each style by position,
 // so a reorder of snapshotStyles without matching the constants silently misreads
@@ -583,7 +625,7 @@ func TestDecodeGlyphRunsGuards(t *testing.T) {
 		name         string
 		docs         []*domsnapshot.DocumentSnapshot
 		dpr          float64
-		cellW, cellH int
+		cellW, cellH float64
 	}{
 		{"zero cellW", []*domsnapshot.DocumentSnapshot{doc}, 1, 0, 16},
 		{"zero cellH", []*domsnapshot.DocumentSnapshot{doc}, 1, 8, 0},
