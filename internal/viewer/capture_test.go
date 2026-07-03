@@ -152,6 +152,11 @@ type fakeSession struct {
 	// the session-timing tests proceed straight to the bounded loop. The gate tests
 	// set their own channel.
 	textReady <-chan struct{}
+	// scrollSettle is the post-scroll settle signal the scroll hook waits on. A nil
+	// channel means "already settled": ScrollSettle returns a pre-closed channel so
+	// the non-gate tests fall back to the advanced-offset wait. The settle-gate test
+	// sets its own channel and pokes it after the stale advanced frame.
+	scrollSettle <-chan struct{}
 }
 
 func (s *fakeSession) SessionJSON() []byte {
@@ -184,6 +189,13 @@ func (s *fakeSession) TextReady() <-chan struct{} {
 	return s.textReady
 }
 
+func (s *fakeSession) ScrollSettle() <-chan struct{} {
+	if s.scrollSettle == nil {
+		return closedChan
+	}
+	return s.scrollSettle
+}
+
 // fakeCaptureEngine is the viewer.Engine the capture-driver tests drive. It
 // scripts the frames channel and records whether Navigate ran, so the tests
 // assert the forced-backend rejection returns before any Navigate. navigateErr,
@@ -193,6 +205,9 @@ type fakeCaptureEngine struct {
 	frames      chan render.Frame
 	navigated   bool
 	navigateErr error
+	// onScroll, when set, runs on SendScroll with the requested CSS-pixel scroll,
+	// so a scroll-hook test can script the scrolled frame the engine would emit.
+	onScroll func(dy int)
 }
 
 func (e *fakeCaptureEngine) EnableCapture(io.Writer) CaptureSession { return nil }
@@ -208,7 +223,12 @@ func (e *fakeCaptureEngine) Navigate(string) error {
 
 func (e *fakeCaptureEngine) Frames() <-chan render.Frame { return e.frames }
 func (e *fakeCaptureEngine) SendKey(string)              {}
-func (e *fakeCaptureEngine) Close() error                { return nil }
+func (e *fakeCaptureEngine) SendScroll(dy int) {
+	if e.onScroll != nil {
+		e.onScroll(dy)
+	}
+}
+func (e *fakeCaptureEngine) Close() error { return nil }
 
 // blockState builds a State whose detection confirms block only, the floor
 // backend. A forced sixel or kitty is not in its enabled set, so the validator
@@ -249,7 +269,7 @@ func TestCaptureForcedBlockOverridesDetectedKitty(t *testing.T) {
 	}
 	applyForcedBackend(st, ModeBlock)
 
-	meta := captureMeta("https://example.test", st, ModeBlock, 1)
+	meta := captureMeta("https://example.test", st, ModeBlock, 1, 0)
 	if meta.Backend != capture.Backend("block") {
 		t.Fatalf("meta backend = %q, want block; the manifest must record the forced backend", meta.Backend)
 	}
@@ -260,7 +280,7 @@ func TestCaptureForcedBlockOverridesDetectedKitty(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := runCapture(eng, "https://example.test", st, &tty, bundle, ModeBlock, 1, captureIdle, captureIdle)
+	err := runCapture(eng, "https://example.test", st, &tty, bundle, ModeBlock, 1, 0, true, captureIdle, captureIdle)
 	if err != nil {
 		t.Fatalf("runCapture err = %v, want nil for a full forced-block capture", err)
 	}
@@ -283,7 +303,7 @@ func TestRunCaptureForcedSixelRejectedWritesPartial(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := runCapture(eng, "https://example.test", blockState(), &tty, bundle, ModeSixel, 1, captureIdle, time.Millisecond)
+	err := runCapture(eng, "https://example.test", blockState(), &tty, bundle, ModeSixel, 1, 0, true, captureIdle, time.Millisecond)
 
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("runCapture err = %v, want ErrPartialBundle", err)
@@ -309,7 +329,7 @@ func TestRunCaptureForcedKittyRejectedWritesPartial(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := runCapture(eng, "https://example.test", blockState(), &tty, bundle, ModeKitty, 1, captureIdle, time.Millisecond)
+	err := runCapture(eng, "https://example.test", blockState(), &tty, bundle, ModeKitty, 1, 0, true, captureIdle, time.Millisecond)
 
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("runCapture err = %v, want ErrPartialBundle", err)
@@ -332,7 +352,7 @@ func TestRunCaptureForcedBlockNotRejected(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := runCapture(eng, "https://example.test", blockState(), &tty, bundle, ModeBlock, 1, captureIdle, captureIdle)
+	err := runCapture(eng, "https://example.test", blockState(), &tty, bundle, ModeBlock, 1, 0, true, captureIdle, captureIdle)
 	if err != nil {
 		t.Fatalf("runCapture err = %v, want nil for a full block capture", err)
 	}
@@ -372,7 +392,7 @@ func TestRunCaptureFullReturnsNilPartialReturnsSentinel(t *testing.T) {
 		eng := &fakeCaptureEngine{frames: ch}
 		var tty bytes.Buffer
 
-		err := runCapture(eng, "https://example.test", blockState(), &tty, &fakeBundle{}, ModeBlock, 1, captureIdle, captureIdle)
+		err := runCapture(eng, "https://example.test", blockState(), &tty, &fakeBundle{}, ModeBlock, 1, 0, true, captureIdle, captureIdle)
 		if err != nil {
 			t.Fatalf("runCapture err = %v, want nil for a full capture", err)
 		}
@@ -383,7 +403,7 @@ func TestRunCaptureFullReturnsNilPartialReturnsSentinel(t *testing.T) {
 		eng := &fakeCaptureEngine{frames: make(chan render.Frame)}
 		var tty bytes.Buffer
 
-		err := runCapture(eng, "https://example.test", blockState(), &tty, &fakeBundle{}, ModeSixel, 1, captureIdle, time.Millisecond)
+		err := runCapture(eng, "https://example.test", blockState(), &tty, &fakeBundle{}, ModeSixel, 1, 0, true, captureIdle, time.Millisecond)
 		if !errors.Is(err, ErrPartialBundle) {
 			t.Fatalf("runCapture err = %v, want ErrPartialBundle for a partial capture", err)
 		}
@@ -414,7 +434,7 @@ func TestCaptureLoopWritesSessionAtFinalise(t *testing.T) {
 	bundle := &fakeBundle{onWriteFrame: func() { sess.filled = true }}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, 1, captureIdle, captureIdle)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, 1, 0, true, captureIdle, captureIdle)
 	if err != nil {
 		t.Fatalf("captureLoop err = %v, want nil for a full capture", err)
 	}
@@ -440,7 +460,7 @@ func TestCaptureLoopWritesSessionOnPartialExit(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, 3, captureIdle, captureIdle)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, 3, 0, true, captureIdle, captureIdle)
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
 	}
@@ -584,7 +604,7 @@ func TestCaptureLoopFullCaptureReturnsNil(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, captureIdle, captureIdle)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, 0, true, captureIdle, captureIdle)
 	if err != nil {
 		t.Fatalf("captureLoop err = %v, want nil for a full capture", err)
 	}
@@ -599,6 +619,148 @@ func TestCaptureLoopFullCaptureReturnsNil(t *testing.T) {
 	}
 }
 
+// TestCaptureLoopScrollHookDrawsScrolledLastFrame asserts the capture scroll hook:
+// after the n frames draw, a positive scrollPx injects the scroll through the
+// engine and draws one more frame whose screencast offset advanced as the bundle's
+// last frame. The fake engine's SendScroll pushes a scrolled frame (non-zero
+// ScrollOffsetY), simulating the engine's debounced re-snapshot. The bundle must
+// hold n+1 frames, finalise full, and its last frame must carry the scrolled
+// offset. A pre-scroll frame (offset zero) delivered after the injection is skipped
+// so the last frame is the scrolled one.
+func TestCaptureLoopScrollHookDrawsScrolledLastFrame(t *testing.T) {
+	const n = 1
+	const scrollPx = 600
+	ch := make(chan render.Frame, 3)
+	ch <- blockFrame() // the one pre-scroll frame counted toward n
+	eng := &fakeCaptureEngine{frames: ch}
+	eng.onScroll = func(dy int) {
+		if dy != scrollPx {
+			t.Errorf("SendScroll dy = %d, want %d", dy, scrollPx)
+		}
+		// A stale pre-scroll frame lands first (offset zero), then the scrolled frame.
+		ch <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16)), Meta: &render.ScreencastMeta{ScrollOffsetY: 0}}
+		scrolled := render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16)), Meta: &render.ScreencastMeta{ScrollOffsetY: float64(dy)}}
+		ch <- scrolled
+	}
+	bundle := &fakeBundle{}
+	var tty bytes.Buffer
+
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, scrollPx, true, captureIdle, captureIdle)
+	if err != nil {
+		t.Fatalf("captureLoop err = %v, want nil for a full scrolled capture", err)
+	}
+	if bundle.finalise != "full" {
+		t.Fatalf("bundle finalise = %q, want full", bundle.finalise)
+	}
+	if len(bundle.frames) != n+1 {
+		t.Fatalf("bundle wrote %d frames, want %d (n plus the scrolled frame)", len(bundle.frames), n+1)
+	}
+	last := bundle.frames[len(bundle.frames)-1]
+	if last.Meta == nil || last.Meta.ScrollOffsetY != scrollPx {
+		t.Fatalf("last frame ScrollOffsetY = %v, want the scrolled %d", last.Meta, scrollPx)
+	}
+}
+
+// TestCaptureLoopScrollHookWaitsForSettle asserts the settle gate: an advanced-offset
+// frame that arrives before the engine's settle snapshot has published is held back
+// (it still carries the stale pre-scroll text), and only the advanced-offset frame
+// that arrives after the settle poke is drawn as the bundle's last frame. The stale
+// frame carries a distinct offset so the test proves the gate skipped it.
+func TestCaptureLoopScrollHookWaitsForSettle(t *testing.T) {
+	const n = 1
+	const scrollPx = 600
+	const staleOffset = 300 // an advanced offset that arrives before the settle poke
+	settle := make(chan struct{}, 1)
+	ch := make(chan render.Frame, 3)
+	ch <- blockFrame() // the one pre-scroll frame counted toward n
+	eng := &fakeCaptureEngine{frames: ch}
+	eng.onScroll = func(dy int) {
+		// A stale advanced-offset frame lands first, before any settle poke, so the gate
+		// must skip it. Then the settle snapshot publishes and pokes settle, and the
+		// settled advanced frame lands.
+		ch <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16)), Meta: &render.ScreencastMeta{ScrollOffsetY: staleOffset}}
+		go func() {
+			settle <- struct{}{}
+			ch <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16)), Meta: &render.ScreencastMeta{ScrollOffsetY: float64(dy)}}
+		}()
+	}
+	sess := &fakeSession{scrollSettle: settle}
+	bundle := &fakeBundle{}
+	var tty bytes.Buffer
+
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, n, scrollPx, true, captureIdle, captureIdle)
+	if err != nil {
+		t.Fatalf("captureLoop err = %v, want nil for a full settled capture", err)
+	}
+	if len(bundle.frames) != n+1 {
+		t.Fatalf("bundle wrote %d frames, want %d (n plus the settled scrolled frame)", len(bundle.frames), n+1)
+	}
+	last := bundle.frames[len(bundle.frames)-1]
+	if last.Meta == nil || last.Meta.ScrollOffsetY != scrollPx {
+		t.Fatalf("last frame ScrollOffsetY = %v, want the settled %d, not the stale %d", last.Meta, scrollPx, staleOffset)
+	}
+}
+
+// TestCaptureLoopScrollHookSettleOffDrawsFirstAdvanced asserts that with the
+// settle wait off (NYALA_CAPTURE_SCROLL_SETTLE=0), the hook draws the first frame
+// whose scroll offset advanced, without waiting for the settle poke. The session
+// carries a settle channel that is never poked, so a working settle gate would
+// hang; settle=false must skip it and draw the advanced frame at once. The
+// compose-time scroll compensation is what keeps that pre-settle frame glued.
+func TestCaptureLoopScrollHookSettleOffDrawsFirstAdvanced(t *testing.T) {
+	const n = 1
+	const scrollPx = 600
+	settle := make(chan struct{}, 1) // deliberately never poked
+	ch := make(chan render.Frame, 3)
+	ch <- blockFrame() // the one pre-scroll frame counted toward n
+	eng := &fakeCaptureEngine{frames: ch}
+	eng.onScroll = func(dy int) {
+		// The advanced-offset frame lands with no settle poke. With settle off the hook
+		// must draw it rather than hold it back.
+		ch <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16)), Meta: &render.ScreencastMeta{ScrollOffsetY: float64(dy)}}
+	}
+	sess := &fakeSession{scrollSettle: settle}
+	bundle := &fakeBundle{}
+	var tty bytes.Buffer
+
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, n, scrollPx, false, captureIdle, captureIdle)
+	if err != nil {
+		t.Fatalf("captureLoop err = %v, want nil for a settle-off scrolled capture", err)
+	}
+	if len(bundle.frames) != n+1 {
+		t.Fatalf("bundle wrote %d frames, want %d (n plus the pre-settle scrolled frame)", len(bundle.frames), n+1)
+	}
+	last := bundle.frames[len(bundle.frames)-1]
+	if last.Meta == nil || last.Meta.ScrollOffsetY != scrollPx {
+		t.Fatalf("last frame ScrollOffsetY = %v, want the advanced %d drawn without settle", last.Meta, scrollPx)
+	}
+}
+
+// TestCaptureLoopScrollHookTimeoutWritesPartial asserts the scroll hook's bound:
+// when the scrolled re-snapshot never lands (the injected scroll yields no frame
+// with an advanced offset), the idle timer fires and the loop writes a partial
+// bundle reasoned for the scroll timeout. A tiny idle runs it instantly.
+func TestCaptureLoopScrollHookTimeoutWritesPartial(t *testing.T) {
+	const n = 1
+	ch := make(chan render.Frame, 1)
+	ch <- blockFrame()
+	eng := &fakeCaptureEngine{frames: ch}
+	// SendScroll delivers nothing, so no scrolled frame ever arrives.
+	bundle := &fakeBundle{}
+	var tty bytes.Buffer
+
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, 600, true, captureIdle, time.Millisecond)
+	if !errors.Is(err, ErrPartialBundle) {
+		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
+	}
+	if !strings.Contains(bundle.finalise, "scroll re-snapshot timeout") {
+		t.Errorf("partial reason = %q, want it to name the scroll re-snapshot timeout", bundle.finalise)
+	}
+	if len(bundle.frames) != n {
+		t.Errorf("bundle wrote %d frames, want %d (the scrolled frame never landed)", len(bundle.frames), n)
+	}
+}
+
 // TestCaptureLoopFirstDrawTimeoutWritesPartial covers exit condition 2: the engine
 // never delivers a frame, so the idle timer fires before the first draw. The loop
 // finalises a partial bundle and returns ErrPartialBundle (task 3.4). A tiny idle
@@ -609,7 +771,7 @@ func TestCaptureLoopFirstDrawTimeoutWritesPartial(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, captureIdle, time.Millisecond)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, 0, true, captureIdle, time.Millisecond)
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
 	}
@@ -651,7 +813,7 @@ func TestCaptureLoopDiscardsPrePaintFrames(t *testing.T) {
 		}
 	}()
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, n, captureIdle, captureIdle)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, n, 0, true, captureIdle, captureIdle)
 	if err != nil {
 		t.Fatalf("captureLoop err = %v, want nil for a full post-paint capture", err)
 	}
@@ -674,7 +836,7 @@ func TestCaptureLoopPaintTimeoutWritesPartial(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, 3, time.Millisecond, captureIdle)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, 3, 0, true, time.Millisecond, captureIdle)
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
 	}
@@ -697,7 +859,7 @@ func TestCaptureLoopPerFrameIdleTimeoutWritesPartial(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, captureIdle, time.Millisecond)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, 0, true, captureIdle, time.Millisecond)
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
 	}
@@ -729,7 +891,7 @@ func TestCaptureLoopSteadyStreamDoesNotTripIdle(t *testing.T) {
 		}
 	}()
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, captureIdle, idle)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, 0, true, captureIdle, idle)
 	if err != nil {
 		t.Fatalf("captureLoop err = %v, want nil; a steady stream must not trip the idle timeout", err)
 	}
@@ -757,7 +919,7 @@ func TestCaptureLoopChannelCloseBeforeNWritesPartial(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, captureIdle, captureIdle)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, 0, true, captureIdle, captureIdle)
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
 	}
@@ -781,7 +943,7 @@ func TestCaptureLoopWriteFrameErrorWritesPartial(t *testing.T) {
 	bundle := &fakeBundle{writeErr: errors.New("disk full")}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, captureIdle, captureIdle)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, 0, true, captureIdle, captureIdle)
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
 	}
@@ -807,7 +969,7 @@ func TestCaptureLoopNavigateFailureWritesPartial(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, captureIdle, time.Millisecond)
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 3, 0, true, captureIdle, time.Millisecond)
 	if !errors.Is(err, ErrPartialBundle) {
 		t.Fatalf("captureLoop err = %v, want ErrPartialBundle", err)
 	}
@@ -838,7 +1000,7 @@ func TestCaptureLoopTeeMirrorsClearAndRenderOnly(t *testing.T) {
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
-	if err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, captureIdle, captureIdle); err != nil {
+	if err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, 0, true, captureIdle, captureIdle); err != nil {
 		t.Fatalf("captureLoop err = %v, want nil", err)
 	}
 

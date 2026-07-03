@@ -52,6 +52,9 @@ type Engine interface {
 	// Scroll keys route to the engine's wheel transport; the engine owns the
 	// offset.
 	SendKey(code string)
+	// SendScroll scrolls the page down by dy CSS pixels through the engine's wheel
+	// transport. The capture scroll hook calls it; the interactive path does not.
+	SendScroll(dy int)
 	// Close tears down the engine and the browser process.
 	Close() error
 }
@@ -75,6 +78,13 @@ type CaptureSession interface {
 	// its decoded text runs rather than the pre-publish nil. A nil channel reads as
 	// never closed, so the driver's deadline bounds the wait.
 	TextReady() <-chan struct{}
+	// ScrollSettle returns a channel the engine pokes after the settle snapshot
+	// publishes the text at the resting scroll position. The capture scroll hook
+	// drains it before injecting the scroll, then waits for a fresh poke so it draws
+	// the scrolled frame with the settled overlay rather than the stale pre-scroll
+	// text. A nil channel reads as never poked, so the hook's idle timer bounds the
+	// wait.
+	ScrollSettle() <-chan struct{}
 }
 
 // Stream runs the interactive viewer on tty, drawing the live frames eng pushes,

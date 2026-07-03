@@ -81,6 +81,34 @@
     font-size: 13px;
     line-height: 18px;
   }
+  /* MediaElement.js offscreen clone. No opacity, no visibility: the clip rect
+     and clip-path collapse it fully offscreen. The clip-offscreen filter drops
+     it. Emits no runs. */
+  .mejs-offscreen {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(1px, 1px, 1px, 1px);
+    clip-path: inset(50%);
+    margin: -1px;
+    padding: 0;
+    border: 0;
+  }
+  /* Older sr-only using clip rect(0,0,0,0) alone, no clip-path. The collapsed
+     clip rect drops it. Emits no runs. */
+  .clip-rect-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+  }
+  /* clip-path inset(50%) alone, no clip rect. The clip-path drops it. Emits no runs. */
+  .clip-path-only {
+    position: absolute;
+    clip-path: inset(50%);
+  }
 </style>
 </head>
 <body>
@@ -94,6 +122,12 @@
     <span class="controls">Volume</span>
 
     <span class="sr-only">Use the up and down arrow keys to change the volume level</span>
+
+    <span class="mejs-offscreen">Use the Arrow keys to increase or decrease the volume</span>
+
+    <span class="clip-rect-only">Rewind fifteen seconds with the left bracket key</span>
+
+    <span class="clip-path-only">Skip forward fifteen seconds with the right bracket key</span>
 
     <div class="speed-menu">
       <ul>

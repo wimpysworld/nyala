@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 
 	"github.com/chromedp/cdproto/browser"
@@ -101,7 +102,7 @@ type ChromiumEngine struct {
 	// to snapshotRuns. The unit test swaps in a counter to assert the snapshot is
 	// gated to about one call per delivered frame without launching a browser; it is
 	// nil in production, where runTextSync falls back to snapshotRuns.
-	snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState)
+	snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, overlayState)
 
 	// Proxy config parsed once in New, read-only afterwards. Unlike the
 	// mutex-guarded group above, these are set before any goroutine starts and
@@ -127,6 +128,15 @@ type ChromiumEngine struct {
 	// captured frame carries no text. It stays nil off the capture path.
 	textReady     chan struct{}
 	textReadyOnce sync.Once // guards textReady against a double close
+	// scrollSettle is the capture-only post-scroll settle signal. The snapshot
+	// goroutine pokes it (latest-wins, capacity 1) after the trailing settle
+	// snapshot publishes the text at the resting scroll position, so the capture
+	// scroll hook can wait for a publish that landed after its scroll injection
+	// before it draws the scrolled frame. Without it the hook draws the first frame
+	// whose bitmap shows the advanced scroll, which arrives before the debounced
+	// settle re-snapshot, so the drawn frame carries the stale pre-scroll text. It
+	// stays nil off the capture path.
+	scrollSettle chan struct{}
 
 	// Lifecycle. The supervisor goroutine owns the engine lifetime: it starts
 	// each browser session, watches for a crash or a lost connection, rebuilds
@@ -185,9 +195,14 @@ func (e *ChromiumEngine) EnableCapture(rec captureRecorder) {
 	// runs rather than the pre-publish nil. It is created here alongside painted,
 	// before any goroutine starts; markTextReady closes it on the first publish.
 	e.textReady = make(chan struct{})
+	// The scrollSettle channel lets the capture scroll hook wait for a text publish
+	// that landed after its scroll injection. It is latest-wins, capacity 1, so a
+	// burst of settle pokes collapses to one and the snapshot goroutine never blocks.
+	e.scrollSettle = make(chan struct{}, 1)
 	if r, ok := rec.(*Recorder); ok {
 		r.setPainted(e.painted)
 		r.setTextReady(e.textReady)
+		r.setScrollSettle(e.scrollSettle)
 	}
 }
 
@@ -201,6 +216,20 @@ func (e *ChromiumEngine) markTextReady() {
 		return
 	}
 	e.textReadyOnce.Do(func() { close(e.textReady) })
+}
+
+// pokeScrollSettle signals the capture scroll hook that a settle snapshot has
+// published the text at the resting scroll position. The send is latest-wins on a
+// capacity-1 channel, so it never blocks and a burst of settle snapshots collapses
+// to one signal. It is a no-op off the capture path, where scrollSettle stays nil.
+func (e *ChromiumEngine) pokeScrollSettle() {
+	if e.scrollSettle == nil {
+		return
+	}
+	select {
+	case e.scrollSettle <- struct{}{}:
+	default:
+	}
 }
 
 // markPainted closes the painted latch, so a late reader still sees it closed. The
@@ -335,7 +364,10 @@ func (e *ChromiumEngine) SetBackend(backend string) {
 // focused element to receive, such as text typed into a form field.
 func (e *ChromiumEngine) SendKey(k Key) {
 	e.mu.Lock()
-	pageStepPx := e.rows * e.cellH
+	// The wheel transport speaks CSS pixels, but rows*cellH is device pixels. Divide
+	// by the layout scale Z so a Page key steps one CSS-pixel viewport height rather
+	// than over-scrolling by Z on a wide block grid.
+	pageStepPx := int(math.Round(float64(e.rows*e.cellH) / e.layoutScale()))
 	ctx := e.ctx
 	e.mu.Unlock()
 	if dx, dy, ok := scrollKeyDelta(k.Code, pageStepPx); ok {
@@ -359,6 +391,17 @@ func (e *ChromiumEngine) SendMouse(m MouseEvent) {
 	if m.DeltaX != 0 || m.DeltaY != 0 {
 		e.dispatchWheel(m.DeltaX, m.DeltaY)
 	}
+}
+
+// SendScroll scrolls the page down by dy CSS pixels through the same wheel
+// transport a user wheel or scroll key takes, so the capture scroll hook
+// exercises the full input chain. It is the capture-only vertical scroll
+// injection; a non-positive dy is a no-op.
+func (e *ChromiumEngine) SendScroll(dy int) {
+	if dy <= 0 {
+		return
+	}
+	e.dispatchWheel(0, dy)
 }
 
 // dispatchWheel scrolls the page by dx, dy CSS pixels through the one scroll

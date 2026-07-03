@@ -50,6 +50,10 @@ type Meta struct {
 	TerminalCapability string
 	// FramesRequested is the requested frame count n.
 	FramesRequested int
+	// RequestedScrollPx is the capture scroll hook's requested vertical scroll in
+	// CSS pixels, zero when no scroll was requested. When positive the bundle's
+	// last frame is the scrolled one.
+	RequestedScrollPx int
 	// NavigationURL is the URL the capture navigated to.
 	NavigationURL string
 	// FinalURL is the resolved final URL after navigation, if known.
@@ -69,6 +73,9 @@ type manifest struct {
 	TerminalCapability string `json:"terminal_capability"`
 	// FramesRequested is the requested frame count n.
 	FramesRequested int `json:"frames_requested"`
+	// RequestedScrollPx is the capture scroll hook's requested vertical scroll in
+	// CSS pixels; omitted when no scroll was requested.
+	RequestedScrollPx int `json:"requested_scroll_px,omitempty"`
 	// FramesCaptured is the number of frames the run actually drew.
 	FramesCaptured int `json:"frames_captured"`
 	// NavigationURL is the URL the capture navigated to.
@@ -297,6 +304,7 @@ func (b *Bundle) finalise(partial bool, reason string) error {
 		Backend:            string(b.meta.Backend),
 		TerminalCapability: b.meta.TerminalCapability,
 		FramesRequested:    b.meta.FramesRequested,
+		RequestedScrollPx:  b.meta.RequestedScrollPx,
 		FramesCaptured:     b.captured,
 		NavigationURL:      b.meta.NavigationURL,
 		FinalURL:           b.meta.FinalURL,

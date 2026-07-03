@@ -40,7 +40,11 @@ func renderReport(m manifest) []byte {
 
 	fmt.Fprintf(&b, "## Frames\n\n")
 	fmt.Fprintf(&b, "- Requested: %d\n", m.FramesRequested)
-	fmt.Fprintf(&b, "- Captured: %d\n\n", m.FramesCaptured)
+	fmt.Fprintf(&b, "- Captured: %d\n", m.FramesCaptured)
+	if m.RequestedScrollPx > 0 {
+		fmt.Fprintf(&b, "- Requested scroll: %d CSS px (last frame is the scrolled one)\n", m.RequestedScrollPx)
+	}
+	b.WriteByte('\n')
 
 	fmt.Fprintf(&b, "## Artefacts\n\n")
 	fmt.Fprintf(&b, "Root:\n\n")

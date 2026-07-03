@@ -295,7 +295,7 @@ func TestComposeFrameCaptureFillsStats(t *testing.T) {
 	e.EnableCapture(rec)
 
 	ts := &textSync{}
-	ts.store(nil, 3.0)
+	ts.store(nil, 3.0, 0, 0)
 	frame := e.composeFrame(pendingFrame{img: img, bytes: 4096, decodeMS: 2.5}, ts)
 
 	if frame.Stats == nil {

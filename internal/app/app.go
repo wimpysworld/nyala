@@ -60,23 +60,28 @@ func (c CLI) Validate() error {
 
 // Run dispatches a parsed CLI on the given tty. It prepends https:// when the
 // URL has no scheme, accepts http, https, and file, and rejects any other
-// scheme with a clear error. It reads NYALA_CAPTURE: a parse error returns
-// before any viewer call. With capture disabled it runs the interactive
-// viewer.Stream; with capture enabled it runs the bounded viewer.Capture. Both
-// pass the --backend mode through. It constructs the Chromium engine from the
-// validated URL and the --browser flag.
+// scheme with a clear error. It reads NYALA_CAPTURE, NYALA_CAPTURE_SCROLL, and
+// NYALA_CAPTURE_SCROLL_SETTLE: a
+// parse error returns before any viewer call. With capture disabled it runs the
+// interactive viewer.Stream; with capture enabled it runs the bounded
+// viewer.Capture, passing the requested scroll through. Both pass the --backend
+// mode through. It constructs the Chromium engine from the validated URL and the
+// --browser flag.
 func Run(cli CLI, tty *os.File) error {
 	target, err := normaliseURL(cli.URL)
 	if err != nil {
 		return err
 	}
-	capture, err := ParseCaptureEnv(os.LookupEnv("NYALA_CAPTURE"))
+	captureValue, captureSet := os.LookupEnv("NYALA_CAPTURE")
+	scrollValue, scrollSet := os.LookupEnv("NYALA_CAPTURE_SCROLL")
+	settleValue, settleSet := os.LookupEnv("NYALA_CAPTURE_SCROLL_SETTLE")
+	capture, err := ParseCaptureEnv(captureValue, captureSet, scrollValue, scrollSet, settleValue, settleSet)
 	if err != nil {
 		return err
 	}
 	eng := engineAdapter{engine.New(cli.Browser)}
 	if capture.Enabled {
-		return viewer.Capture(eng, target, tty, cli.Color, cli.Backend, cli.LayoutWidth, capture.N)
+		return viewer.Capture(eng, target, tty, cli.Color, cli.Backend, cli.LayoutWidth, capture.N, capture.ScrollPx, capture.ScrollSettle)
 	}
 	return viewer.Stream(eng, target, tty, cli.Color, cli.Backend, cli.LayoutWidth)
 }
@@ -92,6 +97,12 @@ type engineAdapter struct{ *engine.ChromiumEngine }
 // codes (ArrowUp, PageDown, and so on) to its wheel transport.
 func (a engineAdapter) SendKey(code string) {
 	a.ChromiumEngine.SendKey(engine.Key{Code: code})
+}
+
+// SendScroll passes the capture scroll hook's vertical scroll straight to the
+// engine's wheel transport.
+func (a engineAdapter) SendScroll(dy int) {
+	a.ChromiumEngine.SendScroll(dy)
 }
 
 // EnableCapture constructs the engine capture recorder over the bundle's
