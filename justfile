@@ -1,5 +1,7 @@
 capture := ""
 backend := ""
+scroll := ""
+settle := ""
 
 # List available recipes
 default:
@@ -17,6 +19,8 @@ run url="https://wimpys.world" *flags: build
 
     capture={{ quote(capture) }}
     backend={{ quote(backend) }}
+    scroll={{ quote(scroll) }}
+    settle={{ quote(settle) }}
     url="$1"
     shift
 
@@ -31,6 +35,12 @@ run url="https://wimpys.world" *flags: build
                 ;;
             backend=*)
                 backend="${arg#backend=}"
+                ;;
+            scroll=*)
+                scroll="${arg#scroll=}"
+                ;;
+            settle=*)
+                settle="${arg#settle=}"
                 ;;
             --browser=*)
                 browser="${arg#--browser=}"
@@ -69,7 +79,18 @@ run url="https://wimpys.world" *flags: build
 
     cmd=(./nyala "${args[@]}")
     if [ -n "$capture" ]; then
-        cmd=(env "NYALA_CAPTURE=$capture" "${cmd[@]}")
+        env_pairs=("NYALA_CAPTURE=$capture")
+        # scroll rides only with capture: NYALA_CAPTURE_SCROLL is ignored off the
+        # capture path, so setting it without capture would do nothing.
+        if [ -n "$scroll" ]; then
+            env_pairs+=("NYALA_CAPTURE_SCROLL=$scroll")
+        fi
+        # settle rides only with capture: NYALA_CAPTURE_SCROLL_SETTLE=0 skips the
+        # scroll hook's settle wait so the pre-settle scrolled frame is captured.
+        if [ -n "$settle" ]; then
+            env_pairs+=("NYALA_CAPTURE_SCROLL_SETTLE=$settle")
+        fi
+        cmd=(env "${env_pairs[@]}" "${cmd[@]}")
     fi
 
     if [ -t 0 ] && [ -t 1 ]; then

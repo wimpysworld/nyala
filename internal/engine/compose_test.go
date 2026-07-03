@@ -64,7 +64,7 @@ func TestComposeFrameFoldsPublishedText(t *testing.T) {
 	e := &ChromiumEngine{backend: "block"}
 	ts := &textSync{}
 	want := decodedRuns
-	ts.store(want, 1.5)
+	ts.store(want, 1.5, 0, 0)
 
 	frame := e.composeFrame(pendingFrame{img: image.NewRGBA(image.Rect(0, 0, 2, 2))}, ts)
 	if len(frame.Text) != len(want) || (len(want) > 0 && frame.Text[0].Text != want[0].Text) {

@@ -13,7 +13,9 @@ import (
 // read failure whose duration is wall-clock and the usable-frame cadence varies by
 // backend and load. 250 ms sits below the ~400 ms threshold where a human reads
 // stale on-screen text as wrong, and spans a few snapshot retries at the engine's
-// frame cadence. It is the sync-tolerance knob beside scrollMatchTolerancePx.
+// frame cadence. It is the sole sync-tolerance knob now: the placement rewrite
+// decodes each snapshot's runs at its own scroll offset, so there is no offset
+// match tolerance, only this staleness bound on the error hold.
 const holdStalenessLimit = 250 * time.Millisecond
 
 // scrollOffset is one CSS-pixel scroll position. The bitmap pair comes from

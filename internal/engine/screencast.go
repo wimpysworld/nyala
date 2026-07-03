@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"math"
 	"sync"
 	"time"
 
@@ -280,6 +281,7 @@ func (e *ChromiumEngine) ackPump(ctx context.Context, acks <-chan int64) {
 // the snapshot read runs outside any lock.
 type overlayState struct {
 	lastText       []render.GlyphRun // last text matched to a bitmap
+	lastScroll     scrollOffset      // DOM scroll offset lastText was decoded at, for the error-hold tag
 	failingSince   time.Time         // start of the current snapshot-failure run, zero when not failing
 	lastReSnap     time.Time         // wall-clock time of the last networkAlmostIdle re-snapshot, zero before the first
 	lastScrollSnap time.Time         // wall-clock time of the last mid-scroll re-snapshot, zero before the first
@@ -296,22 +298,31 @@ type textSync struct {
 	mu         sync.Mutex
 	runs       []render.GlyphRun
 	snapshotMS float64
+	// scrollX/scrollY tag the runs with the DOM scroll offset (CSS pixels) they
+	// were decoded at, so composeFrame can shift them to the bitmap's own scroll and
+	// keep the overlay glued to the page while the two scrolls differ.
+	scrollX float64
+	scrollY float64
 }
 
-// store publishes the latest decoded runs and snapshot time.
-func (t *textSync) store(runs []render.GlyphRun, snapshotMS float64) {
+// store publishes the latest decoded runs, snapshot time, and the DOM scroll
+// offset the runs were decoded at.
+func (t *textSync) store(runs []render.GlyphRun, snapshotMS, scrollX, scrollY float64) {
 	t.mu.Lock()
 	t.runs = runs
 	t.snapshotMS = snapshotMS
+	t.scrollX = scrollX
+	t.scrollY = scrollY
 	t.mu.Unlock()
 }
 
-// latest returns the most recently published runs and snapshot time, or nil and
-// zero before the first snapshot lands.
-func (t *textSync) latest() ([]render.GlyphRun, float64) {
+// latest returns the most recently published runs, snapshot time, and the DOM
+// scroll offset the runs were decoded at, or nil and zeroes before the first
+// snapshot lands.
+func (t *textSync) latest() ([]render.GlyphRun, float64, float64, float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.runs, t.snapshotMS
+	return t.runs, t.snapshotMS, t.scrollX, t.scrollY
 }
 
 // noSnapshotBackoff is the idle pause the snapshot goroutine takes between
@@ -459,6 +470,10 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 			state = e.publishSnapshot(ctx, snapshot, ts, state)
 			state.lastScrollSnap = time.Now()
 			pokeReEmit(reEmit)
+			// Signal the capture scroll hook that the text at the resting scroll position
+			// has published, so it draws the scrolled frame with the settled overlay rather
+			// than the stale pre-scroll text. A no-op off the capture path.
+			e.pokeScrollSettle()
 		}
 	}
 }
@@ -472,7 +487,7 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 // the caller exits without snapshotting.
 func (e *ChromiumEngine) waitForFirstSnapshot(ctx context.Context, ts *textSync) bool {
 	for !e.textOverlayBackend() {
-		ts.store(nil, 0)
+		ts.store(nil, 0, 0, 0)
 		if sleepCtx(ctx, noSnapshotBackoff) {
 			return false
 		}
@@ -491,7 +506,7 @@ func (e *ChromiumEngine) waitForFirstSnapshot(ctx context.Context, ts *textSync)
 // records the time. The cap holds it to one per reSnapshotMinInterval, so a chatty
 // page cannot drive the snapshot goroutine; a capped poke keeps the navigation and
 // resize clocked text. It returns the updated hold state.
-func (e *ChromiumEngine) reSnapshotCapped(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState), ts *textSync, state overlayState) overlayState {
+func (e *ChromiumEngine) reSnapshotCapped(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, overlayState), ts *textSync, state overlayState) overlayState {
 	now := time.Now()
 	if !state.lastReSnap.IsZero() && now.Sub(state.lastReSnap) < reSnapshotMinInterval {
 		return state
@@ -514,7 +529,7 @@ func scrollSnapDue(last, now time.Time, cadence time.Duration) bool {
 // scrollCadence. A throttled poke leaves the state unchanged; the trailing debounce
 // still lands the settle snapshot. It returns the updated hold state and pokes
 // reEmit on a fire so the held frame repaints with the new scroll's text.
-func (e *ChromiumEngine) scrollSnap(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState), ts *textSync, state overlayState, reEmit chan<- struct{}) overlayState {
+func (e *ChromiumEngine) scrollSnap(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, overlayState), ts *textSync, state overlayState, reEmit chan<- struct{}) overlayState {
 	now := time.Now()
 	if !scrollSnapDue(state.lastScrollSnap, now, scrollCadence) {
 		return state
@@ -561,17 +576,19 @@ func armDebounce(t *time.Timer, d time.Duration) *time.Timer {
 // first-after-paint and re-snapshot triggers share, so the publish stays in one
 // place. A graphics backend takes no overlay, so it publishes nil and skips the
 // layout read rather than snapshot the full viewport it ignores.
-func (e *ChromiumEngine) publishSnapshot(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState), ts *textSync, state overlayState) overlayState {
+func (e *ChromiumEngine) publishSnapshot(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, overlayState), ts *textSync, state overlayState) overlayState {
 	if !e.textOverlayBackend() {
-		ts.store(nil, 0)
+		ts.store(nil, 0, 0, 0)
 		return state
 	}
-	runs, snapshotMS, next := snapshot(ctx, state)
+	runs, snapshotMS, scroll, next := snapshot(ctx, state)
 	// snapshotRuns rebuilds the hold fields and drops the cadence timestamps, so carry
 	// them forward here: the re-snapshot caps live in runTextSync, not the snapshot.
 	next.lastReSnap = state.lastReSnap
 	next.lastScrollSnap = state.lastScrollSnap
-	ts.store(runs, snapshotMS)
+	// Tag the published runs with the DOM scroll they were decoded at, so
+	// composeFrame can shift them to the bitmap's own scroll.
+	ts.store(runs, snapshotMS, scroll.X, scroll.Y)
 	return next
 }
 
@@ -706,15 +723,19 @@ func (e *ChromiumEngine) emitFrame(ctx context.Context, frames chan render.Frame
 // text may lag the bitmap by a frame, which the place-by-scroll sync tolerates.
 func (e *ChromiumEngine) composeFrame(pending pendingFrame, ts *textSync) render.Frame {
 	var runs []render.GlyphRun
-	var snapshotMS float64
+	var snapshotMS, snapScrollX, snapScrollY float64
 	if ts != nil {
-		runs, snapshotMS = ts.latest()
+		runs, snapshotMS, snapScrollX, snapScrollY = ts.latest()
 	}
+	e.mu.Lock()
+	cellCSSW, cellCSSH := e.snapshotCellPx()
+	scale := e.layoutScale()
+	e.mu.Unlock()
+	// Shift the published runs onto the bitmap's own scroll, so the overlay stays
+	// glued to the page when the snapshot and the bitmap scrolls differ.
+	runs = shiftRunsToBitmapScroll(runs, pending.meta, snapScrollX, snapScrollY, cellCSSW, cellCSSH)
 	frame := render.Frame{Img: pending.img, Text: runs}
 	if e.captureOn {
-		e.mu.Lock()
-		scale := e.layoutScale()
-		e.mu.Unlock()
 		frame.Stats = &render.FrameStats{
 			ScreencastPayloadBytes: int64(pending.bytes),
 			ScreencastDecodeMS:     pending.decodeMS,
@@ -731,6 +752,46 @@ func (e *ChromiumEngine) composeFrame(pending pendingFrame, ts *textSync) render
 	return frame
 }
 
+// shiftRunsToBitmapScroll compensates the compose-time skew between the runs and
+// the bitmap. The runs were decoded at the DOM scroll of snapshot time
+// (snapScrollX/Y, CSS pixels); the bitmap carries its own scroll in the screencast
+// metadata. When the two differ, every composed frame is skewed by the difference,
+// so this shifts the runs onto the bitmap's scroll. A run's box Y is the on-screen
+// top with the snapshot scroll already subtracted, so a bitmap scrolled dy past the
+// snapshot moves the run up by dy: the box shifts by -dy and the cell row by
+// -round(dy/cellCSSH), keeping the row and the box in step. The horizontal axis
+// shifts the same way by dx. cellCSSW/H are the CSS-pixel cell dimensions the runs
+// were snapped with. It returns the runs untouched (no copy) when there is no delta,
+// the production fast path. Otherwise it returns a shifted copy and never mutates
+// runs, which textSync shares across composes, so a shift never accumulates. Runs
+// shifted off the grid are dropped by applyOverlay's bounds guards.
+func shiftRunsToBitmapScroll(runs []render.GlyphRun, meta *page.ScreencastFrameMetadata, snapScrollX, snapScrollY, cellCSSW, cellCSSH float64) []render.GlyphRun {
+	if len(runs) == 0 || meta == nil {
+		return runs
+	}
+	dx := meta.ScrollOffsetX - snapScrollX
+	dy := meta.ScrollOffsetY - snapScrollY
+	if dx == 0 && dy == 0 {
+		return runs
+	}
+	var dCol, dRow int
+	if cellCSSW > 0 {
+		dCol = int(math.Round(dx / cellCSSW))
+	}
+	if cellCSSH > 0 {
+		dRow = int(math.Round(dy / cellCSSH))
+	}
+	shifted := make([]render.GlyphRun, len(runs))
+	for i, run := range runs {
+		run.Col -= dCol
+		run.Row -= dRow
+		run.X -= dx
+		run.Y -= dy
+		shifted[i] = run
+	}
+	return shifted
+}
+
 // snapshotRuns runs one captureSnapshot, decodes its inline text boxes to glyph
 // runs at the resolved cell px and the snapshot's own scroll offset, then routes
 // the result through the bounded holdDecision: a successful read emits the fresh
@@ -738,10 +799,10 @@ func (e *ChromiumEngine) composeFrame(pending pendingFrame, ts *textSync) render
 // before dropping to nil. It returns the emitted runs, the snapshot time, and the
 // updated state. It runs on the snapshot goroutine; the snapshot chromedp.Run
 // stays outside any lock.
-func (e *ChromiumEngine) snapshotRuns(ctx context.Context, state overlayState) ([]render.GlyphRun, float64, overlayState) {
+func (e *ChromiumEngine) snapshotRuns(ctx context.Context, state overlayState) ([]render.GlyphRun, float64, scrollOffset, overlayState) {
 	if ctx == nil {
 		emit, last, failing := holdDecision(context.Canceled, nil, state.lastText, state.failingSince, time.Now())
-		return emit, 0, overlayState{lastText: last, failingSince: failing}
+		return emit, 0, state.lastScroll, overlayState{lastText: last, lastScroll: state.lastScroll, failingSince: failing}
 	}
 	e.mu.Lock()
 	cellW, cellH := e.snapshotCellPx()
@@ -758,6 +819,7 @@ func (e *ChromiumEngine) snapshotRuns(ctx context.Context, state overlayState) (
 		e.recorder.Record(captureEvent{Type: captureEventDOMSnapshot})
 	}
 	var decoded []render.GlyphRun
+	var scroll scrollOffset
 	if err == nil {
 		// Place runs by the snapshot's own scroll offset, not the bitmap's: the
 		// snapshot bounds and its scroll come from one DOM read, so they are
@@ -767,11 +829,19 @@ func (e *ChromiumEngine) snapshotRuns(ctx context.Context, state overlayState) (
 		// is a no-op, and under Z > 1 the block backend launches at DSF Z so the bounds
 		// are Z device pixels per CSS pixel. The pure decode stays general so tests can
 		// pass other ratios.
-		scroll := snapshotScrollOffset(documents)
+		scroll = snapshotScrollOffset(documents)
 		decoded = decodeGlyphRuns(documents, strs, dpr, scroll.X, scroll.Y, cellW, cellH, cols)
 	}
 	emit, last, failing := holdDecision(err, decoded, state.lastText, state.failingSince, time.Now())
-	return emit, snapshotMS, overlayState{lastText: last, failingSince: failing}
+	// Tag the emitted runs with the scroll they were decoded at: a fresh success
+	// carries the new snapshot scroll, an error hold re-emits the last-matched runs
+	// so it carries the scroll those were decoded at (state.lastScroll). The runs and
+	// their scroll travel together so composeFrame shifts the right amount.
+	emitScroll := scroll
+	if err != nil {
+		emitScroll = state.lastScroll
+	}
+	return emit, snapshotMS, emitScroll, overlayState{lastText: last, lastScroll: emitScroll, failingSince: failing}
 }
 
 // screencastMeta copies the CDP screencast frame metadata into a neutral

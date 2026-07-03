@@ -162,6 +162,13 @@ type Recorder struct {
 	// overlay publish; the viewer reads it via TextReady to wait for the text to land
 	// before counting a usable frame, so the first captured frame carries its runs.
 	textReady <-chan struct{}
+
+	// scrollSettle is the engine's post-scroll settle signal, set once in
+	// EnableCapture alongside painted and read-only afterwards. The engine pokes it
+	// after the settle snapshot publishes the text at the resting scroll position;
+	// the viewer reads it via ScrollSettle so the capture scroll hook draws the
+	// scrolled frame with the settled overlay rather than the stale pre-scroll text.
+	scrollSettle <-chan struct{}
 }
 
 // Ensure Recorder satisfies captureRecorder.
@@ -240,6 +247,23 @@ func (r *Recorder) setTextReady(textReady <-chan struct{}) {
 // driver's deadline then bounds the wait.
 func (r *Recorder) TextReady() <-chan struct{} {
 	return r.textReady
+}
+
+// setScrollSettle records the engine's post-scroll settle signal. The engine calls
+// it once in EnableCapture before any goroutine starts; the viewer reads the channel
+// with ScrollSettle. It is set-once and read-only afterwards, so it takes no lock.
+func (r *Recorder) setScrollSettle(scrollSettle <-chan struct{}) {
+	r.scrollSettle = scrollSettle
+}
+
+// ScrollSettle returns the engine's post-scroll settle signal, poked after the
+// settle snapshot publishes the text at the resting scroll position under capture.
+// The capture scroll hook drains it before injecting the scroll, then waits for a
+// fresh poke so it draws the scrolled frame with the settled overlay rather than the
+// stale pre-scroll text. A nil channel (no engine wiring, as in a fake) reads as
+// never poked; the hook's idle timer then bounds the wait.
+func (r *Recorder) ScrollSettle() <-chan struct{} {
+	return r.scrollSettle
 }
 
 // cdpSession is the run-metadata view serialised to cdp-session.json. It records

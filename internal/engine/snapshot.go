@@ -19,7 +19,7 @@ import (
 // DOMSnapshot.captureSnapshot, in the order the browser returns them per layout
 // node. The order is load-bearing: it must match the style index constants
 // below, which the decode reads by position.
-var snapshotStyles = []string{"color", "visibility", "opacity"}
+var snapshotStyles = []string{"color", "visibility", "opacity", "clip", "clip-path", "position"}
 
 // Style index constants into a layout node's Styles entry. The order is
 // load-bearing and must match snapshotStyles; a reorder silently misreads the
@@ -28,10 +28,14 @@ const (
 	styleColour     = 0
 	styleVisibility = 1
 	styleOpacity    = 2
+	styleClip       = 3
+	styleClipPath   = 4
+	stylePosition   = 5
 )
 
 // captureSnapshot runs DOMSnapshot.captureSnapshot against ctx, requesting the
-// computed color, visibility, and opacity styles, the paint order, and the
+// computed color, visibility, opacity, clip, clip-path, and position styles, the
+// paint order, and the
 // blended text-colour opacities. It returns the snapshot documents and the
 // shared string table that the document indices refer to. The pure
 // decodeGlyphRuns maps that pair to glyph runs without a browser.
@@ -192,10 +196,13 @@ func layoutColour(layout *domsnapshot.LayoutTreeSnapshot, strings []string, layo
 const hiddenOpacityEps = 0.05
 
 // boxHidden reports whether a text box should be dropped as invisible. It drops
-// on three conditions: the layout node's computed visibility is hidden or
+// on four conditions: the layout node's computed visibility is hidden or
 // collapse; its effective opacity (own computed opacity times the blended text
-// opacity) is at or near zero; or the box is subpixel-short in height (below a
-// quarter cell, so it carries no legible glyph). An absent visibility style
+// opacity) is at or near zero; the box is clip-offscreen (an absolute or fixed
+// element whose computed clip-path collapses to inset(50%) or whose computed clip
+// rect collapses to a zero or inverted area, the screen-reader-only pattern); or
+// the box is subpixel-short in height (below a quarter cell, so it carries no
+// legible glyph). An absent visibility style
 // means visible, an absent or unparseable opacity means 1, and a nil or short
 // TextColorOpacities means 1, so a fixture without these style slots is never
 // dropped.
@@ -207,7 +214,86 @@ func boxHidden(layout *domsnapshot.LayoutTreeSnapshot, strings []string, layoutI
 	if layoutOpacity(layout, strings, layoutIdx)*layoutTextOpacity(layout, layoutIdx) < hiddenOpacityEps {
 		return true
 	}
+	if clipOffscreen(layoutStyle(layout, strings, layoutIdx, stylePosition), layoutStyle(layout, strings, layoutIdx, styleClip), layoutStyle(layout, strings, layoutIdx, styleClipPath)) {
+		return true
+	}
 	return bounds[3]/dpr < cellH/4
+}
+
+// clipOffscreen reports whether an element is clipped fully offscreen by the
+// screen-reader-only pattern: it must be absolutely or fixed positioned, and
+// either its clip-path collapses to inset(50%) or its clip rect collapses to a
+// zero or inverted area. A statically positioned element is never offscreen this
+// way (its clip has no effect without absolute positioning), so absent or static
+// position keeps the box.
+func clipOffscreen(position, clip, clipPath string) bool {
+	switch strings.TrimSpace(position) {
+	case "absolute", "fixed":
+	default:
+		return false
+	}
+	if strings.TrimSpace(clipPath) == "inset(50%)" {
+		return true
+	}
+	return clipRectCollapsed(clip)
+}
+
+// clipRectCollapsed reports whether a computed clip value is a rect(...) whose
+// clipped area collapses to zero or inverts: right at or below left, or bottom at
+// or below top. The four offsets are top, right, bottom, left (CSS order),
+// separated by commas or spaces. An "auto" offset means the box edge, so it never
+// collapses that axis. A non-rect value (clip "auto" or absent) never collapses.
+func clipRectCollapsed(clip string) bool {
+	clip = strings.TrimSpace(clip)
+	open := strings.IndexByte(clip, '(')
+	if !strings.HasPrefix(clip, "rect") || open < 0 || !strings.HasSuffix(clip, ")") {
+		return false
+	}
+	fields := strings.FieldsFunc(clip[open+1:len(clip)-1], func(r rune) bool {
+		return r == ',' || r == ' '
+	})
+	if len(fields) != 4 {
+		return false
+	}
+	top, topAuto := clipOffset(fields[0])
+	right, rightAuto := clipOffset(fields[1])
+	bottom, bottomAuto := clipOffset(fields[2])
+	left, leftAuto := clipOffset(fields[3])
+	horizontalCollapsed := !rightAuto && !leftAuto && right <= left
+	verticalCollapsed := !bottomAuto && !topAuto && bottom <= top
+	return horizontalCollapsed || verticalCollapsed
+}
+
+// clipOffset parses one clip-rect offset. It returns the numeric CSS-pixel value
+// and whether the offset is "auto" (the box edge, which never collapses its axis).
+// A "px" suffix is stripped; an unparseable value reads as auto so it never
+// collapses.
+func clipOffset(s string) (value float64, auto bool) {
+	s = strings.TrimSpace(s)
+	if s == "auto" {
+		return 0, true
+	}
+	s = strings.TrimSuffix(s, "px")
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, true
+	}
+	return v, false
+}
+
+// layoutStyle reads the computed style at styleIdx from a layout node's Styles
+// entry, or "" when the slot is absent. It reads any whitelisted style by its
+// index constant; the "" default means the style is unset, so a fixture without
+// the slot never trips a filter that reads it.
+func layoutStyle(layout *domsnapshot.LayoutTreeSnapshot, strings []string, layoutIdx, styleIdx int) string {
+	if layoutIdx < 0 || layoutIdx >= len(layout.Styles) {
+		return ""
+	}
+	style := layout.Styles[layoutIdx]
+	if len(style) <= styleIdx {
+		return ""
+	}
+	return stringAt(strings, int(style[styleIdx]))
 }
 
 // layoutVisibility reads the computed visibility of a layout node, or "" when the

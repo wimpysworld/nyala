@@ -90,8 +90,16 @@ var _ bundleWriter = (*capture.Bundle)(nil)
 // first-draw prefix. It returns nil on a full capture and ErrPartialBundle when it writes a
 // partial bundle. colourFlag is the --color intent; mode is the --backend mode
 // the forced-backend validator checks; layoutWidth is the block-backend target
-// layout width in CSS pixels, handed to the engine before Navigate.
-func Capture(eng Engine, url string, tty *os.File, colourFlag, mode string, layoutWidth, n int) (err error) {
+// layout width in CSS pixels, handed to the engine before Navigate. scrollPx is
+// the capture scroll hook's requested vertical scroll in CSS pixels: when
+// positive, after the n frames draw the driver injects the scroll through the
+// engine's wheel transport, waits for the engine's settle snapshot to publish the
+// text at the resting scroll position, then draws one more usable frame that
+// reflects the scrolled state, so the bundle's last frame is the scrolled bitmap
+// with its settled text overlay. A zero or negative scrollPx skips the hook.
+// settle gates the scroll hook's settle wait: true waits for the settled overlay,
+// false draws the first frame whose scroll offset advanced (the pre-settle state).
+func Capture(eng Engine, url string, tty *os.File, colourFlag, mode string, layoutWidth, n, scrollPx int, settle bool) (err error) {
 	_, st, restore, err := setupViewer(eng, tty, colourFlag, layoutWidth)
 	if err != nil {
 		return err
@@ -111,12 +119,12 @@ func Capture(eng Engine, url string, tty *os.File, colourFlag, mode string, layo
 		eng.SetBackend(backendName(st.Backend))
 	}
 
-	b, err := capture.NewBundle(captureMeta(url, st, mode, n))
+	b, err := capture.NewBundle(captureMeta(url, st, mode, n, scrollPx))
 	if err != nil {
 		return fmt.Errorf("viewer: open capture bundle: %w", err)
 	}
 
-	return runCapture(eng, url, st, tty, bundleWriter(b), mode, n, capturePaintDeadline, captureIdle)
+	return runCapture(eng, url, st, tty, bundleWriter(b), mode, n, scrollPx, settle, capturePaintDeadline, captureIdle)
 }
 
 // runCapture runs the capture flow below the not-a-terminal guard: it validates
@@ -130,8 +138,10 @@ func Capture(eng Engine, url string, tty *os.File, colourFlag, mode string, layo
 // and returns ErrPartialBundle before any browser launch, so validation runs
 // after detection and before Navigate; placing it later would launch the browser
 // before failing. ModeAuto and ModeBlock always pass. paintWait bounds the wait
-// for first contentful paint; idle is the per-frame deadline.
-func runCapture(eng Engine, url string, st *State, tty io.Writer, bundle bundleWriter, mode string, n int, paintWait, idle time.Duration) error {
+// for first contentful paint; idle is the per-frame deadline. scrollPx is the
+// capture scroll hook's requested vertical scroll, passed through to the loop;
+// settle gates the hook's settle wait.
+func runCapture(eng Engine, url string, st *State, tty io.Writer, bundle bundleWriter, mode string, n, scrollPx int, settle bool, paintWait, idle time.Duration) error {
 	if verr := ValidateForcedBackend(mode, st.Enabled); verr != nil {
 		_ = bundle.FinalisePartial(verr.Error())
 		fmt.Fprintf(tty, "capture bundle: %s\r\n", bundle.Path())
@@ -145,14 +155,14 @@ func runCapture(eng Engine, url string, st *State, tty io.Writer, bundle bundleW
 	// latch the loop waits on before counting usable frames.
 	session := eng.EnableCapture(bundle.CDPEventsFile())
 
-	return captureLoop(eng, url, st, tty, bundle, session, n, paintWait, idle)
+	return captureLoop(eng, url, st, tty, bundle, session, n, scrollPx, settle, paintWait, idle)
 }
 
 // captureMeta builds the bundle run metadata from the resolved state and the
 // invocation. The backend is the resolved active backend; the terminal
 // capability mirrors it. Command omits secrets: it carries the URL and backend
 // mode only, never proxy env values.
-func captureMeta(url string, st *State, mode string, n int) capture.Meta {
+func captureMeta(url string, st *State, mode string, n, scrollPx int) capture.Meta {
 	backend := capture.Backend(backendName(st.Backend))
 	return capture.Meta{
 		Command:            fmt.Sprintf("nyala --backend=%s %s", mode, url),
@@ -160,6 +170,7 @@ func captureMeta(url string, st *State, mode string, n int) capture.Meta {
 		TerminalCapability: backendName(st.Backend),
 		FramesRequested:    n,
 		NavigationURL:      url,
+		RequestedScrollPx:  scrollPx,
 	}
 }
 
@@ -204,7 +215,14 @@ func captureMeta(url string, st *State, mode string, n int) capture.Meta {
 // It prints the bundle path on every exit. The single select orders the frames
 // channel against the timer deterministically, so the timeout-after-frame and
 // channel-close cases stay distinct.
-func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundleWriter, session CaptureSession, n int, paintWait, idle time.Duration) (err error) {
+//
+// When scrollPx is positive the loop runs the capture scroll hook after the n
+// frames draw: it injects the scroll through the engine's wheel transport and
+// draws one more scrolled frame as the bundle's last frame (captureScrollFrame).
+// A scroll timeout or a closed channel during the hook writes a partial bundle.
+// A zero or negative scrollPx skips the hook and finalises after the n frames.
+// settle gates the scroll hook's settle wait, passed through to captureScrollFrame.
+func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundleWriter, session CaptureSession, n, scrollPx int, settle bool, paintWait, idle time.Duration) (err error) {
 	defer func() { fmt.Fprintf(tty, "capture bundle: %s\r\n", bundle.Path()) }()
 
 	// finaliseFull and finalisePartial write the cdp-session.json bytes the engine
@@ -269,6 +287,30 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 
 	var nilImageOnce sync.Once
 	drawn := 0
+	// drawOne draws one usable frame, records its artefacts, and resets the idle
+	// timer. It returns a reason on a draw or write failure; the caller finalises a
+	// partial bundle. firstDrawn selects the cursor prefix and seeds the differ.
+	drawOne := func(frame render.Frame) (reason string, ok bool) {
+		in, derr := drawCaptureFrame(st, frame, tee, drawn > 0)
+		if derr != nil {
+			return fmt.Sprintf("draw frame %d of %d: %v", drawn+1, n, derr), false
+		}
+		if werr := bundle.WriteFrame(in); werr != nil {
+			return fmt.Sprintf("write frame %d of %d: %v", drawn+1, n, werr), false
+		}
+		drawn++
+		// Reset the per-frame idle deadline. Stop and drain before reset so a fire
+		// that raced the draw does not leak onto the next select.
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(idle)
+		return "", true
+	}
+
 	for {
 		select {
 		case frame, ok := <-frames:
@@ -284,31 +326,25 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 				})
 				continue
 			}
-			in, derr := drawCaptureFrame(st, frame, tee, drawn > 0)
-			if derr != nil {
-				_ = finalisePartial(fmt.Sprintf("draw frame %d of %d: %v", drawn+1, n, derr))
+			if reason, ok := drawOne(frame); !ok {
+				_ = finalisePartial(reason)
 				return ErrPartialBundle
 			}
-			if werr := bundle.WriteFrame(in); werr != nil {
-				_ = finalisePartial(fmt.Sprintf("write frame %d of %d: %v", drawn+1, n, werr))
-				return ErrPartialBundle
-			}
-			drawn++
 			if drawn >= n {
+				// The n frames drew. With a scroll requested, inject it and draw one more
+				// scrolled frame as the bundle's last frame; a scroll failure writes a
+				// partial bundle. With no scroll, finalise the full bundle straight away.
+				if scrollPx > 0 {
+					if reason, ok := captureScrollFrame(eng, session, frames, tee, st, bundle, timer, scrollPx, settle, idle, drawn); !ok {
+						_ = finalisePartial(reason)
+						return ErrPartialBundle
+					}
+				}
 				if ferr := finaliseFull(); ferr != nil {
 					return ferr
 				}
 				return nil
 			}
-			// Reset the per-frame idle deadline. Stop and drain before reset so a
-			// fire that raced the draw does not leak onto the next select.
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(idle)
 		case <-timer.C:
 			reason := "first-draw timeout"
 			if drawn > 0 {
@@ -316,6 +352,108 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 			}
 			_ = finalisePartial(reason)
 			return ErrPartialBundle
+		}
+	}
+}
+
+// captureScrollFrame runs the capture scroll hook: it injects a vertical scroll
+// of scrollPx CSS pixels through the engine's wheel transport (the same chain a
+// user wheel or scroll key takes), then draws one more usable frame that reflects
+// the scrolled state as the bundle's last frame. It draws a frame only once both
+// hold: the engine's settle snapshot has published the text at the resting scroll
+// position after the injection (session.ScrollSettle poked, so the folded overlay
+// is the scrolled text, not the stale pre-scroll text), and the frame's screencast
+// scroll offset has advanced (so the bitmap is the scrolled page). The advanced
+// bitmap frame lands before the debounced settle snapshot, so without the settle
+// gate the drawn frame carries a stale text map; the gate holds the draw until the
+// settled overlay has published and the frame loop has re-emitted the held bitmap
+// with it. The settle signal is drained before the injection so a stale pre-scroll
+// poke does not satisfy the gate. A nil session or a nil settle channel (a
+// fake-engine test that scripts the scrolled frame directly) reads as settled at
+// once, so the hook falls back to the advanced-offset wait alone. nilImage frames
+// are skipped; the wait is bounded by the idle timer, already armed by the last
+// main-loop draw. It returns a reason on a draw or write failure, a scroll timeout,
+// or a closed frames channel; ok is true once the scrolled frame is drawn and
+// recorded. drawn is the count of frames already drawn, so the failure reasons name
+// the right frame index. settle gates the settle wait: when false the hook skips it
+// and draws the first frame whose scroll offset advanced (the pre-settle state,
+// which the compose-time scroll compensation keeps glued to the scrolled bitmap).
+func captureScrollFrame(eng Engine, session CaptureSession, frames <-chan render.Frame, tee io.Writer, st *State, bundle bundleWriter, timer *time.Timer, scrollPx int, settle bool, idle time.Duration, drawn int) (reason string, ok bool) {
+	// Read the settle channel and drain any stale poke before the injection, so only a
+	// settle publish that lands after this scroll satisfies the gate. A nil session or
+	// a nil channel means no settle gate (a fake-engine test): treat it as settled at
+	// once and fall back to the advanced-offset wait. settle=false skips the gate the
+	// same way, drawing the first advanced-offset frame before the settle snapshot.
+	var settleC <-chan struct{}
+	if settle && session != nil {
+		settleC = session.ScrollSettle()
+	}
+	settled := settleC == nil
+	if settleC != nil {
+		select {
+		case <-settleC:
+		default:
+		}
+	}
+
+	eng.SendScroll(scrollPx)
+	// Re-arm the idle timer to bound the wait for the scrolled re-snapshot: the
+	// engine debounces the scroll before it re-snapshots and re-emits.
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(idle)
+
+	var nilImageOnce sync.Once
+	for {
+		select {
+		case <-settleC:
+			// The settle snapshot published the scrolled text. Mark settled and keep
+			// waiting for the advanced-offset frame the settle re-emit produces.
+			settled = true
+		case frame, open := <-frames:
+			if !open {
+				return fmt.Sprintf("frames channel closed before scrolled frame after %d", drawn), false
+			}
+			if frame.Img == nil {
+				nilImageOnce.Do(func() {
+					fmt.Fprintln(os.Stderr, "nyala: capture skipped a frame with no image")
+				})
+				continue
+			}
+			// Check the settle signal before judging this frame: the settle snapshot
+			// pokes reEmit and scrollSettle together, so the re-emitted scrolled frame and
+			// its settle poke race onto their channels. Draining the poke here keeps the
+			// select from skipping that frame as still-stale when the poke has landed.
+			if !settled && settleC != nil {
+				select {
+				case <-settleC:
+					settled = true
+				default:
+				}
+			}
+			// Wait for both the settled text publish and the scrolled bitmap. The
+			// scrolled frame's screencast metadata reports a non-zero vertical offset; a
+			// pre-scroll frame still shows offset zero and a frame with no metadata cannot
+			// confirm the scroll, so both are skipped. Until the settle poke lands, an
+			// advanced-offset frame still carries the stale pre-scroll overlay, so it is
+			// held back too.
+			if !settled || frame.Meta == nil || frame.Meta.ScrollOffsetY <= 0 {
+				continue
+			}
+			in, derr := drawCaptureFrame(st, frame, tee, true)
+			if derr != nil {
+				return fmt.Sprintf("draw scrolled frame after %d: %v", drawn, derr), false
+			}
+			if werr := bundle.WriteFrame(in); werr != nil {
+				return fmt.Sprintf("write scrolled frame after %d: %v", drawn, werr), false
+			}
+			return "", true
+		case <-timer.C:
+			return fmt.Sprintf("scroll re-snapshot timeout after %d", drawn), false
 		}
 	}
 }

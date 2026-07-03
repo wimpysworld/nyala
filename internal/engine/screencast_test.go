@@ -28,9 +28,9 @@ func TestRunTextSyncSnapshotsOncePerPaint(t *testing.T) {
 	painted := make(chan struct{})
 	close(painted) // paint already happened
 	e := &ChromiumEngine{backend: "block", painted: painted}
-	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState) {
+	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, overlayState) {
 		atomic.AddInt64(&snaps, 1)
-		return want, 0, overlayState{}
+		return want, 0, scrollOffset{}, overlayState{}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -58,7 +58,7 @@ func TestRunTextSyncSnapshotsOncePerPaint(t *testing.T) {
 
 	// The single post-paint snapshot published its runs to textSync as sticky state,
 	// so a later frame folds them on without re-snapshotting.
-	if got, _ := ts.latest(); len(got) != 1 || got[0] != want[0] {
+	if got, _, _, _ := ts.latest(); len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("published runs = %v, want %v", got, want)
 	}
 
@@ -109,7 +109,7 @@ func TestRunFrameLoopReEmitsHeldFrameWithText(t *testing.T) {
 	// Text lands with no new screencast frame pending. The poke must re-emit the held
 	// bitmap recomposed with the published runs.
 	runs := []render.GlyphRun{{Col: 1, Row: 0, Text: "ok"}}
-	ts.store(runs, 0)
+	ts.store(runs, 0, 0, 0)
 	reEmit <- struct{}{}
 
 	reframe := recvFrame(t, frames)
@@ -150,9 +150,9 @@ func TestRunTextSyncReSnapTriggers(t *testing.T) {
 	painted := make(chan struct{})
 	close(painted)
 	e := &ChromiumEngine{backend: "block", painted: painted}
-	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState) {
+	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, overlayState) {
 		atomic.AddInt64(&snaps, 1)
-		return nil, 0, overlayState{}
+		return nil, 0, scrollOffset{}, overlayState{}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -191,9 +191,9 @@ func TestRunTextSyncScrollTriggers(t *testing.T) {
 	painted := make(chan struct{})
 	close(painted)
 	e := &ChromiumEngine{backend: "block", painted: painted}
-	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState) {
+	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, overlayState) {
 		atomic.AddInt64(&snaps, 1)
-		return nil, 0, overlayState{}
+		return nil, 0, scrollOffset{}, overlayState{}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -267,9 +267,9 @@ func TestRunTextSyncScrollCadence(t *testing.T) {
 	painted := make(chan struct{})
 	close(painted)
 	e := &ChromiumEngine{backend: "block", painted: painted}
-	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, overlayState) {
+	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, overlayState) {
 		atomic.AddInt64(&snaps, 1)
-		return nil, 0, overlayState{}
+		return nil, 0, scrollOffset{}, overlayState{}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
