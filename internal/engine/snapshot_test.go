@@ -59,6 +59,182 @@ func cannedTwoBoxDoc(textA, textB, colourA, colourB string, boundsA, boundsB dom
 	return doc, strs
 }
 
+// cannedHiddenDoc builds one DocumentSnapshot holding a single inline text box
+// whose layout node carries the full style whitelist (colour, visibility, opacity)
+// plus a blended text opacity. It is the visibility-filter counterpart to
+// cannedDoc: where cannedDoc gives the box only a colour slot, this one fills the
+// styleVisibility and styleOpacity slots too and sets TextColorOpacities[0], so a
+// test can drive every drop condition boxHidden reads. The string table holds the
+// layout text, the colour, the visibility keyword, and the opacity string, in the
+// index order the Styles entry references.
+func cannedHiddenDoc(text, colour, visibility, opacity string, textOpacity float64, bounds domsnapshot.Rectangle, utf16Len int64) (*domsnapshot.DocumentSnapshot, []string) {
+	strs := []string{text, colour, visibility, opacity}
+	doc := &domsnapshot.DocumentSnapshot{
+		Layout: &domsnapshot.LayoutTreeSnapshot{
+			Text:               []domsnapshot.StringIndex{0},
+			Styles:             []domsnapshot.ArrayOfStrings{{1, 2, 3}},
+			Bounds:             []domsnapshot.Rectangle{bounds},
+			TextColorOpacities: []float64{textOpacity},
+		},
+		TextBoxes: &domsnapshot.TextBoxSnapshot{
+			LayoutIndex: []int64{0},
+			Bounds:      []domsnapshot.Rectangle{bounds},
+			Start:       []int64{0},
+			Length:      []int64{utf16Len},
+		},
+	}
+	return doc, strs
+}
+
+// cannedVisibleHiddenDoc builds one DocumentSnapshot holding two inline text boxes
+// that both carry the full style whitelist: box A visible, box B driven hidden by
+// the caller's visibility/opacity/textOpacity. It is the two-box counterpart to
+// cannedHiddenDoc, so a test can assert the filter drops only the hidden box and
+// leaves the visible one at its own cell. The string table interleaves each box's
+// layout text, colour, visibility, and opacity in the index order its Styles entry
+// references.
+func cannedVisibleHiddenDoc(textA, textB, visibilityB, opacityB string, textOpacityB float64, boundsA, boundsB domsnapshot.Rectangle, utf16LenA, utf16LenB int64) (*domsnapshot.DocumentSnapshot, []string) {
+	// Box A is fully visible: solid colour, "visible" keyword, opacity "1".
+	// Box B carries the caller's hidden-driving styles.
+	strs := []string{textA, "rgb(0, 0, 0)", "visible", "1", textB, "rgb(0, 0, 0)", visibilityB, opacityB}
+	doc := &domsnapshot.DocumentSnapshot{
+		Layout: &domsnapshot.LayoutTreeSnapshot{
+			Text:               []domsnapshot.StringIndex{0, 4},
+			Styles:             []domsnapshot.ArrayOfStrings{{1, 2, 3}, {5, 6, 7}},
+			Bounds:             []domsnapshot.Rectangle{boundsA, boundsB},
+			TextColorOpacities: []float64{1, textOpacityB},
+		},
+		TextBoxes: &domsnapshot.TextBoxSnapshot{
+			LayoutIndex: []int64{0, 1},
+			Bounds:      []domsnapshot.Rectangle{boundsA, boundsB},
+			Start:       []int64{0, 0},
+			Length:      []int64{utf16LenA, utf16LenB},
+		},
+	}
+	return doc, strs
+}
+
+// TestDecodeGlyphRunsDropsHiddenBox drives each drop condition in boxHidden on a
+// single-box document and asserts the box yields no run: visibility hidden or
+// collapse, opacity zero (own computed opacity or the blended text opacity), and a
+// subpixel box height below a quarter cell. A wrong threshold or a missed
+// condition would let the phantom run through, which the zero-run assertion
+// catches. The last case pins the absent-means-visible default: a normal visible
+// box at full opacity and full height survives.
+func TestDecodeGlyphRunsDropsHiddenBox(t *testing.T) {
+	// A box wide and tall enough to survive the clip and the subpixel test, so
+	// only the hidden condition under test can drop it. DPR 1, 8x16 cells, so
+	// the quarter-cell floor is 4 CSS px of height.
+	visibleBounds := domsnapshot.Rectangle{0, 0, 100, 16}
+
+	cases := []struct {
+		name        string
+		colour      string
+		visibility  string
+		opacity     string
+		textOpacity float64
+		bounds      domsnapshot.Rectangle
+		wantRuns    int
+	}{
+		{
+			name:   "visibility hidden drops the box",
+			colour: "rgb(0, 0, 0)", visibility: "hidden", opacity: "1", textOpacity: 1,
+			bounds: visibleBounds, wantRuns: 0,
+		},
+		{
+			name:   "visibility collapse drops the box",
+			colour: "rgb(0, 0, 0)", visibility: "collapse", opacity: "1", textOpacity: 1,
+			bounds: visibleBounds, wantRuns: 0,
+		},
+		{
+			name:   "own opacity zero drops the box",
+			colour: "rgb(0, 0, 0)", visibility: "visible", opacity: "0", textOpacity: 1,
+			bounds: visibleBounds, wantRuns: 0,
+		},
+		{
+			name:   "blended text opacity zero drops the box",
+			colour: "rgb(0, 0, 0)", visibility: "visible", opacity: "1", textOpacity: 0,
+			bounds: visibleBounds, wantRuns: 0,
+		},
+		{
+			// Height 3 CSS px is below the quarter-cell floor of 4, so a
+			// zero-height box leaves no legible glyph and drops.
+			name:   "subpixel height drops the box",
+			colour: "rgb(0, 0, 0)", visibility: "visible", opacity: "1", textOpacity: 1,
+			bounds: domsnapshot.Rectangle{0, 0, 100, 3}, wantRuns: 0,
+		},
+		{
+			name:   "visible full-opacity box survives",
+			colour: "rgb(0, 0, 0)", visibility: "visible", opacity: "1", textOpacity: 1,
+			bounds: visibleBounds, wantRuns: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, strs := cannedHiddenDoc("A", tc.colour, tc.visibility, tc.opacity, tc.textOpacity, tc.bounds, 1)
+			runs := decodeGlyphRuns([]*domsnapshot.DocumentSnapshot{doc}, strs, 1, 0, 0, 8, 16, 200)
+			if len(runs) != tc.wantRuns {
+				t.Fatalf("want %d runs, got %d", tc.wantRuns, len(runs))
+			}
+		})
+	}
+}
+
+// TestDecodeGlyphRunsHiddenBoxLeavesVisibleBox checks the filter is per-box: a
+// two-box document with one hidden box and one visible box keeps exactly the
+// visible run, at its own cell. It drives the hidden box through each condition in
+// turn, so a filter that dropped both boxes or the wrong box would fail. The
+// visible box sits at (64, 48), so it bins to (8, 3) with DPR 1 and 8x16 cells.
+func TestDecodeGlyphRunsHiddenBoxLeavesVisibleBox(t *testing.T) {
+	boundsA := domsnapshot.Rectangle{64, 48, 100, 16}
+	boundsB := domsnapshot.Rectangle{0, 0, 100, 16}
+
+	cases := []struct {
+		name        string
+		visibility  string
+		opacity     string
+		textOpacity float64
+	}{
+		{"hidden box beside visible box", "hidden", "1", 1},
+		{"opacity-zero box beside visible box", "visible", "0", 1},
+		{"blended-opacity-zero box beside visible box", "visible", "1", 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, strs := cannedVisibleHiddenDoc("A", "B", tc.visibility, tc.opacity, tc.textOpacity, boundsA, boundsB, 1, 1)
+			runs := decodeGlyphRuns([]*domsnapshot.DocumentSnapshot{doc}, strs, 1, 0, 0, 8, 16, 200)
+			if len(runs) != 1 {
+				t.Fatalf("want exactly 1 surviving run, got %d", len(runs))
+			}
+			if runs[0].Text != "A" {
+				t.Fatalf("surviving run text = %q, want %q (the visible box)", runs[0].Text, "A")
+			}
+			if runs[0].Col != 8 || runs[0].Row != 3 {
+				t.Fatalf("surviving run cell = (%d, %d), want (8, 3)", runs[0].Col, runs[0].Row)
+			}
+		})
+	}
+}
+
+// TestDecodeGlyphRunsNoStyleSlotsKeepsRuns pins the absent-means-visible default:
+// a document built by cannedDoc carries only a colour style slot and a nil
+// TextColorOpacities, so the visibility, opacity, and blended-opacity readers all
+// fall back to visible. The run must survive; a filter that dropped a box on a
+// missing style slot would regress every fixture that omits these styles.
+func TestDecodeGlyphRunsNoStyleSlotsKeepsRuns(t *testing.T) {
+	bounds := domsnapshot.Rectangle{0, 0, 100, 16}
+	doc, strs := cannedDoc("A", "rgb(0, 0, 0)", bounds, 1)
+	runs := decodeGlyphRuns([]*domsnapshot.DocumentSnapshot{doc}, strs, 1, 0, 0, 8, 16, 200)
+	if len(runs) != 1 {
+		t.Fatalf("want 1 run for a box with no visibility/opacity slots, got %d", len(runs))
+	}
+	if runs[0].Text != "A" {
+		t.Fatalf("run text = %q, want %q", runs[0].Text, "A")
+	}
+}
+
 // TestDecodeGlyphRunsMultiBoxDropsClippedBox checks a two-box document where the
 // first box yields a run and the second clips to empty (zero width budget from an
 // overflow clip). Exactly one run must survive, at the first box's cell, with the
@@ -306,6 +482,15 @@ func TestMapBoxToCellsWidthBudget(t *testing.T) {
 			wantCol: 0, wantClipped: "hello",
 		},
 		{
+			// A soft-wrap can leave a trailing newline rather than a space. It
+			// too must trim before the clip, or the phantom whitespace claims a
+			// cell and fuses the word with the next box's text across the wrap.
+			// The 10-glyph word survives at its own glyph count.
+			name: "soft-wrap trailing newline trimmed to glyph count",
+			x:    0, w: 88, text: "developing\n",
+			wantCol: 0, wantClipped: "developing",
+		},
+		{
 			// Box starts at the last two columns and is far wider than the grid.
 			// col = round(944/8) = 118, so edge budget = cols - col = 2, and the
 			// text clips to two cells even though its box budget is larger.
@@ -329,6 +514,32 @@ func TestMapBoxToCellsWidthBudget(t *testing.T) {
 				t.Fatalf("clipped = %q, want %q", clipped, tc.wantClipped)
 			}
 		})
+	}
+}
+
+// TestSnapshotStyleIndexMapping pins the style whitelist order to the index
+// constants. The order is load-bearing: the decode reads each style by position,
+// so a reorder of snapshotStyles without matching the constants silently misreads
+// every computed style. Colour must sit at index 0, visibility at 1, opacity at 2.
+func TestSnapshotStyleIndexMapping(t *testing.T) {
+	want := []struct {
+		idx  int
+		name string
+	}{
+		{styleColour, "color"},
+		{styleVisibility, "visibility"},
+		{styleOpacity, "opacity"},
+	}
+	if len(snapshotStyles) != len(want) {
+		t.Fatalf("snapshotStyles has %d entries, want %d", len(snapshotStyles), len(want))
+	}
+	for _, w := range want {
+		if w.idx < 0 || w.idx >= len(snapshotStyles) {
+			t.Fatalf("index %d for %q out of range", w.idx, w.name)
+		}
+		if snapshotStyles[w.idx] != w.name {
+			t.Fatalf("snapshotStyles[%d] = %q, want %q", w.idx, snapshotStyles[w.idx], w.name)
+		}
 	}
 }
 

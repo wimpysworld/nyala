@@ -1,0 +1,12 @@
+{
+  "id": "layout-09-hidden-player",
+  "title": "Desktop audio player with screen-reader-only, opacity, and visibility hidden UI",
+  "stressor": "hidden UI that must emit no runs: 1px sr-only clip, opacity:0 ancestor, visibility:hidden",
+  "origin": "original",
+  "source_url": null,
+  "license": "BlueOak-1.0.0",
+  "attribution": null,
+  "fonts": ["UA default serif"],
+  "self_contained": true,
+  "notes": "Self-contained single page, all CSS inline, no script, no network URLs. Reproduces the desktop audio-player fault class the hidden-box filter targets. Visible content emits runs: an h1, two paragraphs, and a player bar with Play, a time readout, and Volume. The hidden set must emit zero runs: a .sr-only block using the 1px clip pattern (absolute position, 1px width/height, overflow hidden, clip rect) plus opacity:0, carrying a volume-keys hint sentence; a speed menu (1.75x down to 0.75x) whose items carry opacity:0; a tooltip hidden with visibility:hidden. The filter drops on visibility:hidden and on effective opacity at or near zero. The forcing stylesheet sets line-height:cellH on every element, so a subpixel-height page box still reports a full cell tall; the sr-only hint therefore relies on its own opacity:0, not the 1px clip, to drop. The hidden strings use distinctive text so a capture inspection can grep them (the exact speed labels, the volume-keys hint, the tooltip text)."
+}
