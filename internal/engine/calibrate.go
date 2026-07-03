@@ -82,10 +82,7 @@ func (e *ChromiumEngine) calibrateFonts(ctx context.Context) {
 	runCtx, cancel := context.WithTimeout(ctx, fontCalibrationTimeout)
 	defer cancel()
 
-	if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
-		_, _, err := runtime.Evaluate("document.fonts.ready").WithAwaitPromise(true).Do(c)
-		return err
-	})); err != nil {
+	if err := evaluateVoid(runCtx, "font readiness await", "document.fonts.ready", true); err != nil {
 		e.recordCalibration()
 		return
 	}
@@ -97,13 +94,29 @@ func (e *ChromiumEngine) calibrateFonts(ctx context.Context) {
 	}
 
 	corrected := calibratedFontSize(seed, calibrationProbeN, cellW, measured)
-	if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
-		_, _, err := runtime.Evaluate(buildReinjectScript(corrected)).Do(c)
-		return err
-	})); err != nil {
+	if err := evaluateVoid(runCtx, "corrected-size reinject", buildReinjectScript(corrected), false); err != nil {
 		e.recordCalibration()
 		return
 	}
+}
+
+// evaluateVoid runs a JS expression for its side effect and discards the result.
+// A non-nil ExceptionDetails is an error even when the transport call succeeds, so
+// a thrown expression or rejected awaited promise records the calibration miss and
+// keeps the seed rather than reporting a false success. label names the step in the
+// error. awaitPromise mirrors WithAwaitPromise for expressions that resolve a
+// promise, so a rejection surfaces as an exception.
+func evaluateVoid(ctx context.Context, label, expr string, awaitPromise bool) error {
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(c context.Context) error {
+		_, exc, evalErr := runtime.Evaluate(expr).WithAwaitPromise(awaitPromise).Do(c)
+		if evalErr != nil {
+			return evalErr
+		}
+		if exc != nil {
+			return fmt.Errorf("engine: calibration %s threw: %s", label, exc.Text)
+		}
+		return nil
+	}))
 }
 
 // evaluateFloat runs a JS expression that returns a number and decodes the
