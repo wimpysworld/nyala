@@ -244,6 +244,16 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 		return ErrPartialBundle
 	}
 
+	// Wait for the first overlay publish before counting a usable frame, draining
+	// post-paint pre-publish frames so the slot does not stall. Paint and the first
+	// publish both wake off the painted latch, but the publish trails paint by the
+	// calibration pass, so without this wait the driver latches the first frame with
+	// no text. A publish timeout or a closed channel writes a partial bundle.
+	if reason, ok := waitForText(session, frames, paintWait); !ok {
+		_ = finalisePartial(reason)
+		return ErrPartialBundle
+	}
+
 	// The cell differ drives the capture block paint exactly as it drives the live
 	// path: the first frame full-repaints against a clearScreen, every later frame
 	// emits cursorHome and diffs. Setting it on the State routes renderBlock through
@@ -325,6 +335,22 @@ func waitForPaint(session CaptureSession, frames <-chan render.Frame, paintWait 
 	}
 	return waitForLatch(session.Painted(), frames, paintWait, false,
 		"first contentful paint timeout", "frames channel closed before first contentful paint")
+}
+
+// waitForText blocks until the session's first-publish latch closes, then returns
+// ok=true. While waiting it drains and discards post-paint pre-publish frames so
+// the engine's latest-wins slot does not stall. It bounds the wait with a timer at
+// paintWait. It returns ok=false with a reason when the publish deadline fires
+// ("first overlay publish timeout") or the frames channel closes before the publish
+// ("frames channel closed before first overlay publish"). A nil session or a nil
+// textReady latch reads as never closed, so the deadline bounds the wait; the
+// production path always wires the latch.
+func waitForText(session CaptureSession, frames <-chan render.Frame, paintWait time.Duration) (reason string, ok bool) {
+	if session == nil {
+		return "", true
+	}
+	return waitForLatch(session.TextReady(), frames, paintWait, false,
+		"first overlay publish timeout", "frames channel closed before first overlay publish")
 }
 
 // waitForLatch blocks until latch closes, then returns ok=true. While waiting it

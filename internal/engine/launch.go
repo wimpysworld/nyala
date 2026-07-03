@@ -12,6 +12,7 @@ import (
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 	"github.com/wimpysworld/nyala/internal/render"
+	"github.com/wimpysworld/nyala/internal/render/font"
 )
 
 // chromiumNames lists the executable names tried on PATH, in order, when no
@@ -174,6 +175,24 @@ func enableLifecycle(ctx context.Context) error {
 	)
 }
 
+// injectFontStylesheet registers the font-forcing stylesheet script to run on
+// every new document. It seeds the cell size from snapshotCellPx and installs the
+// script with Page.addScriptToEvaluateOnNewDocument, so the stylesheet applies to
+// the first document this session loads and to every later one, including the
+// document that follows a crash-recovery restart. It runs after enableLifecycle
+// and before navigation so the script is registered before the first document
+// loads.
+func (e *ChromiumEngine) injectFontStylesheet(ctx context.Context) error {
+	e.mu.Lock()
+	cellW, cellH := e.snapshotCellPx()
+	e.mu.Unlock()
+	script := buildStylesheetScript(font.FiraCodeTTF(), cellW, cellH)
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {
+		_, err := page.AddScriptToEvaluateOnNewDocument(script).Do(runCtx)
+		return err
+	}))
+}
+
 // launch resolves the executable from flag, builds the allocator and the
 // chromedp context sized to the real CSS-pixel viewport (surfaceSize), fetches
 // the browser window id, enables lifecycle events, then sizes the layout viewport
@@ -217,6 +236,10 @@ func (e *ChromiumEngine) launch(flag string) error {
 	e.windowID = windowID
 	e.mu.Unlock()
 	if err := enableLifecycle(ctx); err != nil {
+		cancel()
+		return err
+	}
+	if err := e.injectFontStylesheet(ctx); err != nil {
 		cancel()
 		return err
 	}

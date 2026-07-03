@@ -66,13 +66,13 @@ func cannedTwoBoxDoc(textA, textB, colourA, colourB string, boundsA, boundsB dom
 // surviving run would fail here.
 func TestDecodeGlyphRunsMultiBoxDropsClippedBox(t *testing.T) {
 	// Box A: at (64, 48), wide enough for "A". DPR 1, 8x16 cells.
-	//   col = floor(64/8) = 8, row = floor(48/16) = 3.
-	// Box B: zero width, so maxCells = floor(0/8) = 0, clips to "".
+	//   col = round(64/8) = 8, row = round(48/16) = 3.
+	// Box B: zero width, so maxCells = round(0/8) = 0, clips to "".
 	boundsA := domsnapshot.Rectangle{64, 48, 100, 16}
 	boundsB := domsnapshot.Rectangle{0, 0, 0, 16}
 	doc, strs := cannedTwoBoxDoc("A", "B", "rgb(0, 0, 0)", "rgb(0, 0, 0)", boundsA, boundsB, 1, 1)
 
-	runs := decodeGlyphRuns([]*domsnapshot.DocumentSnapshot{doc}, strs, 1, 0, 0, 8, 16)
+	runs := decodeGlyphRuns([]*domsnapshot.DocumentSnapshot{doc}, strs, 1, 0, 0, 8, 16, 200)
 	if len(runs) != 1 {
 		t.Fatalf("want exactly 1 surviving run, got %d", len(runs))
 	}
@@ -85,9 +85,9 @@ func TestDecodeGlyphRunsMultiBoxDropsClippedBox(t *testing.T) {
 }
 
 // TestDecodeGlyphRunsBinning checks the device-pixel-to-cell binning: divide the
-// box top-left by DPR, subtract the page scroll, then floor by the cell size. The
+// box top-left by DPR, subtract the page scroll, then round by the cell size. The
 // bounds are document-absolute and the bitmap is the scrolled view, so the screen
-// cell is floor((bounds/dpr - scroll) / cell). A wrong DPR divide or the old
+// cell is round((bounds/dpr - scroll) / cell). A wrong DPR divide or the old
 // add-scroll sign lands the box in the wrong cell, off by 2*scroll; the
 // hand-computed col/row catch it. These non-zero scroll cases fail against the
 // add-scroll bug and pass against the subtract fix.
@@ -102,27 +102,29 @@ func TestDecodeGlyphRunsBinning(t *testing.T) {
 		{
 			// Worked example: (200, 100) device px, DPR 2, scroll (10, 4),
 			// 8x16 cells. The bitmap is scrolled, so screen = document - scroll.
-			//   col = floor((200/2 - 10)/8)  = floor(90/8)  = 11
-			//   row = floor((100/2 - 4)/16)  = floor(46/16) = 2
+			//   col = round((200/2 - 10)/8)  = round(90/8)   = round(11.25) = 11
+			//   row = round((100/2 - 4)/16)  = round(46/16)  = round(2.875) = 3
 			name: "worked example dpr 2 with scroll",
 			x:    200, y: 100, dpr: 2, scrollX: 10, scrollY: 4,
-			cellW: 8, cellH: 16, wantCol: 11, wantRow: 2,
+			cellW: 8, cellH: 16, wantCol: 11, wantRow: 3,
 		},
 		{
 			// No scroll, DPR 1: the box top-left bins straight to a cell.
-			//   col = floor(64/8)  = 8
-			//   row = floor(48/16) = 3
+			//   col = round(64/8)  = 8
+			//   row = round(48/16) = 3
 			name: "dpr 1 no scroll",
 			x:    64, y: 48, dpr: 1, scrollX: 0, scrollY: 0,
 			cellW: 8, cellH: 16, wantCol: 8, wantRow: 3,
 		},
 		{
 			// Scroll subtract crosses a cell boundary the bare bounds would not.
-			//   col = floor((40/2 - 5)/8) = floor(15/8) = 1
-			//   row = floor((40/2 - 5)/8) = floor(15/8) = 1
+			// Bare 40/2 = 20 rounds to cell round(20/8) = round(2.5) = 3; the
+			// scroll subtract lands it a cell lower.
+			//   col = round((40/2 - 5)/8) = round(15/8) = round(1.875) = 2
+			//   row = round((40/2 - 5)/8) = round(15/8) = round(1.875) = 2
 			name: "scroll subtract crosses cell boundary",
 			x:    40, y: 40, dpr: 2, scrollX: 5, scrollY: 5,
-			cellW: 8, cellH: 8, wantCol: 1, wantRow: 1,
+			cellW: 8, cellH: 8, wantCol: 2, wantRow: 2,
 		},
 	}
 
@@ -132,7 +134,7 @@ func TestDecodeGlyphRunsBinning(t *testing.T) {
 			// test is about position, not the clip budget.
 			bounds := domsnapshot.Rectangle{tc.x, tc.y, 1000, 16}
 			doc, strs := cannedDoc("A", "rgb(0, 0, 0)", bounds, 1)
-			runs := decodeGlyphRuns([]*domsnapshot.DocumentSnapshot{doc}, strs, tc.dpr, tc.scrollX, tc.scrollY, tc.cellW, tc.cellH)
+			runs := decodeGlyphRuns([]*domsnapshot.DocumentSnapshot{doc}, strs, tc.dpr, tc.scrollX, tc.scrollY, tc.cellW, tc.cellH, 200)
 			if len(runs) != 1 {
 				t.Fatalf("want 1 run, got %d", len(runs))
 			}
@@ -204,7 +206,7 @@ func TestDecodeGlyphRunsClip(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bounds := domsnapshot.Rectangle{0, 0, tc.boxWidth, 16}
 			doc, strs := cannedDoc(tc.text, "rgb(0, 0, 0)", bounds, tc.utf16Len)
-			runs := decodeGlyphRuns([]*domsnapshot.DocumentSnapshot{doc}, strs, 2, 0, 0, 8, 16)
+			runs := decodeGlyphRuns([]*domsnapshot.DocumentSnapshot{doc}, strs, 2, 0, 0, 8, 16, 200)
 			if tc.want == "" {
 				if len(runs) != 0 {
 					t.Fatalf("want no run for empty clip, got %d: %q", len(runs), runs[0].Text)
@@ -234,13 +236,99 @@ func TestDecodeGlyphRunsGeometry(t *testing.T) {
 	//   H = 48/2       = 24
 	bounds := domsnapshot.Rectangle{200, 100, 320, 48}
 	doc, strs := cannedDoc("A", "rgb(0, 0, 0)", bounds, 1)
-	runs := decodeGlyphRuns([]*domsnapshot.DocumentSnapshot{doc}, strs, 2, 10, 4, 8, 16)
+	runs := decodeGlyphRuns([]*domsnapshot.DocumentSnapshot{doc}, strs, 2, 10, 4, 8, 16, 200)
 	if len(runs) != 1 {
 		t.Fatalf("want 1 run, got %d", len(runs))
 	}
 	r := runs[0]
 	if r.X != 90 || r.Y != 46 || r.W != 160 || r.H != 24 {
 		t.Fatalf("geometry = (X %v, Y %v, W %v, H %v), want (90, 46, 160, 24)", r.X, r.Y, r.W, r.H)
+	}
+}
+
+// TestMapBoxToCellsWidthBudget checks the box-width-to-cell-count rule directly on
+// the pure mapping function, without a document wrapper, so the arithmetic is
+// visible. The box width in CSS px divides by cellW and rounds to a cell budget,
+// so a box exactly N*cellW wide yields N cells and a box a rounding epsilon short
+// of N*cellW still yields N (the guard against a font-metric residue dropping the
+// last glyph). The budget also clips at the grid's right edge (cols - col cells).
+// DPR 1 and zero scroll throughout, so bounds are CSS px straight through; the
+// binning and scroll cases live in TestDecodeGlyphRunsBinning.
+func TestMapBoxToCellsWidthBudget(t *testing.T) {
+	const cellW, cellH, cols = 8, 16, 120
+
+	cases := []struct {
+		name        string
+		x, w        float64
+		text        string
+		wantCol     int
+		wantClipped string
+	}{
+		{
+			// Box exactly 5*cellW = 40 px wide, text 5 glyphs: round(40/8) = 5
+			// cells, all 5 kept.
+			name: "exact N cells keeps all glyphs",
+			x:    0, w: 40, text: "abcde",
+			wantCol: 0, wantClipped: "abcde",
+		},
+		{
+			// A sub-cell inset below the half-cell mark rounds down to the same
+			// column, so a small left inset does not shift the run.
+			//   col = round(27/8) = round(3.375) = 3
+			name: "sub-cell inset below half rounds down",
+			x:    27, w: 40, text: "abcde",
+			wantCol: 3, wantClipped: "abcde",
+		},
+		{
+			// A sub-cell inset above the half-cell mark rounds up to the next
+			// column, so a larger inset lands the run one cell right. Floor would
+			// keep it at column 3.
+			//   col = round(29/8) = round(3.625) = 4
+			name: "sub-cell inset above half rounds up",
+			x:    29, w: 40, text: "abcde",
+			wantCol: 4, wantClipped: "abcde",
+		},
+		{
+			// Box 5*cellW - epsilon = 39.999 px, text 5 glyphs: round is the
+			// guard, round(39.999/8) = round(4.9998) = 5, so all 5 survive. A
+			// floor here would drop "e".
+			name: "N cells minus epsilon keeps all glyphs via round",
+			x:    0, w: 39.999, text: "abcde",
+			wantCol: 0, wantClipped: "abcde",
+		},
+		{
+			// A mid-paragraph fragment the layout soft-wraps carries a trailing
+			// space. The box is wide enough for all 6 code units (round(48/8) =
+			// 6), but the trailing space is trimmed before the clip, so the real
+			// 5-glyph word survives and the phantom space never reaches a cell.
+			name: "soft-wrap trailing space trimmed to glyph count",
+			x:    0, w: 48, text: "hello ",
+			wantCol: 0, wantClipped: "hello",
+		},
+		{
+			// Box starts at the last two columns and is far wider than the grid.
+			// col = round(944/8) = 118, so edge budget = cols - col = 2, and the
+			// text clips to two cells even though its box budget is larger.
+			name: "box past grid edge clips at cellW*cols",
+			x:    944, w: 800, text: "abcdef",
+			wantCol: 118, wantClipped: "ab",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bounds := []float64{tc.x, 0, tc.w, 16}
+			col, row, clipped := mapBoxToCells(bounds, 1, 0, 0, cellW, cellH, cols, tc.text)
+			if col != tc.wantCol {
+				t.Fatalf("col = %d, want %d", col, tc.wantCol)
+			}
+			if row != 0 {
+				t.Fatalf("row = %d, want 0", row)
+			}
+			if clipped != tc.wantClipped {
+				t.Fatalf("clipped = %q, want %q", clipped, tc.wantClipped)
+			}
+		})
 	}
 }
 
@@ -262,7 +350,7 @@ func TestDecodeGlyphRunsColour(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bounds := domsnapshot.Rectangle{0, 0, 100, 16}
 			doc, strs := cannedDoc("A", tc.colour, bounds, 1)
-			runs := decodeGlyphRuns([]*domsnapshot.DocumentSnapshot{doc}, strs, 1, 0, 0, 8, 16)
+			runs := decodeGlyphRuns([]*domsnapshot.DocumentSnapshot{doc}, strs, 1, 0, 0, 8, 16, 200)
 			if len(runs) != 1 {
 				t.Fatalf("want 1 run, got %d", len(runs))
 			}
@@ -294,7 +382,7 @@ func TestDecodeGlyphRunsGuards(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			runs := decodeGlyphRuns(tc.docs, strs, tc.dpr, 0, 0, tc.cellW, tc.cellH)
+			runs := decodeGlyphRuns(tc.docs, strs, tc.dpr, 0, 0, tc.cellW, tc.cellH, 200)
 			if len(runs) != 0 {
 				t.Fatalf("want no runs for %s, got %d", tc.name, len(runs))
 			}

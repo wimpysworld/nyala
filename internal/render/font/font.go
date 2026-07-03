@@ -23,6 +23,12 @@ var firaCodeTTF []byte
 //go:embed Unifont.otf
 var unifontOTF []byte
 
+// FiraCodeTTF returns the embedded FiraCode Nerd Font Mono TTF bytes, the
+// primary face used by the Route A rasteriser.
+func FiraCodeTTF() []byte {
+	return firaCodeTTF
+}
+
 // Atlas holds the parsed primary and fallback fonts plus a reusable glyph
 // lookup buffer. The primary is FiraCode Nerd Font Mono; the fallback is GNU
 // Unifont.

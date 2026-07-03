@@ -147,6 +147,11 @@ type fakeSession struct {
 	// tests, not the gate, drive the bounded loop. The gate tests set their own
 	// channel.
 	painted <-chan struct{}
+	// textReady is the first-publish latch the driver waits on after paint. A nil
+	// channel means "already published": TextReady returns a pre-closed channel so
+	// the session-timing tests proceed straight to the bounded loop. The gate tests
+	// set their own channel.
+	textReady <-chan struct{}
 }
 
 func (s *fakeSession) SessionJSON() []byte {
@@ -170,6 +175,13 @@ func (s *fakeSession) Painted() <-chan struct{} {
 		return closedChan
 	}
 	return s.painted
+}
+
+func (s *fakeSession) TextReady() <-chan struct{} {
+	if s.textReady == nil {
+		return closedChan
+	}
+	return s.textReady
 }
 
 // fakeCaptureEngine is the viewer.Engine the capture-driver tests drive. It

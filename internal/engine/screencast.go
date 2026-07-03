@@ -371,13 +371,29 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 		snapshot = e.snapshotRuns
 	}
 	var state overlayState
+	// lastCalCellW/H track the (cellW, cellH) pair the last calibration corrected
+	// for. The reSnap arm skips recalibration when the pair is unchanged, so a
+	// non-resize poke does not re-measure. Goroutine-local like state: the snapshot
+	// goroutine owns it, so the guard is lock-free.
+	var lastCalCellW, lastCalCellH int
 	if !e.waitForFirstSnapshot(ctx, ts) {
 		return
 	}
+	// Calibrate before the first publish so the first overlay maps against the
+	// corrected font metrics. Program order on this single goroutine is the whole
+	// ordering contract: no channel, no sync.Once, no new goroutine.
+	e.calibrateFonts(ctx)
+	e.mu.Lock()
+	lastCalCellW, lastCalCellH = e.snapshotCellPx()
+	e.mu.Unlock()
 	// First snapshot on the painted latch: the navigation trigger, single-shot per
 	// session, and the new reader of the painted latch replacing firstSnapshotAfterPaint.
 	state = e.publishSnapshot(ctx, snapshot, ts, state)
 	pokeReEmit(reEmit)
+	// Signal the capture driver that the first overlay runs have published, so it
+	// counts a usable frame only once the text has landed rather than racing the
+	// (calibration-delayed) first publish. A no-op off the capture path.
+	e.markTextReady()
 
 	// debounce arms a trailing timer per reflow quiet window; scrollDebounce does the
 	// same for scroll. A nil channel means none is pending; each timer is armed on its
@@ -392,6 +408,16 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 			return
 		case <-reSnap:
 			// Resize or backend switch: re-snapshot at once, no debounce, no cap.
+			// Recalibrate first when the cell size changed, since the seed size is
+			// derived from cellW; skip when the pair is unchanged so a backend switch
+			// at the same grid does not re-measure.
+			e.mu.Lock()
+			cellW, cellH := e.snapshotCellPx()
+			e.mu.Unlock()
+			if cellW != lastCalCellW || cellH != lastCalCellH {
+				e.calibrateFonts(ctx)
+				lastCalCellW, lastCalCellH = cellW, cellH
+			}
 			state = e.publishSnapshot(ctx, snapshot, ts, state)
 			pokeReEmit(reEmit)
 		case <-reflow:
@@ -699,6 +725,7 @@ func (e *ChromiumEngine) snapshotRuns(ctx context.Context, state overlayState) (
 	}
 	e.mu.Lock()
 	cellW, cellH := e.snapshotCellPx()
+	cols := e.cols
 	e.mu.Unlock()
 	start := time.Now()
 	documents, strs, err := captureSnapshot(ctx)
@@ -718,7 +745,7 @@ func (e *ChromiumEngine) snapshotRuns(ctx context.Context, state overlayState) (
 		// pixels equal CSS pixels and the DPR divide inside decodeGlyphRuns is a no-op
 		// in production. The pure decode stays general so tests can pass other ratios.
 		scroll := snapshotScrollOffset(documents)
-		decoded = decodeGlyphRuns(documents, strs, deviceScaleFactor, scroll.X, scroll.Y, cellW, cellH)
+		decoded = decodeGlyphRuns(documents, strs, deviceScaleFactor, scroll.X, scroll.Y, cellW, cellH, cols)
 	}
 	emit, last, failing := holdDecision(err, decoded, state.lastText, state.failingSince, time.Now())
 	return emit, snapshotMS, overlayState{lastText: last, failingSince: failing}

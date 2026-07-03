@@ -109,6 +109,14 @@ type ChromiumEngine struct {
 	recorder    captureRecorder // event sink, nil off the capture path
 	painted     chan struct{}   // closed on the first contentful paint (or load) under capture
 	paintedOnce sync.Once       // guards painted against a double close
+	// textReady is the capture-only first-publish latch. The snapshot goroutine
+	// closes it after its first publishSnapshot, so the capture driver waits for the
+	// first overlay runs to land before it counts a usable frame. Without it the
+	// driver and the snapshot goroutine both wake off painted and the driver can
+	// latch the first frame before the (calibration-delayed) publish, so the
+	// captured frame carries no text. It stays nil off the capture path.
+	textReady     chan struct{}
+	textReadyOnce sync.Once // guards textReady against a double close
 
 	// Lifecycle. The supervisor goroutine owns the engine lifetime: it starts
 	// each browser session, watches for a crash or a lost connection, rebuilds
@@ -162,9 +170,27 @@ func (e *ChromiumEngine) EnableCapture(rec captureRecorder) {
 	// sees the closed channel. The exported recorder relays it to the viewer's
 	// CaptureSession, so the viewer never imports the engine package.
 	e.painted = make(chan struct{})
+	// The textReady latch lets the capture driver wait for the first overlay publish
+	// before it counts a usable frame, so the first captured frame carries its text
+	// runs rather than the pre-publish nil. It is created here alongside painted,
+	// before any goroutine starts; markTextReady closes it on the first publish.
+	e.textReady = make(chan struct{})
 	if r, ok := rec.(*Recorder); ok {
 		r.setPainted(e.painted)
+		r.setTextReady(e.textReady)
 	}
+}
+
+// markTextReady closes the textReady latch on the first overlay publish, so a late
+// reader still sees the closed channel. The snapshot goroutine (runTextSync) calls
+// it once, after its first publishSnapshot. textReadyOnce guards the close because a
+// crash rebuild restarts the snapshot goroutine. It is a no-op off the capture path,
+// where textReady stays nil.
+func (e *ChromiumEngine) markTextReady() {
+	if e.textReady == nil {
+		return
+	}
+	e.textReadyOnce.Do(func() { close(e.textReady) })
 }
 
 // markPainted closes the painted latch, so a late reader still sees it closed. The

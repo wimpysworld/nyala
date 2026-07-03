@@ -99,8 +99,28 @@ corpus:
     for dir in "$root"/layout-*/; do
         name="$(basename "$dir")"
         printf '== %s ==\n' "$name"
-        if ! just capture=1 run "file://${dir}index.html" backend=block; then
+        # Capture the run output to parse the bundle path, then print it so a
+        # failed capture stays debuggable. The pty wrapper emits CRLF, so strip
+        # the trailing CR before using the path.
+        out="$(just capture=1 run "file://${dir}index.html" backend=block 2>&1)"
+        status=$?
+        printf '%s\n' "$out"
+        if [ "$status" -ne 0 ]; then
             printf 'capture failed: %s\n' "$name" >&2
+            fail=1
+            continue
+        fi
+        bundle="$(printf '%s\n' "$out" | grep 'capture bundle:' | tail -n 1)"
+        bundle="${bundle#*capture bundle: }"
+        bundle="${bundle%$'\r'}"
+        if [ -z "$bundle" ]; then
+            printf 'no bundle path parsed: %s\n' "$name" >&2
+            fail=1
+            continue
+        fi
+        frame="$(printf '%s' "$bundle"/frames/frame-*/)"
+        if ! go run ./tools/placement-score -gate -thresholds "${dir}fixture.json" "$frame"; then
+            printf 'placement gate failed: %s\n' "$name" >&2
             fail=1
         fi
     done
