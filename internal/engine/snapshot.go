@@ -6,7 +6,6 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf16"
 
 	"github.com/chromedp/cdproto/domsnapshot"
@@ -138,7 +137,7 @@ func mapBoxToCells(bounds []float64, dpr, scrollX, scrollY float64, cellW, cellH
 	bw := bounds[2] / dpr
 	col = int(math.Round(px / cellW))
 	row = int(math.Round(py / cellH))
-	text = strings.TrimRightFunc(text, unicode.IsSpace)
+	text = strings.TrimRight(text, " \n")
 	if text == "" {
 		return col, row, ""
 	}
