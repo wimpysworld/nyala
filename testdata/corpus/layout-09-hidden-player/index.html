@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<title>Episode 314: a desktop audio player with hidden UI</title>
+<style>
+  html {
+    background: #ffffff;
+    color: #1a1a1a;
+  }
+  body {
+    margin: 0;
+    padding: 16px 24px;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 15px;
+    line-height: 22px;
+    max-width: 912px;
+  }
+  h1 {
+    font-size: 28px;
+    line-height: 34px;
+    margin: 0 0 8px 0;
+    font-weight: 700;
+  }
+  p {
+    margin: 0 0 10px 0;
+  }
+  .player {
+    margin: 12px 0;
+    padding: 10px 12px;
+    border: 1px solid #999999;
+    background: #f4f4f4;
+    font-size: 15px;
+    line-height: 22px;
+  }
+  .player .controls {
+    font-weight: 700;
+    margin-right: 12px;
+  }
+  .player .time {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Screen-reader-only hint. The 1px clip hides it visually; opacity:0 on the
+     text-bearing element itself is what the hidden-box filter drops. Emits no runs. */
+  .sr-only {
+    opacity: 0;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  /* Speed menu. opacity:0 on each menu item is what the filter drops. Emits no runs. */
+  .speed-menu {
+    position: absolute;
+    top: 0;
+    left: 0;
+    background: #ffffff;
+    border: 1px solid #555555;
+    font-size: 15px;
+    line-height: 22px;
+  }
+  .speed-menu ul {
+    margin: 0;
+    padding: 4px 12px;
+    list-style: none;
+  }
+  .speed-menu li {
+    opacity: 0;
+  }
+  /* Tooltip hidden by visibility. Emits no runs. */
+  .tooltip {
+    visibility: hidden;
+    position: absolute;
+    top: 0;
+    left: 0;
+    background: #1a1a1a;
+    color: #ffffff;
+    padding: 4px 8px;
+    font-size: 13px;
+    line-height: 18px;
+  }
+</style>
+</head>
+<body>
+  <h1>Episode 314: Warty Warthog, twenty years on</h1>
+
+  <p>This week the team gathers to mark two decades of Ubuntu releases, from the first Warty Warthog in October 2004 to the present day. Press play below to listen along while you read the show notes.</p>
+
+  <div class="player">
+    <span class="controls">Play</span>
+    <span class="time">12:47 / 31:05</span>
+    <span class="controls">Volume</span>
+
+    <span class="sr-only">Use the up and down arrow keys to change the volume level</span>
+
+    <div class="speed-menu">
+      <ul>
+        <li>1.75x</li>
+        <li>1.50x</li>
+        <li>1.25x</li>
+        <li>1.00x</li>
+        <li>0.75x</li>
+      </ul>
+    </div>
+
+    <div class="tooltip">Playback speed control tooltip text</div>
+  </div>
+
+  <p>Show notes and chapter markers follow. The full back catalogue lives on the Internet Archive and YouTube for anyone who wants to revisit the earlier seasons.</p>
+</body>
+</html>

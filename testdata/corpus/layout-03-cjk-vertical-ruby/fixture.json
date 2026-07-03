@@ -22,6 +22,7 @@
     "mean": 0.95,
     "max": 4.5,
     "drifted": 5,
-    "reason": "CJK vertical and ruby runs fall back off the embedded face, so advances are not 2*cellW; the horizontal CJK paragraph maps near-clean, and a new drifted box still trips the pinned count."
+    "collisions": 2,
+    "reason": "CJK vertical and ruby runs fall back off the embedded face, so advances are not 2*cellW; the horizontal CJK paragraph maps near-clean, and a new drifted box still trips the pinned count. The shaped CJK/ruby runs overlap a row, so two same-row cell collisions are expected."
   }
 }

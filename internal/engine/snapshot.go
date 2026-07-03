@@ -6,6 +6,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 
 	"github.com/chromedp/cdproto/domsnapshot"
@@ -14,13 +15,30 @@ import (
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
+// snapshotStyles is the computed-style whitelist requested from
+// DOMSnapshot.captureSnapshot, in the order the browser returns them per layout
+// node. The order is load-bearing: it must match the style index constants
+// below, which the decode reads by position.
+var snapshotStyles = []string{"color", "visibility", "opacity"}
+
+// Style index constants into a layout node's Styles entry. The order is
+// load-bearing and must match snapshotStyles; a reorder silently misreads the
+// computed styles.
+const (
+	styleColour     = 0
+	styleVisibility = 1
+	styleOpacity    = 2
+)
+
 // captureSnapshot runs DOMSnapshot.captureSnapshot against ctx, requesting the
-// computed color style and the paint order. It returns the snapshot documents
-// and the shared string table that the document indices refer to. The pure
+// computed color, visibility, and opacity styles, the paint order, and the
+// blended text-colour opacities. It returns the snapshot documents and the
+// shared string table that the document indices refer to. The pure
 // decodeGlyphRuns maps that pair to glyph runs without a browser.
 func captureSnapshot(ctx context.Context) (documents []*domsnapshot.DocumentSnapshot, strings []string, err error) {
-	action := domsnapshot.CaptureSnapshot([]string{"color"}).
-		WithIncludePaintOrder(true)
+	action := domsnapshot.CaptureSnapshot(snapshotStyles).
+		WithIncludePaintOrder(true).
+		WithIncludeTextColorOpacities(true)
 	// chromedp.Run injects the cdproto executor into the context; calling the
 	// action's Do directly returns "invalid context" because the bare session
 	// context carries no executor.
@@ -76,6 +94,9 @@ func appendDocumentRuns(runs []render.GlyphRun, doc *domsnapshot.DocumentSnapsho
 		if len(bounds) < 4 {
 			continue
 		}
+		if boxHidden(layout, strings, layoutIdx, bounds, dpr, cellH) {
+			continue
+		}
 		col, row, clipped := mapBoxToCells(bounds, dpr, scrollX, scrollY, cellW, cellH, cols, text)
 		if clipped == "" {
 			continue
@@ -98,11 +119,12 @@ func appendDocumentRuns(runs []render.GlyphRun, doc *domsnapshot.DocumentSnapsho
 // a browser, so it is unit-testable on plain floats. The bounds are the CDP
 // device-pixel [x, y, w, h]; dpr converts them to CSS pixels and the scroll
 // offset shifts document-absolute coordinates to the scrolled on-screen view.
-// It rounds the box top-left to a cell, trims the soft-wrap trailing space
-// the layout adds, then clips the text to the cells left before the grid's
-// right edge (cellW*cols). A box whose width falls a rounding epsilon short of
-// N whole cells still yields N cells: the width budget rounds the cell count
-// rather than flooring it, so a font-metric residue never drops the last cell.
+// It rounds the box top-left to a cell, trims all trailing whitespace the
+// soft-wrap layout adds (a space or a newline), then clips the text to the
+// cells left before the grid's right edge (cellW*cols). A box whose width falls
+// a rounding epsilon short of N whole cells still yields N cells: the width
+// budget rounds the cell count rather than flooring it, so a font-metric residue
+// never drops the last cell.
 // Page insets are arbitrary sub-cell offsets, so round centres the residue at
 // zero and stays order-preserving, keeping the bins monotonic and non-overlapping.
 func mapBoxToCells(bounds []float64, dpr, scrollX, scrollY float64, cellW, cellH, cols int, text string) (col, row int, clipped string) {
@@ -111,7 +133,7 @@ func mapBoxToCells(bounds []float64, dpr, scrollX, scrollY float64, cellW, cellH
 	bw := bounds[2] / dpr
 	col = int(math.Round(px / float64(cellW)))
 	row = int(math.Round(py / float64(cellH)))
-	text = strings.TrimRight(text, " ")
+	text = strings.TrimRightFunc(text, unicode.IsSpace)
 	if text == "" {
 		return col, row, ""
 	}
@@ -148,18 +170,89 @@ func layoutBoxText(layout *domsnapshot.LayoutTreeSnapshot, strings []string, lay
 }
 
 // layoutColour reads the computed color of a layout node and maps it to RGBA.
-// captureSnapshot was called with the single style color, so each layout node's
-// Styles entry holds one string-table index: the serialised CSS colour. A
-// missing or unparseable colour falls back to opaque black.
+// captureSnapshot requests the snapshotStyles whitelist, so each layout node's
+// Styles entry holds one string-table index per style; the colour is at
+// styleColour. A missing or unparseable colour falls back to opaque black.
 func layoutColour(layout *domsnapshot.LayoutTreeSnapshot, strings []string, layoutIdx int) color.RGBA {
 	if layoutIdx < 0 || layoutIdx >= len(layout.Styles) {
 		return color.RGBA{A: 0xff}
 	}
 	style := layout.Styles[layoutIdx]
-	if len(style) == 0 {
+	if len(style) <= styleColour {
 		return color.RGBA{A: 0xff}
 	}
-	return parseCSSColour(stringAt(strings, int(style[0])))
+	return parseCSSColour(stringAt(strings, int(style[styleColour])))
+}
+
+// hiddenOpacityEps is the effective-opacity floor below which a text box is
+// treated as invisible and dropped. A visibility:hidden or opacity:0 element
+// still owns a DOMSnapshot layout box, so its text would compose phantom runs
+// over the page without this drop.
+const hiddenOpacityEps = 0.05
+
+// boxHidden reports whether a text box should be dropped as invisible. It drops
+// on three conditions: the layout node's computed visibility is hidden or
+// collapse; its effective opacity (own computed opacity times the blended text
+// opacity) is at or near zero; or the box is subpixel-short in height (below a
+// quarter cell, so it carries no legible glyph). An absent visibility style
+// means visible, an absent or unparseable opacity means 1, and a nil or short
+// TextColorOpacities means 1, so a fixture without these style slots is never
+// dropped.
+func boxHidden(layout *domsnapshot.LayoutTreeSnapshot, strings []string, layoutIdx int, bounds []float64, dpr float64, cellH int) bool {
+	switch layoutVisibility(layout, strings, layoutIdx) {
+	case "hidden", "collapse":
+		return true
+	}
+	if layoutOpacity(layout, strings, layoutIdx)*layoutTextOpacity(layout, layoutIdx) < hiddenOpacityEps {
+		return true
+	}
+	return bounds[3]/dpr < float64(cellH)/4
+}
+
+// layoutVisibility reads the computed visibility of a layout node, or "" when the
+// style slot is absent. The Styles entry holds one string-table index per
+// requested style; visibility sits at styleVisibility. An absent entry means the
+// element is visible, so the "" default never drops a run.
+func layoutVisibility(layout *domsnapshot.LayoutTreeSnapshot, strings []string, layoutIdx int) string {
+	if layoutIdx < 0 || layoutIdx >= len(layout.Styles) {
+		return ""
+	}
+	style := layout.Styles[layoutIdx]
+	if len(style) <= styleVisibility {
+		return ""
+	}
+	return stringAt(strings, int(style[styleVisibility]))
+}
+
+// layoutOpacity reads the computed opacity of a layout node, or 1 when the style
+// slot is absent or unparseable. The opacity sits at styleOpacity in the Styles
+// entry. The default of 1 keeps a fixture without the opacity slot fully opaque,
+// so it is never dropped.
+func layoutOpacity(layout *domsnapshot.LayoutTreeSnapshot, strings []string, layoutIdx int) float64 {
+	if layoutIdx < 0 || layoutIdx >= len(layout.Styles) {
+		return 1
+	}
+	style := layout.Styles[layoutIdx]
+	if len(style) <= styleOpacity {
+		return 1
+	}
+	v, err := strconv.ParseFloat(stringAt(strings, int(style[styleOpacity])), 64)
+	if err != nil {
+		return 1
+	}
+	return v
+}
+
+// layoutTextOpacity reads the blended text opacity of a layout node from the
+// snapshot's TextColorOpacities list, or 1 when the list is nil or too short.
+// The blended value folds in ancestor opacity, so an ancestor with opacity:0
+// zeroes it even when the element's own opacity is 1. The default of 1 keeps a
+// fixture without the list fully opaque, so it is never dropped.
+func layoutTextOpacity(layout *domsnapshot.LayoutTreeSnapshot, layoutIdx int) float64 {
+	if layoutIdx < 0 || layoutIdx >= len(layout.TextColorOpacities) {
+		return 1
+	}
+	return layout.TextColorOpacities[layoutIdx]
 }
 
 // stringAt returns the string-table entry at idx, or "" when idx is out of range.
