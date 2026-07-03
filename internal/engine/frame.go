@@ -32,7 +32,7 @@ const frameChannelBuffer = 2
 const ackBufferDepth = 8
 
 // snapshotCellPx returns the layout pixels per terminal cell, the divisor
-// decodeGlyphRuns floors the DOM box bounds by. The CSS layout viewport is the
+// decodeGlyphRuns rounds the DOM box bounds by. The CSS layout viewport is the
 // real surface (surfaceSize, set by SetDeviceMetricsOverride and SetContentsSize),
 // so the snapshot box bounds are in surface pixels; dividing the surface viewport
 // by the grid maps a box to its cell. This is the real cell px (cellW x cellH),

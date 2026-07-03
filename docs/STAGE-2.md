@@ -70,6 +70,8 @@ The overlay lives inside the block `Grid`, so all three consumers and the Route 
 
 Cell positions are the producer's contract, not a compositor step. `GlyphRun.Col, Row` is already a cell address, so the compositor places each run at its cell and does no binning. The `floor(px/cellW)`, `floor(py/cellH)` rule that maps pixels to cells is the producer's job (the Stage 2 fixtures, Stage 3's DOM mapping later). Floor, never round: floor keeps the text and the quadrant bitmap on one monotonic, non-overlapping partition, so no glyph drifts into a neighbour.
 
+Forward note: Stage 3's producer snap is now round, not floor. Page insets are arbitrary sub-cell offsets, so round centres the residue at zero. Round preserves the monotonic non-overlapping partition (order-preserving), the property this rule protected.
+
 ## Grapheme width and wide glyphs
 
 Each grapheme is segmented with `rivo/uniseg` (cluster segmentation: ZWJ, emoji) and measured with `mattn/go-runewidth` (display width, clamped to 1 or 2). A width-0 cluster (a standalone combining mark) is treated as width 1, so it still occupies a cell.
@@ -127,7 +129,7 @@ The harness grades the overlay through four measures, three gated and one report
 
 - Single combined grid, grapheme wins, no z-buffer. The grapheme overriding the block collapses cell ownership, z-order, and block suppression into one branch. Ported from Browsh and Carbonyl.
 - Text-cell background is the whole-cell bitmap average, not a luma-distance nudge. The glyph sits on its local page background, so contrast holds by construction at near-zero cost. The nudge stays opt-in and off by default; it rescues thin glyphs on busy backgrounds but adds per-cell work and, for the DOM-background variant, a source not wired until Stage 3.
-- Cell positions are the producer's contract. `GlyphRun.Col, Row` arrives as a cell address; the compositor does no binning. The `floor` rule lives upstream and uses floor, never round, to keep the partition monotonic.
+- Cell positions are the producer's contract. `GlyphRun.Col, Row` arrives as a cell address; the compositor does no binning. The snap rule lives upstream. Stage 3 moved it from floor to round: page insets are arbitrary sub-cell offsets, so round centres the residue at zero while preserving the monotonic non-overlapping partition (order-preserving).
 - Wide glyphs claim N cells and clip, never half-emit. A clipped wide glyph at the right edge writes a single background space, because terminals disagree on a half-clipped wide glyph.
 - The matcher is an exact-template placement-and-coverage check, not general OCR. Its candidate set is fixed (run graphemes plus the block glyphs), it is polarity-invariant, and it gates on `CER == 0`. This is the distinct role the matcher was deferred from Stage 0 to fill: it needs the crisp glyph cells the Stage 2 overlay provides.
 - Gate the deterministic measures, report the variable one. The golden, the matcher, and the WCAG count are deterministic and hard-gated; the gosseract differentiator varied and was reported (since removed).

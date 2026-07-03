@@ -42,7 +42,10 @@ Every page is deterministic and offline:
 - `index.html` - the self-contained page.
 - `fixture.json` - metadata: `id`, `title`, `stressor`, `origin`
   (`original` or `adapted`), `source_url`, `license`, `attribution`, `fonts`,
-  `self_contained`, `notes`.
+  `self_contained`, `notes`, and an optional `placement_gate` object
+  (`mean`, `max`, `drifted`, `reason`) that overrides the corpus placement gate's
+  default thresholds for shaped-script fixtures whose advances cannot match the
+  forced monospace cell.
 
 ## Capture and render
 
@@ -55,14 +58,23 @@ auto-rasterised `block-render.png` per frame, so the two compare directly at
 just capture=1 run file:///abs/path/testdata/corpus/layout-01-dense-prose/index.html backend=block
 ```
 
-Use `capture=1`. The capture driver waits for the page to paint, then folds the
-text layer on before it counts the first frame, so `capture=1` lands the painted,
-text-bearing frame deterministically. A static file page emits few screencast
+Use `capture=1`. The capture driver waits for the page to paint, then a text-ready
+latch holds the first counted frame until the text layer is folded on, so
+`capture=1` lands the painted, text-bearing frame deterministically. A static file page emits few screencast
 frames then idles; the gate keeps the blank pre-paint frame out, so `n>1` is no
 longer needed. To re-render an existing bundle, run `just rasterise <frame-dir>`.
 
 `just placement-score <frame-dir>` reports per-box horizontal placement error from
-the captured geometry, for before/after measurement of the block renderer.
+the captured geometry, for before/after measurement of the block renderer. It reads
+the cell size from the bundle's `performance.json` (`cell_px`).
+
+`just corpus` captures every fixture then gates each one: it runs
+`placement-score -gate -thresholds <fixture.json>` against the bundle frame and
+fails the fixture when mean right-edge error reaches 0.5 cells, max reaches 1.0, or
+any box drifts. A fixture whose shaped-script advances cannot match the forced
+monospace cell carries a `placement_gate` override in `fixture.json` (see below)
+that loosens these thresholds. The sweep continues past a failure and exits
+non-zero if any fixture fails.
 
 ## Committed artefacts
 
@@ -78,4 +90,4 @@ Per fixture, regenerated like `just update-golden`:
 - the golden `.txtar` grid.
 
 `block-render.png` stays a regenerated diagnostic artefact via `just rasterise`, not a
-committed golden. See `BLOCK-RESEARCH.md` "Corpus build decision".
+committed golden.

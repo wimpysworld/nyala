@@ -33,6 +33,10 @@ const (
 	// captureEventInputDispatchFailed marks a persistent run of input-dispatch
 	// failures, so a wedged browser is observable in the bundle.
 	captureEventInputDispatchFailed captureEventType = "input_dispatch_failed"
+	// captureEventFontCalibration marks a font-calibration miss: fonts.ready, the
+	// probe measurement, or the re-inject timed out or errored, so the seed size
+	// stood. It makes a degraded-placement session observable in the bundle.
+	captureEventFontCalibration captureEventType = "font_calibration"
 )
 
 // captureWhitelist is the set of event types the recorder accepts. A type absent
@@ -45,6 +49,7 @@ var captureWhitelist = map[captureEventType]bool{
 	captureEventScreencastControl:   true,
 	captureEventFrameAck:            true,
 	captureEventInputDispatchFailed: true,
+	captureEventFontCalibration:     true,
 }
 
 // captureEvent is one event offered to the recorder. Type is the discriminator;
@@ -151,6 +156,12 @@ type Recorder struct {
 	// engine closes it on the first contentful paint (or load fallback); the viewer
 	// reads it via Painted to wait for a painted page before counting usable frames.
 	painted <-chan struct{}
+
+	// textReady is the engine's first-publish latch, set once in EnableCapture
+	// alongside painted and read-only afterwards. The engine closes it on the first
+	// overlay publish; the viewer reads it via TextReady to wait for the text to land
+	// before counting a usable frame, so the first captured frame carries its runs.
+	textReady <-chan struct{}
 }
 
 // Ensure Recorder satisfies captureRecorder.
@@ -213,6 +224,22 @@ func (r *Recorder) setPainted(painted <-chan struct{}) {
 // driver's paint deadline then bounds the wait.
 func (r *Recorder) Painted() <-chan struct{} {
 	return r.painted
+}
+
+// setTextReady records the engine's first-publish latch. The engine calls it once
+// in EnableCapture before any goroutine starts; the viewer reads the channel with
+// TextReady. It is set-once and read-only afterwards, so it takes no lock.
+func (r *Recorder) setTextReady(textReady <-chan struct{}) {
+	r.textReady = textReady
+}
+
+// TextReady returns the engine's first-publish latch, closed on the first overlay
+// publish under capture. The capture driver waits on it after paint so the first
+// counted frame carries its decoded text runs rather than the pre-publish nil. A
+// nil latch (no engine wiring, as in a fake) reads as a never-closed channel; the
+// driver's deadline then bounds the wait.
+func (r *Recorder) TextReady() <-chan struct{} {
+	return r.textReady
 }
 
 // cdpSession is the run-metadata view serialised to cdp-session.json. It records

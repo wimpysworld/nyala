@@ -16,7 +16,9 @@ type PlacementBox struct {
 	X float64
 	// W is the box width in CSS pixels.
 	W float64
-	// Col is the binned start column, floor(X/cellW).
+	// Col is the binned start column, round(X/cellW). Page insets are arbitrary
+	// sub-cell offsets, so round centres the residue at zero and stays
+	// order-preserving, keeping the bins monotonic and non-overlapping.
 	Col int
 	// Text is the run's text, graphemes packed one per cell from Col.
 	Text string

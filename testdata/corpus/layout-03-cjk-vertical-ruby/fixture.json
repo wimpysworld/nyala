@@ -17,5 +17,11 @@
     }
   ],
   "self_contained": true,
-  "notes": "Original Japanese and Simplified Chinese sentences authored for this fixture. Designed for 960x640, white background, dark text. Three CJK blocks: a horizontal Japanese paragraph (default writing-mode), a vertical Japanese block (writing-mode: vertical-rl, right-to-left flow), and a ruby line with <rt> furigana over kanji, plus a short Simplified Chinese line for Han coverage. English <h1>/<h2> headings label each block. The embedded NyalaCJK webfont is a subset of Noto Sans CJK JP covering every CJK and kana glyph on the page, so headless Chromium renders real glyphs rather than tofu without relying on a system CJK font. CSS is inline, the font is base64 @font-face, and there are no external URLs, no <script>, and no @import. Verified by capture: screenshot.png shows correct CJK glyphs, vertical-rl flow, and ruby furigana, with no tofu boxes."
+  "notes": "Original Japanese and Simplified Chinese sentences authored for this fixture. Designed for 960x640, white background, dark text. Three CJK blocks: a horizontal Japanese paragraph (default writing-mode), a vertical Japanese block (writing-mode: vertical-rl, right-to-left flow), and a ruby line with <rt> furigana over kanji, plus a short Simplified Chinese line for Han coverage. English <h1>/<h2> headings label each block. The embedded NyalaCJK webfont is a subset of Noto Sans CJK JP covering every CJK and kana glyph on the page, so headless Chromium renders real glyphs rather than tofu without relying on a system CJK font. CSS is inline, the font is base64 @font-face, and there are no external URLs, no <script>, and no @import. Verified by capture: screenshot.png shows correct CJK glyphs, vertical-rl flow, and ruby furigana, with no tofu boxes.",
+  "placement_gate": {
+    "mean": 0.95,
+    "max": 4.5,
+    "drifted": 5,
+    "reason": "CJK vertical and ruby runs fall back off the embedded face, so advances are not 2*cellW; the horizontal CJK paragraph maps near-clean, and a new drifted box still trips the pinned count."
+  }
 }

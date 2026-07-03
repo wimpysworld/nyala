@@ -470,6 +470,122 @@ reviews it.
   `shm_open`/mmap cost against a reused mapping, and the sub-cell box jitter past the
   clip rule.
 
+## Monospace block render (post-Stage-3 fix)
+
+Stage 3 shipped the overlay, but the block backend placed some text in the wrong
+cell. The page laid out with proportional fonts, so a run of N graphemes did not
+occupy `N*cellW` pixels, and the box-to-cell mapping binned the text off its true
+column. This fix forces the page onto the cell grid before capture, repairs the
+mapping, and gates the corpus against placement error. It is a correction to the
+Stage 3 overlay, not the Stage 4 UI, and it is the first item on the post-Stage-3
+`docs/TODO.md`.
+
+### Document-creation font forcing
+
+`internal/engine/stylesheet.go` builds one injection script. The engine installs
+it with `Page.addScriptToEvaluateOnNewDocument`, so it runs when each new
+document's JS context is created, before `documentElement` exists, and applies to
+the first document and every later one. `buildStylesheetScript` embeds the
+FiraCode Nerd Font Mono TTF (`font.FiraCodeTTF()`) as a base64 `data:` URL
+`@font-face` under the family `FiraCode Nerd Font Mono`, then forces on every
+element with `!important`:
+
+- `font-family: "FiraCode Nerd Font Mono", monospace`, so every run resolves to
+  the embedded face rather than a system fallback.
+- `font-size: cellW/advanceRatio px` as the seed. `advanceRatio` is `0.6154`,
+  the glyph advance over the em size, measured `1200/1950` from the embedded TTF.
+  One glyph advance seeds to one cell width before calibration corrects it.
+- `line-height: cellH px`, one text line per cell row.
+- `font-kerning: none`, `letter-spacing: 0`, `font-variant-ligatures: none`, so
+  no pair adjustment shifts a glyph off its cell.
+- `text-align: left`, so justification never stretches inter-word space.
+
+A second rule de-sticks inline `position: fixed` and `position: sticky` to
+`absolute`, so a pinned bar does not float over the scrolled overlay. The script
+appends its `<style>` (id `nyala-font-forcing`) the moment `documentElement`
+lands: at once if it already exists, otherwise from a `MutationObserver` on
+`document` that appends and disconnects when the root element appears, so the
+first layout is forced.
+
+### One-shot runtime calibration
+
+The seed size is a font-metric estimate; the rendered advance still drifts a
+fraction of a pixel per glyph. `calibrateFonts` (`internal/engine/calibrate.go`)
+corrects it once per cell geometry. It runs on the snapshot goroutine, between the
+paint latch and the first published snapshot, so program order is the ordering
+contract and no lock is held across the `chromedp.Run`.
+
+The pass awaits `document.fonts.ready`, appends an offscreen 20-glyph ASCII probe
+styled by the injected rules, reads its box width in CSS pixels, computes the
+corrected size with the pure `calibratedFontSize` (`seed * (N*cellW) /
+measuredBoxW`, a single linear correction), and rewrites the injected `<style>`'s
+`font-size` rule with the corrected value at the same `!important` weight. Font
+advance scales linearly with size, so one correction lands every ASCII glyph on
+exactly `cellW` px. The whole pass runs under a 2-second timeout
+(`fontCalibrationTimeout`, mirroring `inputDispatchTimeout`); on timeout or any
+error the seed stands, a `font_calibration` capture event records the miss when
+the recorder is active, and the caller proceeds to publish. Calibration failure
+degrades placement, never the session. A resize recalibrates through the `reSnap`
+arm when the cell pair changes, guarded by a goroutine-local last-calibrated
+`(cellW, cellH)` so an unchanged pair skips the pass.
+
+### Box-to-cell mapping repair
+
+`mapBoxToCells` (`internal/engine/snapshot.go`) is the pure per-box mapping, unit
+tested on plain floats. It converts the CDP device-pixel bounds to CSS pixels,
+subtracts the scroll offset, then:
+
+- **Round snap on both axes.** `col = round(px/cellW)`, `row = round(py/cellH)`,
+  replacing the Stage 2 floor. Page insets are arbitrary sub-cell offsets, so
+  round centres the residue at zero while preserving the monotonic
+  non-overlapping partition the floor rule protected. `layout-07-ua-default-floor`
+  gave the evidence: its browser-default body inset pushed every run half a cell
+  right, so floor binned a whole column late and round binned it true.
+  `docs/STAGE-2.md` already carries this as a forward note.
+- **Soft-wrap trailing-space trim.** `strings.TrimRight(text, " ")` drops the
+  space the layout adds at a soft wrap, so a wrapped line does not claim a phantom
+  trailing cell.
+- **Grid-edge clip.** The text clips at the grid's right edge (`cellW*cols` from
+  the box start column) through `render.ClipToCells`, replacing the old
+  pixel-width truncation budget.
+- **Rounded width guard.** The cell budget rounds the box width (`round(bw/cellW)`)
+  rather than flooring it, so a box a rounding epsilon short of N whole cells still
+  yields N cells and never drops the last glyph.
+
+### Capture: the textReady latch
+
+The capture driver waits for the first text-bearing publish after paint, not just
+the first painted frame. The `textReady` latch holds the first counted frame until
+the engine publishes a snapshot with runs folded on, so a capture bundle's first
+frame always carries its text. The latch is capture-only; production pays only the
+nil checks.
+
+### Corpus placement gate
+
+`just corpus` now gates each fixture. After each block capture it runs
+`placement-score -gate -thresholds <fixture.json>` against the bundle's frame,
+reading the recorded `cell_px` from `performance.json`. The default thresholds are
+mean right-edge error under 0.5 cells, max under 1.0, and drifted-box count 0. A
+breach sets the failure flag, and the sweep still continues past a failure and
+exits non-zero if any fixture fails.
+
+Two fixtures carry a committed `placement_gate` override in `fixture.json`, because
+their shaped-script runs cannot match the forced monospace advance:
+`layout-02-rtl-bidi` (Arabic shaped-cluster advances exceed one cell) and
+`layout-03-cjk-vertical-ruby` (CJK vertical and ruby runs fall off the embedded
+face). The Latin runs on both pages still score near zero; the override loosens
+mean, max, and drifted only enough to pass the shaped runs. All eight corpus
+fixtures pass the gate.
+
+### The accepted trade
+
+One forced font size breaks faithful proportional layout: a wide display heading
+and a body paragraph both render at the cell size, so the page loses its type
+scale. This is the trade every screenshot-plus-overlay terminal browser makes, and
+Nyala makes it deliberately. The bitmap underneath still shows the true visual page;
+the overlay's job is crisp, correctly placed text, and correct placement needs the
+monospace grid.
+
 ## References
 
 These sources sit behind the engine fixes recorded above.

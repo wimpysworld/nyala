@@ -36,13 +36,13 @@ func captureSnapshot(ctx context.Context) (documents []*domsnapshot.DocumentSnap
 // text box in every document, converts each box's device-pixel bounds to CSS
 // pixels by dividing by dpr, subtracts the page scroll offset (the bounds are
 // document-absolute and the bitmap is the scrolled view), and bins the box
-// top-left to a cell with the Stage 2 floor rule.
-// Each box becomes one render.GlyphRun whose graphemes are clipped to
-// floor(boxWidthPx/cellW) display cells, counting cells with the Stage 2 width
-// rule so a width-2 cluster is never half-emitted; overflow graphemes are
-// dropped because the bitmap underneath already shows them. The box's computed
-// color style feeds GlyphRun.FG in RGBA channel order.
-func decodeGlyphRuns(documents []*domsnapshot.DocumentSnapshot, strings []string, dpr, scrollX, scrollY float64, cellW, cellH int) []render.GlyphRun {
+// top-left to a cell by rounding.
+// Each box becomes one render.GlyphRun whose graphemes are clipped to the grid's
+// right edge (cellW*cols cells from the box's start column), counting cells with
+// the Stage 2 width rule so a width-2 cluster is never half-emitted; overflow
+// graphemes are dropped because the bitmap underneath already shows them. The
+// box's computed color style feeds GlyphRun.FG in RGBA channel order.
+func decodeGlyphRuns(documents []*domsnapshot.DocumentSnapshot, strings []string, dpr, scrollX, scrollY float64, cellW, cellH, cols int) []render.GlyphRun {
 	if cellW <= 0 || cellH <= 0 || dpr <= 0 {
 		return nil
 	}
@@ -51,7 +51,7 @@ func decodeGlyphRuns(documents []*domsnapshot.DocumentSnapshot, strings []string
 		if doc == nil || doc.TextBoxes == nil || doc.Layout == nil {
 			continue
 		}
-		runs = appendDocumentRuns(runs, doc, strings, dpr, scrollX, scrollY, cellW, cellH)
+		runs = appendDocumentRuns(runs, doc, strings, dpr, scrollX, scrollY, cellW, cellH, cols)
 	}
 	return runs
 }
@@ -60,7 +60,7 @@ func decodeGlyphRuns(documents []*domsnapshot.DocumentSnapshot, strings []string
 // references a layout node by LayoutIndex; that node carries the full layout
 // text and the computed color. The box covers a UTF-16 substring of that text
 // given by Start and Length.
-func appendDocumentRuns(runs []render.GlyphRun, doc *domsnapshot.DocumentSnapshot, strings []string, dpr, scrollX, scrollY float64, cellW, cellH int) []render.GlyphRun {
+func appendDocumentRuns(runs []render.GlyphRun, doc *domsnapshot.DocumentSnapshot, strings []string, dpr, scrollX, scrollY float64, cellW, cellH, cols int) []render.GlyphRun {
 	boxes := doc.TextBoxes
 	layout := doc.Layout
 	for i := range boxes.LayoutIndex {
@@ -76,18 +76,7 @@ func appendDocumentRuns(runs []render.GlyphRun, doc *domsnapshot.DocumentSnapsho
 		if len(bounds) < 4 {
 			continue
 		}
-		// The snapshot box bounds are document-absolute; the bitmap is the scrolled
-		// view, so the on-screen position subtracts the scroll offset. Adding it (the
-		// prior bug) placed runs off by 2*scroll on any scrolled page, invisible only
-		// at scroll 0.
-		px := bounds[0]/dpr - scrollX
-		py := bounds[1]/dpr - scrollY
-		bw := bounds[2] / dpr
-		bh := bounds[3] / dpr
-		col := int(math.Floor(px / float64(cellW)))
-		row := int(math.Floor(py / float64(cellH)))
-		maxCells := int(math.Floor(bw / float64(cellW)))
-		clipped := render.ClipToCells(text, maxCells)
+		col, row, clipped := mapBoxToCells(bounds, dpr, scrollX, scrollY, cellW, cellH, cols, text)
 		if clipped == "" {
 			continue
 		}
@@ -96,13 +85,43 @@ func appendDocumentRuns(runs []render.GlyphRun, doc *domsnapshot.DocumentSnapsho
 			Row:  row,
 			Text: clipped,
 			FG:   layoutColour(layout, strings, layoutIdx),
-			X:    px,
-			Y:    py,
-			W:    bw,
-			H:    bh,
+			X:    bounds[0]/dpr - scrollX,
+			Y:    bounds[1]/dpr - scrollY,
+			W:    bounds[2] / dpr,
+			H:    bounds[3] / dpr,
 		})
 	}
 	return runs
+}
+
+// mapBoxToCells maps one text box to its cell position and clipped text without
+// a browser, so it is unit-testable on plain floats. The bounds are the CDP
+// device-pixel [x, y, w, h]; dpr converts them to CSS pixels and the scroll
+// offset shifts document-absolute coordinates to the scrolled on-screen view.
+// It rounds the box top-left to a cell, trims the soft-wrap trailing space
+// the layout adds, then clips the text to the cells left before the grid's
+// right edge (cellW*cols). A box whose width falls a rounding epsilon short of
+// N whole cells still yields N cells: the width budget rounds the cell count
+// rather than flooring it, so a font-metric residue never drops the last cell.
+// Page insets are arbitrary sub-cell offsets, so round centres the residue at
+// zero and stays order-preserving, keeping the bins monotonic and non-overlapping.
+func mapBoxToCells(bounds []float64, dpr, scrollX, scrollY float64, cellW, cellH, cols int, text string) (col, row int, clipped string) {
+	px := bounds[0]/dpr - scrollX
+	py := bounds[1]/dpr - scrollY
+	bw := bounds[2] / dpr
+	col = int(math.Round(px / float64(cellW)))
+	row = int(math.Round(py / float64(cellH)))
+	text = strings.TrimRight(text, " ")
+	if text == "" {
+		return col, row, ""
+	}
+	boxCells := int(math.Round(bw / float64(cellW)))
+	edgeCells := cols - col
+	maxCells := boxCells
+	if edgeCells < maxCells {
+		maxCells = edgeCells
+	}
+	return col, row, render.ClipToCells(text, maxCells)
 }
 
 // layoutBoxText returns the box's substring of its layout node's text. Start and
