@@ -372,9 +372,11 @@ func TestSizingThreeIndependentValuesBlock(t *testing.T) {
 		t.Fatalf("layout viewport and sample grid are the same (%d, %d); they must be independent", surfW, surfH)
 	}
 	// The snapshot cell-px divisor is the real cell px, derived from the surface.
+	// At this grid cols*cellW = 720 <= the default layout width, so Z == 1 and the
+	// fractional cell equals the real cell px.
 	cw, ch := e.snapshotCellPx()
-	if cw != cellW || ch != cellH {
-		t.Errorf("snapshotCellPx = (%d, %d), want real cell px (%d, %d)", cw, ch, cellW, cellH)
+	if cw != float64(cellW) || ch != float64(cellH) {
+		t.Errorf("snapshotCellPx = (%g, %g), want real cell px (%d, %d)", cw, ch, cellW, cellH)
 	}
 }
 

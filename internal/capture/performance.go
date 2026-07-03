@@ -71,6 +71,10 @@ type FramePerformance struct {
 	TerminalBytes int64 `json:"terminal_bytes"`
 	// TerminalWriteMS is the terminal write time in milliseconds.
 	TerminalWriteMS float64 `json:"terminal_write_ms"`
+	// LayoutScale is the block-only layout scale Z; present only when Z exceeds 1
+	// (a block grid wider than the target layout width). An absent field means Z is
+	// 1.
+	LayoutScale *float64 `json:"layout_scale,omitempty"`
 	// BlockComposeMS is the block compose time; present only for a block capture.
 	BlockComposeMS *float64 `json:"block_compose_ms,omitempty"`
 	// SixelPayloadBytes is the sixel payload size; present only for a sixel
@@ -102,6 +106,10 @@ func performanceRecord(backend Backend, in FrameInput) FramePerformance {
 		rec.ScreencastPayloadBytes = s.ScreencastPayloadBytes
 		rec.ScreencastDecodeMS = s.ScreencastDecodeMS
 		rec.DOMSnapshotMS = s.DOMSnapshotMS
+		if s.LayoutScale > 1 {
+			v := s.LayoutScale
+			rec.LayoutScale = &v
+		}
 	}
 	if backend == BackendBlock {
 		v := p.BlockComposeMS

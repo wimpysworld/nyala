@@ -89,9 +89,10 @@ var _ bundleWriter = (*capture.Bundle)(nil)
 // cursorHome, and the render bytes, byte-matching a live draw after the
 // first-draw prefix. It returns nil on a full capture and ErrPartialBundle when it writes a
 // partial bundle. colourFlag is the --color intent; mode is the --backend mode
-// the forced-backend validator checks.
-func Capture(eng Engine, url string, tty *os.File, colourFlag, mode string, n int) (err error) {
-	_, st, restore, err := setupViewer(eng, tty, colourFlag)
+// the forced-backend validator checks; layoutWidth is the block-backend target
+// layout width in CSS pixels, handed to the engine before Navigate.
+func Capture(eng Engine, url string, tty *os.File, colourFlag, mode string, layoutWidth, n int) (err error) {
+	_, st, restore, err := setupViewer(eng, tty, colourFlag, layoutWidth)
 	if err != nil {
 		return err
 	}

@@ -63,7 +63,7 @@ func TestPerformanceBlockPerFrameFields(t *testing.T) {
 		}
 	}
 	// Block must not carry sixel-only fields, nor the excluded fields.
-	for _, k := range []string{"sixel_payload_bytes", "cdp_frame_wait_ms", "kitty_chunks"} {
+	for _, k := range []string{"sixel_payload_bytes", "cdp_frame_wait_ms", "kitty_chunks", "layout_scale"} {
 		if _, ok := frame[k]; ok {
 			t.Errorf("block frame must not carry field %q", k)
 		}
@@ -91,6 +91,29 @@ func TestPerformanceKittyOmitsExtras(t *testing.T) {
 	for _, k := range []string{"block_compose_ms", "sixel_payload_bytes", "kitty_chunks"} {
 		if _, ok := frame[k]; ok {
 			t.Errorf("kitty frame must not carry field %q", k)
+		}
+	}
+}
+
+func TestPerformanceLayoutScaleWritten(t *testing.T) {
+	in := blockFrameInput()
+	in.Frame.Stats.LayoutScale = 1.5
+	rec := performanceRecord(BackendBlock, in)
+	if rec.LayoutScale == nil {
+		t.Fatalf("layout_scale nil, want 1.5")
+	}
+	if *rec.LayoutScale != 1.5 {
+		t.Errorf("layout_scale = %v, want 1.5", *rec.LayoutScale)
+	}
+}
+
+func TestPerformanceLayoutScaleOmittedAtOne(t *testing.T) {
+	for _, z := range []float64{1, 0} {
+		in := blockFrameInput()
+		in.Frame.Stats.LayoutScale = z
+		rec := performanceRecord(BackendBlock, in)
+		if rec.LayoutScale != nil {
+			t.Errorf("layout_scale = %v at Z=%v, want nil (omitted)", *rec.LayoutScale, z)
 		}
 	}
 }

@@ -244,7 +244,7 @@ func (r *Recorder) TextReady() <-chan struct{} {
 
 // cdpSession is the run-metadata view serialised to cdp-session.json. It records
 // the browser version, the executable path source, the target id, the capture
-// pixel size, the device scale factor (pinned 1), the screencast config, the
+// pixel size, the device scale factor (the per-session layout scale Z), the screencast config, the
 // navigation URL and result, and the launch flags. The launch flags are
 // credential-free: they derive from proxyFlags, which carries only the
 // credential-free Server, so the proxy user and password never reach this file.
@@ -258,7 +258,9 @@ type cdpSession struct {
 	TargetID string `json:"target_id"`
 	// CapturePx is the source-pixel capture extent for the active backend.
 	CapturePx cdpSessionPx `json:"capture_px"`
-	// DeviceScaleFactor is the pinned device scale factor; the engine pins it to 1.
+	// DeviceScaleFactor is the per-session layout scale Z: 1 for a graphics
+	// backend and for a block grid at or under the target layout width, and
+	// max(1, cols*cellW / layoutWidth) for a wider block grid.
 	DeviceScaleFactor float64 `json:"device_scale_factor"`
 	// Screencast is the screencast configuration the engine started.
 	Screencast cdpSessionScreencast `json:"screencast"`
@@ -323,6 +325,7 @@ func executablePathSource(flag string) string {
 func buildCDPSession(
 	browserVersion, browserFlag, targetID, navURL, navResult string,
 	capW, capH, maxW, maxH, droppedEvents int,
+	layoutScale float64,
 	proxy ProxyConfig,
 ) cdpSession {
 	flags := map[string]string{}
@@ -334,7 +337,7 @@ func buildCDPSession(
 		ExecutablePathSource: executablePathSource(browserFlag),
 		TargetID:             targetID,
 		CapturePx:            cdpSessionPx{Width: capW, Height: capH},
-		DeviceScaleFactor:    deviceScaleFactor,
+		DeviceScaleFactor:    layoutScale,
 		Screencast: cdpSessionScreencast{
 			Format:    string(page.ScreencastFormatJpeg),
 			Quality:   screencastQuality,

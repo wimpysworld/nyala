@@ -395,9 +395,12 @@ reviews it.
   run at the snapshot's own scroll offset and `composeFrame` folds the latest runs on.
   A snapshot read failure holds the last-matched runs for a bounded time, then drops to
   bitmap-only, so crisp text never composites stale over a page it no longer matches.
-- **Launch managed Chromium, not remote attach.** The browser-side flags (DSF 1,
-  window size) apply only to a process Nyala starts. DSF 1 plus a small viewport is
-  the clean CDP equivalent of Carbonyl's compiled-in LoDPI hack.
+- **Launch managed Chromium, not remote attach.** The browser-side flags (device
+  scale factor, window size) apply only to a process Nyala starts. This decision
+  pinned the device scale factor to 1 for every backend, a small viewport at DSF 1
+  as the clean CDP equivalent of Carbonyl's compiled-in LoDPI hack. That DSF-1 pin
+  now holds for the graphics backends only. The block backend derives a device scale
+  `Z` per grid, recorded under the monospace block render below.
 - **Scroll over one wheel transport, the engine owns the offset.** Keys and the wheel
   both map to `DispatchMouseEvent` `mouseWheel`, avoiding focus-dependent key-to-scroll
   defaults and the experimental `synthesizeScrollGesture`.
@@ -507,6 +510,30 @@ lands: at once if it already exists, otherwise from a `MutationObserver` on
 `document` that appends and disconnects when the root element appears, so the
 first layout is forced.
 
+### Block layout scale
+
+The Stage 3 DSF-1 pin is reopened for the block backend, with the owner's approval.
+A terminal wider than the layout target used to lay the page out at the full terminal
+width, so a wide grid reflowed to a wide page and the text under-filled the columns.
+The block backend now launches at a continuous device scale
+`Z = max(1, cols*cellW / layoutWidth)`, where `layoutWidth` is the `--layout-width`
+flag with a default of `1280`. A terminal wider than the target lays out at the
+target CSS width while Chromium renders at full device resolution, so the page fills
+the grid rather than reflowing wide. A grid at or below the target keeps `Z` of 1 and
+is unchanged. The graphics backends stay at DSF 1 and take no scale, so they render
+the page at its natural width.
+
+The launch flag `force-device-scale-factor` carries `Z` for the block backend and 1
+for graphics. `SetDeviceMetricsOverride` and `Browser.SetContentsSize` take `surf/Z`
+CSS pixels (DIP) at DSF `Z`, while the screencast cap stays `surf` device pixels, so
+the layout viewport shrinks by `Z` and the captured surface stays full resolution.
+The forcing stylesheet, the calibration, and the box-to-cell mapping all run on the
+fractional CSS-pixel cell `cellW/Z`, so the cell size stays a floating-point value end
+to end and rounds only at the final cell bin. A capture records `layout_scale` in
+`performance.json` when `Z` exceeds 1; the field is absent at `Z` of 1 and reads as 1
+downstream. `placement-score` divides the recorded `cell_px` by `layout_scale`, so its
+divisor and the `text-map.json` CSS-pixel geometry share units.
+
 ### Backend-conditional forcing
 
 The forcing and the calibration apply only to the block backend. The block path
@@ -589,6 +616,26 @@ subtracts the scroll offset, then:
 - **Rounded width guard.** The cell budget rounds the box width (`round(bw/cellW)`)
   rather than flooring it, so a box a rounding epsilon short of N whole cells still
   yields N cells and never drops the last glyph.
+
+### Overlay guard and background recompose
+
+The block overlay is first-writer-wins. When two runs target the same cell, the first
+run's grapheme stands and a later run never overwrites a claimed cell, so overlapping
+runs no longer weld. A cell is claimed when it carries overlay text or is a width-2
+trailing cell. Paint-order z-ordering stays deferred: the guard keeps the first
+writer, not the front-most box.
+
+An overlaid cell and its boundary neighbour recompose their background from the source
+columns the run's box does not cover, so the block colour behind the glyph tracks the
+uncovered page rather than the whole cell. The recompose reads the run's box left edge
+and width in CSS pixels, quantises the covered span at the half-cell floor, and
+averages only the uncovered source columns. The quadrant grid is two source columns
+per cell, so the mask quantises at a half cell and a residue finer than a half cell
+stays. The boundary neighbour beside the run becomes a background-only cell, because
+the sub-cell residue paints into the cell the overlay never writes. A box that covers
+a whole cell reproduces the earlier whole-cell average byte for byte, so an
+uncovered-column recompose shifts only the boundary cells and the amd64 golden
+archives stay put elsewhere.
 
 ### Capture: the textReady latch
 

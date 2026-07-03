@@ -5,10 +5,13 @@ package engine
 import (
 	"image"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/chromedp/chromedp"
 )
 
 // liveTestPage is a self-contained data: URL with one line of text. A data: URL
@@ -55,6 +58,61 @@ func TestLiveSyncedFrame(t *testing.T) {
 		}
 	case <-deadline.C:
 		t.Fatal("no synced frame within the deadline")
+	}
+}
+
+// TestLiveBlockLayoutWidthCapped is the live-tagged criterion-4 test for the
+// block layout scale. It launches a wide grid whose cols*cellW exceeds the target
+// layout width, navigates a self-contained page, then reads window.innerWidth (the
+// CSS layout viewport width) and asserts it equals min(cols*cellW, layoutWidth)
+// within one pixel. On a wide grid the page lays out at the target width via the
+// continuous device scale Z, so the innerWidth caps at layoutWidth rather than the
+// full cols*cellW. Run it with `just live`.
+func TestLiveBlockLayoutWidthCapped(t *testing.T) {
+	if _, err := resolveExecutable(""); err != nil {
+		t.Skipf("no Chromium for the live test: %v", err)
+	}
+
+	const cols, rows = 240, 48
+	const cellW, cellH = 8, 16
+	const layoutWidth = 1280
+
+	e := New("")
+	e.SetCellPx(cellW, cellH)
+	e.SetLayoutWidth(layoutWidth)
+	e.Resize(cols, rows)
+	if err := e.Navigate(liveTestPage); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	t.Cleanup(func() { _ = e.Close() })
+
+	// Wait for the first synced frame so the page has laid out before the read.
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	select {
+	case _, ok := <-e.Frames():
+		if !ok {
+			t.Fatal("frames channel closed before a frame arrived")
+		}
+	case <-deadline.C:
+		t.Fatal("no synced frame within the deadline")
+	}
+
+	e.mu.Lock()
+	ctx := e.ctx
+	e.mu.Unlock()
+	if ctx == nil {
+		t.Fatal("engine context is nil after navigate")
+	}
+
+	var innerWidth float64
+	if err := chromedp.Run(ctx, chromedp.Evaluate("window.innerWidth", &innerWidth)); err != nil {
+		t.Fatalf("read window.innerWidth: %v", err)
+	}
+
+	want := math.Min(float64(cols*cellW), float64(layoutWidth))
+	if math.Abs(innerWidth-want) > 1 {
+		t.Fatalf("CSS viewport width = %g, want min(cols*cellW, layoutWidth) = %g within 1px", innerWidth, want)
 	}
 }
 

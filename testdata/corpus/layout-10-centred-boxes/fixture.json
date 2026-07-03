@@ -1,0 +1,16 @@
+{
+  "id": "layout-10-centred-boxes",
+  "title": "Presenter profiles: flex cards, CSS grid, margin-auto column, centred pagination",
+  "stressor": "sub-cell-inset alignment from flex, grid, and margin-auto box centring",
+  "origin": "original",
+  "source_url": null,
+  "license": "BlueOak-1.0.0",
+  "attribution": null,
+  "fonts": ["UA default sans"],
+  "self_contained": true,
+  "notes": "Self-contained single page, all CSS inline, no script, no network URLs. Designed for a 960x640 viewport (120x40 at 8x16). Exercises the sub-cell-inset alignment class that box centring creates. A flex row centred with justify-content:center holds three profile cards, each with a centred caption of distinctive text (Popey minds the mailbag, Mark keeps the calendar, Wimpy runs the desk). A CSS-grid section centred with justify-content:center holds three stat tiles with centred labels. A margin:0 auto fixed-width column centres a short passage. A centred pagination row holds five short numeric links. Paddings and widths are deliberately off 8-pixel multiples (13, 21, 37 pixel insets; 213, 187, 533 pixel widths) so the centred boxes land at sub-cell left edges, and the tightened placement gate fails without the overlay first-writer guard and sub-cell background recompose. White background, dark text. British English copy.",
+  "placement_gate": {
+    "mean": 0.25,
+    "reason": "Scoped tighten to 0.25 cells mean right-edge error, half the global 0.5 default. The centred boxes land at sub-cell left edges, so the overlay first-writer-wins guard and the sub-cell background recompose must both hold for the mean to stay under 0.25. Latin max and drifted defaults are unchanged."
+  }
+}

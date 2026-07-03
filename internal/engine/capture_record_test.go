@@ -146,6 +146,7 @@ func TestBuildCDPSessionStripsProxyCredentials(t *testing.T) {
 		"https://wimpys.world",
 		"ok",
 		800, 600, 1280, 960, 0,
+		1,
 		proxy,
 	)
 
@@ -170,7 +171,7 @@ func TestBuildCDPSessionStripsProxyCredentials(t *testing.T) {
 }
 
 // TestBuildCDPSessionMetadata asserts the builder records the run metadata and
-// pins the device scale factor to 1.
+// the per-session layout scale Z.
 func TestBuildCDPSessionMetadata(t *testing.T) {
 	session := buildCDPSession(
 		"Chromium/120.0.0.0",
@@ -179,6 +180,7 @@ func TestBuildCDPSessionMetadata(t *testing.T) {
 		"https://wimpys.world",
 		"ok",
 		1024, 768, 1024, 768, 3,
+		1.5,
 		ProxyConfig{},
 	)
 
@@ -197,8 +199,8 @@ func TestBuildCDPSessionMetadata(t *testing.T) {
 	if session.DroppedEvents != 3 {
 		t.Errorf("DroppedEvents = %d, want 3", session.DroppedEvents)
 	}
-	if session.DeviceScaleFactor != 1 {
-		t.Errorf("DeviceScaleFactor = %v, want 1", session.DeviceScaleFactor)
+	if session.DeviceScaleFactor != 1.5 {
+		t.Errorf("DeviceScaleFactor = %v, want 1.5", session.DeviceScaleFactor)
 	}
 	if session.Screencast.Quality != screencastQuality {
 		t.Errorf("Screencast.Quality = %d, want %d", session.Screencast.Quality, screencastQuality)

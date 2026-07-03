@@ -154,10 +154,11 @@ func (e *ChromiumEngine) fillSession(ctx context.Context, navURL, navResult stri
 	e.mu.Lock()
 	capW, capH := e.captureW, e.captureH
 	maxW, maxH := e.surfaceSize(e.cols, e.rows)
+	scale := e.layoutScale()
 	e.mu.Unlock()
 	version := browserVersion(ctx)
 	targetID := liveTargetID(ctx)
-	session := buildCDPSession(version, e.browserFlag, targetID, navURL, navResult, capW, capH, maxW, maxH, rec.droppedCount(), e.proxy)
+	session := buildCDPSession(version, e.browserFlag, targetID, navURL, navResult, capW, capH, maxW, maxH, rec.droppedCount(), scale, e.proxy)
 	data, err := json.MarshalIndent(session, "", "  ")
 	if err != nil {
 		return

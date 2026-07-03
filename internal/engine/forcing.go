@@ -59,7 +59,7 @@ func (e *ChromiumEngine) fontForcingActive() bool {
 // stays consistent. A failed live evaluate after a successful register keeps the id,
 // since the script is registered for later documents; the live style just lands on
 // the next document. It returns the active state after the attempt.
-func (e *ChromiumEngine) enableFontForcing(ctx context.Context, cellW, cellH int) (enabled bool) {
+func (e *ChromiumEngine) enableFontForcing(ctx context.Context, cellW, cellH float64) (enabled bool) {
 	script := buildStylesheetScript(font.FiraCodeTTF(), cellW, cellH)
 	var id page.ScriptIdentifier
 	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {

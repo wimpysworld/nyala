@@ -375,7 +375,7 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 	// for. The reSnap arm skips recalibration when the pair is unchanged, so a
 	// non-resize poke does not re-measure. Goroutine-local like state: the snapshot
 	// goroutine owns it, so the guard is lock-free.
-	var lastCalCellW, lastCalCellH int
+	var lastCalCellW, lastCalCellH float64
 	if !e.waitForFirstSnapshot(ctx, ts) {
 		return
 	}
@@ -712,10 +712,14 @@ func (e *ChromiumEngine) composeFrame(pending pendingFrame, ts *textSync) render
 	}
 	frame := render.Frame{Img: pending.img, Text: runs}
 	if e.captureOn {
+		e.mu.Lock()
+		scale := e.layoutScale()
+		e.mu.Unlock()
 		frame.Stats = &render.FrameStats{
 			ScreencastPayloadBytes: int64(pending.bytes),
 			ScreencastDecodeMS:     pending.decodeMS,
 			DOMSnapshotMS:          snapshotMS,
+			LayoutScale:            scale,
 		}
 		// Copy the screencast metadata onto a neutral render.ScreencastMeta so the
 		// bundle records it without the render seam importing the page type. Off the
@@ -742,6 +746,7 @@ func (e *ChromiumEngine) snapshotRuns(ctx context.Context, state overlayState) (
 	e.mu.Lock()
 	cellW, cellH := e.snapshotCellPx()
 	cols := e.cols
+	dpr := e.layoutScale()
 	e.mu.Unlock()
 	start := time.Now()
 	documents, strs, err := captureSnapshot(ctx)
@@ -757,11 +762,13 @@ func (e *ChromiumEngine) snapshotRuns(ctx context.Context, state overlayState) (
 		// Place runs by the snapshot's own scroll offset, not the bitmap's: the
 		// snapshot bounds and its scroll come from one DOM read, so they are
 		// internally consistent and a sustained scroll shows the current text.
-		// deviceScaleFactor is pinned to 1 (DSF 1 plus a small viewport), so capture
-		// pixels equal CSS pixels and the DPR divide inside decodeGlyphRuns is a no-op
-		// in production. The pure decode stays general so tests can pass other ratios.
+		// The decode divides the device-pixel box bounds by the layout scale Z to
+		// reach CSS pixels: at Z == 1 (a grid at or under the target width) the divide
+		// is a no-op, and under Z > 1 the block backend launches at DSF Z so the bounds
+		// are Z device pixels per CSS pixel. The pure decode stays general so tests can
+		// pass other ratios.
 		scroll := snapshotScrollOffset(documents)
-		decoded = decodeGlyphRuns(documents, strs, deviceScaleFactor, scroll.X, scroll.Y, cellW, cellH, cols)
+		decoded = decodeGlyphRuns(documents, strs, dpr, scroll.X, scroll.Y, cellW, cellH, cols)
 	}
 	emit, last, failing := holdDecision(err, decoded, state.lastText, state.failingSince, time.Now())
 	return emit, snapshotMS, overlayState{lastText: last, failingSince: failing}
@@ -815,6 +822,7 @@ func (e *ChromiumEngine) restartStream() error {
 	windowID := e.windowID
 	reSnap := e.reSnap
 	surfW, surfH := e.surfaceSize(e.cols, e.rows)
+	z := e.layoutScale()
 	e.mu.Unlock()
 	if ctx == nil || slot == nil {
 		return nil
@@ -833,7 +841,7 @@ func (e *ChromiumEngine) restartStream() error {
 		}
 	}
 	_ = chromedp.Run(ctx, page.StopScreencast())
-	if err := applySizing(ctx, windowID, surfW, surfH); err != nil {
+	if err := applySizing(ctx, windowID, surfW, surfH, z); err != nil {
 		return fmt.Errorf("engine: resize viewport: %w", err)
 	}
 	return e.startScreencast(ctx, slot, surfW, surfH)

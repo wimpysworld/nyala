@@ -121,6 +121,53 @@ func TestReadGrid(t *testing.T) {
 	})
 }
 
+// frameDirWithPerf writes perf as the bundle-root performance.json and returns the
+// frame directory (bundleRoot/frames/frame-000000) readCellPx reads from.
+func frameDirWithPerf(t *testing.T, perf string) string {
+	t.Helper()
+	bundleRoot := t.TempDir()
+	if perf != "" {
+		if err := os.WriteFile(filepath.Join(bundleRoot, perfName), []byte(perf), 0o644); err != nil {
+			t.Fatalf("write perf: %v", err)
+		}
+	}
+	frameDir := filepath.Join(bundleRoot, "frames", "frame-000000")
+	if err := os.MkdirAll(frameDir, 0o755); err != nil {
+		t.Fatalf("mkdir frame: %v", err)
+	}
+	return frameDir
+}
+
+// TestReadCellPx checks the layout_scale divisor: a present layout_scale returns
+// as the scale so the caller divides cell_px by it, an absent field returns scale
+// 1 so cell_px is unchanged, and an absent performance.json falls back to 8x16
+// scale 1.
+func TestReadCellPx(t *testing.T) {
+	t.Run("layout_scale 1.5 returns scale 1.5", func(t *testing.T) {
+		dir := frameDirWithPerf(t, `{"frames":[{"cell_px":[8,16],"layout_scale":1.5}]}`)
+		w, h, scale := readCellPx(dir)
+		if w != 8 || h != 16 || scale != 1.5 {
+			t.Errorf("readCellPx = %d,%d,%v, want 8,16,1.5", w, h, scale)
+		}
+	})
+
+	t.Run("absent layout_scale returns scale 1", func(t *testing.T) {
+		dir := frameDirWithPerf(t, `{"frames":[{"cell_px":[8,16]}]}`)
+		w, h, scale := readCellPx(dir)
+		if w != 8 || h != 16 || scale != 1 {
+			t.Errorf("readCellPx = %d,%d,%v, want 8,16,1", w, h, scale)
+		}
+	})
+
+	t.Run("absent performance.json falls back to 8x16 scale 1", func(t *testing.T) {
+		dir := frameDirWithPerf(t, "")
+		w, h, scale := readCellPx(dir)
+		if w != fallbackCellW || h != fallbackCellH || scale != 1 {
+			t.Errorf("readCellPx = %d,%d,%v, want %d,%d,1", w, h, scale, fallbackCellW, fallbackCellH)
+		}
+	})
+}
+
 // TestCheckGate checks each of the five terms breaching produces its named
 // message, and a within-gate stats set passes. The gate uses thresholds of
 // mean 0.5, max 1.0, drifted 0, collisions 0, offgrid 0.

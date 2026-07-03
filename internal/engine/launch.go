@@ -3,8 +3,10 @@ package engine
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
+	"strconv"
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/emulation"
@@ -106,19 +108,20 @@ func (e *ChromiumEngine) textOverlayBackend() bool {
 }
 
 // newAllocator builds a chromedp ExecAllocator for the resolved executable,
-// sized to surfW x surfH, the real CSS-pixel viewport (surfaceSize). It sets the
-// launch --window-size from the surface size and pins the device scale factor to
-// 1. The window size matters because emulation.SetDeviceMetricsOverride resizes
-// only the CSS viewport, not the captured content area; the surface is then sized
-// authoritatively with Browser.SetContentsSize once the context and window id
-// exist. When cfg has a Server it adds --proxy-server; it adds --proxy-bypass-list
-// only when both a Server and a Bypass are set, so a stray NO_PROXY without a
-// proxy adds no flag.
-func newAllocator(parent context.Context, execPath string, surfW, surfH int, cfg ProxyConfig) (context.Context, context.CancelFunc) {
+// sized to surfW x surfH, the real device-pixel surface (surfaceSize). It sets the
+// launch --window-size from the surface size and the device scale factor to z: the
+// block backend passes its continuous Z so the page lays out at surf/Z CSS pixels,
+// and the graphics backends pass 1. The window size matters because
+// emulation.SetDeviceMetricsOverride resizes only the CSS viewport, not the
+// captured content area; the surface is then sized authoritatively with
+// Browser.SetContentsSize once the context and window id exist. When cfg has a
+// Server it adds --proxy-server; it adds --proxy-bypass-list only when both a
+// Server and a Bypass are set, so a stray NO_PROXY without a proxy adds no flag.
+func newAllocator(parent context.Context, execPath string, surfW, surfH int, z float64, cfg ProxyConfig) (context.Context, context.CancelFunc) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(execPath),
 		chromedp.WindowSize(surfW, surfH),
-		chromedp.Flag("force-device-scale-factor", "1"),
+		chromedp.Flag("force-device-scale-factor", strconv.FormatFloat(z, 'g', -1, 64)),
 	)
 	for _, pair := range proxyFlags(cfg) {
 		opts = append(opts, chromedp.Flag(pair[0], pair[1]))
@@ -143,24 +146,27 @@ func proxyFlags(cfg ProxyConfig) [][2]string {
 	return pairs
 }
 
-// applySizing sizes the layout viewport and the captured surface together to
-// surfW x surfH on the live context. It sets the CSS layout viewport with
-// emulation.SetDeviceMetricsOverride at device scale factor 1, then sizes the
-// captured content area with Browser.SetContentsSize on windowID (width and
-// height in DIP). The two are distinct CDP concepts: the device-metrics override
-// resizes only the layout viewport, never the captured surface, so the surface
-// call is required or frames arrive cropped or blank. Both are CDP commands on
-// the live context, not allocator options, so they run once the context exists.
-// The screencast cap (maxWidth/maxHeight) is the third, independent value set by
-// startScreencast.
-func applySizing(ctx context.Context, windowID browser.WindowID, surfW, surfH int) error {
+// applySizing sizes the layout viewport and the captured surface together on the
+// live context, in CSS pixels surf/Z at device scale factor Z. It sets the CSS
+// layout viewport with emulation.SetDeviceMetricsOverride(surf/Z, surf/Z, Z), then
+// sizes the captured content area with Browser.SetContentsSize on windowID (width
+// and height in DIP, which equal the CSS pixels surf/Z). The two are distinct CDP
+// concepts: the device-metrics override resizes only the layout viewport, never
+// the captured surface, so the surface call is required or frames arrive cropped
+// or blank. Under Z > 1 both must be surf/Z, not surf, so the page lays out at the
+// target width; the screencast cap (maxWidth/maxHeight, set by startScreencast)
+// stays the surf device pixels, the third independent value. Z stays in float64 up
+// to the int64 boundary cast so no premature rounding widens the viewport.
+func applySizing(ctx context.Context, windowID browser.WindowID, surfW, surfH int, z float64) error {
+	cssW := int64(math.Round(float64(surfW) / z))
+	cssH := int64(math.Round(float64(surfH) / z))
 	if err := chromedp.Run(ctx,
-		emulation.SetDeviceMetricsOverride(int64(surfW), int64(surfH), 1, false),
+		emulation.SetDeviceMetricsOverride(cssW, cssH, z, false),
 	); err != nil {
 		return err
 	}
 	return chromedp.Run(ctx,
-		browser.SetContentsSize(windowID).WithWidth(int64(surfW)).WithHeight(int64(surfH)),
+		browser.SetContentsSize(windowID).WithWidth(cssW).WithHeight(cssH),
 	)
 }
 
@@ -219,8 +225,9 @@ func (e *ChromiumEngine) launch(flag string) error {
 	e.mu.Lock()
 	surfW, surfH := e.surfaceSize(e.cols, e.rows)
 	forcing := e.backend == "block"
+	z := e.layoutScale()
 	e.mu.Unlock()
-	allocCtx, allocCancel := newAllocator(context.Background(), execPath, surfW, surfH, e.proxy)
+	allocCtx, allocCancel := newAllocator(context.Background(), execPath, surfW, surfH, z, e.proxy)
 	ctx, ctxCancel := chromedp.NewContext(allocCtx)
 	cancel := func() {
 		ctxCancel()
@@ -258,7 +265,7 @@ func (e *ChromiumEngine) launch(flag string) error {
 			return err
 		}
 	}
-	if err := applySizing(ctx, windowID, surfW, surfH); err != nil {
+	if err := applySizing(ctx, windowID, surfW, surfH, z); err != nil {
 		cancel()
 		return err
 	}

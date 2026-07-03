@@ -105,18 +105,24 @@ corpus:
             cols="${leg%x*}"
             rows="${leg#*x}"
             printf '== %s [%s] ==\n' "$name" "$leg"
-            # Capture the run output to parse the bundle path, then print it so a
-            # failed capture stays debuggable. The pty wrapper emits CRLF, so
-            # strip the trailing CR before using the path.
-            out="$(COLUMNS="$cols" LINES="$rows" just capture=1 run "file://${dir}index.html" backend=block 2>&1)"
+            # Capture the run output to a temp file, not a shell variable: the
+            # 240-column screencast is megabytes of escape bytes, so expanding it
+            # as an argument overflows ARG_MAX and breaks the sweep. Parse the
+            # bundle path from the file and print only the tail so a failed
+            # capture stays debuggable. The pty wrapper emits CRLF, so strip the
+            # trailing CR before using the path.
+            out="$(mktemp)"
+            COLUMNS="$cols" LINES="$rows" just capture=1 run "file://${dir}index.html" backend=block > "$out" 2>&1
             status=$?
-            printf '%s\n' "$out"
             if [ "$status" -ne 0 ]; then
+                tail -n 20 "$out"
                 printf 'capture failed: %s [%s]\n' "$name" "$leg" >&2
+                rm -f "$out"
                 fail=1
                 continue
             fi
-            bundle="$(printf '%s\n' "$out" | grep 'capture bundle:' | tail -n 1)"
+            bundle="$(grep 'capture bundle:' "$out" | tail -n 1)"
+            rm -f "$out"
             bundle="${bundle#*capture bundle: }"
             bundle="${bundle%$'\r'}"
             if [ -z "$bundle" ]; then

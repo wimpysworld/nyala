@@ -77,7 +77,7 @@ func (e *ChromiumEngine) calibrateFonts(ctx context.Context) {
 	e.mu.Lock()
 	cellW, _ := e.snapshotCellPx()
 	e.mu.Unlock()
-	seed := float64(cellW) / advanceRatio
+	seed := cellW / advanceRatio
 
 	runCtx, cancel := context.WithTimeout(ctx, fontCalibrationTimeout)
 	defer cancel()

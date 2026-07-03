@@ -60,7 +60,7 @@ func captureSnapshot(ctx context.Context) (documents []*domsnapshot.DocumentSnap
 // the Stage 2 width rule so a width-2 cluster is never half-emitted; overflow
 // graphemes are dropped because the bitmap underneath already shows them. The
 // box's computed color style feeds GlyphRun.FG in RGBA channel order.
-func decodeGlyphRuns(documents []*domsnapshot.DocumentSnapshot, strings []string, dpr, scrollX, scrollY float64, cellW, cellH, cols int) []render.GlyphRun {
+func decodeGlyphRuns(documents []*domsnapshot.DocumentSnapshot, strings []string, dpr, scrollX, scrollY float64, cellW, cellH float64, cols int) []render.GlyphRun {
 	if cellW <= 0 || cellH <= 0 || dpr <= 0 {
 		return nil
 	}
@@ -78,7 +78,7 @@ func decodeGlyphRuns(documents []*domsnapshot.DocumentSnapshot, strings []string
 // references a layout node by LayoutIndex; that node carries the full layout
 // text and the computed color. The box covers a UTF-16 substring of that text
 // given by Start and Length.
-func appendDocumentRuns(runs []render.GlyphRun, doc *domsnapshot.DocumentSnapshot, strings []string, dpr, scrollX, scrollY float64, cellW, cellH, cols int) []render.GlyphRun {
+func appendDocumentRuns(runs []render.GlyphRun, doc *domsnapshot.DocumentSnapshot, strings []string, dpr, scrollX, scrollY float64, cellW, cellH float64, cols int) []render.GlyphRun {
 	boxes := doc.TextBoxes
 	layout := doc.Layout
 	for i := range boxes.LayoutIndex {
@@ -102,14 +102,15 @@ func appendDocumentRuns(runs []render.GlyphRun, doc *domsnapshot.DocumentSnapsho
 			continue
 		}
 		runs = append(runs, render.GlyphRun{
-			Col:  col,
-			Row:  row,
-			Text: clipped,
-			FG:   layoutColour(layout, strings, layoutIdx),
-			X:    bounds[0]/dpr - scrollX,
-			Y:    bounds[1]/dpr - scrollY,
-			W:    bounds[2] / dpr,
-			H:    bounds[3] / dpr,
+			Col:   col,
+			Row:   row,
+			Text:  clipped,
+			FG:    layoutColour(layout, strings, layoutIdx),
+			X:     bounds[0]/dpr - scrollX,
+			Y:     bounds[1]/dpr - scrollY,
+			W:     bounds[2] / dpr,
+			H:     bounds[3] / dpr,
+			CellW: cellW,
 		})
 	}
 	return runs
@@ -127,17 +128,17 @@ func appendDocumentRuns(runs []render.GlyphRun, doc *domsnapshot.DocumentSnapsho
 // never drops the last cell.
 // Page insets are arbitrary sub-cell offsets, so round centres the residue at
 // zero and stays order-preserving, keeping the bins monotonic and non-overlapping.
-func mapBoxToCells(bounds []float64, dpr, scrollX, scrollY float64, cellW, cellH, cols int, text string) (col, row int, clipped string) {
+func mapBoxToCells(bounds []float64, dpr, scrollX, scrollY float64, cellW, cellH float64, cols int, text string) (col, row int, clipped string) {
 	px := bounds[0]/dpr - scrollX
 	py := bounds[1]/dpr - scrollY
 	bw := bounds[2] / dpr
-	col = int(math.Round(px / float64(cellW)))
-	row = int(math.Round(py / float64(cellH)))
+	col = int(math.Round(px / cellW))
+	row = int(math.Round(py / cellH))
 	text = strings.TrimRightFunc(text, unicode.IsSpace)
 	if text == "" {
 		return col, row, ""
 	}
-	boxCells := int(math.Round(bw / float64(cellW)))
+	boxCells := int(math.Round(bw / cellW))
 	edgeCells := cols - col
 	maxCells := boxCells
 	if edgeCells < maxCells {
@@ -198,7 +199,7 @@ const hiddenOpacityEps = 0.05
 // means visible, an absent or unparseable opacity means 1, and a nil or short
 // TextColorOpacities means 1, so a fixture without these style slots is never
 // dropped.
-func boxHidden(layout *domsnapshot.LayoutTreeSnapshot, strings []string, layoutIdx int, bounds []float64, dpr float64, cellH int) bool {
+func boxHidden(layout *domsnapshot.LayoutTreeSnapshot, strings []string, layoutIdx int, bounds []float64, dpr float64, cellH float64) bool {
 	switch layoutVisibility(layout, strings, layoutIdx) {
 	case "hidden", "collapse":
 		return true
@@ -206,7 +207,7 @@ func boxHidden(layout *domsnapshot.LayoutTreeSnapshot, strings []string, layoutI
 	if layoutOpacity(layout, strings, layoutIdx)*layoutTextOpacity(layout, layoutIdx) < hiddenOpacityEps {
 		return true
 	}
-	return bounds[3]/dpr < float64(cellH)/4
+	return bounds[3]/dpr < cellH/4
 }
 
 // layoutVisibility reads the computed visibility of a layout node, or "" when the

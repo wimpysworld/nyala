@@ -9,6 +9,7 @@ allocs
 amd64
 appendDocumentRuns
 applyDeviceMetrics
+applyOverlay
 applySizing
 applyThresholds
 arm64
@@ -24,6 +25,7 @@ bptato
 browsh
 Browsh
 Browsh's
+bitmapCell
 buildStyleRemovalScript
 buildStylesheetScript
 calibratedFontSize
@@ -42,6 +44,7 @@ carboxyl
 Carboxyl
 CDP
 cdproto
+cellBGAverage
 cellH
 cell_px
 cellW
@@ -81,6 +84,7 @@ fathyb
 Fira
 FiraCode
 FiraCodeTTF
+FrameStats
 firstContentfulPaint
 fontCalibrationTimeout
 fontForcingID
@@ -96,6 +100,7 @@ genruns
 GetSize
 GetVersion
 GetWindowForTarget
+GlyphRun
 gofumpt
 goldens
 Goldens
@@ -108,14 +113,18 @@ GSUB
 handlePaintEvent
 handleScreencastFrame
 holdDecision
+Harper
 holdStalenessLimit
 honour
 honours
+injectFontStylesheet
 inputDispatchTimeout
 jmagly
 KeyEvent
 labelled
 lastText
+layoutScale
+LayoutScale
 layoutBoxText
 layoutColour
 Licence
@@ -150,6 +159,8 @@ paintWatch
 parameterised
 parseCSSColour
 perf
+perfDoc
+performanceRecord
 placeEps
 PlacementBox
 PlacementStats
@@ -160,6 +171,7 @@ px
 quantisation
 quantise
 quantised
+quantises
 R1
 R2
 R3
@@ -253,3 +265,20 @@ dir
 dirs
 Penfold
 Donatello
+centre
+centred
+centring
+centres
+glyph
+glyphs
+glyph's
+Centring
+x2
+x4
+env
+neutralise
+neutralised
+neutralisation
+neighbour
+neighbours
+neighbouring

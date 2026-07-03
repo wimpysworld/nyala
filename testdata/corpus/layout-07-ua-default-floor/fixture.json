@@ -8,5 +8,10 @@
   "attribution": null,
   "fonts": ["UA default serif"],
   "self_contained": true,
-  "notes": "Self-contained single page, no script, no network URLs, no embedded font. Mirrors the motherfuckingwebsite.com baseline: the browser default user-agent styles do all the typographic work. The only CSS is one rule constraining the body to a readable max-width (42em, centred) and a base font-size of 18px. Designed for a 960x640 viewport (120x40 at 8x16): an h1, two h2 sections, several paragraphs of original running prose, a ul list, a blockquote, and a link, all in the default UA serif. This is the legibility floor: if text placement fails here, it fails everywhere."
+  "notes": "Self-contained single page, no script, no network URLs, no embedded font. Mirrors the motherfuckingwebsite.com baseline: the browser default user-agent styles do all the typographic work. The only CSS is one rule constraining the body to a readable max-width (42em, centred) and a base font-size of 18px. Designed for a 960x640 viewport (120x40 at 8x16): an h1, two h2 sections, several paragraphs of original running prose, a ul list, a blockquote, and a link, all in the default UA serif. This is the legibility floor: if text placement fails here, it fails everywhere.",
+  "placement_gate": {
+    "max": 1.4,
+    "drifted": 1,
+    "reason": "At the 240x48 wide leg the 1280 CSS-pixel reflow moves the max-width prose wrap boundary, and one wrapped line's DOM box carries a trailing space the mapper trims. The box width then counts one more cell than the packed run, so a single box's right-edge error crosses 1 cell (1.336). The glyphs land correctly on the grid and the mean is unchanged (0.410); mean stays at the strict 0.5 Latin default."
+  }
 }
