@@ -179,18 +179,27 @@ func enableLifecycle(ctx context.Context) error {
 // every new document. It seeds the cell size from snapshotCellPx and installs the
 // script with Page.addScriptToEvaluateOnNewDocument, so the stylesheet applies to
 // the first document this session loads and to every later one, including the
-// document that follows a crash-recovery restart. It runs after enableLifecycle
-// and before navigation so the script is registered before the first document
-// loads.
+// document that follows a crash-recovery restart. It records the returned
+// ScriptIdentifier under mu so a later backend switch can remove the script. It
+// runs after enableLifecycle and before navigation so the script is registered
+// before the first document loads.
 func (e *ChromiumEngine) injectFontStylesheet(ctx context.Context) error {
 	e.mu.Lock()
 	cellW, cellH := e.snapshotCellPx()
 	e.mu.Unlock()
 	script := buildStylesheetScript(font.FiraCodeTTF(), cellW, cellH)
-	return chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {
-		_, err := page.AddScriptToEvaluateOnNewDocument(script).Do(runCtx)
+	var id page.ScriptIdentifier
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {
+		var err error
+		id, err = page.AddScriptToEvaluateOnNewDocument(script).Do(runCtx)
 		return err
-	}))
+	})); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.fontForcingID = id
+	e.mu.Unlock()
+	return nil
 }
 
 // launch resolves the executable from flag, builds the allocator and the
@@ -209,6 +218,7 @@ func (e *ChromiumEngine) launch(flag string) error {
 	}
 	e.mu.Lock()
 	surfW, surfH := e.surfaceSize(e.cols, e.rows)
+	forcing := e.backend == "block"
 	e.mu.Unlock()
 	allocCtx, allocCancel := newAllocator(context.Background(), execPath, surfW, surfH, e.proxy)
 	ctx, ctxCancel := chromedp.NewContext(allocCtx)
@@ -239,9 +249,14 @@ func (e *ChromiumEngine) launch(flag string) error {
 		cancel()
 		return err
 	}
-	if err := e.injectFontStylesheet(ctx); err != nil {
-		cancel()
-		return err
+	// Force the page onto the monospace grid only for the block backend, which folds
+	// the crisp text overlay onto its cell grid. The graphics backends draw the
+	// bitmap alone, so forcing the font would distort a page they render faithfully.
+	if forcing {
+		if err := e.injectFontStylesheet(ctx); err != nil {
+			cancel()
+			return err
+		}
 	}
 	if err := applySizing(ctx, windowID, surfW, surfH); err != nil {
 		cancel()

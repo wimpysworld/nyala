@@ -379,6 +379,12 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 	if !e.waitForFirstSnapshot(ctx, ts) {
 		return
 	}
+	// Reconcile font forcing to the active backend before the first calibration. On
+	// the block path this is the no-op the launch injection already covered; on a
+	// graphics-to-block Tab it registers the script and injects the live style.
+	// waitForFirstSnapshot only returns for the block backend, so a graphics start
+	// never reaches here.
+	e.syncFontForcing(ctx)
 	// Calibrate before the first publish so the first overlay maps against the
 	// corrected font metrics. Program order on this single goroutine is the whole
 	// ordering contract: no channel, no sync.Once, no new goroutine.
@@ -407,14 +413,24 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 		case <-ctx.Done():
 			return
 		case <-reSnap:
-			// Resize or backend switch: re-snapshot at once, no debounce, no cap.
+			// Resize or backend switch: reconcile font forcing first, then re-snapshot at
+			// once, no debounce, no cap. A block-to-graphics Tab removes the forcing; a
+			// graphics-to-block Tab re-registers it and injects the live style. A fresh
+			// enable (disabled before, enabled after) resets the calibration guard to zero
+			// so the recalibrate below reruns, since snapshotCellPx is backend-independent
+			// and would otherwise wrongly skip after a Tab back to block at the same grid.
+			wasForcing := e.fontForcingActive()
+			if e.syncFontForcing(ctx) && !wasForcing {
+				lastCalCellW, lastCalCellH = 0, 0
+			}
 			// Recalibrate first when the cell size changed, since the seed size is
 			// derived from cellW; skip when the pair is unchanged so a backend switch
-			// at the same grid does not re-measure.
+			// at the same grid does not re-measure. Only the block backend forces the
+			// font, so a graphics backend takes no calibration.
 			e.mu.Lock()
 			cellW, cellH := e.snapshotCellPx()
 			e.mu.Unlock()
-			if cellW != lastCalCellW || cellH != lastCalCellH {
+			if e.textOverlayBackend() && (cellW != lastCalCellW || cellH != lastCalCellH) {
 				e.calibrateFonts(ctx)
 				lastCalCellW, lastCalCellH = cellW, cellH
 			}

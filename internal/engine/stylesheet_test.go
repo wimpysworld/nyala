@@ -123,6 +123,26 @@ func TestBuildStylesheetScriptEmbedsFontBytes(t *testing.T) {
 	}
 }
 
+func TestBuildStyleRemovalScript(t *testing.T) {
+	// The removal script must target the injected style by its id, remove it, and be
+	// null-safe so a page with no forcing style never throws.
+	script := buildStyleRemovalScript()
+	wants := []struct {
+		desc     string
+		fragment string
+	}{
+		{"targets the style id", jsStringLiteral(styleElementID)},
+		{"looks the element up by id", "document.getElementById("},
+		{"removes the element", "s.remove();"},
+		{"null-safe guard", "if(s){"},
+	}
+	for _, w := range wants {
+		if !strings.Contains(script, w.fragment) {
+			t.Errorf("removal script missing %s: %q not found", w.desc, w.fragment)
+		}
+	}
+}
+
 func TestJSStringLiteralEscaping(t *testing.T) {
 	// The CSS text embeds in a single-quoted JS literal, so backslashes, single
 	// quotes, and newlines must escape or the injection script breaks at parse.

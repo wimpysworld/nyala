@@ -66,6 +66,19 @@ func buildStylesheetScript(fontBytes []byte, cellW, cellH int) string {
 	return b.String()
 }
 
+// buildStyleRemovalScript returns the JavaScript that removes the injected
+// font-forcing <style> from the live document if present, so a Tab switch from the
+// block backend to a graphics backend drops the forcing without a reload. It looks
+// the element up by styleElementID and removes it; a missing element is a no-op, so
+// it never throws when no forcing style is on the page.
+func buildStyleRemovalScript() string {
+	var b strings.Builder
+	b.WriteString("(function(){var s=document.getElementById(")
+	b.WriteString(jsStringLiteral(styleElementID))
+	b.WriteString(");if(s){s.remove();}})();")
+	return b.String()
+}
+
 // jsStringLiteral returns s as a single-quoted JavaScript string literal with
 // backslashes, single quotes, and newlines escaped so the CSS text embeds safely
 // in the injection script.

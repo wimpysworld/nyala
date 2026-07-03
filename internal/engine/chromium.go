@@ -7,6 +7,7 @@ import (
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/input"
+	"github.com/chromedp/cdproto/page"
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
@@ -20,7 +21,7 @@ type ChromiumEngine struct {
 	// viewer goroutine (Resize, SetBackend, SendKey, SendMouse, dispatchWheel)
 	// and the supervisor goroutine (startSession, teardownSession, launch,
 	// rebuild): ctx, cancel, slot, acks, text, captureW, captureH, cols, rows, scrollX,
-	// scrollY, backend, cellW, cellH, windowID, inputFailures. Lock, copy the fields into locals or write
+	// scrollY, backend, cellW, cellH, windowID, inputFailures, fontForcingID. Lock, copy the fields into locals or write
 	// the updates, unlock, then run the chromedp I/O on the locals. Never hold mu
 	// across a chromedp.Run or a channel send, or it deadlocks with the supervisor.
 	mu sync.Mutex
@@ -43,6 +44,14 @@ type ChromiumEngine struct {
 	rows        int    // terminal grid height in cells
 	captureW    int    // capture width in pixels for the active backend
 	captureH    int    // capture height in pixels for the active backend
+
+	// fontForcingID is the ScriptIdentifier of the registered font-forcing
+	// on-new-document script, empty when no forcing is active. Only the block backend
+	// forces the page onto the monospace grid; syncFontForcing registers the script
+	// and injects the live style when the active backend takes the overlay, and removes
+	// both when it does not. It is reset per session by teardownSession so a stale id
+	// never targets a fresh session's script list.
+	fontForcingID page.ScriptIdentifier
 
 	// windowID is the browser window id for the driven target, fetched once per
 	// session via browser.GetWindowForTarget and used to size the captured surface
