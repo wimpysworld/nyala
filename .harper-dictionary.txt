@@ -185,3 +185,9 @@ stylesheet.go
 calibrate.go
 snapshotCellPx
 de-sticks
+syncFontForcing
+enableFontForcing
+disableFontForcing
+fontForcingID
+buildStyleRemovalScript
+forcing.go

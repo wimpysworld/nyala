@@ -333,6 +333,7 @@ func (e *ChromiumEngine) teardownSession() {
 	e.ctx, e.cancel, e.slot, e.acks, e.text = nil, nil, nil, nil, nil
 	e.reSnap, e.reflow, e.scroll, e.reEmit = nil, nil, nil, nil
 	e.windowID = 0
+	e.fontForcingID = ""
 	e.mu.Unlock()
 	if slot != nil {
 		slot.drain(e.ackFrame)

@@ -507,6 +507,44 @@ lands: at once if it already exists, otherwise from a `MutationObserver` on
 `document` that appends and disconnects when the root element appears, so the
 first layout is forced.
 
+### Backend-conditional forcing
+
+The forcing and the calibration apply only to the block backend. The block path
+folds the crisp text overlay onto its cell grid, so it needs the page on the
+monospace grid for the box-to-cell mapping to land text true. The graphics
+backends (Sixel, Kitty) draw the bitmap alone and take no overlay, so forcing
+would distort a page they render faithfully. A session that starts on a graphics
+backend never registers the forcing script (`launch` gates the injection on
+`e.backend == "block"`), so the page keeps its own fonts and layout.
+
+`syncFontForcing` (`internal/engine/forcing.go`) reconciles the forcing state to
+the active backend, so a Tab that switches the backend toggles it live. It runs on
+the snapshot goroutine, reading the desired state (block backend wants forcing) and
+the active state (`fontForcingID != ""`, the registered script identifier held as
+state) under the mutex, then running the CDP outside the lock, mirroring
+`calibrateFonts`. The registered `page.ScriptIdentifier` is the single piece of
+forcing state: a non-empty id means forcing is active, so the reconcile stores the
+id only after a successful register and clears it only after a successful remove,
+and a partial CDP failure never leaves a phantom or stale id.
+
+Two transitions do work; the matched pair is a no-op:
+
+- **Block to graphics.** `disableFontForcing` removes the on-new-document script by
+  its id and evaluates `buildStyleRemovalScript`, which drops the live `<style>` by
+  its `nyala-font-forcing` id. The page reflows to its natural layout without a
+  reload.
+- **Graphics to block.** `enableFontForcing` re-registers the on-new-document script
+  and evaluates it against the live document, whose `documentElement` exists
+  post-paint, so the style lands at once. The `reSnap` arm then recalibrates: a fresh
+  enable resets the goroutine-local last-calibrated `(cellW, cellH)` pair to zero, so
+  the calibration reruns even at an unchanged grid, since `snapshotCellPx` is
+  backend-independent and would otherwise wrongly skip.
+
+Each toggle costs one reflow flash, as the page lays out again between its natural
+and forced states. A per-session teardown clears `fontForcingID`, so a crash rebuild
+re-registers from the launch injection rather than carrying a stale id. Capture and
+corpus force the block backend, so their forcing and calibration are unchanged.
+
 ### One-shot runtime calibration
 
 The seed size is a font-metric estimate; the rendered advance still drifts a
