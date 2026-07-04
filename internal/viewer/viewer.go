@@ -664,23 +664,34 @@ const exitFullScreen = "\x1b[?7h\x1b[?25h"
 // passthrough. Otherwise it runs one terminal handshake and offers a graphics
 // backend only when the terminal confirms it. The colour mode resolves first, on
 // every path, because it is multiplexer-agnostic, so it must not strand at the
-// NewState default behind an early return.
-func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag string) {
+// NewState default behind an early return. A NYALA_CELL_PX override (a diagnostic
+// and harness knob) takes precedence over the ioctl and handshake cell; a
+// malformed override returns an error so the run fails loudly.
+func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag string) error {
 	detected := detectColour(os.Environ(), cterm.IsTerminal(tty.Fd()))
 	st.Colour = resolveColour(colourFlag, os.Environ(), detected)
 
+	overrideValue, overrideSet := os.LookupEnv(cellPxEnv)
+	overridePx, overrideOK, err := parseCellPxOverride(overrideValue, overrideSet)
+	if err != nil {
+		return err
+	}
+
 	winPx, winOK := winsizeCellPixels(tty.Fd(), cols, rows)
-	if winOK {
+	switch {
+	case overrideOK:
+		st.cellPx = overridePx
+	case winOK:
 		st.cellPx = winPx
 	}
 
 	if multiplexed() {
 		st.SetEnabled([]Backend{BackendBlock})
-		return
+		return nil
 	}
 
 	res := probeTerminal(tty, cols, rows)
-	if !winOK {
+	if !overrideOK && !winOK {
 		st.cellPx = res.cellPx
 	}
 
@@ -693,6 +704,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag strin
 	}
 	enabled = append(enabled, BackendBlock)
 	st.SetEnabled(enabled)
+	return nil
 }
 
 // multiplexed reports whether the viewer runs under a focus multiplexer: tmux
@@ -769,6 +781,34 @@ const (
 	winsizeMinCellH = 8
 	winsizeMaxCellH = 64
 )
+
+// cellPxEnv is the environment variable name for the cell-pixel-size override.
+const cellPxEnv = "NYALA_CELL_PX"
+
+// parseCellPxOverride parses a NYALA_CELL_PX override value of the form "WxH"
+// (two positive integers, for example "16x33"). It is a diagnostic and harness
+// knob: it lets a headless run behind a synthetic pty, where no winsize pixel
+// report exists, pin the cell pixel size and reproduce a real terminal's device
+// quantisation. When set (set=true) it takes precedence over the ioctl-derived
+// and handshake-probed cell; production without the variable never calls this.
+// It returns ok=false when unset. A set value that is empty, not "WxH", or holds
+// a non-integer, zero, or negative width or height returns an error naming
+// NYALA_CELL_PX, so a bad override fails loudly rather than falling back.
+func parseCellPxOverride(value string, set bool) (cellPx, bool, error) {
+	if !set {
+		return cellPx{}, false, nil
+	}
+	w, h, found := strings.Cut(value, "x")
+	if !found {
+		return cellPx{}, false, fmt.Errorf("%s=%q: want WxH, two positive integers", cellPxEnv, value)
+	}
+	pxW, errW := strconv.Atoi(w)
+	pxH, errH := strconv.Atoi(h)
+	if errW != nil || errH != nil || pxW <= 0 || pxH <= 0 {
+		return cellPx{}, false, fmt.Errorf("%s=%q: want WxH, two positive integers", cellPxEnv, value)
+	}
+	return cellPx{W: pxW, H: pxH}, true, nil
+}
 
 // keyEvent is one parsed key from the reader: either a single byte (b, with
 // scroll == ScrollNone) or a recognised scroll key (scroll set, b unused). The

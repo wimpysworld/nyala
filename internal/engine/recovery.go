@@ -10,6 +10,7 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
@@ -258,14 +259,19 @@ func (e *ChromiumEngine) watchCrash(crashed chan struct{}) {
 }
 
 // watchPaint registers a ListenTarget handler that watches the Page frame and
-// lifecycle event streams with three arms. On a Page.frameNavigated whose frame
-// has no parent it records the main frame id, the gate for the paint arm. On a
-// "firstContentfulPaint" lifecycle event it fires markPainted, the primary
+// lifecycle event streams plus the Runtime binding stream. On a Page.frameNavigated
+// whose frame has no parent it records the main frame id, the gate for the paint arm.
+// On a "firstContentfulPaint" lifecycle event it fires markPainted, the primary
 // paint-gate fire source the snapshot goroutine reads as its first-snapshot clock,
 // but only when the event's frame is the main frame; a subframe (iframe) painting
 // first must not close the latch early. On "networkAlmostIdle" it pokes the reflow
 // channel for a debounced late re-snapshot, catching a reflow that lands without
-// navigation or resize (web fonts loading, async content). SetLifecycleEventsEnabled
+// navigation or resize (web fonts loading, async content). On a Runtime.bindingCalled
+// for the layout-shift binding it pokes the same reflow channel, so a layout shift
+// that lands after the last trigger (a late web-font swap, an image loading and
+// reshaping a card) re-decodes the text and the overlay tracks the final layout; the
+// injected observer already thresholds the shift score, and the reflow debounce and
+// 1s cap rate-limit it. SetLifecycleEventsEnabled
 // is on per session (launch), so the lifecycle events are delivered. paintedOnce
 // latches the paint close, so a repeat event or the navigate-return backstop is a
 // no-op; the reflow poke is latest-wins and rate-capped on the snapshot goroutine,
@@ -298,8 +304,21 @@ func (e *ChromiumEngine) watchPaint() {
 			case "networkAlmostIdle":
 				e.pokeReflow()
 			}
+		case *runtime.EventBindingCalled:
+			if isLayoutShiftBinding(t.Name) {
+				e.recordLayoutShift()
+				e.pokeReflow()
+			}
 		}
 	})
+}
+
+// isLayoutShiftBinding reports whether a Runtime.bindingCalled name is the
+// layout-shift binding, so the watchPaint arm pokes the reflow channel only for the
+// engine's own binding and ignores any other page-registered binding. It is the pure
+// match the listener runs, factored out so it is unit-tested without a browser.
+func isLayoutShiftBinding(name string) bool {
+	return name == layoutShiftBinding
 }
 
 // pokeReflow signals the snapshot goroutine for a debounced late re-snapshot. The
@@ -335,6 +354,7 @@ func (e *ChromiumEngine) teardownSession() {
 	e.reSnap, e.reflow, e.scroll, e.reEmit = nil, nil, nil, nil
 	e.windowID = 0
 	e.fontForcingID = ""
+	e.layoutShiftID = ""
 	e.mu.Unlock()
 	if slot != nil {
 		slot.drain(e.ackFrame)

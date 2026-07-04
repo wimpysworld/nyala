@@ -37,6 +37,15 @@ const (
 	// probe measurement, or the re-inject timed out or errored, so the seed size
 	// stood. It makes a degraded-placement session observable in the bundle.
 	captureEventFontCalibration captureEventType = "font_calibration"
+	// captureEventLayoutShift marks the layout-shift observer poking its binding, so
+	// a page reflow that triggered a re-decode of the text layer is observable in the
+	// bundle. It aids diagnosis of stale-overlay faults after a late reflow.
+	captureEventLayoutShift captureEventType = "layout_shift"
+	// captureEventRunsDropped marks the ink-anchoring pass dropping one or more runs
+	// as phantoms against the verification bitmap: DOMSnapshot text the forced page
+	// painted as an image or not at all. The Dropped field carries the count for the
+	// snapshot, so the phantom drop is observable in the bundle for diagnosis.
+	captureEventRunsDropped captureEventType = "runs_dropped"
 )
 
 // captureWhitelist is the set of event types the recorder accepts. A type absent
@@ -50,6 +59,8 @@ var captureWhitelist = map[captureEventType]bool{
 	captureEventFrameAck:            true,
 	captureEventInputDispatchFailed: true,
 	captureEventFontCalibration:     true,
+	captureEventLayoutShift:         true,
+	captureEventRunsDropped:         true,
 }
 
 // captureEvent is one event offered to the recorder. Type is the discriminator;
@@ -73,6 +84,9 @@ type captureEvent struct {
 	// SessionID is the screencast frame session id for a screencast_frame or
 	// frame_ack event.
 	SessionID int64 `json:"session_id,omitempty"`
+	// Dropped is the count of runs the ink-anchoring pass dropped as phantoms for a
+	// runs_dropped event.
+	Dropped int `json:"dropped,omitempty"`
 }
 
 // captureRecorder is the one-method sink the engine emits capture events through.

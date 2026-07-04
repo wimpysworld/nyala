@@ -1,0 +1,17 @@
+{
+  "id": "layout-12-brandmark-overlay",
+  "title": "Brandmark overlay: a transparent numeric badge over a raster banner",
+  "stressor": "an absolutely-positioned brand-hue numeric badge with a transparent background over an inline raster banner that carries the same hue on its far left, plus a plain visible control label the anchoring pass must keep",
+  "origin": "original",
+  "source_url": null,
+  "license": "BlueOak-1.0.0",
+  "attribution": null,
+  "fonts": ["DejaVu Sans Mono", "Liberation Mono", "Courier New", "monospace"],
+  "self_contained": true,
+  "notes": "Self-contained single page, all CSS inline, no script, no network URLs. Designed for a 960x640 viewport (120x40 at 8x16). Guards the ink-anchoring pass: a brand-amber numeric badge (color #f8b31d) is absolutely positioned at the top-right of a raster banner, with an invalid background-color keyword so it computes to transparent and the glyph paints over the banner alone. The banner PNG carries the same amber hue on its far left, well away from the badge, so a pass that snapped the badge onto the wrong ink would move it onto the banner block. A plain dark control label below the banner must keep its run. Measured baseline on the current build: Chromium paints the badge glyph at its box, so the pass keeps all three runs and anchors the badge onto its top-right ink, not the banner's left block. 120x40 mean 0.000, max 0.000; 240x48 mean 0.333, max 0.500; drifted 0, collisions 0, offgrid 0 both legs. British English copy, white background, dark text.",
+  "placement_gate": {
+    "mean": 0.4,
+    "max": 0.6,
+    "reason": "Guards the ink-anchoring pass. The three runs (heading, amber badge, control label) must all publish, and the badge must anchor onto its painted top-right ink rather than the banner's far-left amber block. Measured baseline: 120x40 mean 0.000, max 0.000; 240x48 mean 0.333, max 0.500; drifted 0, collisions 0, offgrid 0 both legs. mean 0.4 sits above the wide-leg mean of 0.333 and max 0.6 above the 0.500 half-cell tie, so the clean baseline passes while an anchor that snapped the badge onto the wrong ink or drifted it by about a cell breaches. drifted, collisions, and offgrid keep the global zero defaults so a mis-snapped run trips them."
+  }
+}

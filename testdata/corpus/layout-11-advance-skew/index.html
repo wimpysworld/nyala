@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<title>Episode index: right-anchored codes and a numeric ruler</title>
+<style>
+  html {
+    background: #ffffff;
+    color: #161616;
+  }
+  body {
+    margin: 0;
+    padding: 8px 8px 0 8px;
+    width: 944px;
+    font-family: "DejaVu Sans Mono", "Liberation Mono", "Courier New", monospace;
+    font-size: 14px;
+    line-height: 16px;
+  }
+  h1 {
+    margin: 0 0 8px 0;
+    font-size: 20px;
+    line-height: 32px;
+    font-weight: 700;
+  }
+
+  /* A full-width numeric ruler: tick labels laid left to right across the
+     whole grid, so run start columns sample x from the far left to the far
+     right. Each tick's number sits at a known, rising x. */
+  .ruler {
+    position: relative;
+    width: 944px;
+    height: 16px;
+    margin: 0 0 12px 0;
+    font-size: 14px;
+    line-height: 16px;
+    font-variant-numeric: tabular-nums;
+  }
+  .ruler .tick {
+    position: absolute;
+    top: 0;
+  }
+
+  /* Full-width cards. Each card's title is left-anchored at the card's left
+     edge; the short episode code is right-anchored at the card's top-right
+     corner, the worst case for a rightward advance skew. */
+  .card {
+    position: relative;
+    width: 944px;
+    box-sizing: border-box;
+    border: 1px solid #b4b4b4;
+    background: #f5f5f5;
+    padding: 8px 8px 8px 8px;
+    margin: 0 0 8px 0;
+  }
+  .card .title {
+    margin: 0;
+    font-size: 14px;
+    line-height: 16px;
+    font-weight: 700;
+    /* Reserve the right corner for the code so the title never overlaps it. */
+    padding-right: 96px;
+  }
+  .card .blurb {
+    margin: 4px 0 0 0;
+    font-size: 14px;
+    line-height: 16px;
+    color: #4a4a4a;
+  }
+  .card .code {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    margin: 0;
+    font-size: 14px;
+    line-height: 16px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+</head>
+<body>
+  <h1>Episode index</h1>
+
+  <div class="ruler">
+    <span class="tick" style="left: 0px;">000</span>
+    <span class="tick" style="left: 118px;">120</span>
+    <span class="tick" style="left: 236px;">240</span>
+    <span class="tick" style="left: 354px;">360</span>
+    <span class="tick" style="left: 472px;">480</span>
+    <span class="tick" style="left: 590px;">600</span>
+    <span class="tick" style="left: 708px;">720</span>
+    <span class="tick" style="left: 826px;">840</span>
+    <span class="tick" style="left: 918px;">960</span>
+  </div>
+
+  <div class="card">
+    <p class="title">Booting the terminal browser from a cold shell</p>
+    <p class="blurb">The desk walks through the first launch and the render path.</p>
+    <p class="code">S05E42</p>
+  </div>
+
+  <div class="card">
+    <p class="title">Mapping the DOM text layer onto the cell grid</p>
+    <p class="blurb">How boxes snap to columns and where the overlay lands.</p>
+    <p class="code">S05E43</p>
+  </div>
+
+  <div class="card">
+    <p class="title">Forcing the page font onto a monospace advance</p>
+    <p class="blurb">Calibration measures a probe glyph and corrects the size.</p>
+    <p class="code">S05E44</p>
+  </div>
+
+  <div class="card">
+    <p class="title">Scaling the block layout to the terminal width</p>
+    <p class="blurb">A wide grid reflows the page back to the target width.</p>
+    <p class="code">S05E45</p>
+  </div>
+
+  <div class="card">
+    <p class="title">Compensating the compose-time scroll skew</p>
+    <p class="blurb">The overlay stays glued while two scrolls disagree.</p>
+    <p class="code">S05E46</p>
+  </div>
+
+  <div class="card">
+    <p class="title">Dropping hidden boxes before they compose</p>
+    <p class="blurb">Clipped, faint, and collapsed boxes emit no run at all.</p>
+    <p class="code">S05E47</p>
+  </div>
+
+  <div class="card">
+    <p class="title">Trimming the soft-wrap whitespace the layout adds</p>
+    <p class="blurb">Trailing spaces and newlines never reach the terminal.</p>
+    <p class="code">S05E48</p>
+  </div>
+
+  <div class="card">
+    <p class="title">Answering the proxy auth challenge over CDP</p>
+    <p class="blurb">Credentials stay out of the Chromium process arguments.</p>
+    <p class="code">S05E49</p>
+  </div>
+</body>
+</html>

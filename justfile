@@ -2,6 +2,7 @@ capture := ""
 backend := ""
 scroll := ""
 settle := ""
+cell := ""
 
 # List available recipes
 default:
@@ -21,6 +22,7 @@ run url="https://wimpys.world" *flags: build
     backend={{ quote(backend) }}
     scroll={{ quote(scroll) }}
     settle={{ quote(settle) }}
+    cell={{ quote(cell) }}
     url="$1"
     shift
 
@@ -41,6 +43,9 @@ run url="https://wimpys.world" *flags: build
                 ;;
             settle=*)
                 settle="${arg#settle=}"
+                ;;
+            cell=*)
+                cell="${arg#cell=}"
                 ;;
             --browser=*)
                 browser="${arg#--browser=}"
@@ -78,8 +83,15 @@ run url="https://wimpys.world" *flags: build
     args+=("${flags[@]}")
 
     cmd=(./nyala "${args[@]}")
+    env_pairs=()
+    # cell overrides the terminal cell pixel size (NYALA_CELL_PX="WxH"). It is a
+    # diagnostic and harness knob and rides any run, capture or not, so a headless
+    # pty run can pin a real terminal's cell size to reproduce device quantisation.
+    if [ -n "$cell" ]; then
+        env_pairs+=("NYALA_CELL_PX=$cell")
+    fi
     if [ -n "$capture" ]; then
-        env_pairs=("NYALA_CAPTURE=$capture")
+        env_pairs+=("NYALA_CAPTURE=$capture")
         # scroll rides only with capture: NYALA_CAPTURE_SCROLL is ignored off the
         # capture path, so setting it without capture would do nothing.
         if [ -n "$scroll" ]; then
@@ -90,6 +102,8 @@ run url="https://wimpys.world" *flags: build
         if [ -n "$settle" ]; then
             env_pairs+=("NYALA_CAPTURE_SCROLL_SETTLE=$settle")
         fi
+    fi
+    if [ ${#env_pairs[@]} -gt 0 ]; then
         cmd=(env "${env_pairs[@]}" "${cmd[@]}")
     fi
 

@@ -591,11 +591,43 @@ func TestMapBoxToCellsWidthBudget(t *testing.T) {
 		},
 		{
 			// Box starts at the last two columns and is far wider than the grid.
-			// col = round(944/8) = 118, so edge budget = cols - col = 2, and the
-			// text clips to two cells even though its box budget is larger.
+			// col = round(944/8) = 118, so the box right edge round((944+800)/8) =
+			// 218 caps at cols = 120, and the text clips to 120 - 118 = 2 cells even
+			// though its box is far wider.
 			name: "box past grid edge clips at cellW*cols",
 			x:    944, w: 800, text: "abcdef",
 			wantCol: 118, wantClipped: "ab",
+		},
+		{
+			// Pure clip bound admits more than the old width budget when the residue
+			// splits: the box left edge at 0.25 cells snaps the origin to col 0
+			// (round(2/8) = 0) and the right edge at 3.625 cells snaps to col 4
+			// (round((2+27)/8) = 4), so the box genuinely spans four cells and the
+			// clip admits 4 - 0 = 4. The old round(27/8) = 3 width budget dropped the
+			// fourth cell "d". The box right edge, not the raw width, sets the bound.
+			name: "residue split box right edge admits fourth cell",
+			x:    2, w: 27, text: "abcd",
+			wantCol: 0, wantClipped: "abcd",
+		},
+		{
+			// Pure clip bound clips shorter than the old width budget when the origin
+			// snaps right: the box left edge at 0.625 cells snaps the origin up to
+			// col 1 (round(5/8) = 1) while the right edge at 3.25 cells snaps to col 3
+			// (round((5+21)/8) = 3), so relative to the snapped origin only 3 - 1 = 2
+			// cells fit. The old round(21/8) = 3 width budget over-admitted a third
+			// cell past the box's own right edge; the bound now caps it.
+			name: "origin snaps right clip caps at box right edge",
+			x:    5, w: 21, text: "abc",
+			wantCol: 1, wantClipped: "ab",
+		},
+		{
+			// A sub-half-cell box snaps both edges to the same column, so the clip
+			// budget is zero cells: col = round(0/8) = 0 and edgeCol = round(3/8) =
+			// 0, so edgeCol - col = 0 and ClipToCells returns "". The run claims no
+			// cell rather than emitting a glyph in a box too narrow to hold one.
+			name: "sub-half-cell box clips to empty",
+			x:    0, w: 3, text: "a",
+			wantCol: 0, wantClipped: "",
 		},
 	}
 
