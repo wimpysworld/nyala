@@ -79,6 +79,16 @@ func decodeScreencastImage(data string) (*image.RGBA, error) {
 	if err != nil {
 		return nil, fmt.Errorf("engine: base64-decode frame: %w", err)
 	}
+	return decodeImageBytes(raw)
+}
+
+// decodeImageBytes decodes raw image bytes to an *image.RGBA in RGBA channel order.
+// It is the shared decode both the base64 screencast payload and the CDP verification
+// screenshot feed: page.captureScreenshot's Do already base64-decodes to raw bytes, so
+// the verification path skips the base64 step and hands the bytes straight here. A
+// non-RGBA decode is converted with the same copy idiom the viewer's LoadPNG uses, so
+// the render and anchor paths read one pixel layout.
+func decodeImageBytes(raw []byte) (*image.RGBA, error) {
 	img, _, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("engine: decode frame image: %w", err)

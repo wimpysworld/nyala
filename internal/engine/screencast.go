@@ -586,10 +586,45 @@ func (e *ChromiumEngine) publishSnapshot(ctx context.Context, snapshot func(cont
 	// them forward here: the re-snapshot caps live in runTextSync, not the snapshot.
 	next.lastReSnap = state.lastReSnap
 	next.lastScrollSnap = state.lastScrollSnap
+	// Anchor the decoded runs against a same-generation verification bitmap before
+	// publishing: verify each run's glyph is really painted at its box, snap a drifted
+	// run onto its ink, and drop a phantom the DOMSnapshot reported but the page painted
+	// as an image or not at all. The verification bitmap is captured in the same
+	// sequence as the DOMSnapshot read, so a card that paints after the snapshot read is
+	// captured too and its runs are not falsely dropped.
+	runs = e.anchorPublished(ctx, runs)
 	// Tag the published runs with the DOM scroll they were decoded at, so
 	// composeFrame can shift them to the bitmap's own scroll.
 	ts.store(runs, snapshotMS, scroll.X, scroll.Y)
 	return next
+}
+
+// anchorPublished verifies the decoded runs against a same-generation verification
+// bitmap before they publish, returning the anchored set. It captures the current
+// forced-layout viewport over CDP (captureVerifyBitmap) in the same sequence as the
+// caller's DOMSnapshot read, so the bitmap and the runs share one page generation:
+// the runs' box coordinates are on-screen at the snapshot scroll and the screenshot is
+// taken at that same scroll, so the two align without a scroll match. A capture error,
+// or an empty run set, returns the runs untouched, so anchoring degrades to a
+// passthrough rather than a stall. It reads the CSS-pixel cell and the layout scale
+// under the engine lock, runs the pure anchorRuns pass, and records the dropped-run
+// count when the capture recorder is active. It is called once per published snapshot,
+// never per composed frame.
+func (e *ChromiumEngine) anchorPublished(ctx context.Context, runs []render.GlyphRun) []render.GlyphRun {
+	if len(runs) == 0 || ctx == nil {
+		return runs
+	}
+	img, err := captureVerifyBitmap(ctx)
+	if err != nil || img == nil {
+		return runs
+	}
+	e.mu.Lock()
+	cellW, cellH := e.snapshotCellPx()
+	scale := e.layoutScale()
+	e.mu.Unlock()
+	anchored, dropped := anchorRuns(img, runs, cellW, cellH, scale)
+	e.recordRunsDropped(dropped)
+	return anchored
 }
 
 // sleepCtx sleeps for d or returns true early when ctx is cancelled, so the
@@ -661,7 +696,8 @@ func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, fram
 				continue
 			}
 			held, haveHeld = pending, true
-			if off, ok := frameScrollOffset(pending); ok {
+			off, offOK := frameScrollOffset(pending)
+			if offOK {
 				if !haveScroll || off != lastScroll {
 					if haveScroll {
 						pokeScroll(scroll)

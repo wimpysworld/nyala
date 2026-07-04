@@ -1,0 +1,17 @@
+{
+  "id": "layout-11-advance-skew",
+  "title": "Episode index: right-anchored codes and a full-width numeric ruler",
+  "stressor": "rightward advance skew that grows linearly with x, sampled by right-anchored short runs at large x and a left-to-right numeric ruler",
+  "origin": "original",
+  "source_url": null,
+  "license": "BlueOak-1.0.0",
+  "attribution": null,
+  "fonts": ["DejaVu Sans Mono", "Liberation Mono", "Courier New", "monospace"],
+  "self_contained": true,
+  "notes": "Self-contained single page, all CSS inline, no script, no network URLs. Designed for a 960x640 viewport (120x40 at 8x16). Exercises a rightward advance skew, where run start columns bin further right as element x grows. A full-width numeric ruler lays nine tick labels left to right across the whole grid, so run start columns sample x from the far left to the far right. Full-width cards each carry a left-anchored bold title at the card's left edge and a right-anchored short episode code (for example S05E42) at the card's top-right corner; the right-anchored short runs at large x are the worst case the skew targets. White background, dark text. British English copy.",
+  "placement_gate": {
+    "mean": 0.25,
+    "max": 0.6,
+    "reason": "Filled from the Task 1.5 baseline capture at both legs. Measured baseline on the current build: 120x40 mean 0.154, max 0.500; 240x48 mean 0.173, max 0.500; drifted 0, collisions 0, offgrid 0 both legs. The origin snap Col=round(X/cellW) is exact on this build (33 of 34 runs match to zero, the one nonzero is a rounding tie at X=244), so this build shows no measurable advance skew. mean 0.25 sits just above the measured mean of 0.173 and matches the layout-10 tightened style; max 0.6 sits just above the measured 0.500 half-cell tie so a real rightward drift of about one cell breaches it while the clean baseline passes. drifted, collisions, and offgrid keep the global zero defaults. The gate guards against the linear-in-x drift the fixture targets rather than breaching on the current build, because the baseline capture found no live skew to breach on."
+  }
+}

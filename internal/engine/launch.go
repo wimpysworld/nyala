@@ -264,6 +264,12 @@ func (e *ChromiumEngine) launch(flag string) error {
 			cancel()
 			return err
 		}
+		// Register the layout-shift observer and its binding on the block backend, so a
+		// reflow after the last navigation, resize, scroll, or networkAlmostIdle trigger
+		// re-decodes the text and the overlay tracks the final layout. It shares
+		// syncFontForcing's enable path, so a Tab away and back reconciles it with the
+		// font forcing. A CDP miss degrades the trigger rather than the launch.
+		e.enableLayoutShift(ctx)
 	}
 	if err := applySizing(ctx, windowID, surfW, surfH, z); err != nil {
 		cancel()

@@ -153,10 +153,11 @@ bounds to CSS pixels by dividing by the device pixel ratio, places each run at t
 snapshot's own scroll offset, and bins the box top-left to a cell with the Stage
 2 floor rule. The snapshot bounds and the scroll come from one DOM read, so they are
 internally consistent and a sustained scroll shows the current text. Each box becomes
-one `GlyphRun` clipped to `floor(boxWidthPx/cellW)`
-display cells, counting cells with the Stage 2 width rule so a width-2 cluster is
-never half-emitted; overflow graphemes are dropped because the bitmap underneath
-shows them. The box's computed colour feeds `GlyphRun.FG` in RGBA channel order.
+one `GlyphRun` clipped to the box's snapped right edge (`round((px+bw)/cellW)`)
+and the grid edge, whichever is nearer, counting cells with the Stage 2 width rule
+so a width-2 cluster is never half-emitted; overflow graphemes are dropped because
+the bitmap underneath shows them. The box width is a pure clip bound and never
+sizes the advance. The box's computed colour feeds `GlyphRun.FG` in RGBA channel order.
 The box text is the UTF-16 substring of its layout node given by the box start and
 length. DSF is pinned to 1, so the DPR divide is a no-op in production, but the pure
 decoder stays general so tests pass other ratios.
@@ -610,12 +611,17 @@ subtracts the scroll offset, then:
 - **Soft-wrap trailing-whitespace trim.** `strings.TrimRightFunc(text,
   unicode.IsSpace)` drops any whitespace the layout adds at a soft wrap, a space or
   a newline, so a wrapped line does not claim a phantom trailing cell.
-- **Grid-edge clip.** The text clips at the grid's right edge (`cellW*cols` from
-  the box start column) through `render.ClipToCells`, replacing the old
-  pixel-width truncation budget.
-- **Rounded width guard.** The cell budget rounds the box width (`round(bw/cellW)`)
-  rather than flooring it, so a box a rounding epsilon short of N whole cells still
-  yields N cells and never drops the last glyph.
+- **Right-edge clip.** The run clips through `render.ClipToCells` to the nearer of
+  the box's own snapped right edge (`round((px+bw)/cellW)`) and the grid's right
+  edge (`cellW*cols`), replacing the old pixel-width truncation budget. The box
+  width is a pure clip bound and never sizes the advance: the origin snap
+  `round(px/cellW)` sets position, per-grapheme whole-cell stepping sets advance,
+  and the box right edge only caps how far the run may run.
+- **Symmetric edge snap.** Snapping both edges the same way, so the cap is
+  `round((px+bw)/cellW)` minus `round(px/cellW)`, keeps a box a rounding epsilon
+  short of N whole cells at N cells, so a font-metric residue never drops the last
+  glyph, while a wrongly scaled `cellW` can only clip the run short, never push it
+  wide.
 
 ### Overlay guard and background recompose
 

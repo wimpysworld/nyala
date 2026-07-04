@@ -62,6 +62,7 @@ func TestRecorderWhitelistAcceptsAllTypes(t *testing.T) {
 		captureEventDOMSnapshot,
 		captureEventScreencastControl,
 		captureEventFrameAck,
+		captureEventRunsDropped,
 	}
 	for _, typ := range want {
 		r.Record(captureEvent{Type: typ})
@@ -231,6 +232,47 @@ func TestNDJSONRecorderCountsDropped(t *testing.T) {
 	}
 	if buf.Len() == 0 {
 		t.Error("the whitelisted event was not written")
+	}
+}
+
+// TestRecordRunsDroppedGatesOnCount asserts recordRunsDropped emits one
+// runs_dropped event carrying the count when the pass dropped runs and capture is on,
+// and emits nothing for a zero count. A zero-count clean snapshot must leave no line.
+func TestRecordRunsDroppedGatesOnCount(t *testing.T) {
+	e := New("")
+	rec := &fakeRecorder{}
+	e.EnableCapture(rec)
+
+	e.recordRunsDropped(0)
+	if rec.count() != 0 {
+		t.Fatalf("zero-count recordRunsDropped emitted %d events, want 0", rec.count())
+	}
+
+	e.recordRunsDropped(3)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.events) != 1 {
+		t.Fatalf("recordRunsDropped(3) emitted %d events, want 1", len(rec.events))
+	}
+	if rec.events[0].Type != captureEventRunsDropped {
+		t.Errorf("event type = %q, want runs_dropped", rec.events[0].Type)
+	}
+	if rec.events[0].Dropped != 3 {
+		t.Errorf("event dropped = %d, want 3", rec.events[0].Dropped)
+	}
+}
+
+// TestRecordRunsDroppedNoCapture asserts a non-capture engine records nothing even
+// when the pass dropped runs, so the production path pays only the nil check.
+func TestRecordRunsDroppedNoCapture(t *testing.T) {
+	e := New("")
+	detached := &fakeRecorder{}
+	e.recordRunsDropped(5)
+	if detached.count() != 0 {
+		t.Fatalf("non-capture recordRunsDropped drove a recorder, want no events")
+	}
+	if e.recorder != nil {
+		t.Fatal("non-capture engine has a recorder set")
 	}
 }
 

@@ -820,7 +820,9 @@ func TestConfigureBackendsSkipsHandshakeUnderMux(t *testing.T) {
 
 	tty := newTempTTY(t)
 	st := NewState(80, 24, 64, 64)
-	configureBackends(&st, tty, 80, 24, "auto")
+	if err := configureBackends(&st, tty, 80, 24, "auto"); err != nil {
+		t.Fatalf("configureBackends: %v", err)
+	}
 
 	if len(st.Enabled) != 1 || st.Enabled[0] != BackendBlock {
 		t.Fatalf("enabled = %v, want [BackendBlock]", st.Enabled)
@@ -839,7 +841,9 @@ func TestConfigureBackendsRunsHandshakeWithoutMux(t *testing.T) {
 
 	tty := newTempTTY(t)
 	st := NewState(80, 24, 64, 64)
-	configureBackends(&st, tty, 80, 24, "auto")
+	if err := configureBackends(&st, tty, 80, 24, "auto"); err != nil {
+		t.Fatalf("configureBackends: %v", err)
+	}
 
 	if n := ttyByteCount(t, tty); n == 0 {
 		t.Fatalf("handshake wrote no bytes without mux; probeTerminal should run")
@@ -976,6 +980,52 @@ func TestDeriveCellPixels(t *testing.T) {
 			}
 			if ok && (px.W != c.wantX || px.H != c.wantY) {
 				t.Fatalf("cell px = %dx%d, want %dx%d", px.W, px.H, c.wantX, c.wantY)
+			}
+		})
+	}
+}
+
+// TestParseCellPxOverride exercises the NYALA_CELL_PX override parser. It pins
+// the diagnostic knob: a valid "WxH" resolves to that cell size and takes
+// precedence, an unset value resolves to ok=false, and any malformed value fails
+// loudly with an error rather than falling back.
+func TestParseCellPxOverride(t *testing.T) {
+	cases := []struct {
+		name         string
+		value        string
+		set          bool
+		wantW, wantH int
+		wantOK       bool
+		wantErr      bool
+	}{
+		{name: "unset", value: "", set: false, wantOK: false},
+		{name: "valid 16x33", value: "16x33", set: true, wantW: 16, wantH: 33, wantOK: true},
+		{name: "empty set value", value: "", set: true, wantErr: true},
+		{name: "no separator", value: "1633", set: true, wantErr: true},
+		{name: "non-integer width", value: "axb", set: true, wantErr: true},
+		{name: "trailing junk", value: "16x33px", set: true, wantErr: true},
+		{name: "zero width", value: "0x33", set: true, wantErr: true},
+		{name: "zero height", value: "16x0", set: true, wantErr: true},
+		{name: "negative width", value: "-16x33", set: true, wantErr: true},
+		{name: "negative height", value: "16x-33", set: true, wantErr: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			px, ok, err := parseCellPxOverride(c.value, c.set)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("parseCellPxOverride(%q, %v) err = nil, want error", c.value, c.set)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseCellPxOverride(%q, %v): %v", c.value, c.set, err)
+			}
+			if ok != c.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, c.wantOK)
+			}
+			if ok && (px.W != c.wantW || px.H != c.wantH) {
+				t.Fatalf("cell px = %dx%d, want %dx%d", px.W, px.H, c.wantW, c.wantH)
 			}
 		})
 	}

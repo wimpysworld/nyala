@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<title>Brandmark overlay: a transparent numeric badge over a raster banner</title>
+<style>
+  html {
+    background: #ffffff;
+    color: #161616;
+  }
+  body {
+    margin: 0;
+    padding: 8px;
+    width: 944px;
+    font-family: "DejaVu Sans Mono", "Liberation Mono", "Courier New", monospace;
+    font-size: 14px;
+    line-height: 16px;
+  }
+  h1 {
+    margin: 0 0 8px 0;
+    font-size: 20px;
+    line-height: 32px;
+    font-weight: 700;
+  }
+
+  /* The banner card: an inline raster banner with a brand-coloured numeric badge
+     absolutely positioned at its top-right corner. The banner PNG carries the same
+     amber hue as the badge, but on its left third, well away from the badge. */
+  .banner {
+    position: relative;
+    width: 480px;
+    height: 128px;
+    margin: 0 0 12px 0;
+  }
+  .banner img {
+    display: block;
+    width: 480px;
+    height: 128px;
+  }
+  /* The badge: brand-hue text, top-right corner. Its background-color is an invalid
+     keyword, so it computes to transparent and the amber glyph paints (or not) over
+     the banner alone. Whether Chromium paints the glyph decides if the anchoring
+     pass keeps or drops this run. */
+  .badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    margin: 0;
+    font-size: 20px;
+    line-height: 24px;
+    font-weight: 700;
+    color: #f8b31d;
+    background-color: notacolour;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* A plain visible control label below the banner. It must keep its run: it is
+     ordinary dark text on the white page, so the anchoring pass finds its ink and
+     publishes it unchanged. */
+  .control {
+    margin: 0;
+    font-size: 14px;
+    line-height: 16px;
+    color: #161616;
+  }
+</style>
+</head>
+<body>
+<h1>Brandmark overlay</h1>
+<div class="banner">
+  <img alt="Episode banner with a brand-coloured block on the left" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPAAAABACAIAAACr/W2wAAAA7UlEQVR4nOzUsQkCYRAGUZUr4ULB9Iq4tqzCKgULsQbhl4XhvXzhC4bd9uO8QMVtegCsJGhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpGy/Hnxe7/8sWez+fExPYIAPTYqgSRE0KYImRdCkCJoUQZMiaFIETYqgSRE0KYImRdCkCJoUQZMiaFIETYqgSRE0KYImRdCkCJoUQZMiaFIETYqgSRE0KYImRdCkCJoUQZNy3Y9zegMs40OTImhSBE2KoEkRNCmCJkXQpAiaFEGTImhSBE2KoEkRNCmCJkXQpHwDAAD//wThBHTRncXPAAAAAElFTkSuQmCC">
+  <p class="badge">84</p>
+</div>
+<p class="control">Latest episode index and show notes for the current series.</p>
+</body>
+</html>

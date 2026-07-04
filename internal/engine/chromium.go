@@ -55,6 +55,14 @@ type ChromiumEngine struct {
 	// never targets a fresh session's script list.
 	fontForcingID page.ScriptIdentifier
 
+	// layoutShiftID is the ScriptIdentifier of the registered layout-shift observer
+	// on-new-document script, empty when no observer is active. It rides the block
+	// backend's font-forcing lifecycle: syncFontForcing registers the observer script
+	// and the Runtime binding when the block backend takes the overlay, and removes
+	// both when it does not, so a layout shift on the live page re-decodes the text.
+	// It is reset per session by teardownSession alongside fontForcingID.
+	layoutShiftID page.ScriptIdentifier
+
 	// windowID is the browser window id for the driven target, fetched once per
 	// session via browser.GetWindowForTarget and used to size the captured surface
 	// with Browser.SetContentsSize on launch and on every restart. It is reset per

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"image"
 	"image/color"
 	"math"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/chromedp/cdproto/domsnapshot"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 
 	"github.com/wimpysworld/nyala/internal/render"
@@ -50,6 +52,33 @@ func captureSnapshot(ctx context.Context) (documents []*domsnapshot.DocumentSnap
 		return err
 	}))
 	return documents, strings, err
+}
+
+// captureVerifyBitmap captures the current forced-layout viewport over CDP
+// (page.captureScreenshot) and decodes it to an *image.RGBA in RGBA channel order.
+// It is the same-generation verification bitmap the ink-anchoring pass reads: the
+// snapshot goroutine calls it in the same sequence as the DOMSnapshot read, so the
+// bitmap and the decoded runs share one page generation and a card that paints after
+// the DOMSnapshot read is captured here, not lagged a frame behind on the screencast.
+// The device metrics override is already applied, so the screenshot returns the
+// current forced-layout viewport. It is verification-only and never displayed. A
+// capture or decode error returns nil so the caller anchors nothing, the same as
+// before the pairing landed. It runs on the snapshot goroutine and holds no lock
+// across the chromedp.Run.
+func captureVerifyBitmap(ctx context.Context) (*image.RGBA, error) {
+	var raw []byte
+	err := chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {
+		data, capErr := page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatPng).Do(runCtx)
+		if capErr != nil {
+			return capErr
+		}
+		raw = data
+		return nil
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return decodeImageBytes(raw)
 }
 
 // decodeGlyphRuns maps a DOM snapshot to crisp text runs without any browser
@@ -124,11 +153,16 @@ func appendDocumentRuns(runs []render.GlyphRun, doc *domsnapshot.DocumentSnapsho
 // device-pixel [x, y, w, h]; dpr converts them to CSS pixels and the scroll
 // offset shifts document-absolute coordinates to the scrolled on-screen view.
 // It rounds the box top-left to a cell, trims all trailing whitespace the
-// soft-wrap layout adds (a space or a newline), then clips the text to the
-// cells left before the grid's right edge (cellW*cols). A box whose width falls
-// a rounding epsilon short of N whole cells still yields N cells: the width
-// budget rounds the cell count rather than flooring it, so a font-metric residue
-// never drops the last cell.
+// soft-wrap layout adds (a space or a newline), then clips the text to the cells
+// left before the box's own right edge and the grid's right edge (cellW*cols).
+// The box width is a pure clip bound, never a source of advance: the run's origin
+// snap round(px/cellW) is the single source of horizontal position, per-grapheme
+// whole-cell stepping (render.ClipToCells, block.applyOverlay) is the single
+// source of advance, and the box right edge only caps how far the run may run.
+// Snapping both edges the same way (round(right/cellW) minus round(left/cellW))
+// keeps a box a rounding epsilon short of N whole cells at N cells, so a
+// font-metric residue never drops the last cell, while a wrongly scaled cellW can
+// only clip the run short, never push it wide.
 // Page insets are arbitrary sub-cell offsets, so round centres the residue at
 // zero and stays order-preserving, keeping the bins monotonic and non-overlapping.
 func mapBoxToCells(bounds []float64, dpr, scrollX, scrollY float64, cellW, cellH float64, cols int, text string) (col, row int, clipped string) {
@@ -141,13 +175,12 @@ func mapBoxToCells(bounds []float64, dpr, scrollX, scrollY float64, cellW, cellH
 	if text == "" {
 		return col, row, ""
 	}
-	boxCells := int(math.Round(bw / cellW))
-	edgeCells := cols - col
-	maxCells := boxCells
-	if edgeCells < maxCells {
-		maxCells = edgeCells
+	rightCol := int(math.Round((px + bw) / cellW))
+	edgeCol := cols
+	if rightCol < edgeCol {
+		edgeCol = rightCol
 	}
-	return col, row, render.ClipToCells(text, maxCells)
+	return col, row, render.ClipToCells(text, edgeCol-col)
 }
 
 // layoutBoxText returns the box's substring of its layout node's text. Start and

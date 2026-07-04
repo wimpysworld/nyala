@@ -272,7 +272,10 @@ func setupViewer(eng Engine, tty *os.File, colourFlag string, layoutWidth int) (
 
 	// Detection runs in raw mode but before the full-screen switch and the key
 	// reader, so the handshake replies are not consumed by the key goroutine.
-	configureBackends(&state, tty, cols, rows, colourFlag)
+	if err := configureBackends(&state, tty, cols, rows, colourFlag); err != nil {
+		_ = cterm.Restore(fd, oldState)
+		return 0, nil, nil, err
+	}
 
 	// Hand the resolved backend, cell px, and layout width to the engine before
 	// Navigate; the engine sizes the screencast capture and the block device scale

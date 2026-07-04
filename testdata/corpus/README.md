@@ -25,6 +25,10 @@ text is copied. Embedded fonts are subset Noto faces under the SIL Open Font Lic
 | `layout-06-overlap-abspos` | Absolutely-positioned overlapping text, z-index, non-cell-aligned offsets |
 | `layout-07-ua-default-floor` | Browser default styles, single-column prose, baseline legibility |
 | `layout-08-table-infobox-form` | Data table, infobox sidebar, labelled form inputs |
+| `layout-09-hidden-player` | Hidden UI that must emit no runs: `sr-only` clip, zero opacity, visibility hidden, offscreen clip and clip-path |
+| `layout-10-centred-boxes` | Sub-cell-inset alignment from flex, grid, and margin-auto box centring |
+| `layout-11-advance-skew` | Rightward advance skew that grows with x, sampled by right-anchored runs and a left-to-right ruler |
+| `layout-12-brandmark-overlay` | Ink anchoring: a transparent brand-hue numeric badge anchored to its ink over a raster banner carrying the same hue elsewhere, plus a control label |
 
 ## Page rules
 

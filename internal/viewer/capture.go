@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"os"
 	"sync"
@@ -324,6 +325,18 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 				nilImageOnce.Do(func() {
 					fmt.Fprintln(os.Stderr, "nyala: capture skipped a frame with no image")
 				})
+				continue
+			}
+			// Blank-frame gate on the first counted frame only. The paint and publish
+			// latches gate on event order, not bitmap content: on a large surface
+			// Chromium can satisfy both latches on the frame before the first paint
+			// lands, a uniform field of the background colour with no ink. Skip that
+			// no-ink bitmap so the bundle's opening frame is the painted page. Only
+			// the first frame is gated: once a painted frame is counted, later frames draw
+			// as-is (a legitimately dark or sparse page must not stall). The idle timer, already
+			// armed, bounds the wait and writes a "first-draw timeout" partial if no
+			// painted frame arrives.
+			if drawn == 0 && frameBlank(frame.Img) {
 				continue
 			}
 			if reason, ok := drawOne(frame); !ok {
@@ -659,6 +672,76 @@ func capturePerf(st *State, frame render.Frame, grid *block.Grid, terminalBytes,
 		p.GridCols, p.GridRows = grid.Cols, grid.Rows
 	}
 	return p
+}
+
+// frameBlankThreshold is the fraction of sampled pixels that must differ from
+// the background colour for a frame to count as painted. The gate exists to skip
+// the fully unpainted pre-paint compositor frame, a uniform field of the
+// background colour with no ink. Any real page carries far more ink than this:
+// the sparsest corpus page (a wide-grid RTL or CJK layout with little text) still
+// covers about one percent of sampled pixels, so the floor sits well below that
+// and well above the zero a uniform pre-paint frame produces. Raising it to catch
+// "half-composited" frames starved those sparse pages, timing the capture out on a
+// legitimately painted bitmap; the floor is deliberately near zero so only a
+// no-ink frame reads as blank.
+const frameBlankThreshold = 0.0025
+
+// frameBlankTolerance is the per-channel delta a sampled pixel must exceed from
+// the background colour to count as foreground. It absorbs the sub-pixel dither
+// a flat background carries so anti-aliasing noise is not mistaken for content.
+const frameBlankTolerance = 12
+
+// frameBlankStride subsamples the bitmap so the completeness check stays cheap:
+// every strideth pixel on both axes is tested, which is ample to separate a
+// painted page from a blank one without walking every pixel of a multi-megapixel
+// surface. The check runs capture-only, so production never pays it.
+const frameBlankStride = 8
+
+// frameBlank reports whether img is a no-ink pre-paint bitmap: its
+// frameInkFraction is below frameBlankThreshold. A flat background of any colour
+// reads as blank and a page with real content, however sparse, does not. A
+// degenerate (zero-extent) image reads as blank.
+func frameBlank(img *image.RGBA) bool {
+	return frameInkFraction(img) < frameBlankThreshold
+}
+
+// frameInkFraction returns the fraction of subsampled pixels that differ from the
+// background colour (read from the top-left corner) by more than
+// frameBlankTolerance on any RGB channel. It skips the alpha channel and samples
+// every frameBlankStride pixel on both axes. A degenerate (zero-extent) image
+// returns 0, so frameBlank reads it as blank. It is capture-only, so its cost
+// never touches the live path.
+func frameInkFraction(img *image.RGBA) float64 {
+	b := img.Bounds()
+	if b.Empty() {
+		return 0
+	}
+	bg := img.RGBAAt(b.Min.X, b.Min.Y)
+	sampled, foreground := 0, 0
+	for y := b.Min.Y; y < b.Max.Y; y += frameBlankStride {
+		for x := b.Min.X; x < b.Max.X; x += frameBlankStride {
+			sampled++
+			p := img.RGBAAt(x, y)
+			if absDelta(p.R, bg.R) > frameBlankTolerance ||
+				absDelta(p.G, bg.G) > frameBlankTolerance ||
+				absDelta(p.B, bg.B) > frameBlankTolerance {
+				foreground++
+			}
+		}
+	}
+	if sampled == 0 {
+		return 0
+	}
+	return float64(foreground) / float64(sampled)
+}
+
+// absDelta returns the absolute difference of two 8-bit channel values as an int,
+// avoiding the wraparound a uint8 subtraction would leave.
+func absDelta(a, b uint8) int {
+	if a > b {
+		return int(a) - int(b)
+	}
+	return int(b) - int(a)
 }
 
 // overlayCells counts the grid cells the overlay covers across all runs. Each

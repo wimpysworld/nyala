@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"image"
+	"image/color"
 	"io"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -348,7 +350,7 @@ func TestRunCaptureForcedKittyRejectedWritesPartial(t *testing.T) {
 // full bundle.
 func TestRunCaptureForcedBlockNotRejected(t *testing.T) {
 	eng := &fakeCaptureEngine{frames: make(chan render.Frame, 1)}
-	eng.frames <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}
+	eng.frames <- blockFrame()
 	bundle := &fakeBundle{}
 	var tty bytes.Buffer
 
@@ -412,9 +414,29 @@ func TestRunCaptureFullReturnsNilPartialReturnsSentinel(t *testing.T) {
 
 // blockFrame builds one drawable frame: a 16x16 RGBA image with no text overlay.
 // frame.Img != nil, so the capture loop counts and draws it. The size matches the
-// blockState cell px so the block compose has a non-empty grid.
+// blockState cell px so the block compose has a non-empty grid. The bitmap is
+// painted (a non-uniform fill), so it clears the first-frame completeness gate
+// that skips blank pre-paint bitmaps.
 func blockFrame() render.Frame {
-	return render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}
+	return render.Frame{Img: paintedImg(16, 16)}
+}
+
+// paintedImg builds a w by h RGBA image with a non-uniform, fully opaque fill, so
+// frameBlank reads it as painted. The corner is black and every other pixel is
+// white, so the subsampled foreground fraction sits far above frameBlankThreshold
+// regardless of the sampling stride.
+func paintedImg(w, h int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	white := color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+	for y := range h {
+		for x := range w {
+			img.SetRGBA(x, y, white)
+		}
+	}
+	// A single black corner is the background frameBlank reads; the white field is
+	// all foreground against it.
+	img.SetRGBA(0, 0, color.RGBA{A: 0xff})
+	return img
 }
 
 // TestCaptureLoopWritesSessionAtFinalise asserts captureLoop writes the session
@@ -823,6 +845,126 @@ func TestCaptureLoopDiscardsPrePaintFrames(t *testing.T) {
 	if len(bundle.frames) != n {
 		t.Fatalf("bundle wrote %d frames, want %d (pre-paint frames must be discarded)", len(bundle.frames), n)
 	}
+}
+
+// TestCaptureLoopSkipsBlankFirstFrame asserts the completeness gate: a blank
+// pre-paint bitmap delivered as the first post-latch frame is skipped, not
+// counted, and the first painted frame that follows is drawn as the bundle's
+// opening frame. On a large surface Chromium composites progressively, so the
+// frame satisfying the paint and publish latches can still be mostly background;
+// this keeps that half-composited bitmap out of the counted n. A goroutine sends
+// one blank frame then n painted frames; the bundle must hold exactly n and each
+// must be the painted bitmap.
+func TestCaptureLoopSkipsBlankFirstFrame(t *testing.T) {
+	const n = 1
+	ch := make(chan render.Frame, 2)
+	// A uniform (blank) bitmap the gate must skip, then a painted one it must draw.
+	ch <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}
+	ch <- blockFrame()
+	eng := &fakeCaptureEngine{frames: ch}
+	bundle := &fakeBundle{}
+	var tty bytes.Buffer
+
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, n, 0, true, captureIdle, captureIdle)
+	if err != nil {
+		t.Fatalf("captureLoop err = %v, want nil for a full capture after the blank skip", err)
+	}
+	if bundle.finalise != "full" {
+		t.Fatalf("bundle finalise = %q, want full", bundle.finalise)
+	}
+	if len(bundle.frames) != n {
+		t.Fatalf("bundle wrote %d frames, want %d (the blank first frame must be skipped)", len(bundle.frames), n)
+	}
+}
+
+// TestCaptureLoopBlankOnlyStreamTimesOut asserts the completeness gate stays
+// bounded: when every delivered frame is blank, the first-draw idle timer fires
+// and the loop writes a partial bundle reasoned for the first-draw timeout, with
+// no frame counted. A tiny idle runs it instantly. This is the loud timeout the
+// gate falls back to when the page never paints.
+func TestCaptureLoopBlankOnlyStreamTimesOut(t *testing.T) {
+	ch := make(chan render.Frame, 2)
+	ch <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}
+	ch <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}
+	eng := &fakeCaptureEngine{frames: ch}
+	bundle := &fakeBundle{}
+	var tty bytes.Buffer
+
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, nil, 1, 0, true, captureIdle, time.Millisecond)
+	if !errors.Is(err, ErrPartialBundle) {
+		t.Fatalf("captureLoop err = %v, want ErrPartialBundle for a blank-only stream", err)
+	}
+	if !strings.Contains(bundle.finalise, "first-draw timeout") {
+		t.Errorf("partial reason = %q, want the first-draw timeout", bundle.finalise)
+	}
+	if len(bundle.frames) != 0 {
+		t.Errorf("bundle wrote %d frames, want 0 (every frame was blank)", len(bundle.frames))
+	}
+}
+
+// TestFrameBlank asserts frameBlank separates a no-ink pre-paint bitmap from a
+// painted one: a uniform fill (any single colour) reads as blank, a page with
+// real content reads as painted, a sparse page carrying about one percent ink
+// reads as painted (the fraction the old two-percent gate wrongly starved), and a
+// zero-extent image reads as blank. It pins the gate's core predicate independent
+// of the loop.
+func TestFrameBlank(t *testing.T) {
+	if !frameBlank(image.NewRGBA(image.Rect(0, 0, 100, 100))) {
+		t.Error("frameBlank(uniform black) = false, want true; a flat field is blank")
+	}
+	white := image.NewRGBA(image.Rect(0, 0, 100, 100))
+	for i := range white.Pix {
+		white.Pix[i] = 0xff
+	}
+	if !frameBlank(white) {
+		t.Error("frameBlank(uniform white) = false, want true; a flat field is blank")
+	}
+	if !frameBlank(image.NewRGBA(image.Rect(0, 0, 0, 0))) {
+		t.Error("frameBlank(zero-extent) = false, want true")
+	}
+	if frameBlank(paintedImg(100, 100)) {
+		t.Error("frameBlank(painted) = true, want false; a page with content is not blank")
+	}
+	// A sparse page: a white field seeded so the frameBlank subsample reads about one
+	// percent ink, the fraction a wide-grid RTL or CJK corpus page paints. The old
+	// gate read anything below two percent as blank and starved these pages; the new
+	// floor near zero must read this as painted.
+	sparse := sparseImg(200, 200, 0.004)
+	if got := frameInkFraction(sparse); got < frameBlankThreshold || got >= 0.02 {
+		t.Fatalf("sparse image ink fraction = %.4f, want it in (%.4f, 0.02) to model the starved page", got, frameBlankThreshold)
+	}
+	if frameBlank(sparse) {
+		t.Error("frameBlank(sparse ~1% ink) = true, want false; a sparse painted page is not blank")
+	}
+}
+
+// sparseImg builds a w by h white RGBA image with the given fraction of pixels
+// inked black, so frameBlank sees a low but non-zero ink fraction. It models a
+// sparse corpus page: mostly background with a little text. The ink is spread by a
+// hash of the coordinates rather than a fixed lattice, so it stays near the target
+// fraction under any subsample stride and does not alias against the frameBlank
+// stride.
+func sparseImg(w, h int, fraction float64) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	white := color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+	period := int(math.Round(1.0 / fraction))
+	if period < 1 {
+		period = 1
+	}
+	for y := range h {
+		for x := range w {
+			// Two coprime multipliers spread the inked pixels so no stride aligns with
+			// the pattern; one in period of them ink black, the rest stay white. The
+			// corner stays white so frameBlank reads white as the background and the
+			// sparse black pixels as the ink, not the reverse.
+			if (x != 0 || y != 0) && (x*7+y*13)%period == 0 {
+				img.SetRGBA(x, y, color.RGBA{A: 0xff})
+			} else {
+				img.SetRGBA(x, y, white)
+			}
+		}
+	}
+	return img
 }
 
 // TestCaptureLoopPaintTimeoutWritesPartial asserts the paint gate's deadline: the
