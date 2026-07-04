@@ -29,6 +29,7 @@ text is copied. Embedded fonts are subset Noto faces under the SIL Open Font Lic
 | `layout-10-centred-boxes` | Sub-cell-inset alignment from flex, grid, and margin-auto box centring |
 | `layout-11-advance-skew` | Rightward advance skew that grows with x, sampled by right-anchored runs and a left-to-right ruler |
 | `layout-12-brandmark-overlay` | Ink anchoring: a transparent brand-hue numeric badge anchored to its ink over a raster banner carrying the same hue elsewhere, plus a control label |
+| `layout-13-linuxmatters` | A real-world Bootstrap-grid podcast homepage (frozen from linuxmatters.sh): fixed nav, banner, subscribe badges, a multi-column episode card grid, and pagination; tall enough to scroll, for the scroll-dance leg |
 
 ## Page rules
 
@@ -79,6 +80,21 @@ any box drifts. A fixture whose shaped-script advances cannot match the forced
 monospace cell carries a `placement_gate` override in `fixture.json` (see below)
 that loosens these thresholds. The sweep continues past a failure and exits
 non-zero if any fixture fails.
+
+`layout-13-linuxmatters` also runs two real-geometry legs after the placement
+sweep, pinned to the owner's terminal (158x86 cells, 16x33 device px per cell via
+`cell=16x33`). The first is a placement leg gated like the others. The second is a
+scroll leg: it captures three frames, then scrolls 600 CSS px and settles
+(`capture=3 scroll=600`), so the bundle holds consecutive snapshot generations
+across a scroll. `just scroll-dance <bundle>` scores overlay re-placement over that
+frame sequence: it matches each on-page run frame to frame, classifies a run that
+holds its viewport cell as the page scrolls as fixed (a `position:fixed` or sticky
+run, never danced), and counts every other run as danced when its scroll-compensated
+document row (round((Y+scrollY)/cellH)) or its column takes a second value. The
+`scroll_dance_gate` object in `fixture.json` sets the thresholds (`danced`,
+`replacements`), both zero. This leg is a hard gate: it counts against the sweep
+exit code. On the current build it scores danced 0, re-placements 0 of 65 matched
+runs (13 fixed nav, 52 glued body).
 
 ## Committed artefacts
 

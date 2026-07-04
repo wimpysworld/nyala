@@ -41,7 +41,7 @@ func TestAnchorRunsFoundAtBoxUnchanged(t *testing.T) {
 	img := newBand(200, 40, color.RGBA{R: 255, G: 255, B: 255, A: 0xff})
 	paintInk(img, 50, 4, 58, 20, color.RGBA{R: 16, G: 16, B: 16, A: 0xff})
 	run := render.GlyphRun{Col: 5, Row: 0, Text: "hi", FG: color.RGBA{R: 16, G: 16, B: 16, A: 0xff}, X: 50, Y: 0, W: 16, H: 20, CellW: 10}
-	got, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1)
+	got, _, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1, nil)
 	if len(got) != 1 {
 		t.Fatalf("got %d runs, want 1 kept", len(got))
 	}
@@ -57,7 +57,7 @@ func TestAnchorRunsFoundOffsetSnaps(t *testing.T) {
 	img := newBand(200, 40, color.RGBA{R: 255, G: 255, B: 255, A: 0xff})
 	paintInk(img, 80, 4, 88, 20, color.RGBA{R: 16, G: 16, B: 16, A: 0xff})
 	run := render.GlyphRun{Col: 5, Row: 0, Text: "hi", FG: color.RGBA{R: 16, G: 16, B: 16, A: 0xff}, X: 50, Y: 0, W: 16, H: 20, CellW: 10}
-	got, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1)
+	got, _, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1, nil)
 	if len(got) != 1 {
 		t.Fatalf("got %d runs, want 1 kept", len(got))
 	}
@@ -75,7 +75,7 @@ func TestAnchorRunsFoundOffsetSnaps(t *testing.T) {
 func TestAnchorRunsNoInkKeptAtBox(t *testing.T) {
 	img := newBand(400, 40, color.RGBA{R: 20, G: 40, B: 60, A: 0xff})
 	run := render.GlyphRun{Col: 20, Row: 0, Text: "84", FG: amber, X: 200, Y: 0, W: 20, H: 20, CellW: 10}
-	got, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1)
+	got, _, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1, nil)
 	if len(got) != 1 || got[0].Col != 20 {
 		t.Fatalf("got %v, want the run kept unchanged at column 20", got)
 	}
@@ -87,7 +87,7 @@ func TestAnchorRunsKeptWhenInkPresent(t *testing.T) {
 	img := newBand(400, 40, color.RGBA{R: 20, G: 40, B: 60, A: 0xff})
 	paintInk(img, 200, 4, 220, 20, amber)
 	run := render.GlyphRun{Col: 20, Row: 0, Text: "84", FG: amber, X: 200, Y: 0, W: 20, H: 20, CellW: 10}
-	got, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1)
+	got, _, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1, nil)
 	if len(got) != 1 || got[0].Col != 20 {
 		t.Fatalf("got %v, want the run kept at column 20", got)
 	}
@@ -101,7 +101,7 @@ func TestAnchorRunsKeptWhenInkPresent(t *testing.T) {
 func TestAnchorRunsNoContrastKeepsAtBox(t *testing.T) {
 	img := newBand(200, 40, color.RGBA{R: 128, G: 128, B: 128, A: 0xff})
 	run := render.GlyphRun{Col: 5, Row: 0, Text: "hi", FG: color.RGBA{R: 16, G: 16, B: 16, A: 0xff}, X: 50, Y: 0, W: 16, H: 20, CellW: 10}
-	got, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1)
+	got, _, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1, nil)
 	if len(got) != 1 || got[0].Col != 5 {
 		t.Fatalf("got %v, want the no-contrast run kept unchanged", got)
 	}
@@ -116,7 +116,7 @@ func TestAnchorRunsDivergentColourSnapsByContrast(t *testing.T) {
 	img := newBand(200, 40, color.RGBA{R: 255, G: 255, B: 255, A: 0xff})
 	paintInk(img, 80, 4, 96, 20, color.RGBA{R: 253, G: 124, B: 8, A: 0xff})
 	run := render.GlyphRun{Col: 5, Row: 0, Text: "hi", FG: color.RGBA{R: 20, G: 20, B: 20, A: 0xff}, X: 50, Y: 0, W: 16, H: 20, CellW: 10}
-	got, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1)
+	got, _, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1, nil)
 	if len(got) != 1 {
 		t.Fatalf("got %d runs, want 1 kept", len(got))
 	}
@@ -138,7 +138,7 @@ func TestAnchorRunsNeighbourInkDoesNotCapture(t *testing.T) {
 	// narrower than the run's first grapheme cell.
 	paintInk(img, 80, 4, 81, 20, color.RGBA{R: 253, G: 124, B: 8, A: 0xff})
 	run := render.GlyphRun{Col: 5, Row: 0, Text: "hi", FG: color.RGBA{R: 16, G: 16, B: 16, A: 0xff}, X: 50, Y: 0, W: 16, H: 20, CellW: 10}
-	got, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1)
+	got, _, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1, nil)
 	if len(got) != 1 || got[0].Col != 5 {
 		t.Fatalf("got %v, want the run kept at column 5 (stray speckle rejected)", got)
 	}
@@ -154,7 +154,7 @@ func TestAnchorRunsWindowBounds(t *testing.T) {
 	img := newBand(400, 220, color.RGBA{R: 255, G: 255, B: 255, A: 0xff})
 	paintInk(img, 160, 200, 168, 216, color.RGBA{R: 16, G: 16, B: 16, A: 0xff})
 	run := render.GlyphRun{Col: 10, Row: 0, Text: "hi", FG: color.RGBA{R: 16, G: 16, B: 16, A: 0xff}, X: 100, Y: 0, W: 16, H: 20, CellW: 10}
-	got, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1)
+	got, _, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1, nil)
 	if len(got) != 1 || got[0].Col != 10 {
 		t.Fatalf("got %v, want the run kept at column 10 (ink outside the window)", got)
 	}
@@ -169,7 +169,7 @@ func TestAnchorRunsWideGraphemeSkipped(t *testing.T) {
 	img := newBand(300, 40, color.RGBA{R: 255, G: 255, B: 255, A: 0xff})
 	paintInk(img, 60, 4, 80, 20, color.RGBA{R: 16, G: 16, B: 16, A: 0xff})
 	run := render.GlyphRun{Col: 3, Row: 0, Text: "世", FG: color.RGBA{R: 16, G: 16, B: 16, A: 0xff}, X: 30, Y: 0, W: 20, H: 20, CellW: 10}
-	got, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1)
+	got, _, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1, nil)
 	if len(got) != 1 || got[0].Col != 3 || got[0].Text != "世" {
 		t.Errorf("got %v, want the wide run kept unchanged at column 3", got)
 	}
@@ -184,7 +184,7 @@ func TestAnchorRunsRTLSkipped(t *testing.T) {
 	// Ink painted 3 cells right: an anchorable run would snap, but the RTL run stays.
 	paintInk(img, 60, 4, 100, 20, color.RGBA{R: 16, G: 16, B: 16, A: 0xff})
 	run := render.GlyphRun{Col: 3, Row: 0, Text: "مرحبا", FG: color.RGBA{R: 16, G: 16, B: 16, A: 0xff}, X: 30, Y: 0, W: 40, H: 20, CellW: 10}
-	got, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1)
+	got, _, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1, nil)
 	if len(got) != 1 || got[0].Col != 3 {
 		t.Errorf("got %v, want the RTL run kept unchanged at column 3", got)
 	}
@@ -201,7 +201,7 @@ func TestAnchorRunsOccupancyGuardBlocksSnap(t *testing.T) {
 	paintInk(img, 80, 4, 100, 20, dark)
 	first := render.GlyphRun{Col: 8, Row: 0, Text: "ab", FG: dark, X: 80, Y: 0, W: 20, H: 20, CellW: 10}
 	second := render.GlyphRun{Col: 12, Row: 0, Text: "cd", FG: dark, X: 120, Y: 0, W: 20, H: 20, CellW: 10}
-	got, _ := anchorRuns(img, []render.GlyphRun{first, second}, 10, 20, 1)
+	got, _, _ := anchorRuns(img, []render.GlyphRun{first, second}, 10, 20, 1, nil)
 	if len(got) != 2 {
 		t.Fatalf("got %d runs, want 2 kept", len(got))
 	}
@@ -218,14 +218,14 @@ func TestAnchorRunsOccupancyGuardBlocksSnap(t *testing.T) {
 // as before.
 func TestAnchorRunsNilBitmapPasses(t *testing.T) {
 	runs := []render.GlyphRun{{Col: 1, Text: "x", X: 10, H: 20, CellW: 10}}
-	if got, dropped := anchorRuns(nil, runs, 10, 20, 1); len(got) != 1 || dropped != 0 {
+	if got, dropped, _ := anchorRuns(nil, runs, 10, 20, 1, nil); len(got) != 1 || dropped != 0 {
 		t.Errorf("nil bitmap dropped runs, want passthrough")
 	}
 	img := newBand(50, 40, color.RGBA{A: 0xff})
-	if got, dropped := anchorRuns(img, runs, 0, 20, 1); len(got) != 1 || dropped != 0 {
+	if got, dropped, _ := anchorRuns(img, runs, 0, 20, 1, nil); len(got) != 1 || dropped != 0 {
 		t.Errorf("zero cellW dropped runs, want passthrough")
 	}
-	if got, dropped := anchorRuns(img, nil, 10, 20, 1); got != nil || dropped != 0 {
+	if got, dropped, _ := anchorRuns(img, nil, 10, 20, 1, nil); got != nil || dropped != 0 {
 		t.Errorf("empty runs returned %v, want nil passthrough", got)
 	}
 }
@@ -239,7 +239,7 @@ func TestAnchorRunsScaleMapsToDevice(t *testing.T) {
 	// device y 0..40.
 	paintInk(img, 50, 8, 66, 40, color.RGBA{R: 16, G: 16, B: 16, A: 0xff})
 	run := render.GlyphRun{Col: 3, Row: 0, Text: "hi", FG: color.RGBA{R: 16, G: 16, B: 16, A: 0xff}, X: 25, Y: 0, W: 16, H: 20, CellW: 10}
-	got, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 2)
+	got, _, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 2, nil)
 	if len(got) != 1 {
 		t.Fatalf("got %d runs, want 1 kept", len(got))
 	}
@@ -250,35 +250,79 @@ func TestAnchorRunsScaleMapsToDevice(t *testing.T) {
 	}
 }
 
-// paintNoise fills [x0,x1) x [y0,y1) with a per-pixel varying colour, standing in for
-// a painted region (an avatar photo, a card edge) so the drop guard's variance floor
-// reads it as painted rather than a flat placeholder.
-func paintNoise(img *image.RGBA, x0, y0, x1, y1 int) {
-	for y := y0; y < y1; y++ {
-		for x := x0; x < x1; x++ {
+// paintNoise fills the drop-guard region of a 400x200 test band with a per-pixel
+// varying colour, standing in for a painted region (an avatar photo, a card edge) so
+// the drop guard's variance floor reads it as painted rather than a flat placeholder.
+// It paints rows 40..200 across the full 400-column width, leaving the run's band
+// (rows 0..20, device y) flat, the shape every caller needs. The extent is fixed
+// because every drop-guard test builds the same band size.
+func paintNoise(img *image.RGBA) {
+	for y := 40; y < 200; y++ {
+		for x := range 400 {
 			v := byte((x*37 + y*53) & 0xff)
 			img.SetRGBA(x, y, color.RGBA{R: v, G: 255 - v, B: byte((x * 91) & 0xff), A: 0xff})
 		}
 	}
 }
 
-// TestAnchorRunsPhantomDroppedOverPaintedRegion asserts a run with no ink of its own
-// but a painted region around it is dropped as a phantom: the DOMSnapshot reported the
-// text, the page painted content in the region (an avatar band), but drew no glyph for
-// the run, so the overlay must not place it. The run's own band stays ink-free (no
-// colour match, no contrast onset) while the surrounding rows carry paint variance.
-func TestAnchorRunsPhantomDroppedOverPaintedRegion(t *testing.T) {
+// TestAnchorRunsPhantomKeptFirstGenerationThenDropped asserts the two-snapshot
+// phantom-drop agreement: a run with no ink of its own but a painted region around it
+// (the DOMSnapshot reported the text, the page painted an avatar band but drew no glyph)
+// is kept on the first generation as a candidate, then dropped only when the second
+// generation confirms it ink-free. The first pass must never drop, so a real run whose
+// glyph merely has not painted yet in this verification bitmap survives one generation.
+func TestAnchorRunsPhantomKeptFirstGenerationThenDropped(t *testing.T) {
 	img := newBand(400, 200, color.RGBA{R: 235, G: 235, B: 235, A: 0xff})
 	// Paint the region above and below the run's band (band is y 0..20), leaving the
 	// band itself flat so no ink matches the run.
-	paintNoise(img, 0, 40, 400, 200)
+	paintNoise(img)
 	run := render.GlyphRun{Col: 20, Row: 0, Text: "84", FG: amber, X: 200, Y: 0, W: 20, H: 20, CellW: 10}
-	got, dropped := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1)
+	// Generation 1: no prior candidates, so the phantom is kept and flagged.
+	got, dropped, phantoms := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1, nil)
+	if dropped != 0 {
+		t.Fatalf("generation 1 dropped = %d, want 0 (kept as a candidate)", dropped)
+	}
+	if len(got) != 1 || got[0].Col != 20 {
+		t.Fatalf("generation 1 got %v, want the run kept at column 20", got)
+	}
+	if len(phantoms) != 1 {
+		t.Fatalf("generation 1 phantom set = %v, want one candidate", phantoms)
+	}
+	// Generation 2: the same ink-free run, now confirmed by the carried candidate set,
+	// is dropped.
+	got, dropped, _ = anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1, phantoms)
 	if dropped != 1 {
-		t.Fatalf("dropped = %d, want 1 phantom dropped", dropped)
+		t.Fatalf("generation 2 dropped = %d, want 1 phantom dropped", dropped)
 	}
 	if len(got) != 0 {
-		t.Fatalf("got %v, want the phantom dropped", got)
+		t.Fatalf("generation 2 got %v, want the phantom dropped", got)
+	}
+}
+
+// TestAnchorRunsPhantomReinkedSurvives asserts a run flagged a phantom candidate on
+// generation 1 but whose glyph paints by generation 2 is kept, not dropped: the second
+// pass finds ink at the box (the agree fast path), so the run never reaches the drop
+// guard and the stale candidacy cannot remove it. This is the seven-linuxmatters-runs
+// case, where late-painting text survives.
+func TestAnchorRunsPhantomReinkedSurvives(t *testing.T) {
+	blank := newBand(400, 200, color.RGBA{R: 235, G: 235, B: 235, A: 0xff})
+	paintNoise(blank)
+	run := render.GlyphRun{Col: 20, Row: 0, Text: "84", FG: amber, X: 200, Y: 0, W: 20, H: 20, CellW: 10}
+	_, _, phantoms := anchorRuns(blank, []render.GlyphRun{run}, 10, 20, 1, nil)
+	if len(phantoms) != 1 {
+		t.Fatalf("generation 1 phantom set = %v, want one candidate", phantoms)
+	}
+	// Generation 2: the glyph has now painted at the box, so the run is kept despite the
+	// carried candidacy.
+	inked := newBand(400, 200, color.RGBA{R: 235, G: 235, B: 235, A: 0xff})
+	paintNoise(inked)
+	paintInk(inked, 200, 4, 220, 20, amber)
+	got, dropped, _ := anchorRuns(inked, []render.GlyphRun{run}, 10, 20, 1, phantoms)
+	if dropped != 0 {
+		t.Fatalf("generation 2 dropped = %d, want 0 (glyph painted)", dropped)
+	}
+	if len(got) != 1 || got[0].Col != 20 {
+		t.Fatalf("generation 2 got %v, want the re-inked run kept at column 20", got)
 	}
 }
 
@@ -289,7 +333,7 @@ func TestAnchorRunsPhantomDroppedOverPaintedRegion(t *testing.T) {
 func TestAnchorRunsFlatPlaceholderKeeps(t *testing.T) {
 	img := newBand(400, 200, color.RGBA{R: 30, G: 30, B: 30, A: 0xff})
 	run := render.GlyphRun{Col: 20, Row: 0, Text: "84", FG: amber, X: 200, Y: 0, W: 20, H: 20, CellW: 10}
-	got, dropped := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1)
+	got, dropped, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1, nil)
 	if dropped != 0 {
 		t.Fatalf("dropped = %d, want 0 over a flat placeholder", dropped)
 	}
@@ -304,10 +348,10 @@ func TestAnchorRunsFlatPlaceholderKeeps(t *testing.T) {
 // dropped.
 func TestAnchorRunsMatchingInkKeptOverPaintedRegion(t *testing.T) {
 	img := newBand(400, 200, color.RGBA{R: 255, G: 255, B: 255, A: 0xff})
-	paintNoise(img, 0, 40, 400, 200)
+	paintNoise(img)
 	paintInk(img, 200, 4, 220, 20, amber)
 	run := render.GlyphRun{Col: 20, Row: 0, Text: "84", FG: amber, X: 200, Y: 0, W: 20, H: 20, CellW: 10}
-	got, dropped := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1)
+	got, dropped, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1, nil)
 	if dropped != 0 {
 		t.Fatalf("dropped = %d, want 0 (ink at box)", dropped)
 	}
@@ -321,11 +365,11 @@ func TestAnchorRunsMatchingInkKeptOverPaintedRegion(t *testing.T) {
 // in the window means the run is not a phantom, so it snaps rather than drops.
 func TestAnchorRunsSnappedInkKeptOverPaintedRegion(t *testing.T) {
 	img := newBand(400, 200, color.RGBA{R: 255, G: 255, B: 255, A: 0xff})
-	paintNoise(img, 0, 40, 400, 200)
+	paintNoise(img)
 	// Ink at column 23 (device x 230), 3 cells right of the box column 20.
 	paintInk(img, 230, 4, 250, 20, amber)
 	run := render.GlyphRun{Col: 20, Row: 0, Text: "84", FG: amber, X: 200, Y: 0, W: 20, H: 20, CellW: 10}
-	got, dropped := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1)
+	got, dropped, _ := anchorRuns(img, []render.GlyphRun{run}, 10, 20, 1, nil)
 	if dropped != 0 {
 		t.Fatalf("dropped = %d, want 0 (ink snapped in window)", dropped)
 	}

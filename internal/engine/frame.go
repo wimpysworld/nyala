@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image"
+	"image/draw"
 	_ "image/jpeg" // register the JPEG decoder for image.Decode
 	_ "image/png"  // register the PNG decoder for image.Decode
 )
@@ -86,8 +87,9 @@ func decodeScreencastImage(data string) (*image.RGBA, error) {
 // It is the shared decode both the base64 screencast payload and the CDP verification
 // screenshot feed: page.captureScreenshot's Do already base64-decodes to raw bytes, so
 // the verification path skips the base64 step and hands the bytes straight here. A
-// non-RGBA decode is converted with the same copy idiom the viewer's LoadPNG uses, so
-// the render and anchor paths read one pixel layout.
+// non-RGBA decode is converted to RGBA with a bulk draw.Draw in draw.Src mode, which
+// runs the same colour conversion the render path expects far faster than a per-pixel
+// copy, so the render and anchor paths read one pixel layout.
 func decodeImageBytes(raw []byte) (*image.RGBA, error) {
 	img, _, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
@@ -98,10 +100,6 @@ func decodeImageBytes(raw []byte) (*image.RGBA, error) {
 	}
 	b := img.Bounds()
 	rgba := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			rgba.Set(x-b.Min.X, y-b.Min.Y, img.At(x, y))
-		}
-	}
+	draw.Draw(rgba, rgba.Bounds(), img, b.Min, draw.Src)
 	return rgba, nil
 }

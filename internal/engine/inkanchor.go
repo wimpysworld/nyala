@@ -3,6 +3,7 @@ package engine
 import (
 	"image"
 	"math"
+	"strconv"
 	"unicode"
 
 	"github.com/mattn/go-runewidth"
@@ -79,31 +80,53 @@ const dropRegionRowsCells = 3
 // fill never reaches.
 const dropRegionVarianceFloor = 64
 
+// anchorOutcome is the per-run decision anchorRun returns: keep the run (anchored
+// or at its box), or mark it a phantom candidate this generation (ink-free with the
+// region painted around it). The drop is deferred one generation, so a phantom
+// candidate is kept this pass and dropped only when the next generation confirms it.
+type anchorOutcome int
+
+const (
+	// anchorKeep keeps the run: ink sits at or near its box, or the band is a flat
+	// placeholder the paint has not reached, so the run is not a proven phantom.
+	anchorKeep anchorOutcome = iota
+	// anchorPhantomCandidate marks the run ink-free with real paint around it: a drop
+	// candidate this generation, kept unless the previous generation flagged it too.
+	anchorPhantomCandidate
+)
+
 // anchorRuns anchors each decoded run to the verification bitmap and returns the
-// anchored set with the count of runs dropped as phantoms. It is the ink-anchoring
-// pass: for each run it scans a bounded window of the bitmap for ink at the run's row
-// band, keeps the run unchanged when ink sits at its box, and snaps the run's start
-// column onto the ink when the ink is offset within the window. Ink is matched first
-// by the run's foreground colour, which disambiguates two nearby texts; when the paint
-// colour diverges from the computed foreground the scan falls back to a local-contrast
-// test, matching the glyph by its shape against the band's dominant background.
+// anchored set, the count of runs dropped as phantoms, and the phantom-candidate key
+// set this generation produced. It is the ink-anchoring pass: for each run it scans a
+// bounded window of the bitmap for ink at the run's row band, keeps the run unchanged
+// when ink sits at its box, and snaps the run's start column onto the ink when the ink
+// is offset within the window. Ink is matched first by the run's foreground colour,
+// which disambiguates two nearby texts; when the paint colour diverges from the
+// computed foreground the scan falls back to a local-contrast test, matching the glyph
+// by its shape against the band's dominant background.
 //
-// A run whose window holds no ink of either kind is dropped as a phantom only when the
+// A run whose window holds no ink of either kind is a phantom candidate only when the
 // drop guard says the page painted around it: its own band is ink-free and the
 // enclosing region carries real paint variance (dropRegionPainted). This is the
 // DOMSnapshot-reported text the forced page never paints as glyphs (a presenter name
-// over an avatar photo, a badge the layout draws as an image). When the region is a
-// flat placeholder (the paint has not reached it yet) the run is kept, so late-painting
-// text survives until its paint lands; the next snapshot re-decodes it. cssCellW and
-// cssCellH are the CSS-pixel cell dimensions the runs were snapped with; scale is the
-// block layout scale Z that converts a run's on-screen CSS coordinates to device pixels
-// on the bitmap. It runs once per published snapshot, never per composed frame, and
-// never mutates the input slice. A nil bitmap, a non-positive cell, or an empty run set
-// returns the runs untouched with a zero drop count, so a snapshot with no verification
-// bitmap yet publishes as before.
-func anchorRuns(img *image.RGBA, runs []render.GlyphRun, cssCellW, cssCellH, scale float64) ([]render.GlyphRun, int) {
+// over an avatar photo, a badge the layout draws as an image). The drop is deferred
+// one generation for two-snapshot agreement: a run is dropped only when it is a
+// phantom candidate this generation and prevPhantoms (the previous generation's
+// candidate keys) holds its key too. A first-time ink-free run is kept and returned in
+// the new candidate set, so a run whose glyph merely has not painted yet in this
+// verification bitmap survives until the next generation reads it; only a run ink-free
+// across two consecutive generations drops. When the region is a flat placeholder (the
+// paint has not reached it yet) the run is never even a candidate, so late-painting
+// text survives regardless. cssCellW and cssCellH are the CSS-pixel cell dimensions
+// the runs were snapped with; scale is the block layout scale Z that converts a run's
+// on-screen CSS coordinates to device pixels on the bitmap. It runs once per published
+// snapshot, never per composed frame, and never mutates the input slice. A nil bitmap,
+// a non-positive cell, or an empty run set returns the runs untouched with a zero drop
+// count and a nil candidate set, so a snapshot with no verification bitmap yet
+// publishes as before.
+func anchorRuns(img *image.RGBA, runs []render.GlyphRun, cssCellW, cssCellH, scale float64, prevPhantoms map[string]bool) ([]render.GlyphRun, int, map[string]bool) {
 	if img == nil || len(runs) == 0 || cssCellW <= 0 || cssCellH <= 0 || scale <= 0 {
-		return runs, 0
+		return runs, 0, nil
 	}
 	bounds := img.Bounds()
 	out := make([]render.GlyphRun, 0, len(runs))
@@ -112,17 +135,34 @@ func anchorRuns(img *image.RGBA, runs []render.GlyphRun, cssCellW, cssCellH, sca
 	// ink a few cells off its box, but snapping it there would collide with the run
 	// beside it; the occupancy guard blocks that snap and keeps the run at its box.
 	claimed := make(map[int][]cellSpan)
+	phantoms := make(map[string]bool)
 	dropped := 0
 	for _, run := range runs {
-		kept, keep := anchorRun(img, bounds, run, cssCellW, cssCellH, scale, claimed)
-		if !keep {
-			dropped++
-			continue
+		kept, outcome := anchorRun(img, bounds, run, cssCellW, cssCellH, scale, claimed)
+		if outcome == anchorPhantomCandidate {
+			key := phantomKey(run)
+			// Two-snapshot agreement: drop only when the previous generation flagged this
+			// run a phantom candidate too. Otherwise keep it and carry the candidacy
+			// forward, so a run whose glyph has not painted yet survives one generation.
+			if prevPhantoms[key] {
+				dropped++
+				continue
+			}
+			phantoms[key] = true
 		}
 		out = append(out, kept)
 		claimed[kept.Row] = append(claimed[kept.Row], cellSpan{start: kept.Col, end: kept.Col + runCellWidth(kept.Text)})
 	}
-	return out, dropped
+	return out, dropped, phantoms
+}
+
+// phantomKey identifies a run across generations for the two-snapshot phantom-drop
+// agreement: its text plus its snapped cell position. A run keeps this key while it
+// stays ink-free at the same cell, so a genuine phantom (present across two
+// generations) drops, while a run that shifts a cell as the page settles reads as a
+// fresh candidate rather than a confirmed phantom.
+func phantomKey(run render.GlyphRun) string {
+	return run.Text + "\x00" + strconv.Itoa(run.Col) + "\x00" + strconv.Itoa(run.Row)
 }
 
 // cellSpan is a half-open cell range [start, end) a kept run occupies on its row,
@@ -176,27 +216,28 @@ func firstGraphemeCells(text string) int {
 // Ink is matched first by the run's foreground colour, then, when that finds nothing,
 // by local contrast against the band's dominant background, so a title painted in a
 // colour the computed style does not report still anchors by its shape. When no cell
-// in the window holds ink of either kind it consults the drop guard: it drops the run
-// as a phantom (keep false) when the enclosing region shows real paint (the page
-// rendered content there but no glyph for this run), and keeps it at its box otherwise
-// (a flat placeholder the paint has not reached, so the run is not a proven phantom).
-// Keeping an already-inked box cell fixed means a run that agrees with the paint never
-// moves, so anchoring cannot introduce a collision on agreeing text. It never snaps a
-// run onto a cell already claimed by a kept run on the same row (claimed), so anchoring
-// cannot create a same-row collision. It returns the possibly-snapped run and whether
-// to keep it.
-func anchorRun(img *image.RGBA, bounds image.Rectangle, run render.GlyphRun, cssCellW, cssCellH, scale float64, claimed map[int][]cellSpan) (render.GlyphRun, bool) {
+// in the window holds ink of either kind it consults the drop guard: it flags the run
+// a phantom candidate (anchorPhantomCandidate) when the enclosing region shows real
+// paint (the page rendered content there but no glyph for this run), and keeps it at
+// its box otherwise (a flat placeholder the paint has not reached, so the run is not a
+// proven phantom). The caller defers the drop one generation, so a flagged run still
+// composes this pass. Keeping an already-inked box cell fixed means a run that agrees
+// with the paint never moves, so anchoring cannot introduce a collision on agreeing
+// text. It never snaps a run onto a cell already claimed by a kept run on the same row
+// (claimed), so anchoring cannot create a same-row collision. It returns the
+// possibly-snapped run and its anchor outcome.
+func anchorRun(img *image.RGBA, bounds image.Rectangle, run render.GlyphRun, cssCellW, cssCellH, scale float64, claimed map[int][]cellSpan) (render.GlyphRun, anchorOutcome) {
 	if !anchorable(run.Text) {
 		// The ink scan assumes a left-anchored, one-cell-per-glyph run: it reads the
 		// paint origin as the leftmost inked cell. Right-to-left and wide-script runs
 		// break that assumption (glyphs paint from the right, shaped clusters spread
 		// their ink across cells), so anchoring them would snap onto a neighbour's ink.
 		// Publish them where the DOMSnapshot box placed them.
-		return run, true
+		return run, anchorKeep
 	}
 	deviceCellW := cssCellW * scale
 	if deviceCellW <= 0 {
-		return run, true
+		return run, anchorKeep
 	}
 	// The run's box coordinates are on-screen CSS pixels; multiply by the layout
 	// scale to reach the bitmap's device pixels.
@@ -213,7 +254,7 @@ func anchorRun(img *image.RGBA, bounds image.Rectangle, run render.GlyphRun, css
 		yMax = bounds.Max.Y
 	}
 	if yMin >= yMax {
-		return run, true
+		return run, anchorKeep
 	}
 	bg := bandBackground(img, bounds, yMin, yMax)
 	fg := colourRGB{run.FG.R, run.FG.G, run.FG.B}
@@ -225,17 +266,17 @@ func anchorRun(img *image.RGBA, bounds image.Rectangle, run render.GlyphRun, css
 		// the band is featureless (the paint has not reached it, so keep the run and let a
 		// later snapshot re-decode) or the page painted around the run but drew no glyph
 		// for it (a phantom the forced page renders as an image or not at all). The drop
-		// guard tells the two apart by the paint variance in the enclosing region: drop
-		// only when the region is painted, keep over a flat placeholder.
+		// guard tells the two apart by the paint variance in the enclosing region: flag a
+		// phantom candidate only when the region is painted, keep over a flat placeholder.
 		if dropRegionPainted(img, bounds, cssCellH, scale, yMin, yMax) {
-			return run, false
+			return run, anchorPhantomCandidate
 		}
-		return run, true
+		return run, anchorKeep
 	}
 	if delta == 0 {
 		// Ink sits at the box cell: the box and the paint agree, so keep the run where the
 		// DOMSnapshot placed it. This is the common fast path.
-		return run, true
+		return run, anchorKeep
 	}
 	// The nearest ink sits a few cells off the box: snap the run's start column onto it
 	// so the overlay glues to the paint, keeping the paint origin as the truth. Reject
@@ -244,11 +285,11 @@ func anchorRun(img *image.RGBA, bounds image.Rectangle, run render.GlyphRun, css
 	// box instead, so the snap never introduces a collision.
 	target := run.Col + delta
 	if spansOverlap(claimed[run.Row], target, target+runCellWidth(run.Text)) {
-		return run, true
+		return run, anchorKeep
 	}
 	run.Col = target
 	run.X += float64(delta) * deviceCellW / scale
-	return run, true
+	return run, anchorKeep
 }
 
 // dropRegionPainted reports whether the page painted real content in the region

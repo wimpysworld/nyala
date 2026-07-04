@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<!--
+  Nyala text-layout corpus fixture: layout-13-linuxmatters
+  Source: https://linuxmatters.sh/
+  Fetched: 2026-07-04
+  The markup and visible copy are frozen from the live Linux Matters homepage on
+  2026-07-04 for offline corpus testing. All CSS is inline, no script, no network
+  URLs. Bootstrap 4.6.2, Font Awesome, mediaelement, and Google Fonts (Poppins)
+  are NOT loaded; the kept Bootstrap grid classes are re-styled with plain inline
+  CSS at the md breakpoint (960px viewport). All images are placeholder solid-fill
+  data URIs at the real display dimensions; the layout geometry matters, the image
+  pixels do not. Linux Matters is the maintainer's own project (wimpysworld), so
+  this note is provenance, not third-party licensing.
+-->
+<html lang="en-gb" dir="ltr">
+<head>
+<meta charset="utf-8">
+<title>Linux Matters</title>
+<style>
+  * {
+    box-sizing: border-box;
+  }
+  html {
+    background: #292929;
+    color: #141414;
+  }
+  body {
+    margin: 0;
+    padding-top: 95px;
+    background: #292929;
+    font-family: "Poppins", -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 16px;
+    line-height: 24px;
+  }
+  a {
+    color: #141414;
+    text-decoration: none;
+  }
+
+  /* Grid: Bootstrap .container / .row / .col re-styled at the md breakpoint. */
+  .container {
+    width: 960px;
+    max-width: 960px;
+    margin: 0 auto;
+    padding-left: 15px;
+    padding-right: 15px;
+  }
+  .container-fluid {
+    width: 100%;
+    padding-left: 15px;
+    padding-right: 15px;
+  }
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    margin-left: -15px;
+    margin-right: -15px;
+  }
+  .row > [class^="col"] {
+    padding-left: 15px;
+    padding-right: 15px;
+  }
+  .col {
+    flex: 1 0 0%;
+  }
+  .col-md-12 {
+    flex: 0 0 100%;
+    max-width: 100%;
+  }
+  .col-md-4 {
+    flex: 0 0 33.3333%;
+    max-width: 33.3333%;
+  }
+  .col-md-auto {
+    flex: 0 0 auto;
+    width: auto;
+  }
+  .p-1 {
+    padding: 4px;
+  }
+  .text-center {
+    text-align: center;
+  }
+
+  /* Fixed-top navbar. */
+  .navbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 80px;
+    background: #EBEBEB;
+    z-index: 100;
+  }
+  .navbar > .container {
+    display: flex;
+    align-items: center;
+    height: 80px;
+  }
+  .navbar-brand {
+    color: #141414;
+    font-weight: 400;
+    font-size: 24px;
+    line-height: 32px;
+    margin-right: 24px;
+  }
+  .navbar-nav {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    align-items: center;
+  }
+  .navbar-nav.mr-auto {
+    margin-right: auto;
+  }
+  .navbar-nav.ml-auto {
+    margin-left: auto;
+  }
+  .navbar-nav > li {
+    margin-right: 4px;
+  }
+  .navbar-nav > li > a.nav-link {
+    display: block;
+    padding: 8px 12px;
+    color: #141414;
+    font-size: 16px;
+    line-height: 24px;
+  }
+  .social-links {
+    display: inline-block;
+    padding: 0 6px;
+    color: #141414;
+    font-size: 20px;
+    line-height: 24px;
+    font-weight: 700;
+  }
+
+  /* Middle container: white page body over the dark background. */
+  .middle_container {
+    background: #FFFFFF;
+    padding-top: 16px;
+    padding-bottom: 16px;
+  }
+
+  h1 {
+    margin: 16px 0 4px 0;
+    font-size: 40px;
+    line-height: 48px;
+    font-weight: 600;
+  }
+  h1 > a {
+    color: #141414;
+  }
+  h2 {
+    margin: 16px 0 8px 0;
+    font-size: 32px;
+    line-height: 40px;
+    font-weight: 600;
+  }
+  h3 {
+    margin: 0;
+    font-size: 20px;
+    line-height: 26px;
+    font-weight: 600;
+  }
+  small {
+    display: block;
+    font-size: 14px;
+    line-height: 20px;
+    color: #555555;
+  }
+  p {
+    margin: 0 0 12px 0;
+  }
+
+  /* Episode banner (real display aspect 3000x750 -> 4:1). */
+  .episode-image-banner {
+    position: relative;
+    margin-bottom: 20px;
+  }
+  .episode_image {
+    display: block;
+    width: 100%;
+    height: 231px;
+  }
+  .episode-number-overlay {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    color: #F8B31D;
+    font-size: 29px;
+    line-height: 32px;
+    font-weight: 700;
+    padding: 8px 16px;
+  }
+
+  /* Jumbotron: intro copy, three host avatars, subscribe-badge row. */
+  .jumbotron {
+    background: #EBEBEB;
+    color: #141414;
+    padding: 30px 15px;
+    margin-bottom: 20px;
+  }
+  .jumbotron .col-lg-6 {
+    flex: 0 0 100%;
+    max-width: 100%;
+    padding-left: 15px;
+    padding-right: 15px;
+    font-size: 16px;
+    line-height: 26px;
+  }
+  .jumbotron .col-lg-2 {
+    flex: 0 0 33.3333%;
+    max-width: 33.3333%;
+    padding-left: 15px;
+    padding-right: 15px;
+  }
+  .jumbotron-host {
+    display: block;
+    margin: 0 auto 8px auto;
+    width: 130px;
+    height: 130px;
+    border-radius: 50%;
+  }
+  .jumbotron .host-name {
+    text-align: center;
+    font-weight: 700;
+    font-size: 16px;
+    line-height: 24px;
+  }
+  .badge-img {
+    display: inline-block;
+    width: 150px;
+    height: 32px;
+    vertical-align: middle;
+  }
+
+  /* Episode grid: three-column card grid. */
+  .grid_container {
+    padding-top: 20px;
+  }
+  .episode-list-header {
+    color: #141414;
+  }
+  .grid_episode_col {
+    margin-bottom: 20px;
+  }
+  .episode-image-homepage {
+    position: relative;
+  }
+  .episode-image-homepage img {
+    display: block;
+    width: 100%;
+    height: 169px;
+  }
+  .grid_episode_detail {
+    background: #141414;
+    padding: 10px;
+    color: #EBEBEB;
+  }
+  .grid_episode_title {
+    color: #EBEBEB;
+  }
+  .grid_episode_detail h3 {
+    height: 52px;
+    line-height: 26px;
+    overflow: hidden;
+  }
+  .grid-episode-meta {
+    color: #ABABAB;
+  }
+
+  /* Pagination. */
+  .pagination-nav {
+    display: flex;
+    justify-content: center;
+    margin: 20px 0;
+  }
+  .pagination {
+    list-style: none;
+    display: flex;
+    margin: 0;
+    padding: 0;
+  }
+  .pagination > li > a,
+  .pagination > li > span {
+    display: block;
+    padding: 8px 16px;
+    color: #141414;
+    background: #EBEBEB;
+    border: 1px solid #ABABAB;
+    font-size: 18px;
+    line-height: 24px;
+  }
+  .pagination > li.active > a {
+    color: #EBEBEB;
+    background: #292929;
+    border-color: #141414;
+  }
+  .pagination > li.disabled > a {
+    color: #ABABAB;
+    background: #f5f5f5;
+  }
+
+  /* Footer. */
+  .bottom_container {
+    padding-top: 10px;
+    padding-bottom: 20px;
+  }
+  .footer_copyright {
+    padding: 10px 40px 0 15px;
+    color: #EBEBEB;
+    font-size: 15px;
+    line-height: 22px;
+  }
+  .footer_copyright > a {
+    color: #EBEBEB;
+  }
+</style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="container">
+      <a class="navbar-brand" href="#">Linux Matters</a>
+      <ul class="navbar-nav mr-auto">
+        <li><a href="#" class="nav-link">About</a></li>
+        <li><a href="#" class="nav-link">Contact</a></li>
+        <li><a href="#" class="nav-link">Support Us</a></li>
+        <li><a href="#" class="nav-link">Advertise with Us</a></li>
+        <li><a href="#" class="nav-link">Tools</a></li>
+      </ul>
+      <ul class="navbar-nav ml-auto">
+        <li><a class="social-links" href="#">TG</a></li>
+        <li><a class="social-links" href="#">MA</a></li>
+        <li><a class="social-links" href="#">RE</a></li>
+        <li><a class="social-links" href="#">BS</a></li>
+        <li><a class="social-links" href="#">YT</a></li>
+        <li><a class="social-links" href="#">TT</a></li>
+        <li><a class="social-links" href="#">RSS</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="container middle_container">
+    <div class="row">
+      <div class="col-md-12">
+        <div class="row">
+          <div class="col">
+            <h1><a href="#">DOSing about with games</a></h1>
+            <small>Tuesday, Jun 16, 2026</small>
+          </div>
+        </div>
+        <div class="row">
+          <div class="col">
+            <div class="episode-image-banner">
+              <img class="episode_image" alt="Episode Banner" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%273000%27%20height%3D%27750%27%3E%3Crect%20width%3D%273000%27%20height%3D%27750%27%20fill%3D%27%23141414%27%2F%3E%3C%2Fsvg%3E">
+              <span class="episode-number-overlay">84</span>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="col">
+            <h2>Show Summary</h2>
+            <p>Mark plays DOS games, Martin discovers a new editor (again), and Alan makes an events app</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="container-fluid grid_container">
+      <div class="jumbotron">
+        <div class="row">
+          <div class="col-lg-6">
+            <p>Experienced Open Source professionals exploring the tech we actually use. If it runs on Linux, we&rsquo;re into it. Whether you&rsquo;re tweaking your desktop, gaming, self-hosting, developing software, improving terminal productivity, or running production infrastructure - we cover the tools and workflows that actually matter. New episode every fortnight. Upbeat and family-friendly for Linux enthusiasts of all ages.</p>
+          </div>
+          <div class="col-lg-2">
+            <img class="jumbotron-host" alt="Alan Pope" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27250%27%20height%3D%27250%27%3E%3Crect%20width%3D%27250%27%20height%3D%27250%27%20fill%3D%27%23888888%27%2F%3E%3C%2Fsvg%3E">
+            <p class="host-name">Alan Pope</p>
+          </div>
+          <div class="col-lg-2">
+            <img class="jumbotron-host" alt="Mark Johnson" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27250%27%20height%3D%27250%27%3E%3Crect%20width%3D%27250%27%20height%3D%27250%27%20fill%3D%27%23888888%27%2F%3E%3C%2Fsvg%3E">
+            <p class="host-name">Mark Johnson</p>
+          </div>
+          <div class="col-lg-2">
+            <img class="jumbotron-host" alt="Martin Wimpress" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27250%27%20height%3D%27250%27%3E%3Crect%20width%3D%27250%27%20height%3D%27250%27%20fill%3D%27%23888888%27%2F%3E%3C%2Fsvg%3E">
+            <p class="host-name">Martin Wimpress</p>
+          </div>
+        </div>
+        <div class="row">
+          <div class="p-1 col-md-auto"><img class="badge-img" alt="Apple Podcasts" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27150%27%20height%3D%2732%27%3E%3Crect%20width%3D%27150%27%20height%3D%2732%27%20fill%3D%27%237224D8%27%2F%3E%3C%2Fsvg%3E"></div>
+          <div class="p-1 col-md-auto"><img class="badge-img" alt="Spotify" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27150%27%20height%3D%2732%27%3E%3Crect%20width%3D%27150%27%20height%3D%2732%27%20fill%3D%27%231ED760%27%2F%3E%3C%2Fsvg%3E"></div>
+          <div class="p-1 col-md-auto"><img class="badge-img" alt="Amazon Music" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27150%27%20height%3D%2732%27%3E%3Crect%20width%3D%27150%27%20height%3D%2732%27%20fill%3D%27%2325D1DA%27%2F%3E%3C%2Fsvg%3E"></div>
+          <div class="p-1 col-md-auto"><img class="badge-img" alt="Pocket Casts" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27150%27%20height%3D%2732%27%3E%3Crect%20width%3D%27150%27%20height%3D%2732%27%20fill%3D%27%23F43E37%27%2F%3E%3C%2Fsvg%3E"></div>
+          <div class="p-1 col-md-auto"><img class="badge-img" alt="Overcast" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27150%27%20height%3D%2732%27%3E%3Crect%20width%3D%27150%27%20height%3D%2732%27%20fill%3D%27%23FC7E0F%27%2F%3E%3C%2Fsvg%3E"></div>
+          <div class="p-1 col-md-auto"><img class="badge-img" alt="Android" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27150%27%20height%3D%2732%27%3E%3Crect%20width%3D%27150%27%20height%3D%2732%27%20fill%3D%27%233DDC84%27%2F%3E%3C%2Fsvg%3E"></div>
+          <div class="p-1 col-md-auto"><img class="badge-img" alt="YouTube" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27150%27%20height%3D%2732%27%3E%3Crect%20width%3D%27150%27%20height%3D%2732%27%20fill%3D%27%23FF0000%27%2F%3E%3C%2Fsvg%3E"></div>
+          <div class="p-1 col-md-auto"><img class="badge-img" alt="Podcast RSS" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27150%27%20height%3D%2732%27%3E%3Crect%20width%3D%27150%27%20height%3D%2732%27%20fill%3D%27%23FFA500%27%2F%3E%3C%2Fsvg%3E"></div>
+        </div>
+      </div>
+
+      <section class="episode-list">
+        <div class="row">
+          <div class="col-md-12"><h2 class="episode-list-header">Past Episodes</h2></div>
+          <div class="col-md-4 grid_episode_col">
+            <div class="episode-image-homepage">
+              <img alt="snap install flatpak" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%273000%27%20height%3D%271687%27%3E%3Crect%20width%3D%273000%27%20height%3D%271687%27%20fill%3D%27%23F8B31D%27%2F%3E%3C%2Fsvg%3E">
+              <span class="episode-number-overlay">83</span>
+            </div>
+            <div class="grid_episode_detail">
+              <h3><a href="#" class="grid_episode_title">snap install flatpak</a></h3>
+              <small class="grid-episode-meta">Tuesday, Jun 9, 2026</small>
+            </div>
+          </div>
+          <div class="col-md-4 grid_episode_col">
+            <div class="episode-image-homepage">
+              <img alt="Ditching Grammarly for Open Sauce" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%273000%27%20height%3D%271687%27%3E%3Crect%20width%3D%273000%27%20height%3D%271687%27%20fill%3D%27%23F8B31D%27%2F%3E%3C%2Fsvg%3E">
+              <span class="episode-number-overlay">82</span>
+            </div>
+            <div class="grid_episode_detail">
+              <h3><a href="#" class="grid_episode_title">Ditching Grammarly for Open Sauce</a></h3>
+              <small class="grid-episode-meta">Tuesday, May 26, 2026</small>
+            </div>
+          </div>
+          <div class="col-md-4 grid_episode_col">
+            <div class="episode-image-homepage">
+              <img alt="Cooking up a framework desktop" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%273000%27%20height%3D%271687%27%3E%3Crect%20width%3D%273000%27%20height%3D%271687%27%20fill%3D%27%23F8B31D%27%2F%3E%3C%2Fsvg%3E">
+              <span class="episode-number-overlay">81</span>
+            </div>
+            <div class="grid_episode_detail">
+              <h3><a href="#" class="grid_episode_title">Cooking up a framework desktop</a></h3>
+              <small class="grid-episode-meta">Tuesday, May 12, 2026</small>
+            </div>
+          </div>
+          <div class="col-md-4 grid_episode_col">
+            <div class="episode-image-homepage">
+              <img alt="Passing the Gourd" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%273000%27%20height%3D%271687%27%3E%3Crect%20width%3D%273000%27%20height%3D%271687%27%20fill%3D%27%23F8B31D%27%2F%3E%3C%2Fsvg%3E">
+              <span class="episode-number-overlay">80</span>
+            </div>
+            <div class="grid_episode_detail">
+              <h3><a href="#" class="grid_episode_title">Passing the Gourd</a></h3>
+              <small class="grid-episode-meta">Tuesday, Apr 28, 2026</small>
+            </div>
+          </div>
+          <div class="col-md-4 grid_episode_col">
+            <div class="episode-image-homepage">
+              <img alt="Pouring out the Sidra" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%273000%27%20height%3D%271687%27%3E%3Crect%20width%3D%273000%27%20height%3D%271687%27%20fill%3D%27%23F8B31D%27%2F%3E%3C%2Fsvg%3E">
+              <span class="episode-number-overlay">79</span>
+            </div>
+            <div class="grid_episode_detail">
+              <h3><a href="#" class="grid_episode_title">Pouring out the Sidra</a></h3>
+              <small class="grid-episode-meta">Tuesday, Apr 14, 2026</small>
+            </div>
+          </div>
+          <div class="col-md-4 grid_episode_col">
+            <div class="episode-image-homepage">
+              <img alt="VNC? No way!" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%273000%27%20height%3D%271687%27%3E%3Crect%20width%3D%273000%27%20height%3D%271687%27%20fill%3D%27%23F8B31D%27%2F%3E%3C%2Fsvg%3E">
+              <span class="episode-number-overlay">78</span>
+            </div>
+            <div class="grid_episode_detail">
+              <h3><a href="#" class="grid_episode_title">VNC? No way!</a></h3>
+              <small class="grid-episode-meta">Tuesday, Mar 31, 2026</small>
+            </div>
+          </div>
+          <div class="col-md-4 grid_episode_col">
+            <div class="episode-image-homepage">
+              <img alt="A Tale of Two Terminals" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%273000%27%20height%3D%271687%27%3E%3Crect%20width%3D%273000%27%20height%3D%271687%27%20fill%3D%27%23F8B31D%27%2F%3E%3C%2Fsvg%3E">
+              <span class="episode-number-overlay">77</span>
+            </div>
+            <div class="grid_episode_detail">
+              <h3><a href="#" class="grid_episode_title">A Tale of Two Terminals</a></h3>
+              <small class="grid-episode-meta">Tuesday, Mar 17, 2026</small>
+            </div>
+          </div>
+          <div class="col-md-4 grid_episode_col">
+            <div class="episode-image-homepage">
+              <img alt="Backups on the Brain" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%273000%27%20height%3D%271687%27%3E%3Crect%20width%3D%273000%27%20height%3D%271687%27%20fill%3D%27%23F8B31D%27%2F%3E%3C%2Fsvg%3E">
+              <span class="episode-number-overlay">76</span>
+            </div>
+            <div class="grid_episode_detail">
+              <h3><a href="#" class="grid_episode_title">Backups on the Brain</a></h3>
+              <small class="grid-episode-meta">Tuesday, Mar 3, 2026</small>
+            </div>
+          </div>
+          <div class="col-md-4 grid_episode_col">
+            <div class="episode-image-homepage">
+              <img alt="Immutable and Loving It" src="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%273000%27%20height%3D%271687%27%3E%3Crect%20width%3D%273000%27%20height%3D%271687%27%20fill%3D%27%23F8B31D%27%2F%3E%3C%2Fsvg%3E">
+              <span class="episode-number-overlay">75</span>
+            </div>
+            <div class="grid_episode_detail">
+              <h3><a href="#" class="grid_episode_title">Immutable and Loving It</a></h3>
+              <small class="grid-episode-meta">Tuesday, Feb 17, 2026</small>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="row">
+        <div class="col-md-12">
+          <nav class="pagination-nav">
+            <ul class="pagination">
+              <li class="active"><a href="#">1</a></li>
+              <li><a href="#">2</a></li>
+              <li><a href="#">3</a></li>
+              <li><a href="#">4</a></li>
+              <li><a href="#">5</a></li>
+              <li class="disabled"><a>&mldr;</a></li>
+              <li><a href="#">14</a></li>
+              <li><a href="#">&#187;</a></li>
+              <li><a href="#">&#187;&#187;</a></li>
+            </ul>
+          </nav>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="container bottom_container">
+    <p class="footer_copyright">Copyright &copy; 2023-2026, Linux Matters. The contents of this site, including the audio, is released under a Creative Commons Attribution-NonCommercial 4.0 International license.</p>
+  </footer>
+</body>
+</html>

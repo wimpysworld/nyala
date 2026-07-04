@@ -27,13 +27,23 @@ func Downscale(src image.Image, width, height int) *image.RGBA {
 	return dst
 }
 
-// DownscaleInto resizes src into dst using the pinned AlignFilter, returning the
-// same dst. It is the allocation-free twin of Downscale for the live draw path,
-// which reuses one destination across frames: the caller sizes dst to the render
-// grid once and passes it back each frame. The scaler fully overwrites every
-// destination pixel, so a reused dst carries no stale content. dst's bounds set
-// the output size.
-func DownscaleInto(dst *image.RGBA, src image.Image) *image.RGBA {
-	AlignFilter.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
+// LiveFilter is the fast resampling filter for the interactive live draw only.
+// ApproxBiLinear downscales an order of magnitude faster than the pinned
+// AlignFilter, which the live path spends per frame; the block cells quantise the
+// result into two colours, so the cheaper kernel costs no visible quality. It is
+// deliberately separate from AlignFilter: the diagnostics harness and the amd64
+// byte goldens pin AlignFilter (CatmullRom), so the live speed-up must never reach
+// the measured paths. Only DownscaleLiveInto reads it.
+var LiveFilter draw.Scaler = draw.ApproxBiLinear
+
+// DownscaleLiveInto resizes src into dst using LiveFilter, returning the same dst.
+// Only the interactive diff'd block draw calls it, trading the pinned kernel's cost
+// for ApproxBiLinear's speed; the FitGrid block path and the graphics path still use
+// Downscale. The goldens and the diagnostics harness pin AlignFilter and never call
+// this helper, so the swap stays scoped to the live path. dst's bounds set the output
+// size, and the scaler fully overwrites every destination pixel, so a reused dst
+// carries no stale content.
+func DownscaleLiveInto(dst *image.RGBA, src image.Image) *image.RGBA {
+	LiveFilter.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
 	return dst
 }

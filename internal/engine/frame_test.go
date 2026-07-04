@@ -136,6 +136,40 @@ func TestDecodeScreencastImageJPEGConversion(t *testing.T) {
 	}
 }
 
+// TestDecodeImageBytesJPEGChannelOrder checks the bulk draw.Draw conversion in
+// decodeImageBytes keeps RGBA channel order for a non-RGBA (YCbCr) source. It builds
+// a solid image whose three channels are clearly ranked (R > G > B), decodes the
+// JPEG, and asserts the ranking survives, so a channel swap in the bulk draw would
+// be caught. JPEG is lossy, so each channel is compared with a tolerance.
+func TestDecodeImageBytesJPEGChannelOrder(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	want := color.RGBA{R: 200, G: 100, B: 30, A: 0xff}
+	for y := range 8 {
+		for x := range 8 {
+			src.Set(x, y, want)
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, src, &jpeg.Options{Quality: 100}); err != nil {
+		t.Fatalf("encode test JPEG: %v", err)
+	}
+	rgba, err := decodeImageBytes(buf.Bytes())
+	if err != nil {
+		t.Fatalf("decode JPEG bytes: %v", err)
+	}
+	got := rgba.RGBAAt(0, 0)
+	const tol = 40
+	if absDiff(got.R, want.R) > tol || absDiff(got.G, want.G) > tol || absDiff(got.B, want.B) > tol {
+		t.Fatalf("pixel (0,0) = %+v, want approx %+v (RGBA order, tol %d)", got, want, tol)
+	}
+	if got.R <= got.G || got.G <= got.B {
+		t.Fatalf("pixel (0,0) = %+v, want R>G>B channel ranking preserved (RGBA order, not BGRA)", got)
+	}
+	if got.A != 0xff {
+		t.Fatalf("pixel (0,0) alpha = %d, want 255 (opaque)", got.A)
+	}
+}
+
 // TestDecodeScreencastImageErrors checks bad input returns an error rather than
 // panicking: malformed base64, and valid base64 that is not a decodable image.
 func TestDecodeScreencastImageErrors(t *testing.T) {
@@ -162,4 +196,30 @@ func absDiff(a, b uint8) uint8 {
 		return a - b
 	}
 	return b - a
+}
+
+// BenchmarkDecodeImageBytes measures the non-RGBA (YCbCr) conversion path over a
+// screencast-sized synthetic JPEG frame, the hot decode the block path runs per
+// screencast tick. It encodes once outside the timed loop, so the benchmark isolates
+// the decode plus the bulk draw.Draw conversion.
+func BenchmarkDecodeImageBytes(b *testing.B) {
+	const w, h = 1280, 800
+	src := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			src.Set(x, y, color.RGBA{R: uint8(x % 256), G: uint8(y % 256), B: uint8((x + y) % 256), A: 0xff})
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, src, &jpeg.Options{Quality: screencastQuality}); err != nil {
+		b.Fatalf("encode benchmark JPEG: %v", err)
+	}
+	raw := buf.Bytes()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := decodeImageBytes(raw); err != nil {
+			b.Fatalf("decode benchmark JPEG: %v", err)
+		}
+	}
 }
