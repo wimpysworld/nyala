@@ -34,10 +34,10 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	scrollX, scrollY := e.scrollX, e.scrollY
 	cx := float64(e.cols*e.cellW) / 2
 	cy := float64(e.rows*e.cellH) / 2
-	// The screencast cap is the real pixel surface size, so Chromium emits real
-	// pixels; the engine downscales the block frame to the sub-cell captureSize
-	// client-side.
-	capW, capH := e.surfaceSize(e.cols, e.rows)
+	// The screencast cap is the painted device surface (screencastCap), so Chromium
+	// emits the frame it paints without downscaling to a cap set one row short; the
+	// engine downscales the block frame to the sub-cell captureSize client-side.
+	capW, capH := e.screencastCap(e.cols, e.rows)
 	e.mu.Unlock()
 
 	crashed = make(chan struct{})
@@ -154,7 +154,7 @@ func (e *ChromiumEngine) fillSession(ctx context.Context, navURL, navResult stri
 	}
 	e.mu.Lock()
 	capW, capH := e.captureW, e.captureH
-	maxW, maxH := e.surfaceSize(e.cols, e.rows)
+	maxW, maxH := e.screencastCap(e.cols, e.rows)
 	scale := e.layoutScale()
 	e.mu.Unlock()
 	version := browserVersion(ctx)

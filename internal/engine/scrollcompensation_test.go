@@ -10,12 +10,15 @@ import (
 )
 
 // TestShiftRunsToBitmapScroll covers the compose-time scroll compensation: a
-// bitmap scrolled past the runs' snapshot scroll shifts every run down by the
-// delta in cells and shifts its CSS box by the delta in pixels. It exercises
-// Z == 1 (whole cell), Z == 1.5 (fractional cell), a negative delta, and the
-// zero-delta fast path that returns the slice untouched.
+// bitmap scrolled past the runs' snapshot scroll shifts every run's CSS box by the
+// delta in pixels, then re-snaps its cell col, row from the shifted origin the same
+// way mapBoxToCells does at decode time. It exercises Z == 1 (whole cell), Z == 1.5
+// (fractional cell), a negative delta, and a horizontal delta. The base run's
+// Col, Row are self-consistent with its X, Y (round(X/cellW), round(Y/cellH)), as a
+// production run always is, so the re-snap is compared against the origin round.
 func TestShiftRunsToBitmapScroll(t *testing.T) {
-	base := []render.GlyphRun{{Col: 3, Row: 2, Text: "hi", X: 30, Y: 40}}
+	// X 24, Y 32 at cell 8x16 snap to Col 3, Row 2 (round(24/8), round(32/16)).
+	base := []render.GlyphRun{{Col: 3, Row: 2, Text: "hi", X: 24, Y: 32}}
 	for _, tc := range []struct {
 		name             string
 		snapY, bitmapY   float64
@@ -26,28 +29,30 @@ func TestShiftRunsToBitmapScroll(t *testing.T) {
 		wantX, wantY     float64
 	}{
 		{
-			// Z == 1: cell is 8x16 CSS px. The bitmap scrolled 160 px past the runs, so
-			// the runs move up 160/16 = 10 rows (row 2 - 10 = -8) and the box Y drops by
-			// 160 (40 - 160 = -120), row and box in step.
+			// Z == 1: cell is 8x16 CSS px. The bitmap scrolled 160 px past the runs, so the
+			// box Y drops by 160 (32 - 160 = -128) and the row re-snaps to round(-128/16) =
+			// -8. The box X and column are unchanged.
 			name: "z1 vertical", snapY: 0, bitmapY: 160, cellCSSW: 8, cellCSSH: 16,
-			wantRow: -8, wantCol: 3, wantX: 30, wantY: -120,
+			wantRow: -8, wantCol: 3, wantX: 24, wantY: -128,
 		},
 		{
-			// Z == 1.5: the CSS cell height is 16/1.5 ~= 10.667. A 160 px bitmap advance
-			// rounds to round(160/10.667) = 15 rows up (row 2 - 15 = -13). The box Y still
-			// drops by the full 160 CSS px.
+			// Z == 1.5: the CSS cell height is 16/1.5 ~= 10.667. The box Y drops by 160
+			// (32 - 160 = -128) and the row re-snaps to round(-128/10.667) = -12. The box X
+			// re-snaps against the fractional cell width 8/1.5 ~= 5.333: round(24/5.333) = 5.
 			name: "z1.5 fractional", snapY: 0, bitmapY: 160, cellCSSW: 8.0 / 1.5, cellCSSH: 16.0 / 1.5,
-			wantRow: -13, wantCol: 3, wantX: 30, wantY: -120,
+			wantRow: -12, wantCol: 5, wantX: 24, wantY: -128,
 		},
 		{
-			// A negative delta (the bitmap scrolled back above the runs) shifts down.
+			// A negative delta (the bitmap scrolled back above the runs) shifts down: box Y
+			// 32 - (-160) = 192, row round(192/16) = 12.
 			name: "negative", snapY: 160, bitmapY: 0, cellCSSW: 8, cellCSSH: 16,
-			wantRow: 12, wantCol: 3, wantX: 30, wantY: 200,
+			wantRow: 12, wantCol: 3, wantX: 24, wantY: 192,
 		},
 		{
-			// Horizontal delta shifts columns and box X in step.
+			// Horizontal delta shifts the box X and re-snaps the column: X 24 - 24 = 0,
+			// col round(0/8) = 0. The row is unchanged.
 			name: "horizontal", snapX: 0, bitmapX: 24, cellCSSW: 8, cellCSSH: 16,
-			wantRow: 2, wantCol: 0, wantX: 6, wantY: 40,
+			wantRow: 2, wantCol: 0, wantX: 0, wantY: 32,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -61,6 +66,37 @@ func TestShiftRunsToBitmapScroll(t *testing.T) {
 				t.Errorf("shifted box = (%v,%v), want (%v,%v)", got[0].X, got[0].Y, tc.wantX, tc.wantY)
 			}
 		})
+	}
+}
+
+// TestShiftRunsToBitmapScrollMatchesFreshDecode is the regression guard for the
+// one-row settle hop: a run shifted from the snapshot scroll onto the bitmap's own
+// scroll must land the same cell a fresh mapBoxToCells decode lands at that bitmap
+// scroll. The old shift subtracted round(dy/cellH), rounding twice against a
+// fractional-cell scroll and landing one row off the settle re-decode. The re-snap
+// from the shifted origin removes that disagreement.
+func TestShiftRunsToBitmapScrollMatchesFreshDecode(t *testing.T) {
+	const dpr = 1.975
+	const cellW, cellH = 16.0 / dpr, 33.0 / dpr
+	const cols = 158
+	// A fixed nav box at document-absolute device Y ~= 62.5 (CSS ~= 31.6), the
+	// linuxmatters fixed-top nav geometry that hopped a row at settle.
+	bounds := []float64{60, 62.5, 100, 40}
+	// Decode at the snapshot scroll (0), the pre-scroll generation.
+	snapCol, snapRow, _ := mapBoxToCells(bounds, dpr, 0, 0, cellW, cellH, cols, "nav")
+	run := render.GlyphRun{
+		Col: snapCol, Row: snapRow, Text: "nav",
+		X: bounds[0]/dpr - 0, Y: bounds[1]/dpr - 0, W: bounds[2] / dpr, H: bounds[3] / dpr,
+	}
+	// The bitmap carries a fractional-cell scroll (522.53 CSS px, ~15.83 cells).
+	const bitmapScroll = 522.5316772460938
+	meta := &page.ScreencastFrameMetadata{ScrollOffsetY: bitmapScroll}
+	shifted := shiftRunsToBitmapScroll([]render.GlyphRun{run}, meta, 0, 0, cellW, cellH)
+	// A fresh decode at the bitmap scroll: the settle generation the shift must match.
+	wantCol, wantRow, _ := mapBoxToCells(bounds, dpr, 0, bitmapScroll, cellW, cellH, cols, "nav")
+	if shifted[0].Row != wantRow || shifted[0].Col != wantCol {
+		t.Errorf("shifted cell = (%d,%d), fresh decode = (%d,%d): the compose shift and the settle decode must agree",
+			shifted[0].Col, shifted[0].Row, wantCol, wantRow)
 	}
 }
 

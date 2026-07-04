@@ -96,6 +96,21 @@ func (e *ChromiumEngine) surfaceSize(cols, rows int) (pxW, pxH int) {
 	return w, h
 }
 
+// screencastCap returns the painted device surface the screencast is capped to:
+// the paintedSurface derivation of the real surface at the active scale Z. On the
+// block backend Z > 1 shrinks the CSS viewport, so the painted surface (round of
+// the floored CSS height times Z) is at or just under surfaceSize, and capping the
+// screencast to it keeps Chromium from downscaling a frame it painted one row over
+// a cap set from an independently rounded surfaceSize. On a graphics backend Z is 1,
+// so the painted surface equals surfaceSize and the cap is unchanged. It takes the
+// same (cols, rows) surfaceSize does and reads no engine field beyond the scale, so
+// callers pass the grid they already hold under mu.
+func (e *ChromiumEngine) screencastCap(cols, rows int) (pxW, pxH int) {
+	surfW, surfH := e.surfaceSize(cols, rows)
+	_, _, paintW, paintH := paintedSurface(surfW, surfH, e.layoutScale())
+	return paintW, paintH
+}
+
 // textOverlayBackend reports whether the active backend consumes the crisp
 // DOM-text overlay. Only the block backend folds Frame.Text onto its cell grid;
 // the graphics backends (sixel, kitty) draw the bitmap alone and ignore the
@@ -146,27 +161,46 @@ func proxyFlags(cfg ProxyConfig) [][2]string {
 	return pairs
 }
 
+// paintedSurface derives the CSS layout dimensions and the resulting painted
+// device surface from a target real surface surfW x surfH at device scale Z. The
+// CSS dimensions are chosen so the page reflows to the target width yet never
+// paints past the screencast cap: the width divides exactly at the target layout
+// width, so a round is correct, but the height takes a floor so cssH*Z <= surfH.
+// A round of the height would let cssH*Z land one device row over surfH (the
+// 1437*1.975 = 2839 > 2838 fault), so Chromium would downscale every frame; the
+// floor keeps the painted surface at or under the cap. It returns the CSS
+// dimensions and the painted device surface paintW = round(cssW*Z), paintH =
+// round(cssH*Z), the surface Chromium actually paints and the screencast cap and
+// the compose model both take, so the engine's model matches the delivered bitmap.
+func paintedSurface(surfW, surfH int, z float64) (cssW, cssH, paintW, paintH int) {
+	cssW = int(math.Round(float64(surfW) / z))
+	cssH = int(math.Floor(float64(surfH) / z))
+	paintW = int(math.Round(float64(cssW) * z))
+	paintH = int(math.Round(float64(cssH) * z))
+	return cssW, cssH, paintW, paintH
+}
+
 // applySizing sizes the layout viewport and the captured surface together on the
-// live context, in CSS pixels surf/Z at device scale factor Z. It sets the CSS
-// layout viewport with emulation.SetDeviceMetricsOverride(surf/Z, surf/Z, Z), then
-// sizes the captured content area with Browser.SetContentsSize on windowID (width
-// and height in DIP, which equal the CSS pixels surf/Z). The two are distinct CDP
-// concepts: the device-metrics override resizes only the layout viewport, never
-// the captured surface, so the surface call is required or frames arrive cropped
-// or blank. Under Z > 1 both must be surf/Z, not surf, so the page lays out at the
-// target width; the screencast cap (maxWidth/maxHeight, set by startScreencast)
-// stays the surf device pixels, the third independent value. Z stays in float64 up
-// to the int64 boundary cast so no premature rounding widens the viewport.
+// live context, in the CSS pixels paintedSurface derives at device scale factor Z.
+// It sets the CSS layout viewport with emulation.SetDeviceMetricsOverride(cssW,
+// cssH, Z), then sizes the captured content area with Browser.SetContentsSize on
+// windowID (width and height in DIP, which equal the CSS pixels). The two are
+// distinct CDP concepts: the device-metrics override resizes only the layout
+// viewport, never the captured surface, so the surface call is required or frames
+// arrive cropped or blank. Under Z > 1 both must be the CSS dimensions, not the
+// device surface, so the page lays out at the target width. The screencast cap
+// (maxWidth/maxHeight, set by startScreencast) takes the painted device surface
+// from the same paintedSurface computation, so Chromium never downscales a frame
+// to fit a cap set one row short of the painted rows.
 func applySizing(ctx context.Context, windowID browser.WindowID, surfW, surfH int, z float64) error {
-	cssW := int64(math.Round(float64(surfW) / z))
-	cssH := int64(math.Round(float64(surfH) / z))
+	cssW, cssH, _, _ := paintedSurface(surfW, surfH, z)
 	if err := chromedp.Run(ctx,
-		emulation.SetDeviceMetricsOverride(cssW, cssH, z, false),
+		emulation.SetDeviceMetricsOverride(int64(cssW), int64(cssH), z, false),
 	); err != nil {
 		return err
 	}
 	return chromedp.Run(ctx,
-		browser.SetContentsSize(windowID).WithWidth(cssW).WithHeight(cssH),
+		browser.SetContentsSize(windowID).WithWidth(int64(cssW)).WithHeight(int64(cssH)),
 	)
 }
 

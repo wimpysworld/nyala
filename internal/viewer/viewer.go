@@ -426,7 +426,7 @@ func (s *State) renderBlock(src *image.RGBA, text []render.GlyphRun, w io.Writer
 	if s.diff != nil {
 		grid := br.FitGridInto(&s.scratch.out, s.ImgW, s.ImgH, func(cols, rows int) *block.Grid {
 			pxW, pxH := schemePixels(s.Scheme, cols, rows)
-			sub := metrics.DownscaleInto(s.scratch.downscaleDst(pxW, pxH), src)
+			sub := metrics.DownscaleLiveInto(s.scratch.downscaleDst(pxW, pxH), src)
 			inner := block.Renderer{Cols: cols, Rows: rows, Scheme: s.Scheme}
 			return inner.ComposeInto(&s.scratch.inner, render.Frame{Img: sub, Text: text})
 		})

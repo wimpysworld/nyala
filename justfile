@@ -172,6 +172,66 @@ corpus:
             fi
         done
     done
+
+    # layout-13 real-geometry legs. The frozen linuxmatters page is captured at
+    # the owner's real terminal geometry (158x86 cells, 16x33 device px per cell,
+    # pinned with cell=16x33 so a headless pty reproduces the device
+    # quantisation), first as a placement leg, then as a scroll leg that gates the
+    # overlay scroll-dance. Only layout-13 carries these; the twelve synthetic
+    # fixtures stay at the two placement legs above.
+    lm="$root/layout-13-linuxmatters/"
+    if [ -d "$lm" ]; then
+        # Real-geometry placement leg: gate right-edge placement at 158x86.
+        printf '== layout-13-linuxmatters [158x86 cell 16x33] ==\n'
+        out="$(mktemp)"
+        COLUMNS=158 LINES=86 just capture=1 run "file://${lm}index.html" backend=block cell=16x33 > "$out" 2>&1
+        status=$?
+        if [ "$status" -ne 0 ]; then
+            tail -n 20 "$out"
+            rm -f "$out"
+            printf 'capture failed: layout-13-linuxmatters [158x86 cell 16x33]\n' >&2
+            fail=1
+        else
+            bundle="$(grep 'capture bundle:' "$out" | tail -n 1)"
+            rm -f "$out"
+            bundle="${bundle#*capture bundle: }"
+            bundle="${bundle%$'\r'}"
+            frame="$(printf '%s' "$bundle"/frames/frame-*/)"
+            if ! go run ./tools/placement-score -gate -thresholds "${lm}fixture.json" "$frame"; then
+                printf 'placement gate failed: layout-13-linuxmatters [158x86 cell 16x33]\n' >&2
+                fail=1
+            fi
+        fi
+
+        # Scroll leg: capture three frames then scroll 600 CSS px and settle, so
+        # the bundle holds consecutive snapshot generations across a scroll. The
+        # scroll-dance gate hard-fails on danced 0: the metric classifies the
+        # position:fixed nav as fixed (viewport-stationary on scroll) and scores
+        # every other run on its own scroll-compensated document row, so a fixed
+        # nav and scrolling body content each read honestly. The compose shift
+        # re-snaps from the shifted box origin, so a mid-scroll frame and the
+        # settle re-decode land the same row and no run hops one cell at settle.
+        printf '== layout-13-linuxmatters [158x86 cell 16x33 scroll=600] ==\n'
+        out="$(mktemp)"
+        COLUMNS=158 LINES=86 just capture=3 scroll=600 run "file://${lm}index.html" backend=block cell=16x33 > "$out" 2>&1
+        status=$?
+        if [ "$status" -ne 0 ]; then
+            tail -n 20 "$out"
+            rm -f "$out"
+            printf 'scroll capture failed: layout-13-linuxmatters [158x86 cell 16x33 scroll=600]\n' >&2
+            fail=1
+        else
+            bundle="$(grep 'capture bundle:' "$out" | tail -n 1)"
+            rm -f "$out"
+            bundle="${bundle#*capture bundle: }"
+            bundle="${bundle%$'\r'}"
+            if ! go run ./tools/scroll-dance -gate -thresholds "${lm}fixture.json" "$bundle"; then
+                printf 'scroll-dance gate failed: layout-13-linuxmatters [158x86 cell 16x33 scroll=600]\n' >&2
+                fail=1
+            fi
+        fi
+    fi
+
     exit "$fail"
 
 # Run all local checks
@@ -204,6 +264,10 @@ rasterise path:
 # Score horizontal text placement error from a captured text-map.json (or frame dir)
 placement-score path:
     @go run ./tools/placement-score {{path}}
+
+# Score overlay re-placement (scroll dance) across a capture bundle's frame sequence
+scroll-dance path:
+    @go run ./tools/scroll-dance {{path}}
 
 # Print the KMSCON quadrant test card to the TTY (owner-verified, off CI)
 kmscon-testcard:

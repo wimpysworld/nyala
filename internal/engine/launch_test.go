@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -391,6 +392,80 @@ func TestSurfaceSizeNonZeroFloor(t *testing.T) {
 	}
 	if surfW == 0 || surfH == 0 {
 		t.Fatalf("surfaceSize(0,0) = (%d, %d), want a non-zero surface", surfW, surfH)
+	}
+}
+
+func TestPaintedSurfaceHeightFloorNeverExceedsCap(t *testing.T) {
+	// The real-geometry fault: at 158x86 cell 16x33 the surface is 2528x2838 and
+	// Z = 2528/1280 = 1.975. A rounded CSS height (round(2838/1.975) = 1437) paints
+	// 1437*1.975 = 2839 device rows, one over the 2838 cap, so Chromium downscales
+	// every frame. The floor (1436) paints 2836 <= 2838, so no downscale.
+	const surfW, surfH = 2528, 2838
+	const z = 1.975
+	cssW, cssH, paintW, paintH := paintedSurface(surfW, surfH, z)
+	if paintW > surfW || paintH > surfH {
+		t.Fatalf("paintedSurface(%d,%d,%g) painted (%d,%d) exceeds the cap (%d,%d)", surfW, surfH, z, paintW, paintH, surfW, surfH)
+	}
+	// The width divides exactly at the target layout width, so it lands on 1280.
+	if cssW != 1280 {
+		t.Errorf("cssW = %d, want 1280 (the target layout width)", cssW)
+	}
+	// The height floors rather than rounds, so cssH is 1436 not 1437.
+	if cssH != 1436 {
+		t.Errorf("cssH = %d, want 1436 (floor of 2838/1.975)", cssH)
+	}
+	if paintH != 2836 {
+		t.Errorf("paintH = %d, want 2836 (round(1436*1.975), one row-band under the cap)", paintH)
+	}
+}
+
+func TestPaintedSurfaceUnityScaleIdentity(t *testing.T) {
+	// At Z == 1 (a graphics backend, or a block grid at or under the target width)
+	// the painted surface must equal the input surface exactly, so the cap and the
+	// compose model are unchanged from the pre-fix behaviour.
+	const surfW, surfH = 1440, 720
+	cssW, cssH, paintW, paintH := paintedSurface(surfW, surfH, 1)
+	if cssW != surfW || cssH != surfH || paintW != surfW || paintH != surfH {
+		t.Fatalf("paintedSurface(%d,%d,1) = css(%d,%d) paint(%d,%d), want all equal to the input surface", surfW, surfH, cssW, cssH, paintW, paintH)
+	}
+}
+
+func TestScreencastCapNeverExceedsSurface(t *testing.T) {
+	// screencastCap on the block backend must return a painted surface at or under
+	// the real cell-grid surface, so the screencast cap never forces a downscale.
+	const cols, rows = 158, 86
+	const cellW, cellH = 16, 33
+	const layoutWidth = 1280
+	e := &ChromiumEngine{backend: "block", cellW: cellW, cellH: cellH, cols: cols, rows: rows, layoutWidth: layoutWidth}
+
+	surfW, surfH := e.surfaceSize(cols, rows)
+	capW, capH := e.screencastCap(cols, rows)
+	if capW > surfW || capH > surfH {
+		t.Fatalf("screencastCap = (%d,%d) exceeds surfaceSize (%d,%d); Chromium would downscale", capW, capH, surfW, surfH)
+	}
+	// A graphics backend stays at Z == 1, so its cap equals the surface exactly.
+	g := &ChromiumEngine{backend: "sixel", cellW: cellW, cellH: cellH, cols: cols, rows: rows, layoutWidth: layoutWidth}
+	gSurfW, gSurfH := g.surfaceSize(cols, rows)
+	gCapW, gCapH := g.screencastCap(cols, rows)
+	if gCapW != gSurfW || gCapH != gSurfH {
+		t.Errorf("graphics screencastCap = (%d,%d), want the surface (%d,%d) at Z 1", gCapW, gCapH, gSurfW, gSurfH)
+	}
+}
+
+func TestBitmapScaleDerivesFromWidth(t *testing.T) {
+	// A verify bitmap 2528 px wide over a 1280 CSS viewport was painted at scale
+	// 2528/1280 = 1.975, which the anchor must recover rather than assume the launch
+	// Z. A degenerate input falls back to the passed scale.
+	const cssCellW = 1280.0 / 158
+	got := bitmapScale(2528, cssCellW, 158, 1.975)
+	if math.Abs(got-1.975) > 1e-6 {
+		t.Errorf("bitmapScale(2528, ...) = %g, want 1.975", got)
+	}
+	if fb := bitmapScale(0, cssCellW, 158, 3.0); fb != 3.0 {
+		t.Errorf("bitmapScale with zero width = %g, want the fallback 3.0", fb)
+	}
+	if fb := bitmapScale(2528, 0, 158, 3.0); fb != 3.0 {
+		t.Errorf("bitmapScale with zero cell = %g, want the fallback 3.0", fb)
 	}
 }
 
