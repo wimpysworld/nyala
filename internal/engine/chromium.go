@@ -22,7 +22,7 @@ type ChromiumEngine struct {
 	// viewer goroutine (Resize, SetBackend, SendKey, SendMouse, dispatchWheel)
 	// and the supervisor goroutine (startSession, teardownSession, launch,
 	// rebuild): ctx, cancel, slot, acks, text, frame, captureW, captureH, cols, rows, scrollX,
-	// scrollY, scrollYTarget, backend, cellW, cellH, layoutWidth, windowID, inputFailures, fontForcingID. Lock, copy the fields into locals or write
+	// scrollY, scrollYTarget, backend, blockScheme, cellW, cellH, layoutWidth, windowID, inputFailures, fontForcingID. Lock, copy the fields into locals or write
 	// the updates, unlock, then run the chromedp I/O on the locals. Never hold mu
 	// across a chromedp.Run or a channel send, or it deadlocks with the supervisor.
 	mu sync.Mutex
@@ -49,6 +49,10 @@ type ChromiumEngine struct {
 
 	layoutWidth int    // block-backend target layout width in CSS pixels
 	backend     string // active backend (block, sixel, kitty)
+	// blockScheme is the block-backend cell rendering scheme ("quadrant" or
+	// "half"); the zero value and any other value read as quadrant (see
+	// captureSize). Set once by SetScheme before Navigate.
+	blockScheme string
 	browserFlag string // --browser value, empty for env/PATH discovery
 	cols        int    // terminal grid width in cells
 	rows        int    // terminal grid height in cells

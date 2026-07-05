@@ -346,6 +346,30 @@ func TestCaptureSizeBlock(t *testing.T) {
 	}
 }
 
+func TestCaptureSizeBlockScheme(t *testing.T) {
+	const cols, rows = 80, 24
+
+	cases := []struct {
+		name   string
+		scheme string
+		wantW  int
+		wantH  int
+	}{
+		{"unset defaults to quadrant", "", cols * 2, rows * 4},
+		{"quadrant explicit", "quadrant", cols * 2, rows * 4},
+		{"half", "half", cols, rows * 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := &ChromiumEngine{backend: "block", blockScheme: c.scheme}
+			gotW, gotH := e.captureSize(cols, rows)
+			if gotW != c.wantW || gotH != c.wantH {
+				t.Errorf("captureSize scheme %q = (%d, %d), want (%d, %d)", c.scheme, gotW, gotH, c.wantW, c.wantH)
+			}
+		})
+	}
+}
+
 func TestSizingThreeIndependentValuesBlock(t *testing.T) {
 	// The block backend proves the split: the layout viewport and the captured
 	// surface (surfaceSize) are the real cell-pixel viewport, while the sample-grid

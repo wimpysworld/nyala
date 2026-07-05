@@ -72,9 +72,21 @@ const surfaceFloorPx = 16
 // and backend switch, so the size is never passed in from the viewer.
 func (e *ChromiumEngine) captureSize(cols, rows int) (pxW, pxH int) {
 	if e.backend == "block" {
-		return render.BlockCaptureSize(true, cols, rows)
+		return render.BlockCaptureSize(e.blockScheme != "half", cols, rows)
 	}
 	return render.GraphicsCaptureSize(cols, rows, e.cellW, e.cellH)
+}
+
+// SetScheme records the block-backend cell rendering scheme. It accepts
+// "quadrant" and "half"; any other value, including the empty string, resolves
+// to quadrant at read time (see captureSize). The caller sets it before
+// Navigate, alongside SetBackend and SetCellPx, so this is set-once and needs
+// no live stream restart, unlike SetBackend, which switches an
+// already-streaming engine.
+func (e *ChromiumEngine) SetScheme(scheme string) {
+	e.mu.Lock()
+	e.blockScheme = scheme
+	e.mu.Unlock()
 }
 
 // surfaceSize returns the real CSS-pixel viewport the page lays out into: the
