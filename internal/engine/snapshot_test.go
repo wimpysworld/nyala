@@ -129,8 +129,8 @@ func TestDecodeWalkRunsColour(t *testing.T) {
 }
 
 // TestDecodeWalkRunsBackground checks the walk's background RGBA channels map
-// straight to GlyphRun.BG in RGBA order, so the block overlay can flat-fill a
-// covered cell with the resolved DOM background instead of the bitmap average.
+// straight to GlyphRun.BG in RGBA order, no channel swap, so a consumer reading the
+// resolved DOM background gets the true colour.
 func TestDecodeWalkRunsBackground(t *testing.T) {
 	run := walkRunAt("A", 0, 0, 0, 16)
 	run.BG = walkColour{R: 240, G: 248, B: 255, A: 255}
@@ -169,6 +169,8 @@ func TestBuildTextWalkScriptContents(t *testing.T) {
 		{"cell dims seeded", "var cw=8.1,ch=16.7;"},
 		{"per-line client rects", "getClientRects()"},
 		{"origin column snap against cell", "c:Math.round(ln.left/cw)"},
+		{"origin row snap", "r:Math.round(ln.top/ch)"},
+		{"bucket row snap", "var row=Math.round(rr.top/ch);"},
 		{"visibility drop", "s.visibility==='hidden'"},
 		{"clip-offscreen drop", "s.clipPath==='inset(50%)'"},
 		{"effective-opacity drop", "if(op<0.05)return true;"},

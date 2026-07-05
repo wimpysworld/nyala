@@ -44,8 +44,9 @@ type ChromiumEngine struct {
 	scrollYTarget int
 
 	// Resolved geometry from the Stage 1 cell px and the active backend.
-	cellW       int    // resolved cell width in pixels
-	cellH       int    // resolved cell height in pixels
+	cellW int // resolved cell width in pixels
+	cellH int // resolved cell height in pixels
+
 	layoutWidth int    // block-backend target layout width in CSS pixels
 	backend     string // active backend (block, sixel, kitty)
 	browserFlag string // --browser value, empty for env/PATH discovery

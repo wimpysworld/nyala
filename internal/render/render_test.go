@@ -47,6 +47,23 @@ func TestCellWidth(t *testing.T) {
 	}
 }
 
+// TestCellWidthAmbiguousPinnedToOne asserts the init() pin makes ambiguous-width
+// runes count as one cell, matching the wezterm and kitty defaults, so the
+// overlay's cell count stays independent of the process locale.
+func TestCellWidthAmbiguousPinnedToOne(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		s    string
+	}{
+		{"right single quote U+2019", "’"},
+		{"horizontal ellipsis U+2026", "…"},
+	} {
+		if w := CellWidth(tc.s); w != 1 {
+			t.Fatalf("%s width = %d, want 1", tc.name, w)
+		}
+	}
+}
+
 // TestClipToCells asserts the clip budget counts display cells, drops a width-2
 // cluster whole rather than half-emitting it, and yields empty for a
 // non-positive budget.

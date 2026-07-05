@@ -100,26 +100,25 @@ type State struct {
 	diff *block.GridDiff
 
 	// scratch holds the reusable per-frame buffers for the live diff path: the
-	// downscale destination, the inner compose grid, the fit-and-letterbox output
-	// grid, and the buffered tty writer. It is used only when diff is set, which
-	// is the single-goroutine interactive draw path, so the buffers never alias
-	// across goroutines. Off the diff path (capture and static image) it stays
-	// untouched and those paths keep their fresh-allocation byte output.
+	// downscale destination, the compose grid, and the buffered tty writer. It is
+	// used only when diff is set, which is the single-goroutine interactive draw
+	// path, so the buffers never alias across goroutines. Off the diff path (capture
+	// and static image) it stays untouched and those paths keep their
+	// fresh-allocation byte output.
 	scratch frameScratch
 }
 
 // frameScratch is the live diff path's reusable per-frame buffers. Each draw
-// fully overwrites the downscale pixels and recomposes both grids, so reuse
-// carries no stale content. dstW and dstH record the downscale size so the
-// destination reallocates only when the grid or scheme changes the pixel extent.
-// bw buffers the tty writer so each frame Resets and Flushes one held writer
-// rather than allocating a new bufio.Writer. The zero value is unset; renderBlock
-// lazily fills it on the first diff draw.
+// fully overwrites the downscale pixels and recomposes the grid, so reuse carries
+// no stale content. dstW and dstH record the downscale size so the destination
+// reallocates only when the grid or scheme changes the pixel extent. bw buffers
+// the tty writer so each frame Resets and Flushes one held writer rather than
+// allocating a new bufio.Writer. The zero value is unset; renderBlock lazily fills
+// it on the first diff draw.
 type frameScratch struct {
 	dst        *image.RGBA   // reused downscale destination
 	dstW, dstH int           // current downscale pixel extent
-	inner      block.Grid    // reused inner compose grid
-	out        block.Grid    // reused fit-and-letterbox output grid
+	out        block.Grid    // reused compose output grid
 	bw         *bufio.Writer // reused buffered tty writer
 }
 
@@ -380,27 +379,35 @@ func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
 	return s.encodeGraphics(frame.Img, fit, w)
 }
 
-// renderBlock composes the source onto the fit-and-letterbox grid and writes it
+// renderBlock composes the source onto the full Cols x Rows grid and writes it
 // as SGR cells, honouring the colour toggle: truecolour SGR or xterm-256 SGR.
-// FitGrid recomputes the fit-and-letterbox placement from the State dimensions,
-// so the image stays centred without a passed-in Fit. text is the crisp DOM-text
-// overlay folded onto the composed grid; a nil text draws the bitmap alone.
+// text is the crisp DOM-text overlay folded onto the composed grid; a nil text
+// draws the bitmap alone.
+//
+// The block path composes at the full grid with no aspect-fit letterbox: the
+// engine sizes the block frame to exactly the terminal grid geometry (cols*cellW
+// by rows*cellH device pixels), so the bitmap maps one-to-one onto the Cols x Rows
+// grid. The overlay bins each run in whole-cell coordinates against the same grid,
+// so a full-grid compose keeps the bitmap and the overlay on one horizontal scale.
+// An aspect-fit would assume a 1:2 cell aspect and letterbox the bitmap onto fewer
+// columns whenever the real terminal cell aspect differs (a 13x27 cell letterboxes
+// 195 columns onto 187), drifting the overlay right of the bitmap by a scale that
+// grows with the column. The graphics backends keep the fit centring in
+// encodeGraphics, since they draw the bitmap alone with no overlay to shear against.
 func (s *State) renderBlock(src *image.RGBA, text []render.GlyphRun, w io.Writer) error {
-	// One block.Renderer value drives both FitGrid and the inner Compose, so the
-	// grid size and scheme come from a single source.
 	br := block.Renderer{Cols: s.Cols, Rows: s.Rows, Scheme: s.Scheme}
+	pxW, pxH := schemePixels(s.Scheme, s.Cols, s.Rows)
+	if pxW <= 0 || pxH <= 0 {
+		return nil
+	}
 
 	// The live diff path is single-goroutine, so it reuses the per-frame buffers:
-	// the downscale destination, both grids, and the buffered tty writer. The
+	// the downscale destination, the compose grid, and the buffered tty writer. The
 	// capture and static-image paths (diff nil) keep the fresh-allocation path so
 	// their byte output stays identical.
 	if s.diff != nil {
-		grid := br.FitGridInto(&s.scratch.out, s.ImgW, s.ImgH, func(cols, rows int) *block.Grid {
-			pxW, pxH := schemePixels(s.Scheme, cols, rows)
-			sub := metrics.DownscaleLiveInto(s.scratch.downscaleDst(pxW, pxH), src)
-			inner := block.Renderer{Cols: cols, Rows: rows, Scheme: s.Scheme}
-			return inner.ComposeInto(&s.scratch.inner, render.Frame{Img: sub, Text: text})
-		})
+		sub := metrics.DownscaleLiveInto(s.scratch.downscaleDst(pxW, pxH), src)
+		grid := br.ComposeInto(&s.scratch.out, render.Frame{Img: sub, Text: text})
 		if s.captureGrid != nil {
 			// Copy the cells, never alias: the live scratch grid is reused next frame,
 			// so the capture sink must own an independent backing array to serialise.
@@ -414,12 +421,8 @@ func (s *State) renderBlock(src *image.RGBA, text []render.GlyphRun, w io.Writer
 		return bw.Flush()
 	}
 
-	grid := br.FitGrid(s.ImgW, s.ImgH, func(cols, rows int) block.Grid {
-		pxW, pxH := schemePixels(s.Scheme, cols, rows)
-		sub := metrics.Downscale(src, pxW, pxH)
-		inner := block.Renderer{Cols: cols, Rows: rows, Scheme: s.Scheme}
-		return inner.Compose(render.Frame{Img: sub, Text: text})
-	})
+	sub := metrics.Downscale(src, pxW, pxH)
+	grid := br.Compose(render.Frame{Img: sub, Text: text})
 	if s.captureGrid != nil {
 		*s.captureGrid = grid
 	}
