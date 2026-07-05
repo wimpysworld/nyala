@@ -95,6 +95,71 @@ func TestWheelHorizontalUnquantised(t *testing.T) {
 	}
 }
 
+// TestWheelNonBlockAlignsTarget asserts a scroll off the block backend keeps
+// scrollYTarget aligned with scrollY, so no stale whole-cell snap residue survives
+// to correct a later block scroll.
+func TestWheelNonBlockAlignsTarget(t *testing.T) {
+	e := New("")
+	e.SetCellPx(16, 33)
+	e.SetLayoutWidth(1280)
+	e.Resize(158, 86)
+	e.SetBackend("sixel")
+
+	e.SendKey(Key{Code: "ArrowDown"})
+
+	e.mu.Lock()
+	gotY, gotTarget := e.scrollY, e.scrollYTarget
+	e.mu.Unlock()
+	if gotY != wheelLineStepPx {
+		t.Errorf("non-block ArrowDown scrollY = %d, want %d (unquantised)", gotY, wheelLineStepPx)
+	}
+	if gotTarget != gotY {
+		t.Errorf("non-block scrollYTarget = %d, want %d (aligned with scrollY)", gotTarget, gotY)
+	}
+}
+
+// TestWheelBackendSwitchNoCorrectiveJump asserts a block, non-block, block sequence
+// dispatches only the new delta on block re-entry, not a corrective jump back to a
+// stale snap. The non-block scroll realigns the target with scrollY, so the first
+// re-entry block scroll accumulates from the current offset and its held step equals
+// one snapped whole cell, not that plus a residual correction.
+func TestWheelBackendSwitchNoCorrectiveJump(t *testing.T) {
+	e := New("")
+	e.SetCellPx(16, 33)
+	e.SetLayoutWidth(1280)
+	e.Resize(158, 86)
+
+	cellH := snapshotCellHeight(e)
+	step := int(math.Round(math.Round(float64(wheelLineStepPx)/cellH) * cellH))
+
+	// Scroll on block, snapping to a whole cell that differs from the raw step.
+	e.SendKey(Key{Code: "ArrowDown"})
+
+	// Switch to a graphics backend and scroll unquantised.
+	e.SetBackend("sixel")
+	e.SendKey(Key{Code: "ArrowDown"})
+
+	e.mu.Lock()
+	beforeY := e.scrollY
+	e.mu.Unlock()
+
+	// Return to block and scroll once more.
+	e.SetBackend("block")
+	e.SendKey(Key{Code: "ArrowDown"})
+
+	e.mu.Lock()
+	afterY := e.scrollY
+	e.mu.Unlock()
+
+	delta := afterY - beforeY
+	// The re-entry step accumulates a raw wheelLineStepPx onto the aligned target,
+	// then snaps, so the held delta is within one cell of the snapped line step, never
+	// a large corrective jump.
+	if delta < step-int(math.Ceil(cellH)) || delta > step+int(math.Ceil(cellH)) {
+		t.Errorf("block re-entry delta = %d, want near %d (no corrective jump)", delta, step)
+	}
+}
+
 // TestSendKeyPageStepCSSPixels asserts a Page key steps one CSS-pixel viewport
 // height, not one device-pixel height. The wheel transport speaks CSS pixels, so
 // on a wide block grid where the layout scale Z exceeds 1 the raw rows*cellH device

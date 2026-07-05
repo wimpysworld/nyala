@@ -448,10 +448,17 @@ func (e *ChromiumEngine) dispatchWheel(dx, dy int) {
 			dyDispatch = snapped - e.scrollY
 			e.scrollY = snapped
 		} else {
+			// No cell height to snap against: track scrollY exactly and realign the
+			// target, so a later block scroll that can snap starts from the current
+			// offset with no stale snap residue to correct.
 			e.scrollY += dy
+			e.scrollYTarget = e.scrollY
 		}
 	} else {
+		// Off the block backend the target tracks scrollY exactly, so a return to
+		// block accumulates from the current offset and dispatches no corrective jump.
 		e.scrollY += dy
+		e.scrollYTarget = e.scrollY
 	}
 	ctx := e.ctx
 	cx := float64(e.cols*e.cellW) / 2
