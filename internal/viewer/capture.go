@@ -91,7 +91,9 @@ var _ bundleWriter = (*capture.Bundle)(nil)
 // first-draw prefix. It returns nil on a full capture and ErrPartialBundle when it writes a
 // partial bundle. colourFlag is the --color intent; mode is the --backend mode
 // the forced-backend validator checks; blocks is the --blocks mode selecting the
-// block glyph scheme (auto and quadrant keep quadrant, half renders half-block);
+// block glyph scheme, resolved deterministically by resolveCaptureScheme (sextant
+// forces sextant, half forces half-block, and everything else, including auto,
+// forces quadrant, so capture and corpus stay unchanged);
 // layoutWidth is the block-backend target
 // layout width in CSS pixels, handed to the engine before Navigate. scrollPx is
 // the capture scroll hook's requested vertical scroll in CSS pixels: when
@@ -103,7 +105,8 @@ var _ bundleWriter = (*capture.Bundle)(nil)
 // settle gates the scroll hook's settle wait: true waits for the settled overlay,
 // false draws the first frame whose scroll offset advanced (the pre-settle state).
 func Capture(eng Engine, url string, tty *os.File, colourFlag, mode, blocks string, layoutWidth, n, scrollPx int, settle bool) (err error) {
-	_, st, restore, err := setupViewer(eng, tty, colourFlag, blocks, layoutWidth)
+	scheme := resolveCaptureScheme(blocks)
+	_, st, restore, err := setupViewer(eng, tty, colourFlag, scheme, layoutWidth)
 	if err != nil {
 		return err
 	}

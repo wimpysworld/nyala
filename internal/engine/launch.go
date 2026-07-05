@@ -64,22 +64,36 @@ const surfaceFloorPx = 16
 
 // captureSize returns the client-side downscale (sample-grid) target for the
 // active backend: the source-pixel extent the emitted bitmap is reduced to. The
-// block backend samples a sub-cell grid via render.BlockCaptureSize (quadrant
-// scheme); the graphics backends keep the real cell-pixel bitmap via
+// block backend samples a sub-cell grid via render.BlockCaptureSize (in the
+// active block scheme); the graphics backends keep the real cell-pixel bitmap via
 // render.GraphicsCaptureSize. This is no longer the layout viewport or the
 // screencast cap (see surfaceSize); it is only the downscale target and the
 // snapshot cell-px divisor source. The engine derives it itself on every resize
 // and backend switch, so the size is never passed in from the viewer.
 func (e *ChromiumEngine) captureSize(cols, rows int) (pxW, pxH int) {
 	if e.backend == "block" {
-		return render.BlockCaptureSize(e.blockScheme != "half", cols, rows)
+		return render.BlockCaptureSize(blockScheme(e.blockScheme), cols, rows)
 	}
 	return render.GraphicsCaptureSize(cols, rows, e.cellW, e.cellH)
 }
 
+// blockScheme maps the engine's scheme string to a render.BlockScheme. It
+// accepts "half" and "sextant"; any other value, including the empty string,
+// resolves to quadrant, the default that keeps capture and corpus unchanged.
+func blockScheme(name string) render.BlockScheme {
+	switch name {
+	case "half":
+		return render.BlockHalf
+	case "sextant":
+		return render.BlockSextant
+	default:
+		return render.BlockQuadrant
+	}
+}
+
 // SetScheme records the block-backend cell rendering scheme. It accepts
-// "quadrant" and "half"; any other value, including the empty string, resolves
-// to quadrant at read time (see captureSize). The caller sets it before
+// "quadrant", "half", and "sextant"; any other value, including the empty
+// string, resolves to quadrant at read time (see captureSize). The caller sets it before
 // Navigate, alongside SetBackend and SetCellPx, so this is set-once and needs
 // no live stream restart, unlike SetBackend, which switches an
 // already-streaming engine.

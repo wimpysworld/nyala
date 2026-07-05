@@ -34,9 +34,11 @@ type CLI struct {
 	// terminal's best supported backend.
 	Backend string `help:"Renderer backend: auto, block, kitty, or sixel." default:"auto" enum:"auto,block,kitty,sixel"`
 
-	// Blocks selects the block glyph mode: auto, sextant, quadrant, or half. auto
-	// and quadrant render quadrant; half renders half-block; sextant prints a
-	// terminal support verdict and exits without launching a browser.
+	// Blocks selects the block glyph mode: auto, sextant, quadrant, or half. On the
+	// interactive path auto and sextant render sextant when the terminal supports it
+	// and degrade to quadrant otherwise; quadrant forces quadrant; half renders
+	// half-block. The capture path is deterministic: sextant forces sextant, half
+	// forces half-block, and everything else (including auto) forces quadrant.
 	Blocks string `help:"Block glyph mode: auto, sextant, quadrant, or half." name:"blocks" default:"auto" enum:"auto,sextant,quadrant,half"`
 
 	// Browser is the path to the Chromium executable to drive. Empty falls back
@@ -70,10 +72,10 @@ func (c CLI) Validate() error {
 // parse error returns before any viewer call. With capture disabled it runs the
 // interactive viewer.Stream; with capture enabled it runs the bounded
 // viewer.Capture, passing the requested scroll through. Both pass the --backend
-// mode and the --blocks glyph mode through. When --blocks is sextant it prints a
-// terminal support verdict to tty and returns before any engine or viewer runs.
-// It constructs the Chromium engine from the validated URL and the --browser
-// flag.
+// mode and the --blocks glyph mode through; the viewer resolves --blocks to a
+// glyph scheme, detecting sextant support on the interactive path and staying
+// deterministic on the capture path. It constructs the Chromium engine from the
+// validated URL and the --browser flag.
 func Run(cli CLI, tty *os.File) error {
 	target, err := normaliseURL(cli.URL)
 	if err != nil {
@@ -85,17 +87,6 @@ func Run(cli CLI, tty *os.File) error {
 	capture, err := ParseCaptureEnv(captureValue, captureSet, scrollValue, scrollSet, settleValue, settleSet)
 	if err != nil {
 		return err
-	}
-	// The sextant mode is a diagnostic: report whether the terminal is known to
-	// render sextant blocks and exit before any engine or viewer runs.
-	if cli.Blocks == "sextant" {
-		name, supported := viewer.SextantSupported(os.Environ())
-		verdict := "unsupported"
-		if supported {
-			verdict = "supported"
-		}
-		fmt.Fprintf(tty, "sextant: %s (%s)\n", verdict, name)
-		return nil
 	}
 	eng := engineAdapter{engine.New(cli.Browser)}
 	if capture.Enabled {

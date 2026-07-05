@@ -427,12 +427,13 @@ func cursorPosition(row, col int) string {
 }
 
 // schemePixels returns the source-pixel extent a cols x rows block grid samples
-// in the given scheme: 2x4 per cell for quadrant, 1x2 per cell for half-block.
-// The compose step needs the source at this extent so each cell maps to its
-// own block of pixels. It maps the block.Scheme to render.BlockCaptureSize's
-// quadrant bool, the shared helper the engine also calls.
+// in the given scheme: 2x4 per cell for quadrant, 1x2 per cell for half-block,
+// 2x3 per cell for sextant. The compose step needs the source at this extent so
+// each cell maps to its own block of pixels. It maps the block.Scheme to a
+// render.BlockScheme via renderScheme, then calls render.BlockCaptureSize, the
+// shared helper the engine also calls.
 func schemePixels(scheme block.Scheme, cols, rows int) (pxW, pxH int) {
-	return render.BlockCaptureSize(scheme == block.SchemeQuadrant, cols, rows)
+	return render.BlockCaptureSize(renderScheme(scheme), cols, rows)
 }
 
 // writeGrid writes a composed grid to w as SGR cells, one block glyph per cell,

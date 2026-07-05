@@ -5,21 +5,23 @@ import "testing"
 func TestBlockCaptureSize(t *testing.T) {
 	cases := []struct {
 		name         string
-		quadrant     bool
+		scheme       BlockScheme
 		cols, rows   int
 		wantW, wantH int
 	}{
-		{"quadrant 80x24", true, 80, 24, 160, 96},
-		{"quadrant 1x1", true, 1, 1, 2, 4},
-		{"half-block 80x24", false, 80, 24, 80, 48},
-		{"half-block 1x1", false, 1, 1, 1, 2},
+		{"quadrant 80x24", BlockQuadrant, 80, 24, 160, 96},
+		{"quadrant 1x1", BlockQuadrant, 1, 1, 2, 4},
+		{"half-block 80x24", BlockHalf, 80, 24, 80, 48},
+		{"half-block 1x1", BlockHalf, 1, 1, 1, 2},
+		{"sextant 80x24", BlockSextant, 80, 24, 160, 72},
+		{"sextant 1x1", BlockSextant, 1, 1, 2, 3},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			gotW, gotH := BlockCaptureSize(c.quadrant, c.cols, c.rows)
+			gotW, gotH := BlockCaptureSize(c.scheme, c.cols, c.rows)
 			if gotW != c.wantW || gotH != c.wantH {
 				t.Errorf("BlockCaptureSize(%v, %d, %d) = (%d, %d), want (%d, %d)",
-					c.quadrant, c.cols, c.rows, gotW, gotH, c.wantW, c.wantH)
+					c.scheme, c.cols, c.rows, gotW, gotH, c.wantW, c.wantH)
 			}
 		})
 	}

@@ -33,7 +33,8 @@ const (
 const lowerHalfBlock = 0x2584
 
 // Scheme selects how Renderer maps source pixels to cells. SchemeQuadrant
-// is the 2x2 binarisation default; SchemeHalfBlock is the half-block floor.
+// is the 2x2 binarisation default; SchemeHalfBlock is the half-block floor;
+// SchemeSextant is the 2x3 sextant binarisation.
 type Scheme int
 
 const (
@@ -44,6 +45,9 @@ const (
 	// half-block glyph U+2584 with the top pixel as background and the bottom
 	// pixel as foreground.
 	SchemeHalfBlock
+	// SchemeSextant maps one cell to a 2x3 source block via the sextant (2x3)
+	// binarisation, raising vertical resolution over the quadrant scheme.
+	SchemeSextant
 )
 
 // Cell is one terminal cell on the owned grid. Glyph is the block rune to draw,
@@ -164,9 +168,12 @@ func WriteCell(w io.Writer, c *Cell, fgSGR, bgSGR string) error {
 // result is deterministic for a given Frame.
 func (br *Renderer) Compose(f render.Frame) Grid {
 	var g Grid
-	if br.Scheme == SchemeHalfBlock {
+	switch br.Scheme {
+	case SchemeHalfBlock:
 		g = br.composeHalfBlock(f)
-	} else {
+	case SchemeSextant:
+		g = br.composeSextant(f)
+	default:
 		g = br.composeQuadrant(f)
 	}
 	applyOverlay(&g, f, br.Scheme)
@@ -180,9 +187,12 @@ func (br *Renderer) Compose(f render.Frame) Grid {
 // It returns the same dst.
 func (br *Renderer) ComposeInto(dst *Grid, f render.Frame) *Grid {
 	reuseGrid(dst, br.Cols, br.Rows)
-	if br.Scheme == SchemeHalfBlock {
+	switch br.Scheme {
+	case SchemeHalfBlock:
 		br.composeHalfBlockInto(dst, f)
-	} else {
+	case SchemeSextant:
+		br.composeSextantInto(dst, f)
+	default:
 		br.composeQuadrantInto(dst, f)
 	}
 	applyOverlay(dst, f, br.Scheme)
