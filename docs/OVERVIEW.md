@@ -100,6 +100,11 @@ separate text channel may return in Stage 4 for link-hint geometry. See
    text exists, bitmap elsewhere. This is the primary quality differentiator.
 4. Diff against the previous frame; emit only changed cells.
 
+The block backend ships three schemes (quadrant, half-block, sextant), selected by the
+`--blocks` flag and, on the interactive path, a terminal-identity allow-list. See
+[`BLOCK-MODES.md`](./BLOCK-MODES.md) for the flag surface, the detector, the sextant
+character set, and the sampling model.
+
 ### Known constraints / risks
 
 - **Frame rate**: `startScreencast` streams JPEG/PNG over the CDP socket. Benchmarks
