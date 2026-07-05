@@ -42,10 +42,10 @@ type Engine interface {
 	// sizes the capture: sub-cell for block, cell-pixel for the graphics
 	// backends. When streaming it restarts the stream at the new size.
 	SetBackend(name string)
-	// SetScheme names the active block glyph scheme (quadrant, half) so the
-	// engine sizes the block capture: quadrant samples 2x4 source pixels per
-	// cell, half 1x2. It is set once before Navigate, so unlike SetBackend it
-	// needs no live stream restart.
+	// SetScheme names the active block glyph scheme (quadrant, half, sextant) so
+	// the engine sizes the block capture: quadrant samples 2x4 source pixels per
+	// cell, half 1x2, sextant 2x3. It is set once before Navigate, so unlike
+	// SetBackend it needs no live stream restart.
 	SetScheme(name string)
 	// SetCellPx sets the resolved terminal cell pixel size the engine uses to
 	// size the graphics capture and to bin DOM text boxes to cells.
@@ -111,11 +111,14 @@ type CaptureSession interface {
 // NO_COLOR and detection. mode is the --backend mode: auto and block always
 // pass, and a forced graphics backend is rejected before navigation when
 // detection did not confirm it. blocks is the --blocks mode selecting the block
-// glyph scheme (auto and quadrant render quadrant, half renders half-block).
+// glyph scheme; Stream resolves it with resolveScheme against os.Environ(), so
+// auto and sextant render sextant on a supported terminal and quadrant otherwise,
+// quadrant forces quadrant, and half renders half-block.
 // layoutWidth is the block-backend target layout
 // width in CSS pixels, handed to the engine before Navigate.
 func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks string, layoutWidth int) (err error) {
-	fd, st, restore, err := setupViewer(eng, tty, colourFlag, blocks, layoutWidth)
+	scheme := resolveScheme(blocks, os.Environ())
+	fd, st, restore, err := setupViewer(eng, tty, colourFlag, scheme, layoutWidth)
 	if err != nil {
 		return err
 	}
@@ -259,10 +262,11 @@ func (c *control) submit(fn func(Engine)) {
 // returns the tty fd, the State, and
 // a restore closure the caller must defer to leave raw mode. It does not enter
 // the full-screen mode or write the loading cue, because the capture driver must
-// not mirror those bytes into its terminal-stream capture. blocks is the
-// --blocks mode; it sets the block glyph scheme on the State and hands it to the
-// engine before Navigate.
-func setupViewer(eng Engine, tty *os.File, colourFlag, blocks string, layoutWidth int) (fd uintptr, st *State, restore func(), err error) {
+// not mirror those bytes into its terminal-stream capture. scheme is the resolved
+// block glyph scheme; it sets the scheme on the State and hands its engine name to
+// the engine before Navigate. The caller resolves it: Stream via resolveScheme
+// with detection, Capture via resolveCaptureScheme without.
+func setupViewer(eng Engine, tty *os.File, colourFlag string, scheme block.Scheme, layoutWidth int) (fd uintptr, st *State, restore func(), err error) {
 	fd = tty.Fd()
 	if !cterm.IsTerminal(fd) {
 		return 0, nil, nil, fmt.Errorf("viewer: %s is not a terminal", tty.Name())
@@ -280,10 +284,10 @@ func setupViewer(eng Engine, tty *os.File, colourFlag, blocks string, layoutWidt
 	// The image size is unknown until the first frame; NewState seeds a square
 	// and each drawn frame updates ImgW/ImgH before Fit and the block compose.
 	state := NewState(cols, rows, 1, 1)
-	// Set the block glyph scheme from the --blocks mode, overriding the NewState
-	// quadrant default for this run. auto keeps quadrant, so capture and corpus
-	// are unchanged.
-	state.Scheme = schemeFromBlocks(blocks)
+	// Set the resolved block glyph scheme, overriding the NewState quadrant default
+	// for this run. The caller resolves the --blocks mode; auto keeps quadrant on the
+	// capture path, so capture and corpus are unchanged.
+	state.Scheme = scheme
 
 	// Detection runs in raw mode but before the full-screen switch and the key
 	// reader, so the handshake replies are not consumed by the key goroutine.
@@ -520,25 +524,70 @@ func (s *keySender) close() {
 	})
 }
 
-// schemeFromBlocks maps the --blocks mode to a block.Scheme. "half" selects the
-// half-block scheme; auto, quadrant, and the empty string select quadrant, the
-// default that keeps capture and corpus unchanged. The sextant mode never
-// reaches here: app.Run handles it as a diagnostic before the viewer runs.
-func schemeFromBlocks(blocks string) block.Scheme {
-	if blocks == "half" {
+// resolveScheme maps the --blocks mode to a block.Scheme for the interactive
+// path, which may detect terminal support. "half" selects half-block; "quadrant"
+// selects quadrant; "auto" and "sextant" select sextant when SextantSupported(env)
+// reports the terminal renders sextant blocks, and degrade to quadrant otherwise.
+// Any other value, including the empty string, resolves to quadrant, the default
+// that keeps behaviour unchanged.
+func resolveScheme(blocks string, env []string) block.Scheme {
+	switch blocks {
+	case "half":
 		return block.SchemeHalfBlock
+	case "quadrant":
+		return block.SchemeQuadrant
+	case "auto", "sextant":
+		if _, supported := SextantSupported(env); supported {
+			return block.SchemeSextant
+		}
+		return block.SchemeQuadrant
+	default:
+		return block.SchemeQuadrant
 	}
-	return block.SchemeQuadrant
+}
+
+// resolveCaptureScheme maps the --blocks mode to a block.Scheme for the capture
+// path, which is deterministic and runs no terminal detection. "sextant" forces
+// sextant; "half" selects half-block; everything else, including "auto" and the
+// empty string, resolves to quadrant, so the default capture and corpus sweeps
+// are unchanged.
+func resolveCaptureScheme(blocks string) block.Scheme {
+	switch blocks {
+	case "sextant":
+		return block.SchemeSextant
+	case "half":
+		return block.SchemeHalfBlock
+	default:
+		return block.SchemeQuadrant
+	}
 }
 
 // schemeEngineName maps a block.Scheme to the engine's scheme string, the name
-// SetScheme accepts. It returns "half" for the half-block scheme and "quadrant"
-// otherwise, matching the engine's set-once scheme seam.
+// SetScheme accepts. It returns "half" for half-block, "sextant" for sextant, and
+// "quadrant" otherwise, matching the engine's set-once scheme seam.
 func schemeEngineName(s block.Scheme) string {
-	if s == block.SchemeHalfBlock {
+	switch s {
+	case block.SchemeHalfBlock:
 		return "half"
+	case block.SchemeSextant:
+		return "sextant"
+	default:
+		return "quadrant"
 	}
-	return "quadrant"
+}
+
+// renderScheme maps a block.Scheme to the render package's BlockScheme, the enum
+// render.BlockCaptureSize takes. The render package cannot import block, so this
+// viewer-side helper bridges the two enums for the three schemes.
+func renderScheme(s block.Scheme) render.BlockScheme {
+	switch s {
+	case block.SchemeHalfBlock:
+		return render.BlockHalf
+	case block.SchemeSextant:
+		return render.BlockSextant
+	default:
+		return render.BlockQuadrant
+	}
 }
 
 // backendName maps a Backend to the engine's backend string. The engine sizes

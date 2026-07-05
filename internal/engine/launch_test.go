@@ -336,7 +336,7 @@ func TestCaptureSizeBlock(t *testing.T) {
 	e := &ChromiumEngine{backend: "block"}
 
 	gotW, gotH := e.captureSize(cols, rows)
-	wantW, wantH := render.BlockCaptureSize(true, cols, rows)
+	wantW, wantH := render.BlockCaptureSize(render.BlockQuadrant, cols, rows)
 	if gotW != wantW || gotH != wantH {
 		t.Errorf("captureSize block = (%d, %d), want (%d, %d)", gotW, gotH, wantW, wantH)
 	}
@@ -358,6 +358,7 @@ func TestCaptureSizeBlockScheme(t *testing.T) {
 		{"unset defaults to quadrant", "", cols * 2, rows * 4},
 		{"quadrant explicit", "quadrant", cols * 2, rows * 4},
 		{"half", "half", cols, rows * 2},
+		{"sextant", "sextant", cols * 2, rows * 3},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -387,7 +388,7 @@ func TestSizingThreeIndependentValuesBlock(t *testing.T) {
 		t.Errorf("surfaceSize = (%d, %d), want the real viewport (%d, %d)", surfW, surfH, cols*cellW, rows*cellH)
 	}
 	// The downscale target is the sub-cell quadrant grid, a different number.
-	wantCapW, wantCapH := render.BlockCaptureSize(true, cols, rows)
+	wantCapW, wantCapH := render.BlockCaptureSize(render.BlockQuadrant, cols, rows)
 	if capW != wantCapW || capH != wantCapH {
 		t.Errorf("captureSize = (%d, %d), want the sub-cell grid (%d, %d)", capW, capH, wantCapW, wantCapH)
 	}

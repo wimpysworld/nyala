@@ -110,26 +110,57 @@ func TestSetEnabledNominatesCeiling(t *testing.T) {
 	}
 }
 
-// TestSchemeFromBlocks asserts the --blocks mode maps to the block scheme and
-// its engine name: half selects half-block, everything else quadrant. This is
-// the mapping setupViewer applies to the State and hands the engine.
-func TestSchemeFromBlocks(t *testing.T) {
+// TestResolveScheme asserts the interactive --blocks resolution: half and
+// quadrant map straight through, auto and sextant render sextant on a supported
+// terminal and degrade to quadrant on an unsupported one. It also pins the
+// engine-name mapping for each resolved scheme.
+func TestResolveScheme(t *testing.T) {
+	supportedEnv := []string{"TERM=xterm-kitty"}
+	unsupportedEnv := []string{"TERM=xterm-256color"}
 	cases := []struct {
+		name    string
 		blocks  string
+		env     []string
 		scheme  block.Scheme
 		engName string
 	}{
-		{"half", block.SchemeHalfBlock, "half"},
-		{"quadrant", block.SchemeQuadrant, "quadrant"},
-		{"auto", block.SchemeQuadrant, "quadrant"},
-		{"", block.SchemeQuadrant, "quadrant"},
+		{"quadrant", "quadrant", supportedEnv, block.SchemeQuadrant, "quadrant"},
+		{"half", "half", supportedEnv, block.SchemeHalfBlock, "half"},
+		{"auto supported", "auto", supportedEnv, block.SchemeSextant, "sextant"},
+		{"auto unsupported", "auto", unsupportedEnv, block.SchemeQuadrant, "quadrant"},
+		{"sextant supported", "sextant", supportedEnv, block.SchemeSextant, "sextant"},
+		{"sextant unsupported", "sextant", unsupportedEnv, block.SchemeQuadrant, "quadrant"},
 	}
 	for _, c := range cases {
-		if got := schemeFromBlocks(c.blocks); got != c.scheme {
-			t.Errorf("schemeFromBlocks(%q) = %d, want %d", c.blocks, got, c.scheme)
-		}
-		if got := schemeEngineName(c.scheme); got != c.engName {
-			t.Errorf("schemeEngineName(%d) = %q, want %q", c.scheme, got, c.engName)
+		t.Run(c.name, func(t *testing.T) {
+			if got := resolveScheme(c.blocks, c.env); got != c.scheme {
+				t.Errorf("resolveScheme(%q, env) = %d, want %d", c.blocks, got, c.scheme)
+			}
+			if got := schemeEngineName(c.scheme); got != c.engName {
+				t.Errorf("schemeEngineName(%d) = %q, want %q", c.scheme, got, c.engName)
+			}
+		})
+	}
+}
+
+// TestResolveCaptureScheme asserts the deterministic capture --blocks resolution,
+// which runs no terminal detection: sextant forces sextant, half forces
+// half-block, and everything else, including auto, forces quadrant so the default
+// capture and corpus sweeps are unchanged.
+func TestResolveCaptureScheme(t *testing.T) {
+	cases := []struct {
+		blocks string
+		scheme block.Scheme
+	}{
+		{"sextant", block.SchemeSextant},
+		{"half", block.SchemeHalfBlock},
+		{"quadrant", block.SchemeQuadrant},
+		{"auto", block.SchemeQuadrant},
+		{"", block.SchemeQuadrant},
+	}
+	for _, c := range cases {
+		if got := resolveCaptureScheme(c.blocks); got != c.scheme {
+			t.Errorf("resolveCaptureScheme(%q) = %d, want %d", c.blocks, got, c.scheme)
 		}
 	}
 }

@@ -1,17 +1,38 @@
 package render
 
+// BlockScheme selects how a block grid maps source pixels to cells. It mirrors
+// the block package's Scheme enum without importing it: the block package imports
+// render, so render must not import block, and this local enum keeps the
+// dependency one way.
+type BlockScheme int
+
+const (
+	// BlockQuadrant maps each cell to a 2x4 source block via the quadrant (2x2)
+	// binarisation. It is the zero value and the default scheme.
+	BlockQuadrant BlockScheme = iota
+	// BlockHalf maps each cell to a 1x2 source column via the half-block floor.
+	BlockHalf
+	// BlockSextant maps each cell to a 2x3 source block via the sextant (2x3)
+	// binarisation.
+	BlockSextant
+)
+
 // BlockCaptureSize returns the source-pixel extent a cols x rows block grid
-// samples. The quadrant scheme maps each cell to a 2x4 source block, so the
-// extent is (cols*2, rows*4); the half-block scheme maps each cell to a 1x2
-// source column, so the extent is (cols, rows*2). The quadrant flag selects the
-// scheme: true for quadrant, false for half-block. The scheme is passed as a
-// bool, not a block.Scheme, because the block package imports render, so render
-// must not import block.
-func BlockCaptureSize(quadrant bool, cols, rows int) (pxW, pxH int) {
-	if quadrant {
+// samples in the given scheme. Quadrant maps each cell to a 2x4 source block, so
+// the extent is (cols*2, rows*4); half-block maps each cell to a 1x2 source
+// column, so the extent is (cols, rows*2); sextant maps each cell to a 2x3 source
+// block, so the extent is (cols*2, rows*3). The scheme is passed as a BlockScheme,
+// not a block.Scheme, because the block package imports render, so render must not
+// import block.
+func BlockCaptureSize(scheme BlockScheme, cols, rows int) (pxW, pxH int) {
+	switch scheme {
+	case BlockHalf:
+		return cols, rows * 2
+	case BlockSextant:
+		return cols * 2, rows * 3
+	default:
 		return cols * 2, rows * 4
 	}
-	return cols, rows * 2
 }
 
 // GraphicsCaptureSize returns the source-pixel extent a cols x rows grid samples
