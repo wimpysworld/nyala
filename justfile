@@ -122,7 +122,10 @@ run url="https://wimpys.world" *flags: build
         for word in "${cmd[@]}"; do
             wrapped+="$(printf '%q ' "$word")"
         done
-        script -qec "$wrapped" /dev/null
+        # script runs the wrapped command via $SHELL. The wrapped string is POSIX
+        # sh syntax (${LINES:-40} and %q quoting), so force a POSIX shell rather
+        # than the caller's login shell, which may be fish and cannot parse it.
+        SHELL=/bin/sh script -qec "$wrapped" /dev/null
     fi
 
 # Capture every corpus fixture on the block backend for a text-layout sweep
