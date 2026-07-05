@@ -331,12 +331,16 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 			// latches gate on event order, not bitmap content: on a large surface
 			// Chromium can satisfy both latches on the frame before the first paint
 			// lands, a uniform field of the background colour with no ink. Skip that
-			// no-ink bitmap so the bundle's opening frame is the painted page. Only
-			// the first frame is gated: once a painted frame is counted, later frames draw
-			// as-is (a legitimately dark or sparse page must not stall). The idle timer, already
-			// armed, bounds the wait and writes a "first-draw timeout" partial if no
-			// painted frame arrives.
-			if drawn == 0 && frameBlank(frame.Img) {
+			// no-ink bitmap so the bundle's opening frame is the painted page. A
+			// text-only page now paints no glyph ink into the bitmap (the block path
+			// hides page text and the crisp overlay carries it), so bitmap blankness
+			// alone no longer means unpainted; the overlay runs distinguish a painted
+			// text page from a true pre-paint frame. Only the first frame is gated:
+			// once a painted frame is counted, later frames draw as-is (a legitimately
+			// dark or sparse page must not stall). The idle timer, already armed, bounds
+			// the wait and writes a "first-draw timeout" partial if no painted frame
+			// arrives.
+			if drawn == 0 && firstFrameUnpainted(frame.Img, frame.Text) {
 				continue
 			}
 			if reason, ok := drawOne(frame); !ok {
@@ -697,6 +701,17 @@ const frameBlankTolerance = 12
 // painted page from a blank one without walking every pixel of a multi-megapixel
 // surface. The check runs capture-only, so production never pays it.
 const frameBlankStride = 8
+
+// firstFrameUnpainted reports whether the first counted frame is a genuine
+// pre-paint frame: its bitmap carries no ink and it carries no overlay text runs.
+// A text-only page paints no glyph ink into the bitmap now that the block path
+// hides page text, so bitmap blankness alone no longer proves the frame is
+// unpainted; a painted text page has overlay runs (the text latch holds the first
+// counted frame until the runs are folded on), so the runs keep it from being
+// skipped. It is capture-only.
+func firstFrameUnpainted(img *image.RGBA, runs []render.GlyphRun) bool {
+	return frameBlank(img) && len(runs) == 0
+}
 
 // frameBlank reports whether img is a no-ink pre-paint bitmap: its
 // frameInkFraction is below frameBlankThreshold. A flat background of any colour

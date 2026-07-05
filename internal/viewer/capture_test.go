@@ -938,6 +938,25 @@ func TestFrameBlank(t *testing.T) {
 	}
 }
 
+// TestFirstFrameUnpainted asserts the first-frame skip predicate is text-aware: a
+// blank bitmap counts as unpainted only when no overlay runs ride with it, so a
+// painted text-only page (no glyph ink in the bitmap, text carried by the overlay)
+// is not skipped, while a true pre-paint frame (no ink, no runs) still is. It pins
+// the fix for the block path hiding page text into the overlay.
+func TestFirstFrameUnpainted(t *testing.T) {
+	blank := image.NewRGBA(image.Rect(0, 0, 100, 100))
+	runs := []render.GlyphRun{{Text: "hello"}}
+	if !firstFrameUnpainted(blank, nil) {
+		t.Error("firstFrameUnpainted(blank, no runs) = false, want true; a true pre-paint frame is skipped")
+	}
+	if firstFrameUnpainted(blank, runs) {
+		t.Error("firstFrameUnpainted(blank, runs) = true, want false; a painted text-only page must not be skipped")
+	}
+	if firstFrameUnpainted(paintedImg(100, 100), nil) {
+		t.Error("firstFrameUnpainted(painted, no runs) = true, want false; a painted bitmap is not unpainted")
+	}
+}
+
 // sparseImg builds a w by h white RGBA image with the given fraction of pixels
 // inked black, so frameBlank sees a low but non-zero ink fraction. It models a
 // sparse corpus page: mostly background with a little text. The ink is spread by a
