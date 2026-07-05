@@ -40,6 +40,7 @@ type walkRun struct {
 	W    float64    `json:"w"`
 	H    float64    `json:"h"`
 	FG   walkColour `json:"fg"`
+	BG   walkColour `json:"bg"`
 }
 
 // walkResult is the whole in-page walk return: the current layout generation, the
@@ -98,6 +99,28 @@ func buildTextWalkScript(cellW, cellH float64) string {
 	b.WriteString("var p=m[1].split(/[ ,\\/]+/).filter(function(x){return x.length;});")
 	b.WriteString("var a=p.length>3?Math.round(Math.max(0,Math.min(1,parseFloat(p[3])))*255):255;")
 	b.WriteString("return{r:parseInt(p[0])||0,g:parseInt(p[1])||0,b:parseInt(p[2])||0,a:a};}")
+	// bgOf resolves the run's DOM effective background colour. It walks from the
+	// text node's element up through ancestors, composites each background layer
+	// front-to-back accumulating coverage, and stops at the first fully opaque
+	// layer. When no ancestor is opaque it falls back to the documentElement then
+	// body background. It un-premultiplies the accumulated channels by the coverage
+	// so the stored RGB is straight colour, and returns a=round(cov*255): a==255
+	// only when a fully opaque background was resolved, so the block overlay fills a
+	// covered cell with a solid colour only when it is safe. A fully transparent
+	// stack returns a==0, the "no opaque background" signal.
+	b.WriteString("function bgOf(el){")
+	b.WriteString("function parse(c){var m=/rgba?\\(([^)]+)\\)/.exec(c);if(!m)return null;")
+	b.WriteString("var p=m[1].split(/[ ,\\/]+/).filter(function(x){return x.length;});")
+	b.WriteString("var a=p.length>3?Math.max(0,Math.min(1,parseFloat(p[3]))):1;")
+	b.WriteString("return{r:parseInt(p[0])||0,g:parseInt(p[1])||0,b:parseInt(p[2])||0,a:a};}")
+	b.WriteString("var or=0,og=0,ob=0,cov=0;")
+	b.WriteString("for(var a=el;a;a=a.parentElement){var s=parse(getComputedStyle(a).backgroundColor);")
+	b.WriteString("if(!s||s.a<=0)continue;var w=s.a*(1-cov);")
+	b.WriteString("or+=s.r*w;og+=s.g*w;ob+=s.b*w;cov+=w;if(cov>=0.999)break;}")
+	b.WriteString("if(cov<0.999){var ds=parse(getComputedStyle(document.documentElement).backgroundColor)||parse(document.body?getComputedStyle(document.body).backgroundColor:'');")
+	b.WriteString("if(ds&&ds.a>0){var w=ds.a*(1-cov);or+=ds.r*w;og+=ds.g*w;ob+=ds.b*w;cov+=w;}}")
+	b.WriteString("if(cov<=0)return{r:0,g:0,b:0,a:0};")
+	b.WriteString("return{r:Math.round(or/cov),g:Math.round(og/cov),b:Math.round(ob/cov),a:Math.round(Math.min(1,cov)*255)};}")
 	// The tree walker visits every text node. A node with no non-whitespace content
 	// or no parent element is skipped. rejectHidden drops a whole subtree whose parent
 	// element is hidden, so the walk never descends into a hidden container.
@@ -106,7 +129,7 @@ func buildTextWalkScript(cellW, cellH float64) string {
 	b.WriteString("var el=node.parentElement;if(!el)continue;")
 	b.WriteString("if(!node.nodeValue||!node.nodeValue.trim())continue;")
 	b.WriteString("if(hiddenStyle(el))continue;")
-	b.WriteString("var fg=rgba(el);")
+	b.WriteString("var fg=rgba(el);var bg=bgOf(el);")
 	// Bucket the node's code units by their rounded row, so a soft-wrapped node yields
 	// one run per line box with that line's own origin. For each code unit a one-unit
 	// range gives its client rect; the unit joins the line whose top rounds to the same
@@ -138,7 +161,7 @@ func buildTextWalkScript(cellW, cellH float64) string {
 	b.WriteString("var t=ln.chars.join('').replace(/\\s+/g,' ').replace(/^ | $/g,'');if(!t)continue;")
 	b.WriteString("var h=ln.bottom-ln.top;")
 	fmt.Fprintf(&b, "if(h<ch/4)continue;")
-	b.WriteString("runs.push({t:t,c:Math.round(ln.left/cw),r:Math.round(ln.top/ch),x:ln.left,y:ln.top,w:ln.right-ln.left,h:h,fg:fg});}")
+	b.WriteString("runs.push({t:t,c:Math.round(ln.left/cw),r:Math.round(ln.top/ch),x:ln.left,y:ln.top,w:ln.right-ln.left,h:h,fg:fg,bg:bg});}")
 	b.WriteString("}")
 	b.WriteString("var gen=(window." + layoutGenProperty + "||0);")
 	b.WriteString("var de=document.documentElement||{};")
@@ -226,6 +249,7 @@ func decodeWalkRuns(res walkResult, cellW float64, cols int) []render.GlyphRun {
 			Row:   r.Row,
 			Text:  clipped,
 			FG:    color.RGBA{R: r.FG.R, G: r.FG.G, B: r.FG.B, A: r.FG.A},
+			BG:    color.RGBA{R: r.BG.R, G: r.BG.G, B: r.BG.B, A: r.BG.A},
 			X:     r.X,
 			Y:     r.Y,
 			W:     r.W,
