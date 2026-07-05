@@ -11,7 +11,7 @@ import (
 )
 
 // errSnapshot is the canned snapshot-read failure the holdDecision tests feed,
-// standing in for a real DOMSnapshot.captureSnapshot error. No browser involved.
+// standing in for a real in-page text-walk read error. No browser involved.
 var errSnapshot = errors.New("snapshot read failed")
 
 // decodedRuns is the freshly decoded text, the "current snapshot" set. A held

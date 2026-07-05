@@ -398,8 +398,9 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 // or a closed frames channel; ok is true once the scrolled frame is drawn and
 // recorded. drawn is the count of frames already drawn, so the failure reasons name
 // the right frame index. settle gates the settle wait: when false the hook skips it
-// and draws the first frame whose scroll offset advanced (the pre-settle state,
-// which the compose-time scroll compensation keeps glued to the scrolled bitmap).
+// and draws the first frame whose scroll offset advanced (the pre-settle state, whose
+// overlay holds the previous runs until the settle re-snapshot lands at the bitmap's
+// scroll).
 func captureScrollFrame(eng Engine, session CaptureSession, frames <-chan render.Frame, tee io.Writer, st *State, bundle bundleWriter, timer *time.Timer, scrollPx int, settle bool, idle time.Duration, drawn int, baseScrollY float64) (reason string, ok bool) {
 	// Read the settle channel and drain any stale poke before the injection, so only a
 	// settle publish that lands after this scroll satisfies the gate. A nil session or

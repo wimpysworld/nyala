@@ -131,86 +131,97 @@ corpus:
     set -uo pipefail
     root="$(pwd)/testdata/corpus"
     fail=0
-    # Each fixture captures and gates at two grids: the default 120x40 and a
-    # wide 240x48 leg. The run wrapper honours caller-exported LINES/COLUMNS.
-    legs=("120x40" "240x48")
+
+    # capture_bundle COLS ROWS DIR CELL: capture one block bundle for the fixture
+    # at DIR (the index.html directory) at the given grid, forcing CELL device px
+    # per cell when CELL is non-empty. It prints the parsed bundle path on stdout
+    # and returns non-zero on a capture failure (tail of the run output goes to
+    # stderr). The 240-column screencast is megabytes of escape bytes, so the run
+    # output goes to a temp file, not a shell variable, to stay under ARG_MAX. The
+    # pty wrapper emits CRLF, so the trailing CR is stripped before use.
+    capture_bundle() {
+        local cols="$1" rows="$2" dir="$3" cell="$4"
+        local out; out="$(mktemp)"
+        local cellflag=(); [ -n "$cell" ] && cellflag=("cell=$cell")
+        COLUMNS="$cols" LINES="$rows" just capture=1 run "file://${dir}index.html" backend=block "${cellflag[@]}" > "$out" 2>&1
+        local status=$?
+        if [ "$status" -ne 0 ]; then
+            tail -n 20 "$out" >&2
+            rm -f "$out"
+            return 1
+        fi
+        local bundle; bundle="$(grep 'capture bundle:' "$out" | tail -n 1)"
+        rm -f "$out"
+        bundle="${bundle#*capture bundle: }"
+        bundle="${bundle%$'\r'}"
+        [ -n "$bundle" ] || return 1
+        printf '%s' "$bundle"
+    }
+
+    # paint_gate FIXTURE_JSON FRAME LABEL: run the paint-referenced displacement
+    # gate against FRAME. The gate threshold is the correctness target (mean-abs
+    # below 0.5 cell, max-abs below 1.0 cell, both axes), NOT the current build's
+    # baseline, so on the unfixed architecture several fixtures breach it. This is
+    # the point: the board is honest. A breach is logged as an expected-fail with
+    # its real numbers and does NOT set fail, so the sweep exit code stays usable
+    # while the architecture is unfixed; every later phase turns these expected-
+    # fails green. A pass is noted. This mirrors the report-the-number discipline
+    # the layout-13 scroll leg uses. The paint metric reads screenshot.png (the
+    # source page paint) not block-render.png (which folds our overlay on and would
+    # cancel), so it cannot self-cancel the way placement-score can.
+    paint_gate() {
+        local fjson="$1" frame="$2" label="$3"
+        local numbers; numbers="$(go run ./tools/paint-displacement "$frame" 2>/dev/null | grep -E 'measured|skipped|disp')"
+        if go run ./tools/paint-displacement -gate -thresholds "$fjson" "$frame" >/dev/null 2>&1; then
+            printf 'paint-displacement PASS: %s\n' "$label"
+        else
+            printf 'paint-displacement EXPECTED-FAIL (architecture unfixed): %s\n' "$label"
+            printf '%s\n' "$numbers" | sed 's/^/    /'
+        fi
+    }
+
+    # Each fixture captures and gates at three grids: the default 120x40, a wide
+    # 240x48, and the owner's real terminal geometry 158x86 (cell 16x33 device px,
+    # pinned so a headless pty reproduces the device quantisation). Every leg runs
+    # the placement-score gate (a cheap regression guard, hard-gated as before) and
+    # the paint-referenced displacement gate (the honest arbiter, expected-fail on
+    # the current build). The run wrapper honours caller-exported LINES/COLUMNS.
+    legs=("120x40 " "240x48 " "158x86 16x33")
     for dir in "$root"/layout-*/; do
         name="$(basename "$dir")"
         for leg in "${legs[@]}"; do
-            cols="${leg%x*}"
-            rows="${leg#*x}"
-            printf '== %s [%s] ==\n' "$name" "$leg"
-            # Capture the run output to a temp file, not a shell variable: the
-            # 240-column screencast is megabytes of escape bytes, so expanding it
-            # as an argument overflows ARG_MAX and breaks the sweep. Parse the
-            # bundle path from the file and print only the tail so a failed
-            # capture stays debuggable. The pty wrapper emits CRLF, so strip the
-            # trailing CR before using the path.
-            out="$(mktemp)"
-            COLUMNS="$cols" LINES="$rows" just capture=1 run "file://${dir}index.html" backend=block > "$out" 2>&1
-            status=$?
-            if [ "$status" -ne 0 ]; then
-                tail -n 20 "$out"
-                printf 'capture failed: %s [%s]\n' "$name" "$leg" >&2
-                rm -f "$out"
+            grid="${leg%% *}"
+            cell="${leg#* }"
+            cols="${grid%x*}"
+            rows="${grid#*x}"
+            label="$name [$grid${cell:+ cell $cell}]"
+            printf '== %s ==\n' "$label"
+            bundle="$(capture_bundle "$cols" "$rows" "$dir" "$cell")" || {
+                printf 'capture failed: %s\n' "$label" >&2
                 fail=1
                 continue
-            fi
-            bundle="$(grep 'capture bundle:' "$out" | tail -n 1)"
-            rm -f "$out"
-            bundle="${bundle#*capture bundle: }"
-            bundle="${bundle%$'\r'}"
-            if [ -z "$bundle" ]; then
-                printf 'no bundle path parsed: %s [%s]\n' "$name" "$leg" >&2
-                fail=1
-                continue
-            fi
+            }
             frame="$(printf '%s' "$bundle"/frames/frame-*/)"
             if ! go run ./tools/placement-score -gate -thresholds "${dir}fixture.json" "$frame"; then
-                printf 'placement gate failed: %s [%s]\n' "$name" "$leg" >&2
+                printf 'placement gate failed: %s\n' "$label" >&2
                 fail=1
             fi
+            paint_gate "${dir}fixture.json" "$frame" "$label"
         done
     done
 
-    # layout-13 real-geometry legs. The frozen linuxmatters page is captured at
-    # the owner's real terminal geometry (158x86 cells, 16x33 device px per cell,
-    # pinned with cell=16x33 so a headless pty reproduces the device
-    # quantisation), first as a placement leg, then as a scroll leg that gates the
-    # overlay scroll-dance. Only layout-13 carries these; the twelve synthetic
-    # fixtures stay at the two placement legs above.
+    # layout-13 real-geometry scroll leg. It captures three frames then scrolls
+    # 600 CSS px and settles, so the bundle holds consecutive snapshot generations
+    # across a scroll. The scroll-dance gate hard-fails on danced 0: the metric
+    # classifies the position:fixed nav as fixed (viewport-stationary on scroll)
+    # and scores every other run on its own scroll-compensated document row, so a
+    # fixed nav and scrolling body content each read honestly. Whole-cell scroll
+    # lands the settle re-snapshot's runs on the resting bitmap's scroll and
+    # composeFrame pairs the two on scroll equality, so no run hops one cell at
+    # settle. Only layout-13 carries the scroll leg; the placement and paint legs
+    # above cover every fixture at all three geometries.
     lm="$root/layout-13-linuxmatters/"
     if [ -d "$lm" ]; then
-        # Real-geometry placement leg: gate right-edge placement at 158x86.
-        printf '== layout-13-linuxmatters [158x86 cell 16x33] ==\n'
-        out="$(mktemp)"
-        COLUMNS=158 LINES=86 just capture=1 run "file://${lm}index.html" backend=block cell=16x33 > "$out" 2>&1
-        status=$?
-        if [ "$status" -ne 0 ]; then
-            tail -n 20 "$out"
-            rm -f "$out"
-            printf 'capture failed: layout-13-linuxmatters [158x86 cell 16x33]\n' >&2
-            fail=1
-        else
-            bundle="$(grep 'capture bundle:' "$out" | tail -n 1)"
-            rm -f "$out"
-            bundle="${bundle#*capture bundle: }"
-            bundle="${bundle%$'\r'}"
-            frame="$(printf '%s' "$bundle"/frames/frame-*/)"
-            if ! go run ./tools/placement-score -gate -thresholds "${lm}fixture.json" "$frame"; then
-                printf 'placement gate failed: layout-13-linuxmatters [158x86 cell 16x33]\n' >&2
-                fail=1
-            fi
-        fi
-
-        # Scroll leg: capture three frames then scroll 600 CSS px and settle, so
-        # the bundle holds consecutive snapshot generations across a scroll. The
-        # scroll-dance gate hard-fails on danced 0: the metric classifies the
-        # position:fixed nav as fixed (viewport-stationary on scroll) and scores
-        # every other run on its own scroll-compensated document row, so a fixed
-        # nav and scrolling body content each read honestly. The compose shift
-        # re-snaps from the shifted box origin, so a mid-scroll frame and the
-        # settle re-decode land the same row and no run hops one cell at settle.
         printf '== layout-13-linuxmatters [158x86 cell 16x33 scroll=600] ==\n'
         out="$(mktemp)"
         COLUMNS=158 LINES=86 just capture=3 scroll=600 run "file://${lm}index.html" backend=block cell=16x33 > "$out" 2>&1
@@ -264,6 +275,10 @@ rasterise path:
 # Score horizontal text placement error from a captured text-map.json (or frame dir)
 placement-score path:
     @go run ./tools/placement-score {{path}}
+
+# Score paint-referenced glyph displacement from a captured frame dir against screenshot.png
+paint-displacement path:
+    @go run ./tools/paint-displacement {{path}}
 
 # Score overlay re-placement (scroll dance) across a capture bundle's frame sequence
 scroll-dance path:

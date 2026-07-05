@@ -3,11 +3,14 @@ package engine
 import (
 	"context"
 	"image"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/page"
+
+	"github.com/wimpysworld/nyala/internal/render"
 )
 
 // cancelledContext returns a context that is already cancelled, so the snapshot
@@ -38,7 +41,7 @@ func TestComposeFrameCopiesMetaUnderCapture(t *testing.T) {
 			Timestamp:       &ts,
 		},
 	}
-	frame := e.composeFrame(pending, nil)
+	frame := e.composeFrame(pending, nil, nil)
 	if frame.Meta == nil {
 		t.Fatal("frame.Meta is nil under capture, want the screencast metadata copied")
 	}
@@ -66,7 +69,7 @@ func TestComposeFrameFoldsPublishedText(t *testing.T) {
 	want := decodedRuns
 	ts.store(want, 1.5, 0, 0)
 
-	frame := e.composeFrame(pendingFrame{img: image.NewRGBA(image.Rect(0, 0, 2, 2))}, ts)
+	frame := e.composeFrame(pendingFrame{img: image.NewRGBA(image.Rect(0, 0, 2, 2))}, ts, nil)
 	if len(frame.Text) != len(want) || (len(want) > 0 && frame.Text[0].Text != want[0].Text) {
 		t.Errorf("frame.Text = %v, want the published runs %v", frame.Text, want)
 	}
@@ -98,6 +101,49 @@ func TestSnapshotRunsRecordsForBlockOnly(t *testing.T) {
 	}
 }
 
+// TestShiftRunsToBitmapScrollTracksScroll asserts the compose-time shift moves each
+// run onto the bitmap's scroll and drops a run scrolled off the grid. The bitmap
+// scrolled two cells (2*cellCSSH CSS pixels) past the snapshot, so every run shifts up
+// two rows, and a run at row 1 shifts to row -1 and is dropped. The shared input slice
+// is never mutated.
+func TestShiftRunsToBitmapScrollTracksScroll(t *testing.T) {
+	const cellCSSH = 33.0
+	const rows = 40
+	runs := []render.GlyphRun{
+		{Col: 0, Row: 5, Text: "here", Y: 5 * cellCSSH},
+		{Col: 2, Row: 1, Text: "gone", Y: 1 * cellCSSH}, // shifts to row -1, dropped
+	}
+	orig := append([]render.GlyphRun(nil), runs...)
+	bitmapScrollY := 2 * cellCSSH // bitmap scrolled two cells past the snapshot at 0
+	got := shiftRunsToBitmapScroll(runs, bitmapScrollY, 0, cellCSSH, rows)
+
+	if len(got) != 1 {
+		t.Fatalf("shifted runs = %d, want 1 (the off-grid run dropped)", len(got))
+	}
+	if got[0].Row != 3 {
+		t.Errorf("kept run row = %d, want 3 (5 - 2)", got[0].Row)
+	}
+	if got[0].Y != 3*cellCSSH {
+		t.Errorf("kept run Y = %v, want %v (5c - 2c)", got[0].Y, 3*cellCSSH)
+	}
+	if got[0].Col != 0 {
+		t.Errorf("kept run col = %d, want 0 (columns untouched)", got[0].Col)
+	}
+	if !reflect.DeepEqual(runs, orig) {
+		t.Error("shiftRunsToBitmapScroll mutated the shared input slice")
+	}
+}
+
+// TestShiftRunsToBitmapScrollZeroDeltaIsFastPath asserts a zero scroll delta returns
+// the input slice untouched (no copy), the production fast path.
+func TestShiftRunsToBitmapScrollZeroDeltaIsFastPath(t *testing.T) {
+	runs := decodedRuns
+	got := shiftRunsToBitmapScroll(runs, 100, 100, 33, 40)
+	if &got[0] != &runs[0] {
+		t.Error("zero delta returned a copy, want the input slice untouched")
+	}
+}
+
 // TestComposeFrameLeavesMetaNilOffCapture asserts composeFrame leaves frame.Meta
 // nil when capture is off, so production stays zero-cost.
 func TestComposeFrameLeavesMetaNilOffCapture(t *testing.T) {
@@ -106,7 +152,7 @@ func TestComposeFrameLeavesMetaNilOffCapture(t *testing.T) {
 		img:  image.NewRGBA(image.Rect(0, 0, 2, 2)),
 		meta: &page.ScreencastFrameMetadata{ScrollOffsetY: 240},
 	}
-	frame := e.composeFrame(pending, nil)
+	frame := e.composeFrame(pending, nil, nil)
 	if frame.Meta != nil {
 		t.Errorf("frame.Meta = %+v off capture, want nil", frame.Meta)
 	}

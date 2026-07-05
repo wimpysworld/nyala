@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"testing"
 
+	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
@@ -26,8 +27,8 @@ func TestCaptureGridSinkFillsOnBlockDraw(t *testing.T) {
 	st.SetCaptureGrid(&sink)
 
 	var buf bytes.Buffer
-	if err := st.RenderFrame(src, &buf); err != nil {
-		t.Fatalf("RenderFrame: %v", err)
+	if err := st.RenderStreamFrame(render.Frame{Img: src}, &buf); err != nil {
+		t.Fatalf("RenderStreamFrame: %v", err)
 	}
 
 	if sink.Cols != st.Cols || sink.Rows != st.Rows {
@@ -37,7 +38,7 @@ func TestCaptureGridSinkFillsOnBlockDraw(t *testing.T) {
 		t.Fatalf("sink grid cells = %d, want %d", len(sink.Cells), st.Cols*st.Rows)
 	}
 	if buf.Len() == 0 {
-		t.Errorf("RenderFrame wrote no terminal bytes")
+		t.Errorf("RenderStreamFrame wrote no terminal bytes")
 	}
 }
 
@@ -49,7 +50,7 @@ func TestCaptureGridSinkNilByDefault(t *testing.T) {
 	src := image.NewRGBA(image.Rect(0, 0, 16, 16))
 	var buf bytes.Buffer
 	// With no sink set, drawing must not panic and must still write bytes.
-	if err := st.RenderFrame(src, &buf); err != nil {
-		t.Fatalf("RenderFrame: %v", err)
+	if err := st.RenderStreamFrame(render.Frame{Img: src}, &buf); err != nil {
+		t.Fatalf("RenderStreamFrame: %v", err)
 	}
 }

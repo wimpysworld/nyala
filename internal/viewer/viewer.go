@@ -294,12 +294,10 @@ const (
 )
 
 // Action is the outcome of feeding one key to the state machine: whether the
-// viewer should redraw, whether it should quit, and any recognised scroll key to
-// forward. Scroll is ScrollNone unless the key was a scroll key.
+// viewer should redraw and whether it should quit.
 type Action struct {
-	Redraw bool      // the state changed; the caller should re-render
-	Quit   bool      // the user asked to quit
-	Scroll ScrollKey // a recognised scroll key to forward, or ScrollNone
+	Redraw bool // the state changed; the caller should re-render
+	Quit   bool // the user asked to quit
 }
 
 // keyQuitCtrlC is the Ctrl-C byte; keyTab is the Tab byte; keyEsc is the escape
@@ -332,17 +330,6 @@ func (s *State) HandleKey(b byte) Action {
 	}
 }
 
-// HandleScrollKey surfaces a recognised scroll key as an Action for the push
-// consumer to forward to the engine. The viewer holds no scroll state, so it
-// does not redraw or quit; it carries the key on Action.Scroll. ScrollNone is a
-// no-op. It never touches the terminal, so it is unit-tested directly.
-func (s *State) HandleScrollKey(k ScrollKey) Action {
-	if k == ScrollNone {
-		return Action{}
-	}
-	return Action{Scroll: k}
-}
-
 // decodeCSI maps a CSI sequence body (the bytes after ESC [) to a scroll key. It
 // recognises the arrow finals A/B/C/D and the PageUp/PageDown sequences 5~/6~.
 // It returns ScrollNone, false for any other body, so an unrecognised escape
@@ -366,31 +353,15 @@ func decodeCSI(body []byte) (ScrollKey, bool) {
 	}
 }
 
-// RenderFrame fits the source image to the current terminal grid and writes one
-// frame to w with the active backend. The block backend fits onto the owned cell
-// grid and honours the scheme and colour toggles; the graphics backends encode
-// the fitted image directly. The source is the full-resolution loaded image; it
-// is downscaled to the fit extent here.
-func (s *State) RenderFrame(src *image.RGBA, w io.Writer) error {
-	fit := s.Fit()
-	if fit.FitCols <= 0 || fit.FitRows <= 0 {
-		return nil
-	}
-	if s.Backend == BackendBlock {
-		return s.renderBlock(src, nil, w)
-	}
-	return s.renderGraphics(src, fit, w)
-}
-
 // RenderStreamFrame draws one live screencast frame, folding its crisp DOM-text
 // overlay on the block path. The engine sizes the capture to the full grid and
 // bins each text run in whole-cell coordinates, so the overlay aligns when the
 // block path composes at the same full grid. The graphics backends carry no
 // overlay and the engine already sized their bitmap to the terminal target, so
-// they draw frame.Img as final via renderGraphicsFinal with no second downscale:
-// the engine is the one graphics sizing owner. A nil or degenerate (zero-extent)
-// image is a no-op; this one guard covers both the block and the graphics paths,
-// so neither downscales to a zero extent.
+// they encode frame.Img as final with no second downscale: the engine is the one
+// graphics sizing owner. A nil or degenerate (zero-extent) image is a no-op; this
+// one guard covers both the block and the graphics paths, so neither downscales to
+// a zero extent.
 func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
 	if frame.Img == nil {
 		return nil
@@ -406,7 +377,7 @@ func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
 	if fit.FitCols <= 0 || fit.FitRows <= 0 {
 		return nil
 	}
-	return s.renderGraphicsFinal(frame.Img, fit, w)
+	return s.encodeGraphics(frame.Img, fit, w)
 }
 
 // renderBlock composes the source onto the fit-and-letterbox grid and writes it
@@ -455,31 +426,10 @@ func (s *State) renderBlock(src *image.RGBA, text []render.GlyphRun, w io.Writer
 	return writeGrid(grid, s.Colour, w)
 }
 
-// renderGraphics downscales the source to the fitted pixel extent and encodes it
-// with the active graphics backend. Sixel and kitty draw a bitmap, so the fit
-// maps to pixels at the real terminal cell size, filling the letterbox; the image
-// keeps its aspect. The static-image path (RenderFrame) uses it because its source
-// is a full-resolution loaded image that must be fitted and downscaled here.
-func (s *State) renderGraphics(src *image.RGBA, fit block.Fit, w io.Writer) error {
-	pxW, pxH := render.GraphicsCaptureSize(fit.FitCols, fit.FitRows, s.W, s.H)
-	sub := metrics.Downscale(src, pxW, pxH)
-	return s.encodeGraphics(sub, fit, w)
-}
-
-// renderGraphicsFinal encodes an already-sized graphics bitmap as final, with no
-// second downscale. The live stream path uses it: the engine sized the bitmap to
-// the terminal pixel target, so it is the one sizing owner and the viewer must not
-// resize the frame again. It positions and encodes through the same encodeGraphics
-// seam as the static path.
-func (s *State) renderGraphicsFinal(src *image.RGBA, fit block.Fit, w io.Writer) error {
-	return s.encodeGraphics(src, fit, w)
-}
-
 // encodeGraphics positions the cursor at the letterbox offset and encodes img
-// with the active graphics backend. It is the shared tail of renderGraphics (which
-// downscales first) and renderGraphicsFinal (which passes the engine-sized bitmap
-// through), so the kitty delete-all and the centring offset stay identical on both
-// paths.
+// with the active graphics backend. RenderStreamFrame passes the engine-sized
+// bitmap through, so the kitty delete-all and the centring offset stay in one
+// place.
 func (s *State) encodeGraphics(img *image.RGBA, fit block.Fit, w io.Writer) error {
 	if s.Backend == BackendKitty {
 		if _, err := io.WriteString(w, kittyDeleteAll); err != nil {

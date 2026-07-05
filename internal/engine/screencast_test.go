@@ -28,9 +28,9 @@ func TestRunTextSyncSnapshotsOncePerPaint(t *testing.T) {
 	painted := make(chan struct{})
 	close(painted) // paint already happened
 	e := &ChromiumEngine{backend: "block", painted: painted}
-	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, overlayState) {
+	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, int64, overlayState) {
 		atomic.AddInt64(&snaps, 1)
-		return want, 0, scrollOffset{}, overlayState{}
+		return want, 0, scrollOffset{}, 0, overlayState{}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -150,9 +150,9 @@ func TestRunTextSyncReSnapTriggers(t *testing.T) {
 	painted := make(chan struct{})
 	close(painted)
 	e := &ChromiumEngine{backend: "block", painted: painted}
-	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, overlayState) {
+	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, int64, overlayState) {
 		atomic.AddInt64(&snaps, 1)
-		return nil, 0, scrollOffset{}, overlayState{}
+		return nil, 0, scrollOffset{}, 0, overlayState{}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -191,9 +191,9 @@ func TestRunTextSyncScrollTriggers(t *testing.T) {
 	painted := make(chan struct{})
 	close(painted)
 	e := &ChromiumEngine{backend: "block", painted: painted}
-	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, overlayState) {
+	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, int64, overlayState) {
 		atomic.AddInt64(&snaps, 1)
-		return nil, 0, scrollOffset{}, overlayState{}
+		return nil, 0, scrollOffset{}, 0, overlayState{}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -267,9 +267,9 @@ func TestRunTextSyncScrollCadence(t *testing.T) {
 	painted := make(chan struct{})
 	close(painted)
 	e := &ChromiumEngine{backend: "block", painted: painted}
-	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, overlayState) {
+	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, int64, overlayState) {
 		atomic.AddInt64(&snaps, 1)
-		return nil, 0, scrollOffset{}, overlayState{}
+		return nil, 0, scrollOffset{}, 0, overlayState{}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -488,6 +488,28 @@ func TestAckFrameFullChannelDrops(t *testing.T) {
 	}
 }
 
+// blockingConsume drives the slot's real take path, the one runFrameLoop uses: it
+// parks on readyC, takes the held frame with tryConsume, and treats an empty wake
+// as a drain (ok=false) or a spurious re-park. It blocks until a frame is taken,
+// ctx is cancelled, or the slot drains, so the slot tests exercise the production
+// path rather than a bespoke take. ack accounting stays exactly once, since
+// tryConsume acks the frame it takes.
+func blockingConsume(ctx context.Context, slot *frameSlot, ack ackFunc) (pendingFrame, bool) {
+	for {
+		if frame, ok := slot.tryConsume(ack); ok {
+			return frame, true
+		}
+		if slot.drained() {
+			return pendingFrame{}, false
+		}
+		select {
+		case <-slot.readyC():
+		case <-ctx.Done():
+			return pendingFrame{}, false
+		}
+	}
+}
+
 // TestFrameSlotPutOnEmptyDefersAck checks the first put stores the frame and
 // does not ack it: an unconsumed frame stays unacked until consume or replace.
 // A regression that acked on every put would fail here.
@@ -521,7 +543,7 @@ func TestFrameSlotPutReplaceAcksDisplaced(t *testing.T) {
 	}
 
 	// The slot now holds only the latest frame (id 2).
-	frame, ok := slot.consume(context.Background(), rec.ack)
+	frame, ok := blockingConsume(context.Background(), slot, rec.ack)
 	if !ok {
 		t.Fatal("consume returned ok=false, want the latest held frame")
 	}
@@ -539,7 +561,7 @@ func TestFrameSlotConsumeAcksTaken(t *testing.T) {
 	var rec ackRecorder
 
 	slot.put(pendingFrame{ack: 7}, rec.ack)
-	frame, ok := slot.consume(context.Background(), rec.ack)
+	frame, ok := blockingConsume(context.Background(), slot, rec.ack)
 	if !ok || frame.ack != 7 {
 		t.Fatalf("consume = (%d, %v), want (7, true)", frame.ack, ok)
 	}
@@ -573,7 +595,7 @@ func TestFrameSlotInterleavedAckedExactlyOnce(t *testing.T) {
 		slot.put(pendingFrame{ack: int64(put)}, rec.ack)
 	}
 	doConsume := func() {
-		_, ok := slot.consume(context.Background(), rec.ack)
+		_, ok := blockingConsume(context.Background(), slot, rec.ack)
 		if !ok {
 			t.Fatal("consume returned ok=false on a non-empty slot")
 		}
@@ -623,7 +645,7 @@ func TestFrameSlotDrainAcksHeld(t *testing.T) {
 	}
 
 	// consume on a drained slot returns ok=false with no block.
-	if _, ok := slot.consume(context.Background(), rec.ack); ok {
+	if _, ok := blockingConsume(context.Background(), slot, rec.ack); ok {
 		t.Fatal("consume on a drained slot returned ok=true, want false")
 	}
 
@@ -644,7 +666,7 @@ func TestFrameSlotDrainUnblocksParkedConsume(t *testing.T) {
 
 	done := make(chan bool, 1)
 	go func() {
-		_, ok := slot.consume(context.Background(), rec.ack)
+		_, ok := blockingConsume(context.Background(), slot, rec.ack)
 		done <- ok
 	}()
 
@@ -672,7 +694,7 @@ func TestFrameSlotConsumeCancelUnblocks(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan bool, 1)
 	go func() {
-		_, ok := slot.consume(ctx, rec.ack)
+		_, ok := blockingConsume(ctx, slot, rec.ack)
 		done <- ok
 	}()
 
@@ -711,7 +733,7 @@ func TestFrameSlotConcurrentPutsAckedExactlyOnce(t *testing.T) {
 	go func() {
 		defer close(consumed)
 		for {
-			if _, ok := slot.consume(ctx, rec.ack); !ok {
+			if _, ok := blockingConsume(ctx, slot, rec.ack); !ok {
 				return
 			}
 		}

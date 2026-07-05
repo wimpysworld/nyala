@@ -196,6 +196,47 @@ func binarise(img *image.RGBA) []bool {
 	return bits
 }
 
+// otsuThreshold computes the Otsu binarisation threshold of a grey image: the
+// grey level that maximises between-class variance over the luma histogram.
+func otsuThreshold(g *image.Gray) uint8 {
+	var hist [256]int
+	for _, v := range g.Pix {
+		hist[v]++
+	}
+	total := len(g.Pix)
+	if total == 0 {
+		return 128
+	}
+
+	var sum float64
+	for i := range 256 {
+		sum += float64(i) * float64(hist[i])
+	}
+
+	var sumB, wB float64
+	var maxVar float64
+	var threshold int
+	for i := range 256 {
+		wB += float64(hist[i])
+		if wB == 0 {
+			continue
+		}
+		wF := float64(total) - wB
+		if wF == 0 {
+			break
+		}
+		sumB += float64(i) * float64(hist[i])
+		mB := sumB / wB
+		mF := (sum - sumB) / wF
+		between := wB * wF * (mB - mF) * (mB - mF)
+		if between > maxVar {
+			maxVar = between
+			threshold = i
+		}
+	}
+	return uint8(threshold)
+}
+
 // clampLuma rounds a luma value to its 0..255 grey level.
 func clampLuma(lum float64) uint8 {
 	i := int(lum + 0.5)

@@ -20,11 +20,23 @@ func TestLayoutShiftScriptShape(t *testing.T) {
 		"buffered:true",
 		"hadRecentInput",
 		"pending>0.01",
+		// The generation counter is initialised to 0 and incremented on every
+		// qualifying shift, so the snapshot goroutine reads a monotonic generation.
+		layoutGenProperty + "=0",
+		layoutGenProperty + "++",
 	}
 	for _, w := range wants {
 		if !strings.Contains(script, w) {
 			t.Errorf("layout-shift script missing %q\nscript: %s", w, script)
 		}
+	}
+	// The counter bump must sit inside the per-entry loop (before the epsilon-gated
+	// binding poke), so a sub-epsilon reflow that never pokes the binding still
+	// advances the generation. The bump text must appear before the "pending>" gate.
+	bump := strings.Index(script, layoutGenProperty+"++")
+	gate := strings.Index(script, "pending>")
+	if bump < 0 || gate < 0 || bump > gate {
+		t.Errorf("generation bump must precede the epsilon gate; bump=%d gate=%d", bump, gate)
 	}
 }
 

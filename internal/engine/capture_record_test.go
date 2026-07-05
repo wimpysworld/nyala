@@ -62,7 +62,6 @@ func TestRecorderWhitelistAcceptsAllTypes(t *testing.T) {
 		captureEventDOMSnapshot,
 		captureEventScreencastControl,
 		captureEventFrameAck,
-		captureEventRunsDropped,
 	}
 	for _, typ := range want {
 		r.Record(captureEvent{Type: typ})
@@ -235,47 +234,6 @@ func TestNDJSONRecorderCountsDropped(t *testing.T) {
 	}
 }
 
-// TestRecordRunsDroppedGatesOnCount asserts recordRunsDropped emits one
-// runs_dropped event carrying the count when the pass dropped runs and capture is on,
-// and emits nothing for a zero count. A zero-count clean snapshot must leave no line.
-func TestRecordRunsDroppedGatesOnCount(t *testing.T) {
-	e := New("")
-	rec := &fakeRecorder{}
-	e.EnableCapture(rec)
-
-	e.recordRunsDropped(0)
-	if rec.count() != 0 {
-		t.Fatalf("zero-count recordRunsDropped emitted %d events, want 0", rec.count())
-	}
-
-	e.recordRunsDropped(3)
-	rec.mu.Lock()
-	defer rec.mu.Unlock()
-	if len(rec.events) != 1 {
-		t.Fatalf("recordRunsDropped(3) emitted %d events, want 1", len(rec.events))
-	}
-	if rec.events[0].Type != captureEventRunsDropped {
-		t.Errorf("event type = %q, want runs_dropped", rec.events[0].Type)
-	}
-	if rec.events[0].Dropped != 3 {
-		t.Errorf("event dropped = %d, want 3", rec.events[0].Dropped)
-	}
-}
-
-// TestRecordRunsDroppedNoCapture asserts a non-capture engine records nothing even
-// when the pass dropped runs, so the production path pays only the nil check.
-func TestRecordRunsDroppedNoCapture(t *testing.T) {
-	e := New("")
-	detached := &fakeRecorder{}
-	e.recordRunsDropped(5)
-	if detached.count() != 0 {
-		t.Fatalf("non-capture recordRunsDropped drove a recorder, want no events")
-	}
-	if e.recorder != nil {
-		t.Fatal("non-capture engine has a recorder set")
-	}
-}
-
 // TestExecutablePathSourceFlag asserts a non-empty --browser flag sources the
 // path as "flag".
 func TestExecutablePathSourceFlag(t *testing.T) {
@@ -313,7 +271,7 @@ func TestComposeFrameNoCaptureLeavesStatsNil(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
 	e := New("")
 
-	frame := e.composeFrame(pendingFrame{img: img, bytes: 99, decodeMS: 1.5}, nil)
+	frame := e.composeFrame(pendingFrame{img: img, bytes: 99, decodeMS: 1.5}, nil, nil)
 
 	if frame.Stats != nil {
 		t.Fatalf("non-capture composeFrame set Stats = %+v, want nil", frame.Stats)
@@ -338,7 +296,7 @@ func TestComposeFrameCaptureFillsStats(t *testing.T) {
 
 	ts := &textSync{}
 	ts.store(nil, 3.0, 0, 0)
-	frame := e.composeFrame(pendingFrame{img: img, bytes: 4096, decodeMS: 2.5}, ts)
+	frame := e.composeFrame(pendingFrame{img: img, bytes: 4096, decodeMS: 2.5}, ts, nil)
 
 	if frame.Stats == nil {
 		t.Fatal("capture composeFrame left Stats nil, want populated")
@@ -523,7 +481,7 @@ func TestProductionPathZeroCost(t *testing.T) {
 	}
 
 	// A composed frame carries no Stats: no engine-phase timing runs off capture.
-	frame := e.composeFrame(pendingFrame{img: img, bytes: 4096, decodeMS: 2.5}, nil)
+	frame := e.composeFrame(pendingFrame{img: img, bytes: 4096, decodeMS: 2.5}, nil, nil)
 	if frame.Stats != nil {
 		t.Fatalf("non-capture composeFrame set Stats = %+v, want nil", frame.Stats)
 	}

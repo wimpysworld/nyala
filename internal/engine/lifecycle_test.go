@@ -222,7 +222,7 @@ func TestComposeFrameNilTextKeepsBitmap(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
 	e := New("")
 
-	frame := e.composeFrame(pendingFrame{img: img}, nil)
+	frame := e.composeFrame(pendingFrame{img: img}, nil, nil)
 
 	if frame.Img != img {
 		t.Fatal("composeFrame dropped the bitmap")

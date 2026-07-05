@@ -145,9 +145,8 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode string, layou
 
 	// The control goroutine runs the engine restarts (Resize, SetBackend) off the
 	// consumer loop, so a slow restartStream cannot freeze draw, keys, and quit
-	// (Decision 3). It stops when Stream returns and closes done.
+	// (Decision 3). It stops when Stream returns and the deferred close(done) fires.
 	ctl := newControl(eng, done)
-	defer ctl.close()
 
 	// The cell differ drives the live block paint: each draw emits only the cells
 	// that changed since the previous frame, with CUP and SGR coalescing. It is
@@ -224,7 +223,8 @@ type control struct {
 }
 
 // newControl starts the control goroutine and returns the handle the loop
-// enqueues restarts on. done stops the goroutine when Stream returns.
+// enqueues restarts on. done stops the goroutine when Stream returns; the caller
+// owns done and closes it, so control needs no close of its own.
 func newControl(eng Engine, done <-chan struct{}) *control {
 	return &control{eng: eng, worker: startCoalescingWorker(done, func(fn func(Engine)) { fn(eng) })}
 }
@@ -236,11 +236,6 @@ func newControl(eng Engine, done <-chan struct{}) *control {
 func (c *control) submit(fn func(Engine)) {
 	c.worker.submit(fn)
 }
-
-// close lets the goroutine drain through the shared done channel; it is a no-op
-// placeholder so the caller can defer a symmetric close beside the other viewer
-// goroutines. The goroutine exits on done.
-func (c *control) close() {}
 
 // setupViewer performs the shared viewer setup both Stream and the capture
 // driver need: it checks tty is a terminal, reads the grid size, puts the
