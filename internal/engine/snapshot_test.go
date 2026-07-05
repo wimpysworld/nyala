@@ -128,6 +128,22 @@ func TestDecodeWalkRunsColour(t *testing.T) {
 	}
 }
 
+// TestDecodeWalkRunsBackground checks the walk's background RGBA channels map
+// straight to GlyphRun.BG in RGBA order, so the block overlay can flat-fill a
+// covered cell with the resolved DOM background instead of the bitmap average.
+func TestDecodeWalkRunsBackground(t *testing.T) {
+	run := walkRunAt("A", 0, 0, 0, 16)
+	run.BG = walkColour{R: 240, G: 248, B: 255, A: 255}
+	runs := decodeWalkRuns(walkResult{Runs: []walkRun{run}}, 8, 200)
+	if len(runs) != 1 {
+		t.Fatalf("want 1 run, got %d", len(runs))
+	}
+	want := color.RGBA{R: 240, G: 248, B: 255, A: 255}
+	if runs[0].BG != want {
+		t.Fatalf("BG = %+v, want %+v", runs[0].BG, want)
+	}
+}
+
 // TestDecodeWalkRunsGuards checks the degenerate inputs return no runs rather than
 // panicking: a non-positive column count, and an empty run set.
 func TestDecodeWalkRunsGuards(t *testing.T) {

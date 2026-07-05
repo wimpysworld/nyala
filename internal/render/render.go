@@ -57,10 +57,16 @@ type GlyphRun struct {
 	Col, Row int        // cell position
 	Text     string     // one or more graphemes
 	FG       color.RGBA // foreground colour
-	X        float64    // box left, CSS pixels, on-screen (scroll subtracted)
-	Y        float64    // box top, CSS pixels, on-screen (scroll subtracted)
-	W        float64    // box width, CSS pixels
-	H        float64    // box height, CSS pixels
+	// BG is the DOM effective background colour resolved for the run's box, in
+	// RGBA order. The block overlay fills each fully-covered cell with this solid
+	// colour instead of the downscaled bitmap average, removing the page's own
+	// anti-aliased text ink from behind crisp glyphs. A zero-alpha BG means "no
+	// opaque background resolved"; the overlay then keeps the bitmap average.
+	BG color.RGBA
+	X  float64 // box left, CSS pixels, on-screen (scroll subtracted)
+	Y  float64 // box top, CSS pixels, on-screen (scroll subtracted)
+	W  float64 // box width, CSS pixels
+	H  float64 // box height, CSS pixels
 	// CellW is the CSS-pixel cell width the run was snapped with. It is zero when
 	// unknown, which disables the sub-cell recompose for the run.
 	CellW float64

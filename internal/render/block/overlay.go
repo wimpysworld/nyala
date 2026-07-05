@@ -55,7 +55,7 @@ func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 					// A wide glyph in the last column would cross the right edge;
 					// write a background space instead of half-emitting it.
 					if !claimed(cell) {
-						bg := cellBGAverage(f.Img, col, row, scheme, run, off, cellCSSW)
+						bg := overlayCellBG(f.Img, col, row, scheme, run, off, cellCSSW)
 						*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: " "}
 					}
 					col++
@@ -68,7 +68,7 @@ func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 					off += 2
 					continue
 				}
-				bg := cellBGAverage(f.Img, col, row, scheme, run, off, cellCSSW)
+				bg := overlayCellBG(f.Img, col, row, scheme, run, off, cellCSSW)
 				*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: cluster}
 				*trailing = Cell{Glyph: trailing.Glyph, FG: run.FG, BG: bg, Wide: true}
 				col += 2
@@ -80,7 +80,7 @@ func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 				off++
 				continue
 			}
-			bg := cellBGAverage(f.Img, col, row, scheme, run, off, cellCSSW)
+			bg := overlayCellBG(f.Img, col, row, scheme, run, off, cellCSSW)
 			*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: cluster}
 			col++
 			off++
@@ -167,6 +167,21 @@ func runCellCSSWidth(run render.GlyphRun) float64 {
 // A claimed cell is never overwritten under the first-writer-wins rule.
 func claimed(c *Cell) bool {
 	return c.Text != "" || c.Wide
+}
+
+// overlayCellBG picks the cell background for a cell the run's grapheme fully
+// covers. When the run carries an opaque DOM effective background (BG.A == 0xff)
+// it returns that solid colour, so the crisp glyph sits on a clean page
+// background instead of the downscaled bitmap average. A non-opaque BG (the
+// no-opaque-background case, or a run with no resolved BG) falls back to
+// cellBGAverage, the pre-existing behaviour, so no wrong flat colour is ever
+// painted. A flat return is cheaper than the average, so the hot Compose path
+// never gets more expensive.
+func overlayCellBG(img *image.RGBA, col, row int, scheme Scheme, run render.GlyphRun, off int, cellCSSW float64) color.RGBA {
+	if run.BG.A == 0xff {
+		return run.BG
+	}
+	return cellBGAverage(img, col, row, scheme, run, off, cellCSSW)
 }
 
 // cellBGAverage averages the uncovered source footprint of cell (col, row) into
