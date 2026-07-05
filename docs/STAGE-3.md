@@ -127,8 +127,10 @@ never outlives a session.
 
 ### The DOM snapshot decode
 
-`snapshot.go` runs one `DOMSnapshot.captureSnapshot`, requesting the computed
-`color` style and the paint order in one round-trip. The snapshot runs on its own
+`snapshotRuns` (`screencast.go`) runs one live in-page text walk (`walk.go`),
+evaluated as a single `Runtime.evaluate` that returns the per-line runs, the DOM
+scroll offset it read at, and the layout generation in one round-trip. The walk
+replaces the earlier `DOMSnapshot.captureSnapshot` decode. The snapshot runs on its own
 goroutine (`runTextSync`), decoupled from the frame-emit loop, so snapshot latency
 never withholds acks or stalls frame emission; `composeFrame` reads the latest
 published runs. The snapshot clock is decoupled from frame delivery: the first
@@ -146,21 +148,24 @@ by the once-per-second reflow cap; `scrollCadence` is its only throttle, so the
 overlay never freezes mid-scroll. The published runs are sticky state
 carried across frames: when text publishes and no new screencast frame is pending,
 the engine re-emits the held bitmap recomposed with the new text, so a static page
-shows its overlay rather than drawing bitmap-only. The pure `decodeGlyphRuns` maps the snapshot documents and the shared
-string table to `[]render.GlyphRun` with no browser dependency, so it is unit-testable
-on canned structs. It walks every inline text box, converts each box's device-pixel
-bounds to CSS pixels by dividing by the device pixel ratio, places each run at the
-snapshot's own scroll offset, and bins the box top-left to a cell with the Stage
-2 floor rule. The snapshot bounds and the scroll come from one DOM read, so they are
-internally consistent and a sustained scroll shows the current text. Each box becomes
-one `GlyphRun` clipped to the box's snapped right edge (`round((px+bw)/cellW)`)
-and the grid edge, whichever is nearer, counting cells with the Stage 2 width rule
-so a width-2 cluster is never half-emitted; overflow graphemes are dropped because
-the bitmap underneath shows them. The box width is a pure clip bound and never
-sizes the advance. The box's computed colour feeds `GlyphRun.FG` in RGBA channel order.
-The box text is the UTF-16 substring of its layout node given by the box start and
-length. DSF is pinned to 1, so the DPR divide is a no-op in production, but the pure
-decoder stays general so tests pass other ratios.
+shows its overlay rather than drawing bitmap-only. The pure `decodeWalkRuns` (`walk.go`)
+maps the walk result to `[]render.GlyphRun` with no browser dependency, so it is
+unit-testable on canned structs. The walk snaps each run's origin in the page: it
+visits every text node with a `TreeWalker`, takes one client rect per visual line from
+`Range.getClientRects()`, and snaps the row with `Math.round(top/cellH)` from the
+line-box top, no inset and no bitmap scan. The forced `line-height` makes the divisor
+equal the painted line pitch, so a browser-laid line at `N*cellH` snaps to row `N` with
+no residue. `getClientRects()` returns the on-screen rect with the scroll already
+subtracted, so each run places at the walk's own scroll offset; the runs, that scroll,
+and the layout generation come from one evaluate, so they stay internally consistent
+and a sustained scroll shows the current text. `decodeWalkRuns` trusts the page's
+integer `Col` and `Row` and never re-divides a pixel by a cell width. It keeps only the
+grid right-edge clip, capping each run at the nearer of the box's snapped right edge
+(`round((px+bw)/cellW)`) and the grid edge, counting cells with the Stage 2 width rule
+so a width-2 cluster is never half-emitted; overflow graphemes drop because the bitmap
+underneath shows them. The box width is a pure clip bound and never sizes the advance.
+The parent element's computed colour feeds `GlyphRun.FG` in RGBA channel order, with
+the blended text opacity folded into the alpha.
 
 ### Frame sync between bitmap and text
 
@@ -503,9 +508,23 @@ element with `!important`:
 - `font-kerning: none`, `letter-spacing: 0`, `font-variant-ligatures: none`, so
   no pair adjustment shifts a glyph off its cell.
 - `text-align: left`, so justification never stretches inter-word space.
+- `-webkit-text-fill-color: transparent`, with `text-shadow: none` and
+  `-webkit-text-stroke: 0`, so the page paints no ordinary glyph ink into the
+  screencast bitmap and leaves no orphan shadow or outline. The bitmap then carries
+  backgrounds, images, and borders only, and the crisp overlay is the sole text
+  layer with no painted ghost to sit against, following browsh's separate-layers
+  model.
 
-A second rule de-sticks inline `position: fixed` and `position: sticky` to
-`absolute`, so a pinned bar does not float over the scrolled overlay. The script
+Two follow-on rules restore `-webkit-text-fill-color: currentColor` for content the
+text walk does not capture, so it still paints as block graphics rather than
+vanishing: one for `::before`, `::after`, and `::marker` (CSS-generated content and
+list markers), the next for `input`, `textarea`, `select`, `option`, `svg`, `svg *`,
+and `::placeholder` (form-control values, placeholders, options, and SVG text
+labels). A button label stays hidden, because it is a real text node the walk
+captures and the overlay redraws. The forcing does not de-stick `position: fixed` or
+`sticky`: the in-page walk takes each run's rect from `Range.getClientRects()`,
+which returns the viewport rect a fixed element paints at, so a pinned bar lands on
+its painted row without forcing it into flow. The script
 appends its `<style>` (id `nyala-font-forcing`) the moment `documentElement`
 lands: at once if it already exists, otherwise from a `MutationObserver` on
 `document` that appends and disconnects when the root element appears, so the
@@ -597,9 +616,13 @@ arm when the cell pair changes, guarded by a goroutine-local last-calibrated
 
 ### Box-to-cell mapping repair
 
-`mapBoxToCells` (`internal/engine/snapshot.go`) is the pure per-box mapping, unit
-tested on plain floats. It converts the CDP device-pixel bounds to CSS pixels,
-subtracts the scroll offset, then:
+This mapping is superseded by the live in-page walk: the origin and row snap now run
+in the page against the forced CSS cell (`walk.go`), and `decodeWalkRuns` trusts the
+integer `Col` and `Row` the walk returns. The round rule this fix introduced still
+holds, now applied per visual line inside the walk. The original `mapBoxToCells`
+(`internal/engine/snapshot.go`), recorded here for the fix history, was the pure
+per-box mapping, unit tested on plain floats. It converted the CDP device-pixel bounds
+to CSS pixels, subtracted the scroll offset, then:
 
 - **Round snap on both axes.** `col = round(px/cellW)`, `row = round(py/cellH)`,
   replacing the Stage 2 floor. Page insets are arbitrary sub-cell offsets, so
@@ -654,17 +677,17 @@ nil checks.
 ### Hidden-box visibility filter
 
 The decode drops boxes the page hides, so their text never composes phantom runs
-over the overlay. `captureSnapshot` requests computed `visibility` and `opacity`
-alongside `color` (a `["color","visibility","opacity"]` whitelist with named index
-constants) and the blended `IncludeTextColorOpacities`. `boxHidden` then drops a box
-when its visibility is `hidden` or `collapse`, when its effective opacity (own
-computed opacity times the ancestor-blended text opacity) falls below 0.05, or when
-its height is below a quarter cell. Absent style data reads as visible, so a fixture
-without these slots is never dropped. Two recorded limitations stand: the height
-check is inert on forced pages, because `line-height: cellH` gives every box a full
-cell of height, and the ancestor-blend read 1 in probing. The real page's hidden
-player uses techniques the visibility and opacity checks catch; `layout-09` gates
-that class.
+over the overlay. `hiddenStyle` (`walk.go`) reads the parent element's computed
+`visibility`, `position`, `clip`, and `clip-path` in the page and multiplies the
+`opacity` up the ancestor chain, then drops the node when its visibility is `hidden`
+or `collapse`, when an absolute or fixed box has a collapsed `clip` rect or an
+`inset(50%)` clip-path (the screen-reader-only pattern), or when its effective opacity
+falls below `hiddenOpacityEps` (0.05). A per-line rect below a quarter cell high also
+drops. Absent style data reads as visible, so a node without these values is never
+dropped. One recorded limitation stands: the height check is inert on forced pages,
+because `line-height: cellH` gives every box a full cell of height. The real page's
+hidden player uses techniques the visibility and opacity checks catch; `layout-09`
+gates that class.
 
 ### Corpus placement gate
 
