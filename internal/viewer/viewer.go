@@ -2,10 +2,10 @@
 //
 // The viewer draws each frame an Engine pushes, fits it to the terminal, and
 // re-fits on resize. It cycles the render backend (block, sixel, kitty) behind
-// the render.Renderer seam, toggles the block glyph scheme (quadrant,
-// half-block), and toggles the block colour depth (truecolour, xterm-256).
-// Switching backend swaps only the Renderer value; nothing above the seam
-// changes.
+// the render.Renderer seam. The block glyph scheme (quadrant, half-block) is set
+// once from the --blocks flag and the colour depth from the --color flag, so
+// neither is a live toggle. Switching backend swaps only the Renderer value;
+// nothing above the seam changes.
 //
 // State holds the whole machine and is pure and testable without a live
 // terminal: every hotkey is a method that mutates State, and Fit and Renderer
@@ -41,18 +41,18 @@ type Backend int
 
 const (
 	// BackendBlock is the owned-grid block-cell renderer; it honours the glyph
-	// scheme and colour toggles. It is the floor backend, placed last in the cycle.
+	// scheme and colour mode. It is the floor backend, placed last in the cycle.
 	BackendBlock Backend = iota
 	// BackendSixel is the Sixel graphics backend. It ignores the scheme and
-	// colour toggles, which apply only to the block backend.
+	// colour mode, which apply only to the block backend.
 	BackendSixel
 	// BackendKitty is the Kitty graphics backend. It ignores the scheme and
-	// colour toggles, which apply only to the block backend.
+	// colour mode, which apply only to the block backend.
 	BackendKitty
 )
 
-// ColourMode selects the block backend's colour depth. The colour hotkey flips
-// it between truecolour and xterm-256. The graphics backends ignore it.
+// ColourMode selects the block backend's colour depth, resolved once from the
+// --color flag. The graphics backends ignore it.
 type ColourMode int
 
 const (
@@ -196,8 +196,8 @@ func (s *State) SetEnabled(enabled []Backend) {
 
 // CycleBackend advances to the next enabled backend in cycle order and wraps,
 // then returns the new backend. With block only it stays on block. The scheme and
-// colour state are untouched, so toggling them on block and cycling away then
-// back preserves the chosen scheme and colour.
+// colour state are untouched, so cycling away from block and back preserves the
+// chosen scheme and colour.
 func (s *State) CycleBackend() Backend {
 	if len(s.Enabled) == 0 {
 		return s.Backend
@@ -211,33 +211,6 @@ func (s *State) CycleBackend() Backend {
 	}
 	s.Backend = s.Enabled[(idx+1)%len(s.Enabled)]
 	return s.Backend
-}
-
-// ToggleScheme flips the block glyph scheme between quadrant and half-block and
-// returns the new scheme. It changes only the scheme; the active backend is
-// unchanged, so the toggle takes effect when the block backend is active.
-func (s *State) ToggleScheme() block.Scheme {
-	if s.Scheme == block.SchemeQuadrant {
-		s.Scheme = block.SchemeHalfBlock
-	} else {
-		s.Scheme = block.SchemeQuadrant
-	}
-	return s.Scheme
-}
-
-// ToggleColour cycles the block colour depth truecolour -> xterm-256 ->
-// monochrome -> truecolour and returns the new mode. It changes only the colour
-// mode; the active backend is unchanged.
-func (s *State) ToggleColour() ColourMode {
-	switch s.Colour {
-	case ColourTrue:
-		s.Colour = ColourXTerm256
-	case ColourXTerm256:
-		s.Colour = ColourMono
-	default:
-		s.Colour = ColourTrue
-	}
-	return s.Colour
 }
 
 // Resize records a new terminal size in cells. The next Fit and Renderer reflect
@@ -308,19 +281,12 @@ const (
 )
 
 // HandleKey applies one key byte to the state machine and reports the action.
-// Tab cycles the backend; 's' toggles the glyph scheme; 'c' toggles the colour
-// depth; 'q' or Ctrl-C quits. Any other key is ignored with no redraw. It never
-// touches the terminal, so it is unit-tested directly.
+// Tab cycles the backend; 'q' or Ctrl-C quits. Any other key is ignored with no
+// redraw. It never touches the terminal, so it is unit-tested directly.
 func (s *State) HandleKey(b byte) Action {
 	switch b {
 	case keyTab:
 		s.CycleBackend()
-		return Action{Redraw: true}
-	case 's', 'S':
-		s.ToggleScheme()
-		return Action{Redraw: true}
-	case 'c', 'C':
-		s.ToggleColour()
 		return Action{Redraw: true}
 	case 'q', 'Q', keyQuitCtrlC:
 		return Action{Quit: true}

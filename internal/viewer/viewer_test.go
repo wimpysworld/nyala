@@ -110,67 +110,27 @@ func TestSetEnabledNominatesCeiling(t *testing.T) {
 	}
 }
 
-// TestTogglesApplyOnBlockWithSubset asserts the scheme and colour toggles still
-// act on block when the cycle omits sixel.
-func TestTogglesApplyOnBlockWithSubset(t *testing.T) {
-	s := NewState(120, 40, 64, 64)
-	s.SetEnabled([]Backend{BackendKitty, BackendBlock})
-	if got := s.ToggleScheme(); got != block.SchemeHalfBlock {
-		t.Fatalf("scheme toggle = %d, want SchemeHalfBlock", got)
+// TestSchemeFromBlocks asserts the --blocks mode maps to the block scheme and
+// its engine name: half selects half-block, everything else quadrant. This is
+// the mapping setupViewer applies to the State and hands the engine.
+func TestSchemeFromBlocks(t *testing.T) {
+	cases := []struct {
+		blocks  string
+		scheme  block.Scheme
+		engName string
+	}{
+		{"half", block.SchemeHalfBlock, "half"},
+		{"quadrant", block.SchemeQuadrant, "quadrant"},
+		{"auto", block.SchemeQuadrant, "quadrant"},
+		{"", block.SchemeQuadrant, "quadrant"},
 	}
-	if got := s.ToggleColour(); got != ColourXTerm256 {
-		t.Fatalf("colour toggle = %d, want ColourXTerm256", got)
-	}
-	s.CycleBackend() // block
-	s.CycleBackend() // kitty
-	if s.Scheme != block.SchemeHalfBlock || s.Colour != ColourXTerm256 {
-		t.Fatalf("toggles lost after cycle: scheme=%d colour=%d", s.Scheme, s.Colour)
-	}
-}
-
-// TestSchemeToggleFlips asserts the scheme toggle flips quadrant <-> half-block.
-func TestSchemeToggleFlips(t *testing.T) {
-	s := NewState(120, 40, 64, 64)
-	if s.Scheme != block.SchemeQuadrant {
-		t.Fatalf("initial scheme = %d, want SchemeQuadrant", s.Scheme)
-	}
-	if got := s.ToggleScheme(); got != block.SchemeHalfBlock {
-		t.Fatalf("first toggle = %d, want SchemeHalfBlock", got)
-	}
-	if got := s.ToggleScheme(); got != block.SchemeQuadrant {
-		t.Fatalf("second toggle = %d, want SchemeQuadrant", got)
-	}
-}
-
-// TestColourToggleCycle asserts the colour toggle cycles three modes:
-// ColourTrue -> ColourXTerm256 -> ColourMono -> ColourTrue.
-func TestColourToggleCycle(t *testing.T) {
-	s := NewState(120, 40, 64, 64)
-	if s.Colour != ColourTrue {
-		t.Fatalf("initial colour = %d, want ColourTrue", s.Colour)
-	}
-	want := []ColourMode{ColourXTerm256, ColourMono, ColourTrue}
-	for i, w := range want {
-		if got := s.ToggleColour(); got != w {
-			t.Fatalf("toggle %d = %d, want %d", i, got, w)
+	for _, c := range cases {
+		if got := schemeFromBlocks(c.blocks); got != c.scheme {
+			t.Errorf("schemeFromBlocks(%q) = %d, want %d", c.blocks, got, c.scheme)
 		}
-	}
-}
-
-// TestTogglesSurviveBackendCycle asserts cycling away from block and back keeps
-// the chosen scheme and colour: the toggles are independent of the backend.
-func TestTogglesSurviveBackendCycle(t *testing.T) {
-	s := NewState(120, 40, 64, 64)
-	s.ToggleScheme()
-	s.ToggleColour()
-	s.CycleBackend() // kitty
-	s.CycleBackend() // sixel
-	s.CycleBackend() // block
-	if s.Scheme != block.SchemeHalfBlock {
-		t.Fatalf("scheme after cycle = %d, want SchemeHalfBlock", s.Scheme)
-	}
-	if s.Colour != ColourXTerm256 {
-		t.Fatalf("colour after cycle = %d, want ColourXTerm256", s.Colour)
+		if got := schemeEngineName(c.scheme); got != c.engName {
+			t.Errorf("schemeEngineName(%d) = %q, want %q", c.scheme, got, c.engName)
+		}
 	}
 }
 
@@ -239,8 +199,8 @@ func TestRendererConcreteTypes(t *testing.T) {
 	}
 }
 
-// TestHandleKey asserts the hotkey table: Tab cycles, 's' and 'c' toggle and
-// redraw, 'q' and Ctrl-C quit, and an unknown key is a no-op.
+// TestHandleKey asserts the hotkey table: Tab cycles, 'q' and Ctrl-C quit, and
+// any other key (including the retired 's' and 'c' toggles) is an inert no-op.
 func TestHandleKey(t *testing.T) {
 	s := NewState(120, 40, 64, 64)
 	s.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
@@ -255,18 +215,18 @@ func TestHandleKey(t *testing.T) {
 		t.Fatalf("Tab did not cycle backend: %d", s.Backend)
 	}
 
-	if act := s.HandleKey('s'); !act.Redraw || act.Quit {
-		t.Fatalf("'s' action = %+v, want redraw", act)
+	// The scheme and colour toggles are retired: 's' and 'c' are now inert, so
+	// they redraw nothing and leave the scheme and colour untouched.
+	for _, b := range []byte{'s', 'S', 'c', 'C'} {
+		if act := s.HandleKey(b); act.Redraw || act.Quit {
+			t.Fatalf("%q action = %+v, want inert no-op", b, act)
+		}
 	}
-	if s.Scheme != block.SchemeHalfBlock {
-		t.Fatalf("'s' did not toggle scheme: %d", s.Scheme)
+	if s.Scheme != block.SchemeQuadrant {
+		t.Fatalf("scheme changed after retired toggle: %d", s.Scheme)
 	}
-
-	if act := s.HandleKey('c'); !act.Redraw || act.Quit {
-		t.Fatalf("'c' action = %+v, want redraw", act)
-	}
-	if s.Colour != ColourXTerm256 {
-		t.Fatalf("'c' did not toggle colour: %d", s.Colour)
+	if s.Colour != ColourTrue {
+		t.Fatalf("colour changed after retired toggle: %d", s.Colour)
 	}
 
 	if act := s.HandleKey('z'); act.Redraw || act.Quit {
@@ -556,7 +516,7 @@ func TestRenderFrameBlockColourMode(t *testing.T) {
 		t.Fatalf("truecolour output missing 24-bit SGR")
 	}
 
-	s.ToggleColour()
+	s.Colour = ColourXTerm256
 	var idxBuf bytes.Buffer
 	if err := s.RenderStreamFrame(render.Frame{Img: src}, &idxBuf); err != nil {
 		t.Fatalf("render xterm-256: %v", err)
@@ -1037,6 +997,8 @@ func (e streamTestEngine) SetBackend(name string) {
 		e.setBackend(name)
 	}
 }
+
+func (e streamTestEngine) SetScheme(string) {}
 
 func (e streamTestEngine) EnableCapture(io.Writer) CaptureSession { return nil }
 

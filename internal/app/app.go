@@ -34,6 +34,11 @@ type CLI struct {
 	// terminal's best supported backend.
 	Backend string `help:"Renderer backend: auto, block, kitty, or sixel." default:"auto" enum:"auto,block,kitty,sixel"`
 
+	// Blocks selects the block glyph mode: auto, sextant, quadrant, or half. auto
+	// and quadrant render quadrant; half renders half-block; sextant prints a
+	// terminal support verdict and exits without launching a browser.
+	Blocks string `help:"Block glyph mode: auto, sextant, quadrant, or half." name:"blocks" default:"auto" enum:"auto,sextant,quadrant,half"`
+
 	// Browser is the path to the Chromium executable to drive. Empty falls back
 	// to NYALA_BROWSER, CHROME_PATH, then a PATH lookup at launch.
 	Browser string `help:"Path to the Chromium executable to drive." name:"browser"`
@@ -65,8 +70,10 @@ func (c CLI) Validate() error {
 // parse error returns before any viewer call. With capture disabled it runs the
 // interactive viewer.Stream; with capture enabled it runs the bounded
 // viewer.Capture, passing the requested scroll through. Both pass the --backend
-// mode through. It constructs the Chromium engine from the validated URL and the
-// --browser flag.
+// mode and the --blocks glyph mode through. When --blocks is sextant it prints a
+// terminal support verdict to tty and returns before any engine or viewer runs.
+// It constructs the Chromium engine from the validated URL and the --browser
+// flag.
 func Run(cli CLI, tty *os.File) error {
 	target, err := normaliseURL(cli.URL)
 	if err != nil {
@@ -79,11 +86,22 @@ func Run(cli CLI, tty *os.File) error {
 	if err != nil {
 		return err
 	}
+	// The sextant mode is a diagnostic: report whether the terminal is known to
+	// render sextant blocks and exit before any engine or viewer runs.
+	if cli.Blocks == "sextant" {
+		name, supported := viewer.SextantSupported(os.Environ())
+		verdict := "unsupported"
+		if supported {
+			verdict = "supported"
+		}
+		fmt.Fprintf(tty, "sextant: %s (%s)\n", verdict, name)
+		return nil
+	}
 	eng := engineAdapter{engine.New(cli.Browser)}
 	if capture.Enabled {
-		return viewer.Capture(eng, target, tty, cli.Color, cli.Backend, cli.LayoutWidth, capture.N, capture.ScrollPx, capture.ScrollSettle)
+		return viewer.Capture(eng, target, tty, cli.Color, cli.Backend, cli.Blocks, cli.LayoutWidth, capture.N, capture.ScrollPx, capture.ScrollSettle)
 	}
-	return viewer.Stream(eng, target, tty, cli.Color, cli.Backend, cli.LayoutWidth)
+	return viewer.Stream(eng, target, tty, cli.Color, cli.Backend, cli.Blocks, cli.LayoutWidth)
 }
 
 // engineAdapter wraps a ChromiumEngine to satisfy viewer.Engine. The viewer

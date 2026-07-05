@@ -90,7 +90,9 @@ var _ bundleWriter = (*capture.Bundle)(nil)
 // cursorHome, and the render bytes, byte-matching a live draw after the
 // first-draw prefix. It returns nil on a full capture and ErrPartialBundle when it writes a
 // partial bundle. colourFlag is the --color intent; mode is the --backend mode
-// the forced-backend validator checks; layoutWidth is the block-backend target
+// the forced-backend validator checks; blocks is the --blocks mode selecting the
+// block glyph scheme (auto and quadrant keep quadrant, half renders half-block);
+// layoutWidth is the block-backend target
 // layout width in CSS pixels, handed to the engine before Navigate. scrollPx is
 // the capture scroll hook's requested vertical scroll in CSS pixels: when
 // positive, after the n frames draw the driver injects the scroll through the
@@ -100,8 +102,8 @@ var _ bundleWriter = (*capture.Bundle)(nil)
 // with its settled text overlay. A zero or negative scrollPx skips the hook.
 // settle gates the scroll hook's settle wait: true waits for the settled overlay,
 // false draws the first frame whose scroll offset advanced (the pre-settle state).
-func Capture(eng Engine, url string, tty *os.File, colourFlag, mode string, layoutWidth, n, scrollPx int, settle bool) (err error) {
-	_, st, restore, err := setupViewer(eng, tty, colourFlag, layoutWidth)
+func Capture(eng Engine, url string, tty *os.File, colourFlag, mode, blocks string, layoutWidth, n, scrollPx int, settle bool) (err error) {
+	_, st, restore, err := setupViewer(eng, tty, colourFlag, blocks, layoutWidth)
 	if err != nil {
 		return err
 	}
