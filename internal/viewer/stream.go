@@ -31,6 +31,13 @@ type Engine interface {
 	// capture cost. The adapter constructs the engine recorder, so the viewer
 	// never imports the engine package.
 	EnableCapture(ndjson io.Writer) CaptureSession
+	// SetCaptureSettleHold gates the engine's initial-layout settle hold on the
+	// capture first-publish latch. The capture driver calls it with hold=true only for
+	// a single-frame capture (n == 1), so the one bundled frame waits for the layout to
+	// settle; a multi-frame capture passes false so the load-period frames it counts
+	// are not drained by the wait. Stream never calls it, so the interactive path holds
+	// nothing.
+	SetCaptureSettleHold(hold bool)
 	// SetBackend names the active backend (block, sixel, kitty) so the engine
 	// sizes the capture: sub-cell for block, cell-pixel for the graphics
 	// backends. When streaming it restarts the stream at the new size.

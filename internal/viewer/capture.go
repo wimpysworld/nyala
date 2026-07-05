@@ -156,6 +156,13 @@ func runCapture(eng Engine, url string, st *State, tty io.Writer, bundle bundleW
 	// latch the loop waits on before counting usable frames.
 	session := eng.EnableCapture(bundle.CDPEventsFile())
 
+	// Hold the first counted frame for the initial-layout settle only for a
+	// single-frame capture: the one bundled frame must be the settled page, so its
+	// placement is deterministic. A multi-frame capture leaves the hold off, because
+	// its extra frames come from the load period a settle wait would drain. Set before
+	// Navigate, matching the engine's set-once capture wiring.
+	eng.SetCaptureSettleHold(n == 1)
+
 	return captureLoop(eng, url, st, tty, bundle, session, n, scrollPx, settle, paintWait, idle)
 }
 

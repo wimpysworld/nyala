@@ -213,6 +213,7 @@ type fakeCaptureEngine struct {
 }
 
 func (e *fakeCaptureEngine) EnableCapture(io.Writer) CaptureSession { return nil }
+func (e *fakeCaptureEngine) SetCaptureSettleHold(bool)              {}
 func (e *fakeCaptureEngine) SetBackend(string)                      {}
 func (e *fakeCaptureEngine) SetCellPx(int, int)                     {}
 func (e *fakeCaptureEngine) SetLayoutWidth(int)                     {}

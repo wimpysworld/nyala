@@ -1040,6 +1040,8 @@ func (e streamTestEngine) SetBackend(name string) {
 
 func (e streamTestEngine) EnableCapture(io.Writer) CaptureSession { return nil }
 
+func (e streamTestEngine) SetCaptureSettleHold(bool) {}
+
 func (e streamTestEngine) SetCellPx(int, int) {}
 
 func (e streamTestEngine) SetLayoutWidth(int) {}
