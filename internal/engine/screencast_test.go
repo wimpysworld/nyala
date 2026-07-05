@@ -181,6 +181,118 @@ func TestRunTextSyncReSnapTriggers(t *testing.T) {
 	}
 }
 
+// TestRunTextSyncHoldsTextReadyUntilSettle proves the capture first-publish latch is
+// held past the first publish until the initial layout settles: with textReady wired
+// (the capture path), the latch stays open after the first snapshot and closes only
+// once the first debounced-reflow re-snapshot lands. So the first counted capture
+// frame carries the settled overlay, not a pre-settle snapshot. No browser is involved.
+func TestRunTextSyncHoldsTextReadyUntilSettle(t *testing.T) {
+	var snaps int64
+	want := []render.GlyphRun{{Col: 2, Row: 1, Text: "hi"}}
+	painted := make(chan struct{})
+	close(painted)
+	e := &ChromiumEngine{backend: "block", painted: painted}
+	// Wire the capture first-publish latch and the single-frame settle hold, the gate
+	// the hold runs behind.
+	e.textReady = make(chan struct{})
+	e.settleHold = true
+	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, int64, overlayState) {
+		atomic.AddInt64(&snaps, 1)
+		return want, 0, scrollOffset{}, 0, overlayState{}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reSnap := make(chan struct{}, 1)
+	reflow := make(chan struct{}, 1)
+	scroll := make(chan struct{}, 1)
+	reEmit := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		e.runTextSync(ctx, &textSync{}, reSnap, reflow, scroll, reEmit)
+		close(done)
+	}()
+
+	// The first snapshot publishes, but the latch is held for the settle.
+	waitForCount(t, &snaps, 1)
+	time.Sleep(50 * time.Millisecond)
+	if isClosed(e.textReady) {
+		t.Fatal("textReady closed on the first publish, want it held until the layout settles")
+	}
+
+	// A reflow poke drives the debounced load-settle re-snapshot, which releases the latch.
+	reflow <- struct{}{}
+	if !waitClosed(e.textReady, time.Second) {
+		t.Fatal("textReady did not close after the load-settle re-snapshot")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runTextSync did not return after context cancel")
+	}
+}
+
+// TestRunTextSyncTextReadyBackstop proves a page that fires no load-settle reflow
+// still releases the capture first-publish latch, on the initialSettleTimeout
+// backstop, so the capture never stalls. It shrinks the backstop so the test runs
+// instantly. No browser is involved.
+func TestRunTextSyncTextReadyBackstop(t *testing.T) {
+	old := initialSettleTimeout
+	initialSettleTimeout = 40 * time.Millisecond
+	defer func() { initialSettleTimeout = old }()
+
+	var snaps int64
+	painted := make(chan struct{})
+	close(painted)
+	e := &ChromiumEngine{backend: "block", painted: painted}
+	e.textReady = make(chan struct{})
+	e.settleHold = true
+	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, int64, overlayState) {
+		atomic.AddInt64(&snaps, 1)
+		return nil, 0, scrollOffset{}, 0, overlayState{}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reSnap := make(chan struct{}, 1)
+	reflow := make(chan struct{}, 1)
+	scroll := make(chan struct{}, 1)
+	reEmit := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		e.runTextSync(ctx, &textSync{}, reSnap, reflow, scroll, reEmit)
+		close(done)
+	}()
+
+	// First publish, then no reflow: the backstop releases the latch on its own.
+	waitForCount(t, &snaps, 1)
+	if !waitClosed(e.textReady, time.Second) {
+		t.Fatal("textReady did not close on the settle backstop with no reflow")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runTextSync did not return after context cancel")
+	}
+}
+
+// waitClosed reports whether ch closes within d, polling so a settle that trails the
+// first publish is observed without a fixed sleep.
+func waitClosed(ch <-chan struct{}, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if isClosed(ch) {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return isClosed(ch)
+}
+
 // TestRunTextSyncScrollTriggers proves a scroll poke drives a re-snapshot past the
 // first-after-paint snapshot, so the overlay tracks the page as it scrolls. The
 // first poke fires the leading throttle at once (lastScrollSnap is zero). It uses a

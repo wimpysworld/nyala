@@ -326,6 +326,17 @@ const reSnapshotMinInterval = time.Second
 // scroll position regardless of the cadence phase.
 const scrollCadence = 150 * time.Millisecond
 
+// initialSettleTimeout bounds how long the capture first-publish latch (textReady)
+// waits for the initial layout to settle before it releases anyway. Under capture
+// the snapshot goroutine holds textReady past the first publish until the first
+// debounced-reflow re-snapshot lands (networkAlmostIdle, the load-settle signal), so
+// the first counted capture frame carries the settled overlay rather than a
+// pre-settle snapshot a post-paint reflow would still shift. A page that never fires
+// that signal releases the latch on this backstop, so the capture never stalls. It
+// is a var, not a const, so a test shrinks it to run instantly; production reads it
+// only under capture, where textReady is non-nil, so the live path never touches it.
+var initialSettleTimeout = 2 * time.Second
+
 // runTextSync runs the DOM snapshot loop on its own goroutine, off the frame-emit
 // goroutine, so snapshot latency never stalls frame emission or withholds acks. It
 // is clocked by the page, not by frame delivery: it takes the first snapshot when
@@ -385,10 +396,43 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 	// session, and the new reader of the painted latch replacing firstSnapshotAfterPaint.
 	state = e.publishSnapshot(ctx, snapshot, ts, state)
 	pokeReEmit(reEmit)
-	// Signal the capture driver that the first overlay runs have published, so it
-	// counts a usable frame only once the text has landed rather than racing the
-	// (calibration-delayed) first publish. A no-op off the capture path.
-	e.markTextReady()
+	// Signal the capture driver that the overlay runs have published, so it counts a
+	// usable frame only once the text has landed rather than racing the
+	// (calibration-delayed) first publish. Off the capture path textReady is nil, so
+	// markTextReady is a no-op and this arms no timer, keeping production at a nil
+	// check. For a single-frame capture (settleHold) hold the latch past the first
+	// publish until the initial layout settles: the first debounced-reflow re-snapshot
+	// (networkAlmostIdle, the load-settle signal) releases it on the settled overlay,
+	// and initialSettleTimeout is the backstop for a page that never fires that signal.
+	// Without the hold the one bundled frame can carry a pre-settle snapshot a
+	// post-paint reflow (a late font swap, a CJK vertical/ruby relayout) would still
+	// shift, making the single-frame capture non-deterministic. A multi-frame capture
+	// leaves settleHold false and fires the latch now, so the extra frames it counts
+	// come from the load period a settle wait would otherwise drain.
+	textReadyPending := e.settleHold
+	if !textReadyPending {
+		e.markTextReady()
+	}
+	var settleTimer *time.Timer
+	var settleTimerC <-chan time.Time
+	if textReadyPending {
+		settleTimer = time.NewTimer(initialSettleTimeout)
+		settleTimerC = settleTimer.C
+	}
+	// releaseTextReady closes the capture first-publish latch once and stops the
+	// settle backstop timer, so the load-settle and backstop arms below both funnel
+	// through one place and the latch fires exactly once.
+	releaseTextReady := func() {
+		if !textReadyPending {
+			return
+		}
+		e.markTextReady()
+		textReadyPending = false
+		settleTimerC = nil
+		if settleTimer != nil {
+			settleTimer.Stop()
+		}
+	}
 
 	// debounce arms a trailing timer per reflow quiet window; scrollDebounce does the
 	// same for scroll. A nil channel means none is pending; each timer is armed on its
@@ -434,6 +478,15 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 			debounceC = nil
 			state = e.reSnapshotCapped(ctx, snapshot, ts, state)
 			pokeReEmit(reEmit)
+			// The load settled: the first debounced-reflow re-snapshot published the
+			// resting-layout overlay and re-emitted the held bitmap with it, so release
+			// the capture first-publish latch now, on the settled text.
+			releaseTextReady()
+		case <-settleTimerC:
+			// Backstop: the page fired no load-settle reflow within initialSettleTimeout,
+			// so release the capture first-publish latch on the first-publish text rather
+			// than stall the capture.
+			releaseTextReady()
 		case <-scroll:
 			// Scroll: leading throttle plus trailing debounce. Snapshot now when the
 			// cadence allows, so the overlay tracks mid-scroll, and always re-arm the

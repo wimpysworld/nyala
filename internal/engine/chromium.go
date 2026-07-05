@@ -134,16 +134,25 @@ type ChromiumEngine struct {
 	// goroutines read them without a mu guard. captureOn gates the phase timing
 	// in composeFrame; recorder is the event sink the emit sites use behind a
 	// nil check. Both stay unset on the production path, so it pays zero cost.
-	captureOn   bool            // true once EnableCapture turned capture on
+	captureOn bool // true once EnableCapture turned capture on
+	// settleHold gates the initial-layout settle hold on textReady. The capture driver
+	// sets it true only for a single-frame capture (n == 1), where the one bundled
+	// frame must be the settled page, and leaves it false for a multi-frame capture,
+	// where the extra frames come from the load period a settle wait would drain. It
+	// takes the same set-once treatment as captureOn: written once before Navigate,
+	// read-only on the snapshot goroutine afterwards. Off capture it stays false.
+	settleHold  bool
 	recorder    captureRecorder // event sink, nil off the capture path
 	painted     chan struct{}   // closed on the first contentful paint (or load) under capture
 	paintedOnce sync.Once       // guards painted against a double close
 	// textReady is the capture-only first-publish latch. The snapshot goroutine
-	// closes it after its first publishSnapshot, so the capture driver waits for the
-	// first overlay runs to land before it counts a usable frame. Without it the
-	// driver and the snapshot goroutine both wake off painted and the driver can
-	// latch the first frame before the (calibration-delayed) publish, so the
-	// captured frame carries no text. It stays nil off the capture path.
+	// closes it once the overlay has published and the initial layout has settled (the
+	// first debounced-reflow re-snapshot, or a bounded backstop), so the capture driver
+	// waits for the settled overlay runs to land before it counts a usable frame.
+	// Without it the driver and the snapshot goroutine both wake off painted and the
+	// driver can latch the first frame before the (calibration-delayed) publish, so the
+	// captured frame carries no text; without the settle hold it can latch a pre-settle
+	// snapshot a post-paint reflow would still shift. It stays nil off the capture path.
 	textReady     chan struct{}
 	textReadyOnce sync.Once // guards textReady against a double close
 	// scrollSettle is the capture-only post-scroll settle signal. The snapshot
@@ -224,11 +233,26 @@ func (e *ChromiumEngine) EnableCapture(rec captureRecorder) {
 	}
 }
 
-// markTextReady closes the textReady latch on the first overlay publish, so a late
-// reader still sees the closed channel. The snapshot goroutine (runTextSync) calls
-// it once, after its first publishSnapshot. textReadyOnce guards the close because a
-// crash rebuild restarts the snapshot goroutine. It is a no-op off the capture path,
-// where textReady stays nil.
+// SetCaptureSettleHold gates the initial-layout settle hold on the capture
+// first-publish latch. The capture driver calls it once before Navigate with
+// hold=true only for a single-frame capture (n == 1), so that one bundled frame
+// waits for the layout to settle; a multi-frame capture passes false, so the load
+// period frames it counts are not drained by the wait. It is a set-once flag read on
+// the snapshot goroutine, matching captureOn, so it needs no lock. Off the capture
+// path the viewer never calls it, so settleHold stays false and production holds
+// nothing.
+func (e *ChromiumEngine) SetCaptureSettleHold(hold bool) {
+	e.settleHold = hold
+}
+
+// markTextReady closes the textReady latch once the overlay has published and the
+// initial layout has settled, so a late reader still sees the closed channel. The
+// snapshot goroutine (runTextSync) holds it past the first publishSnapshot until the
+// first debounced-reflow re-snapshot (networkAlmostIdle) lands, or a bounded backstop
+// fires, so the first counted capture frame carries the settled overlay rather than a
+// pre-settle snapshot. textReadyOnce guards the close because a crash rebuild restarts
+// the snapshot goroutine. It is a no-op off the capture path, where textReady stays
+// nil.
 func (e *ChromiumEngine) markTextReady() {
 	if e.textReady == nil {
 		return
