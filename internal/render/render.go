@@ -14,6 +14,14 @@ import (
 	"github.com/rivo/uniseg"
 )
 
+// init pins go-runewidth's global condition so ambiguous-width characters count
+// as one cell, matching the wezterm and kitty defaults. StringWidth reads
+// DefaultCondition, so this makes CellWidth deterministic and independent of the
+// process locale, keeping the overlay's cell count aligned with the terminal.
+func init() {
+	runewidth.DefaultCondition.EastAsianWidth = false
+}
+
 // CellWidth measures the display width of one grapheme cluster, clamped to 1 or
 // 2. This is the shared Stage 2 width rule: a cluster of measured width 2 or
 // more claims two cells, everything else (including a width-0 standalone
@@ -58,10 +66,10 @@ type GlyphRun struct {
 	Text     string     // one or more graphemes
 	FG       color.RGBA // foreground colour
 	// BG is the DOM effective background colour resolved for the run's box, in
-	// RGBA order. The block overlay fills each fully-covered cell with this solid
-	// colour instead of the downscaled bitmap average, removing the page's own
-	// anti-aliased text ink from behind crisp glyphs. A zero-alpha BG means "no
-	// opaque background resolved"; the overlay then keeps the bitmap average.
+	// RGBA order. A zero-alpha BG means "no opaque background resolved". The block
+	// overlay no longer reads it (the bitmap carries the real background with no
+	// painted text ink), but the walk resolves it and the capture text-map records
+	// it for inspection.
 	BG color.RGBA
 	X  float64 // box left, CSS pixels, on-screen (scroll subtracted)
 	Y  float64 // box top, CSS pixels, on-screen (scroll subtracted)

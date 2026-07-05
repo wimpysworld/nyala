@@ -151,6 +151,47 @@ func TestGridDiffContiguousRunOneCUP(t *testing.T) {
 	}
 }
 
+// TestGridDiffReanchorsAfterNonASCIIOverlay checks a contiguous run keeps its
+// single-CUP coalescing for pure-ASCII overlay text, but re-anchors the cursor
+// with a fresh CUP for the cell after a non-ASCII overlay cell, so a terminal
+// width mismatch cannot skew the rest of the row.
+func TestGridDiffReanchorsAfterNonASCIIOverlay(t *testing.T) {
+	// A pure-ASCII overlay run stays on the contiguous fast path: one CUP.
+	ascii := gridOf(4, 1, Cell{})
+	for col := range 4 {
+		ascii.At(col, 0).Text = "x"
+	}
+	var da GridDiff
+	var aout bytes.Buffer
+	if err := da.Emit(&aout, ascii, fixedFG, fixedBG); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(aout.String(), "\x1b["); n != 1 {
+		t.Fatalf("ASCII overlay run: want one CUP, got %d: %q", n, aout.String())
+	}
+
+	// A non-ASCII overlay cell mid-run forces a CUP for the cell after it.
+	mixed := gridOf(4, 1, Cell{})
+	mixed.At(0, 0).Text = "x"
+	mixed.At(1, 0).Text = "’" // non-ASCII: untrusted width
+	mixed.At(2, 0).Text = "y" // must re-anchor with a fresh CUP
+	mixed.At(3, 0).Text = "z"
+	var dm GridDiff
+	var mout bytes.Buffer
+	if err := dm.Emit(&mout, mixed, fixedFG, fixedBG); err != nil {
+		t.Fatal(err)
+	}
+	got := mout.String()
+	// One CUP to start the run, one to re-anchor at column 2 after the non-ASCII
+	// cell. Columns 2 and 3 then coalesce again, so exactly two CUPs total.
+	if n := strings.Count(got, "\x1b["); n != 2 {
+		t.Fatalf("mixed overlay run: want two CUPs, got %d: %q", n, got)
+	}
+	if !strings.Contains(got, "\x1b[1;3H") {
+		t.Fatalf("mixed overlay run: missing re-anchor CUP to column 2: %q", got)
+	}
+}
+
 // TestGridDiffSameColourRun checks a contiguous changed run of one colour sends
 // one SGR pair and a single CUP.
 func TestGridDiffSameColourRun(t *testing.T) {

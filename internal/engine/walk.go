@@ -59,11 +59,13 @@ type walkResult struct {
 // page and returns integer cell positions per line box. It computes the origin
 // column and row against cellW and cellH, the exact forced CSS cell the stylesheet
 // and calibration establish, so the snap divisor equals the value the layout was
-// forced to and the round is exact and Z-independent. For each text node it reads
+// forced to and the column round is exact and Z-independent. The row snap rounds
+// the line-box top over the cell, so a browser-laid line at N*cellH snaps to row N
+// with no residue, matching the forced line pitch. For each text node it reads
 // the parent element's computed style once and folds in the visibility, opacity,
 // and clip-offscreen drops (the same drops the DOMSnapshot decode did on the
 // client), so a hidden node emits no run. It takes per-line boxes from
-// Range.getClientRects() and buckets the node's code units by their rounded row,
+// Range.getClientRects() and buckets the node's code units by their snapped row,
 // so a soft-wrapped node yields one run per line with that line's own origin,
 // which removes the per-glyph advance drift a single origin plus whole-cell
 // stepping accumulates across a long run. It returns the current layout generation

@@ -35,7 +35,19 @@ var forcingExclusions = []string{"img", "svg", "canvas", "video", "iframe", "emb
 // buildStylesheetScript returns the JavaScript that injects the font-forcing
 // stylesheet. It embeds font.FiraCodeTTF() as a base64 data: URL @font-face,
 // forces every element onto the monospace family, disables kerning, ligatures, and
-// letter-spacing, and left-aligns text. It seeds the font-size to cellW/advanceRatio
+// letter-spacing, and left-aligns text. It sets -webkit-text-fill-color to
+// transparent on every element so the page paints no ordinary glyph ink into the
+// screencast bitmap; the crisp overlay is then the sole text layer and has no
+// painted ghost to sit against. The same * rule zeroes text-shadow and
+// -webkit-text-stroke, so no orphan shadow or outline paints once the glyph fill is
+// gone. Two follow-on restore rules bring paint back for content the text walk does
+// not capture, so it still shows as block graphics rather than vanishing: one
+// restores currentColor on ::before, ::after, and ::marker for CSS-generated content
+// and list markers; the next restores it on input, textarea, select, option, svg,
+// svg *, and ::placeholder for form-control values, placeholders, select options, and
+// SVG text labels. A button label stays hidden, because it is a real text node the
+// walk captures and the overlay redraws crisply. The restore rules follow the * rule
+// so they win at equal specificity. It seeds the font-size to cellW/advanceRatio
 // and the line-height to cellH on text-bearing elements only, excluding the replaced
 // and form-control elements in forcingExclusions so media and controls keep their own
 // line boxes; the uniform monospace family still applies to every element so any text
@@ -69,6 +81,15 @@ func buildStylesheetScript(fontBytes []byte, cellW, cellH float64) string {
   letter-spacing: 0 !important;
   font-variant-ligatures: none !important;
   text-align: left !important;
+  -webkit-text-fill-color: transparent !important;
+  text-shadow: none !important;
+  -webkit-text-stroke: 0 !important;
+}
+::before, ::after, ::marker {
+  -webkit-text-fill-color: currentColor !important;
+}
+input, textarea, select, option, svg, svg *, ::placeholder {
+  -webkit-text-fill-color: currentColor !important;
 }
 *%s {
   font-size: %gpx !important;

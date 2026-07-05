@@ -3,6 +3,7 @@ package block
 import (
 	"image/color"
 	"io"
+	"unicode/utf8"
 )
 
 // SGRFunc maps a cell colour to the SGR escape that sets it for the chosen
@@ -34,6 +35,12 @@ type GridDiff struct {
 // (2 for a Wide lead cell, 1 otherwise). The foreground and background SGR are
 // cached and re-emitted only on a colour change, so a same-colour run sends one
 // SGR pair.
+//
+// A cell whose overlay grapheme may render at a terminal width that differs from
+// our count (a non-ASCII grapheme or a wide lead cell) marks the virtual cursor
+// unknown, so the next emitted cell re-anchors with a fresh CUP. This bounds a
+// width mismatch to one cell instead of skewing the rest of the row. Pure-ASCII
+// overlay text and width-1 block glyphs keep the contiguous fast path.
 //
 // On the first frame, and whenever the grid dimensions change (a resize), Emit
 // full-repaints every cell and reseeds the previous grid, because no prior cell
@@ -75,7 +82,15 @@ func (d *GridDiff) Emit(w io.Writer, grid Grid, fg, bg SGRFunc) error {
 			if err := writeCellGlyph(w, c); err != nil {
 				return err
 			}
-			curCol += cellAdvance(c, grid, col, row)
+			adv := cellAdvance(c, grid, col, row)
+			curCol += adv
+			if overlayWidthUntrusted(c, adv) {
+				// A terminal whose width for this grapheme differs from ours would
+				// shift every later cell on the row, since the contiguous run streams
+				// with no CUP. Mark the virtual cursor unknown so the next emitted cell
+				// re-anchors with a fresh CUP, bounding the error to this one cell.
+				curCol = -1
+			}
 		}
 	}
 
@@ -131,6 +146,24 @@ func cellAdvance(c *Cell, g Grid, col, row int) int {
 		return 2
 	}
 	return 1
+}
+
+// overlayWidthUntrusted reports whether a cell's rendered width may differ from
+// the virtual cursor advance, so the cursor can no longer be trusted after it. A
+// cell is untrusted when it carries overlay Text whose first rune is non-ASCII
+// (an ambiguous- or wide-width grapheme, or a Nerd Font glyph, whose terminal
+// width can differ from our go-runewidth count), or when it is a wide lead cell
+// (advance 2). Pure-ASCII overlay text (0x20..0x7E) and width-1 block glyphs stay
+// trusted, so the diff keeps its contiguous fast path and colour coalescing.
+func overlayWidthUntrusted(c *Cell, advance int) bool {
+	if c.Text == "" {
+		return false
+	}
+	if advance == 2 {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(c.Text)
+	return r > 0x7F
 }
 
 // cellUnchanged reports whether two cells draw the same bytes: matching Text,
