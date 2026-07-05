@@ -162,13 +162,3 @@ func (e *ChromiumEngine) recordLayoutShift() {
 		e.recorder.Record(captureEvent{Type: captureEventLayoutShift})
 	}
 }
-
-// recordRunsDropped records one runs-dropped capture event when the recorder is
-// active and the pass dropped at least one run, so the phantom drop is observable in
-// the bundle. A zero count records nothing, so a clean snapshot leaves no line.
-// Production leaves the recorder nil, so the call pays only a nil check.
-func (e *ChromiumEngine) recordRunsDropped(dropped int) {
-	if dropped > 0 && e.recorder != nil {
-		e.recorder.Record(captureEvent{Type: captureEventRunsDropped, Dropped: dropped})
-	}
-}

@@ -12,6 +12,7 @@
   "placement_gate": {
     "max": 1.4,
     "drifted": 1,
-    "reason": "At the 240x48 wide leg the 1280 CSS-pixel reflow moves the max-width prose wrap boundary, and one wrapped line's DOM box carries a trailing space the mapper trims. The box width then counts one more cell than the packed run, so a single box's right-edge error crosses 1 cell (1.336). The glyphs land correctly on the grid and the mean is unchanged (0.410); mean stays at the strict 0.5 Latin default."
+    "collisions": 1,
+    "reason": "At the 240x48 wide leg the 1280 CSS-pixel reflow moves the max-width prose wrap boundary, and one wrapped line's DOM box carries a trailing space the mapper trims. The box width then counts one more cell than the packed run, so a single box's right-edge error crosses 1 cell (1.336). The glyphs land correctly on the grid and the mean is unchanged (0.410); mean stays at the strict 0.5 Latin default. The real-geometry 158x86 leg (fractional 8.101 CSS-pixel cell, layout_scale 1.975) reflows the centred max-width prose so two default-UA runs share one row cell, giving a single same-row collision; collisions 1 admits it as a regression guard while the paint-referenced displacement leg (no override) carries the honest expected-fail."
   }
 }

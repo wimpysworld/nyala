@@ -21,8 +21,8 @@ type ChromiumEngine struct {
 	// mu guards the session and geometry fields read or written from both the
 	// viewer goroutine (Resize, SetBackend, SendKey, SendMouse, dispatchWheel)
 	// and the supervisor goroutine (startSession, teardownSession, launch,
-	// rebuild): ctx, cancel, slot, acks, text, captureW, captureH, cols, rows, scrollX,
-	// scrollY, backend, cellW, cellH, layoutWidth, windowID, inputFailures, fontForcingID. Lock, copy the fields into locals or write
+	// rebuild): ctx, cancel, slot, acks, text, frame, captureW, captureH, cols, rows, scrollX,
+	// scrollY, scrollYTarget, backend, cellW, cellH, layoutWidth, windowID, inputFailures, fontForcingID. Lock, copy the fields into locals or write
 	// the updates, unlock, then run the chromedp I/O on the locals. Never hold mu
 	// across a chromedp.Run or a channel send, or it deadlocks with the supervisor.
 	mu sync.Mutex
@@ -34,7 +34,14 @@ type ChromiumEngine struct {
 	// Page state held outside chromedp for crash recovery.
 	url     string // current URL
 	scrollX int    // current scroll offset X in CSS pixels
-	scrollY int    // current scroll offset Y in CSS pixels
+	scrollY int    // dispatched scroll offset Y in CSS pixels (block: whole-cell snapped)
+
+	// scrollYTarget is the raw intended vertical scroll offset in CSS pixels before
+	// whole-cell snapping. On the block backend dispatchWheel accumulates every raw
+	// wheel delta here and snaps this target to the nearest whole cellCSSH to derive
+	// scrollY, so repeated small scrolls track the true intent and do not drift. Off
+	// the block backend it tracks scrollY exactly.
+	scrollYTarget int
 
 	// Resolved geometry from the Stage 1 cell px and the active backend.
 	cellW       int    // resolved cell width in pixels
@@ -109,8 +116,10 @@ type ChromiumEngine struct {
 	// snapshot is the per-iteration snapshot function runTextSync calls, defaulting
 	// to snapshotRuns. The unit test swaps in a counter to assert the snapshot is
 	// gated to about one call per delivered frame without launching a browser; it is
-	// nil in production, where runTextSync falls back to snapshotRuns.
-	snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, overlayState)
+	// nil in production, where runTextSync falls back to snapshotRuns. It returns the
+	// decoded runs, the snapshot time, the DOM scroll offset the runs were decoded at,
+	// the layout generation read in the same sequence, and the updated hold state.
+	snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, int64, overlayState)
 
 	// Proxy config parsed once in New, read-only afterwards. Unlike the
 	// mutex-guarded group above, these are set before any goroutine starts and
@@ -293,7 +302,7 @@ func (e *ChromiumEngine) Navigate(url string) error {
 	}
 	e.navigated = true
 	e.url = url
-	e.scrollX, e.scrollY = 0, 0
+	e.scrollX, e.scrollY, e.scrollYTarget = 0, 0, 0
 	// A small frame-channel buffer keeps a transient restartStream stall from
 	// parking the producer on an unbuffered frames <- frame send (Decision 3); the
 	// control goroutine on the viewer side is the primary interactive-hang fix.
@@ -416,11 +425,34 @@ func (e *ChromiumEngine) SendScroll(dy int) {
 // transport: a mouseWheel DispatchMouseEvent at the viewport centre. It advances
 // the engine's held scroll offset by the dispatched deltas, which crash recovery
 // reads to restore the page position after a rebuild.
+//
+// On the block backend the vertical scroll is quantised to whole cells: every raw
+// delta accumulates into scrollYTarget, that target snaps to the nearest whole
+// cellCSSH, and the actual dispatched vertical delta closes the gap to the snapped
+// offset. So the DOM scroll offset the screencast metadata and the snapshot report
+// always advances in whole cells, which removes the fractional-cell row aliasing (R2)
+// and lets composeFrame pair a run set to the bitmap on scroll equality once the
+// settle re-snapshot lands. Snapping the accumulated target rather than each raw delta
+// keeps repeated small scrolls from drifting. Horizontal scroll and graphics backends
+// are unchanged.
 // synthesizeScrollGesture is deliberately not used.
 func (e *ChromiumEngine) dispatchWheel(dx, dy int) {
 	e.mu.Lock()
 	e.scrollX += dx
-	e.scrollY += dy
+	e.scrollYTarget += dy
+	dyDispatch := dy
+	if e.backend == "block" {
+		if _, cellH := e.snapshotCellPx(); cellH > 0 {
+			cells := math.Round(float64(e.scrollYTarget) / cellH)
+			snapped := int(math.Round(cells * cellH))
+			dyDispatch = snapped - e.scrollY
+			e.scrollY = snapped
+		} else {
+			e.scrollY += dy
+		}
+	} else {
+		e.scrollY += dy
+	}
 	ctx := e.ctx
 	cx := float64(e.cols*e.cellW) / 2
 	cy := float64(e.rows*e.cellH) / 2
@@ -428,9 +460,12 @@ func (e *ChromiumEngine) dispatchWheel(dx, dy int) {
 	if ctx == nil {
 		return
 	}
+	if dx == 0 && dyDispatch == 0 {
+		return
+	}
 	ev := input.DispatchMouseEvent(input.MouseWheel, cx, cy).
 		WithDeltaX(float64(dx)).
-		WithDeltaY(float64(dy))
+		WithDeltaY(float64(dyDispatch))
 	e.dispatchInput(ctx, ev)
 }
 

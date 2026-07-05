@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -449,23 +448,6 @@ func TestScreencastCapNeverExceedsSurface(t *testing.T) {
 	gCapW, gCapH := g.screencastCap(cols, rows)
 	if gCapW != gSurfW || gCapH != gSurfH {
 		t.Errorf("graphics screencastCap = (%d,%d), want the surface (%d,%d) at Z 1", gCapW, gCapH, gSurfW, gSurfH)
-	}
-}
-
-func TestBitmapScaleDerivesFromWidth(t *testing.T) {
-	// A verify bitmap 2528 px wide over a 1280 CSS viewport was painted at scale
-	// 2528/1280 = 1.975, which the anchor must recover rather than assume the launch
-	// Z. A degenerate input falls back to the passed scale.
-	const cssCellW = 1280.0 / 158
-	got := bitmapScale(2528, cssCellW, 158, 1.975)
-	if math.Abs(got-1.975) > 1e-6 {
-		t.Errorf("bitmapScale(2528, ...) = %g, want 1.975", got)
-	}
-	if fb := bitmapScale(0, cssCellW, 158, 3.0); fb != 3.0 {
-		t.Errorf("bitmapScale with zero width = %g, want the fallback 3.0", fb)
-	}
-	if fb := bitmapScale(2528, 0, 158, 3.0); fb != 3.0 {
-		t.Errorf("bitmapScale with zero cell = %g, want the fallback 3.0", fb)
 	}
 }
 

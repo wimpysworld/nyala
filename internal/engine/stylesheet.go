@@ -21,39 +21,59 @@ const advanceRatio = 0.6154
 // can locate it and overwrite its seed font-size with the corrected value.
 const styleElementID = "nyala-font-forcing"
 
+// forcingExclusions are the replaced media elements the size and line-height
+// forcing skips, so media keeps its own intrinsic line box rather than being
+// squeezed onto the text cell. These elements carry no child text node the walk
+// reads, so withholding the cell size from them never moves an overlay run; it only
+// stops the forced line-height from collapsing an image or embed's box. Form
+// controls stay forced, because a button label and a select option are text the
+// overlay must keep on the grid. The monospace family still applies to every element
+// (the * rule), so any text advances uniformly. The list is used as a :not() chain on
+// the sizing rule.
+var forcingExclusions = []string{"img", "svg", "canvas", "video", "iframe", "embed", "object"}
+
 // buildStylesheetScript returns the JavaScript that injects the font-forcing
 // stylesheet. It embeds font.FiraCodeTTF() as a base64 data: URL @font-face,
-// forces every element onto the monospace grid with a seed font-size of
-// cellW/advanceRatio and a line-height of cellH, disables kerning, ligatures,
-// and letter-spacing, left-aligns text, and de-sticks fixed and sticky
-// positioning to absolute. cellW and cellH are the fractional CSS-pixel cell size
-// under the layout scale Z, so the seed and line-height keep sub-cell precision.
-// It runs via Page.addScriptToEvaluateOnNewDocument, which fires when the new
-// document's JS context is created, before documentElement exists. The script
-// appends the <style> as soon as documentElement appears: immediately if it is
-// already there, otherwise from a MutationObserver on document that appends and
-// disconnects the moment the root element lands, so the first layout is forced. It
-// applies to the first document and every later one.
+// forces every element onto the monospace family, disables kerning, ligatures, and
+// letter-spacing, and left-aligns text. It seeds the font-size to cellW/advanceRatio
+// and the line-height to cellH on text-bearing elements only, excluding the replaced
+// and form-control elements in forcingExclusions so media and controls keep their own
+// line boxes; the uniform monospace family still applies to every element so any text
+// advances one cell. cellW and cellH are the fractional CSS-pixel cell size under the
+// layout scale Z, so the seed and line-height keep sub-cell precision. It runs via
+// Page.addScriptToEvaluateOnNewDocument, which fires when the new document's JS
+// context is created, before documentElement exists. The script appends the <style>
+// as soon as documentElement appears: immediately if it is already there, otherwise
+// from a MutationObserver on document that appends and disconnects the moment the root
+// element lands, so the first layout is forced. It applies to the first document and
+// every later one. It does not de-stick fixed or sticky positioning: the in-page walk
+// takes each run's rect from Range.getClientRects(), which returns the viewport rect a
+// fixed element paints at, so a fixed nav lands on its painted row without forcing it
+// into flow.
 func buildStylesheetScript(fontBytes []byte, cellW, cellH float64) string {
 	dataURL := "data:font/ttf;base64," + base64.StdEncoding.EncodeToString(fontBytes)
 	seedPx := cellW / advanceRatio
+	var not strings.Builder
+	for _, sel := range forcingExclusions {
+		not.WriteString(":not(")
+		not.WriteString(sel)
+		not.WriteString(")")
+	}
 	css := fmt.Sprintf(`@font-face {
   font-family: "%s";
   src: url("%s") format("truetype");
 }
 * {
   font-family: "%s", monospace !important;
-  font-size: %gpx !important;
-  line-height: %gpx !important;
   font-kerning: none !important;
   letter-spacing: 0 !important;
   font-variant-ligatures: none !important;
   text-align: left !important;
 }
-*[style*="position: fixed"], *[style*="position:fixed"],
-*[style*="position: sticky"], *[style*="position:sticky"] {
-  position: absolute !important;
-}`, fontFamily, dataURL, fontFamily, seedPx, cellH)
+*%s {
+  font-size: %gpx !important;
+  line-height: %gpx !important;
+}`, fontFamily, dataURL, fontFamily, not.String(), seedPx, cellH)
 
 	var b strings.Builder
 	b.WriteString("(function(){var s=document.createElement('style');s.id=")

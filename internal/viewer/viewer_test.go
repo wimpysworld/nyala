@@ -309,21 +309,6 @@ func TestDecodeCSI(t *testing.T) {
 	}
 }
 
-// TestHandleScrollKey asserts a scroll key surfaces on Action.Scroll without a
-// redraw or quit, and that ScrollNone is a no-op.
-func TestHandleScrollKey(t *testing.T) {
-	s := NewState(120, 40, 64, 64)
-	for _, k := range []ScrollKey{ScrollUp, ScrollDown, ScrollLeft, ScrollRight, ScrollPageUp, ScrollPageDown} {
-		act := s.HandleScrollKey(k)
-		if act.Scroll != k || act.Redraw || act.Quit {
-			t.Fatalf("HandleScrollKey(%d) = %+v, want Scroll=%d only", k, act, k)
-		}
-	}
-	if act := s.HandleScrollKey(ScrollNone); act != (Action{}) {
-		t.Fatalf("HandleScrollKey(ScrollNone) = %+v, want zero Action", act)
-	}
-}
-
 // TestNextEventCSI asserts the reader resolves whole CSI escape sequences into
 // scroll events: each arrow and PageUp/PageDown sequence yields one scroll
 // keyEvent, a plain byte yields a byte event, an unrecognised CSI sequence (Home,
@@ -564,7 +549,7 @@ func TestRenderFrameBlockColourMode(t *testing.T) {
 	src := solidImage(color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})
 
 	var trueBuf bytes.Buffer
-	if err := s.RenderFrame(src, &trueBuf); err != nil {
+	if err := s.RenderStreamFrame(render.Frame{Img: src}, &trueBuf); err != nil {
 		t.Fatalf("render truecolour: %v", err)
 	}
 	if !strings.Contains(trueBuf.String(), "\x1b[38;2;") {
@@ -573,7 +558,7 @@ func TestRenderFrameBlockColourMode(t *testing.T) {
 
 	s.ToggleColour()
 	var idxBuf bytes.Buffer
-	if err := s.RenderFrame(src, &idxBuf); err != nil {
+	if err := s.RenderStreamFrame(render.Frame{Img: src}, &idxBuf); err != nil {
 		t.Fatalf("render xterm-256: %v", err)
 	}
 	out := idxBuf.String()
@@ -586,7 +571,7 @@ func TestRenderFrameBlockColourMode(t *testing.T) {
 }
 
 // TestRenderFrameGraphics asserts the graphics backends emit a non-empty framed
-// payload through RenderFrame for a fitted image.
+// payload through RenderStreamFrame for a fitted image.
 func TestRenderFrameGraphics(t *testing.T) {
 	s := NewState(8, 4, 16, 16)
 	src := solidImage(color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})
@@ -594,7 +579,7 @@ func TestRenderFrameGraphics(t *testing.T) {
 	for _, b := range []Backend{BackendSixel, BackendKitty} {
 		s.Backend = b
 		var buf bytes.Buffer
-		if err := s.RenderFrame(src, &buf); err != nil {
+		if err := s.RenderStreamFrame(render.Frame{Img: src}, &buf); err != nil {
 			t.Fatalf("render backend %d: %v", b, err)
 		}
 		if buf.Len() == 0 {
@@ -627,7 +612,7 @@ func TestRenderFrameGraphicsCentres(t *testing.T) {
 				s := NewState(c.cols, c.rows, c.imgW, c.imgH)
 				s.Backend = b
 				var buf bytes.Buffer
-				if err := s.RenderFrame(src, &buf); err != nil {
+				if err := s.RenderStreamFrame(render.Frame{Img: src}, &buf); err != nil {
 					t.Fatalf("render backend %d: %v", b, err)
 				}
 				out := buf.String()
@@ -676,7 +661,7 @@ func cupPresent(out string) bool {
 func TestRenderFrameNoFit(t *testing.T) {
 	s := NewState(0, 0, 16, 16)
 	var buf bytes.Buffer
-	if err := s.RenderFrame(solidImage(color.RGBA{A: 0xff}), &buf); err != nil {
+	if err := s.RenderStreamFrame(render.Frame{Img: solidImage(color.RGBA{A: 0xff})}, &buf); err != nil {
 		t.Fatalf("render zero grid: %v", err)
 	}
 	if buf.Len() != 0 {

@@ -55,13 +55,14 @@ func (e *ChromiumEngine) layoutScale() float64 {
 	return layoutScale(e.cols, e.cellW, e.layoutWidth)
 }
 
-// snapshotCellPx returns the fractional CSS-pixel cell size, the divisor
-// decodeGlyphRuns rounds the DOM box bounds by. The CSS layout viewport is the
-// real surface (surfaceSize) divided by Z: under Z the page lays out at surf/Z
-// CSS pixels, so the snapshot box bounds are CSS pixels and dividing the CSS-pixel
-// viewport by the grid maps a box to its cell. The result is fractional so no
-// premature int cast reintroduces the sub-cell binning error; callers round only
-// at the final cell bin. A zero grid falls back to the resolved cell px.
+// snapshotCellPx returns the fractional CSS-pixel cell size, the forced cell the
+// in-page walk snaps origins against and calibration corrects the font-size for.
+// The CSS layout viewport is the real surface (surfaceSize) divided by Z: under Z
+// the page lays out at surf/Z CSS pixels, so a client rect is in CSS pixels and
+// dividing the CSS-pixel viewport by the grid maps a rect to its cell. The result is
+// fractional so no premature int cast reintroduces the sub-cell binning error; the
+// page rounds only at the final cell bin. A zero grid falls back to the resolved
+// cell px.
 func (e *ChromiumEngine) snapshotCellPx() (cellW, cellH float64) {
 	if e.cols > 0 && e.rows > 0 {
 		surfW, surfH := e.surfaceSize(e.cols, e.rows)

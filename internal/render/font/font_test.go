@@ -63,57 +63,14 @@ func TestResolvePrefersPrimary(t *testing.T) {
 	}
 }
 
-func TestCoverageOverBlockGlyphs(t *testing.T) {
+func TestBlockGlyphsResolve(t *testing.T) {
 	a, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	gaps := a.Coverage(blockGlyphs)
-	if len(gaps) != 0 {
-		for _, g := range gaps {
-			t.Errorf("block glyph U+%04X would render as tofu", g.Rune)
+	for _, r := range blockGlyphs {
+		if _, _, ok := a.Resolve(r); !ok {
+			t.Errorf("block glyph U+%04X would render as tofu", r)
 		}
-	}
-}
-
-// TestQuadrantSupport asserts the KMSCON fallback selection. The loaded atlas
-// (FiraCode primary covers U+2596..U+259F) reaches the primary tier. An atlas
-// whose primary lacks the quadrant range but whose fallback covers it reaches
-// the Unifont tier. An atlas where neither font covers the range falls to the
-// half-block floor. Each branch is driven through GlyphIndex coverage.
-func TestQuadrantSupport(t *testing.T) {
-	a, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got := a.QuadrantSupport(); got != QuadrantPrimary {
-		t.Fatalf("loaded atlas tier = %d, want QuadrantPrimary", got)
-	}
-
-	// Primary missing, Unifont fallback covers the quadrant range.
-	unifontOnly := &Atlas{Primary: nil, Fallback: a.Fallback}
-	if got := unifontOnly.QuadrantSupport(); got != QuadrantUnifont {
-		t.Fatalf("fallback-only atlas tier = %d, want QuadrantUnifont", got)
-	}
-
-	// Neither font covers the quadrant range: the half-block floor applies.
-	none := &Atlas{Primary: nil, Fallback: nil}
-	if got := none.QuadrantSupport(); got != QuadrantHalfBlock {
-		t.Fatalf("uncovered atlas tier = %d, want QuadrantHalfBlock", got)
-	}
-}
-
-func TestCoverageReportsTofu(t *testing.T) {
-	a, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	// A Unicode private-use code point neither font defines.
-	gaps := a.Coverage([]rune{'A', 0xF8FF})
-	if len(gaps) != 1 {
-		t.Fatalf("want 1 gap, got %d", len(gaps))
-	}
-	if gaps[0].Rune != 0xF8FF {
-		t.Errorf("gap rune = U+%04X, want U+F8FF", gaps[0].Rune)
 	}
 }

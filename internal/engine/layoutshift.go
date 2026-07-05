@@ -17,6 +17,24 @@ const layoutShiftBinding = "__nyalaLayoutShift"
 // on a backend switch.
 const layoutShiftObserverHandle = "__nyalaLayoutShiftObserver"
 
+// layoutGenProperty is the window property the observer script keeps a monotonic
+// layout-generation counter on. It starts at 0 on each document and increments on
+// every non-input layout shift the observer sees, so the snapshot goroutine can
+// read the current generation in the same sequence as its DOMSnapshot and tag the
+// decoded runs with it. composeFrame then pairs a run set to a bitmap only when
+// their generations agree, so the overlay never composes over a reflowed bitmap of
+// a different generation. It is read via layoutGenExpr; a document without the
+// observer (a graphics backend, or the observer failing to install) leaves it
+// undefined, which the read coerces to 0.
+const layoutGenProperty = "__nyalaLayoutGen"
+
+// layoutGenExpr is the JavaScript expression that reads the current layout
+// generation, coercing an undefined counter (no observer installed) to 0. The
+// snapshot goroutine evaluates it in the same chromedp.Run sequence as the
+// DOMSnapshot so the returned generation and the snapshot boxes share one layout
+// generation.
+const layoutGenExpr = "(window." + layoutGenProperty + "||0)"
+
 // layoutShiftEpsilon is the pending layout-shift score the observer must exceed
 // before it pokes the binding, so animation jitter and sub-pixel reflow noise do
 // not thrash the snapshot goroutine. The reflow-channel debounce rate-limits
@@ -26,21 +44,32 @@ const layoutShiftObserverHandle = "__nyalaLayoutShiftObserver"
 const layoutShiftEpsilon = 0.01
 
 // buildLayoutShiftScript returns the JavaScript that observes layout-shift
-// performance entries and pokes the layout-shift binding once the pending
-// non-input shift score crosses layoutShiftEpsilon. It runs via
-// Page.addScriptToEvaluateOnNewDocument, so it installs on the first document and
-// every later one, catching a reflow that lands after the last navigation, resize,
-// scroll, or networkAlmostIdle trigger. buffered:true replays shifts that landed
-// before the observer registered, so an early reflow is not lost. It ignores
-// entries flagged hadRecentInput (a shift the user caused by interacting) and
-// zero-value entries, and guards against a browser without the layout-shift entry
-// type so the script never throws where PerformanceObserver lacks it. The binding
-// is called with a single string argument, the running cumulative score, since
-// Runtime bindings take exactly one string argument. It stores the observer on
-// window.<observerHandle> so the removal script can disconnect it.
+// performance entries, bumps the layout-generation counter on every non-input
+// shift, and pokes the layout-shift binding once the pending non-input shift score
+// crosses layoutShiftEpsilon. It runs via Page.addScriptToEvaluateOnNewDocument, so
+// it installs on the first document and every later one, catching a reflow that
+// lands after the last navigation, resize, scroll, or networkAlmostIdle trigger.
+// buffered:true replays shifts that landed before the observer registered, so an
+// early reflow is not lost. It ignores entries flagged hadRecentInput (a shift the
+// user caused by interacting) and zero-value entries, and guards against a browser
+// without the layout-shift entry type so the script never throws where
+// PerformanceObserver lacks it. The generation counter bumps on every qualifying
+// entry, independent of the epsilon threshold that gates the binding poke, so a
+// sub-epsilon reflow that moves boxes without re-snapshotting still advances the
+// generation and the compose pairing can tell the layouts apart. The binding is
+// called with a single string argument, the running cumulative score, since Runtime
+// bindings take exactly one string argument. It stores the observer on
+// window.<observerHandle> so the removal script can disconnect it, and initialises
+// window.<layoutGenProperty> to 0 so the generation read returns a number from the
+// first document.
 func buildLayoutShiftScript() string {
 	var b strings.Builder
 	b.WriteString("(function(){")
+	b.WriteString("if(window.")
+	b.WriteString(layoutGenProperty)
+	b.WriteString("===undefined)window.")
+	b.WriteString(layoutGenProperty)
+	b.WriteString("=0;")
 	b.WriteString("if(typeof PerformanceObserver!=='function')return;")
 	b.WriteString("var supported=PerformanceObserver.supportedEntryTypes;")
 	b.WriteString("if(supported&&supported.indexOf('layout-shift')===-1)return;")
@@ -53,6 +82,9 @@ func buildLayoutShiftScript() string {
 	b.WriteString("for(var i=0;i<entries.length;i++){var e=entries[i];")
 	b.WriteString("if(e.hadRecentInput)continue;")
 	b.WriteString("if(!(e.value>0))continue;")
+	b.WriteString("window.")
+	b.WriteString(layoutGenProperty)
+	b.WriteString("++;")
 	b.WriteString("cumulative+=e.value;pending+=e.value;}")
 	fmt.Fprintf(&b, "if(pending>%g){pending=0;try{fn(String(cumulative));}catch(err){}}", layoutShiftEpsilon)
 	b.WriteString("});")
