@@ -174,6 +174,8 @@ func TestBuildTextWalkScriptContents(t *testing.T) {
 		{"visibility drop", "s.visibility==='hidden'"},
 		{"clip-path inset drop", "clipPathHidden(s.clipPath)"},
 		{"clip-path inset parse", "function clipPathHidden(cp){"},
+		{"occlusion hit-test", "elementFromPoint("},
+		{"occlusion predicate", "if(occluded(el,cx,cy))continue;"},
 		{"1px overflow-hidden drop", "s.overflow==='hidden'&&parseFloat(s.width)<=1&&parseFloat(s.height)<=1"},
 		{"effective-opacity drop", "if(op<0.05)return true;"},
 		{"computed colour read", "getComputedStyle(el).color"},
