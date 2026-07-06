@@ -1,6 +1,7 @@
 package viewer
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -350,6 +351,12 @@ type streamSession struct {
 	firstDrawn   bool
 	nilImageOnce sync.Once // guards the one-shot nil-image diagnostic
 	resizeOnce   sync.Once // guards the one-shot dropped-resize diagnostic
+	// frameBuf holds one frame's rendered bytes between the encode (RenderStreamFrame)
+	// and the single tty write. It is reused (Reset) each draw, so after warmup it
+	// allocates nothing. Buffering then one write keeps the same bytes in the same
+	// order, cuts the frame to one write syscall, and lets the fps meter time the
+	// encode apart from the terminal flush.
+	frameBuf bytes.Buffer
 	// fps is the live fps counter, non-nil only when NYALA_FPS_TIMING is set. When
 	// set, draw stamps each frame and repaints a rolling usable-fps badge after the
 	// grid (at most once per second); when nil the draw path pays only a nil check,
@@ -489,8 +496,33 @@ func (s *streamSession) draw(frame render.Frame) error {
 		return err
 	}
 	s.firstDrawn = true
-	if err := s.st.RenderStreamFrame(frame, s.tty); err != nil {
+	// Encode phase, then write phase. RenderStreamFrame renders into the reused
+	// buffer, then one write flushes it to the tty. The bytes and their order are
+	// identical to writing straight to the tty, so the block golden track and the
+	// capture stream are unchanged; the split just lets the fps meter attribute the
+	// per-frame time to our encode versus the terminal flush. The two clock reads are
+	// gated on the armed meter, so an off run pays only the buffer indirection (no
+	// clock reads), which allocates nothing after warmup.
+	s.frameBuf.Reset()
+	timed := s.fps != nil
+	var encodeStart time.Time
+	if timed {
+		encodeStart = time.Now()
+	}
+	if err := s.st.RenderStreamFrame(frame, &s.frameBuf); err != nil {
 		return err
+	}
+	var encodeMS, writeMS float64
+	var writeStart time.Time
+	if timed {
+		encodeMS = msSince(encodeStart)
+		writeStart = time.Now()
+	}
+	if _, err := s.tty.Write(s.frameBuf.Bytes()); err != nil {
+		return err
+	}
+	if timed {
+		writeMS = msSince(writeStart)
 	}
 	// Paint the fps badge after the grid but inside the sync bracket, gated behind
 	// NYALA_FPS_TIMING. It is nil off the timing path, so production pays only this
@@ -508,6 +540,9 @@ func (s *streamSession) draw(frame render.Frame) error {
 		// the viewer directly, no engine plumbing: it opens the warm-up gate so the
 		// page-load stall stays out of the rate stats.
 		s.fps.tick(now, len(frame.Text) > 0)
+		// Record the paint split after tick, so recordPaint sees the gate state this
+		// frame set and drops the load-period paints, mirroring the Out rate stats.
+		s.fps.recordPaint(encodeMS, writeMS)
 		s.paintFPS(s.fps.badge(now))
 	}
 	if _, err := io.WriteString(s.tty, endSyncUpdate); err != nil {
@@ -726,6 +761,15 @@ type fpsMeter struct {
 	maxGap  time.Duration   // largest inter-frame gap seen, the slowest frame
 	gaps    []time.Duration // post-gate inter-frame gaps, sorted once at quit for the median
 
+	// Paint-phase split, in ms per post-gate frame: the encode (RenderStreamFrame
+	// into the buffer) and the write (buffer flush to the tty). The sums divide by
+	// paintFrames at quit for the means; the maxes hold the worst single frame.
+	paintFrames int
+	encodeSum   float64
+	encodeMax   float64
+	writeSum    float64
+	writeMax    float64
+
 	badgeStr  string    // cached escape-wrapped badge, rebuilt at most once per interval
 	badgeAt   time.Time // instant badgeStr was last rebuilt
 	haveBadge bool      // set once badgeStr holds a real string
@@ -809,6 +853,26 @@ func (m *fpsMeter) tick(now time.Time, hasText bool) {
 	m.frames++
 	m.prev = now
 	m.last = now
+}
+
+// recordPaint accumulates one drawn frame's encode and write times, in ms, for the
+// out_encode_* and out_write_* summary fields. It records only from the warm-up gate
+// onward, so the load-period paints stay out of the steady-state budget, mirroring
+// the Out rate stats. The draw path calls it once per armed draw, right after tick,
+// so it reads the gate state this frame set.
+func (m *fpsMeter) recordPaint(encodeMS, writeMS float64) {
+	if !m.gated {
+		return
+	}
+	m.paintFrames++
+	m.encodeSum += encodeMS
+	if encodeMS > m.encodeMax {
+		m.encodeMax = encodeMS
+	}
+	m.writeSum += writeMS
+	if writeMS > m.writeMax {
+		m.writeMax = writeMS
+	}
 }
 
 // windowRate returns the rolling usable-fps over the trailing window. F draws in
@@ -927,8 +991,12 @@ func (m *fpsMeter) refresh(now time.Time) string {
 // wall imposes). Under the decoupled receiver/worker model the arrival times are true
 // per-frame instants, so the In extremes are meaningful and mirror Out exactly
 // (in_min is 1/maxGap, and so on). The Out stream (paint) gets out_frames, wall
-// seconds, out_mean and out_median fps, out_min and out_max, and out_worst_gap_ms,
-// which exposes a post-load stall a mean hides. When no ingest reporter is wired the
+// seconds, out_mean and out_median fps, out_min and out_max, out_worst_gap_ms
+// (which exposes a post-load stall a mean hides), then the paint-phase split in ms
+// per frame: out_encode_mean_ms and out_encode_max_ms (rendering the frame into the
+// buffer, our terminal-byte encode) and out_write_mean_ms and out_write_max_ms
+// (flushing that buffer to the tty). The split localises where each paint's time
+// goes: our encode versus the terminal write. When no ingest reporter is wired the
 // In fields read zero. A nil meter or a session whose gate never opened prints
 // nothing, so an off run and an empty run are both silent.
 func (m *fpsMeter) printSummary(w io.Writer) {
@@ -951,13 +1019,19 @@ func (m *fpsMeter) printSummary(w io.Writer) {
 		}
 	}
 	worstGapMS := float64(m.maxGap) / float64(time.Millisecond)
+	encodeMean, writeMean := 0.0, 0.0
+	if m.paintFrames > 0 {
+		encodeMean = m.encodeSum / float64(m.paintFrames)
+		writeMean = m.writeSum / float64(m.paintFrames)
+	}
 	var in render.IngestStats
 	if m.ingest != nil {
 		in = m.ingest.IngestSummary()
 	}
-	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f in_frames=%d in_mean=%.1f in_min=%.1f in_max=%.1f in_median=%.1f in_worst_gap_ms=%.1f in_decode_mean_ms=%.1f in_decode_max_ms=%.1f out_frames=%d wall=%.2fs out_mean=%.1f out_median=%.1f out_min=%.1f out_max=%.1f out_worst_gap_ms=%.1f\n",
+	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f in_frames=%d in_mean=%.1f in_min=%.1f in_max=%.1f in_median=%.1f in_worst_gap_ms=%.1f in_decode_mean_ms=%.1f in_decode_max_ms=%.1f out_frames=%d wall=%.2fs out_mean=%.1f out_median=%.1f out_min=%.1f out_max=%.1f out_worst_gap_ms=%.1f out_encode_mean_ms=%.1f out_encode_max_ms=%.1f out_write_mean_ms=%.1f out_write_max_ms=%.1f\n",
 		warmupMS, in.Frames, in.MeanFPS, in.MinFPS, in.MaxFPS, in.MedianFPS, in.WorstGapMS, in.DecodeMeanMS, in.DecodeMaxMS,
-		m.frames, wall, mean, medianFPS(m.gaps), minInst, maxInst, worstGapMS)
+		m.frames, wall, mean, medianFPS(m.gaps), minInst, maxInst, worstGapMS,
+		encodeMean, m.encodeMax, writeMean, m.writeMax)
 }
 
 // medianFPS returns the median instantaneous fps from the collected inter-frame
