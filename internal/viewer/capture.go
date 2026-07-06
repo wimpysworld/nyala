@@ -66,6 +66,10 @@ type bundleWriter interface {
 	// navigation. The driver calls it once at finalise, after fillSession has run,
 	// before each finalise. Empty bytes leave the placeholder untouched.
 	WriteSession(data []byte) error
+	// SetLoadTimings records the engine's four load-path milestone spans for
+	// performance.json's load_timings. The driver calls it once at finalise, after the
+	// engine has recorded the spans, before each finalise.
+	SetLoadTimings(t render.LoadTimings)
 	// FinaliseFull writes the full-bundle root files and closes the bundle after
 	// n frames drew.
 	FinaliseFull() error
@@ -246,10 +250,12 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 	// exactly once before each finalise, on every full and partial path.
 	finaliseFull := func() error {
 		writeSession(bundle, session)
+		writeLoadTimings(bundle, session)
 		return bundle.FinaliseFull()
 	}
 	finalisePartial := func(reason string) error {
 		writeSession(bundle, session)
+		writeLoadTimings(bundle, session)
 		return bundle.FinalisePartial(reason)
 	}
 
@@ -578,6 +584,16 @@ func writeSession(bundle bundleWriter, session CaptureSession) {
 		return
 	}
 	_ = bundle.WriteSession(session.SessionJSON())
+}
+
+// writeLoadTimings records the engine's load-path spans into the bundle before
+// finalise, mirroring writeSession. A nil session (no capture wiring) records
+// nothing.
+func writeLoadTimings(bundle bundleWriter, session CaptureSession) {
+	if session == nil {
+		return
+	}
+	bundle.SetLoadTimings(session.LoadTimings())
 }
 
 // drawCaptureFrame draws one frame through the tee and returns the FrameInput the

@@ -24,11 +24,11 @@ import (
 // read from the engine, never from a dead context, so a rebuild resumes where the
 // crash left off.
 func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
-	timer := newLoadTimer()
+	timer := newLoadTimer(e.loadSpans)
 	if err = e.launch(e.browserFlag); err != nil {
 		return nil, err
 	}
-	timer.mark("process spawned")
+	timer.mark(labelProcessSpawned)
 	e.mu.Lock()
 	ctx := e.ctx
 	url := e.url
@@ -81,7 +81,7 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 		e.teardownSession()
 		return nil, fmt.Errorf("engine: start screencast: %w", err)
 	}
-	timer.mark("screencast started")
+	timer.mark(labelScreencastStarted)
 	go e.ackPump(ctx, acks)
 	go e.runTextSync(ctx, ts, reSnap, reflow, scroll, reEmit)
 	go e.runFrameLoop(ctx, slot, frames, ts, scroll, reEmit)

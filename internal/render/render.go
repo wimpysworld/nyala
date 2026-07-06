@@ -101,6 +101,23 @@ type FrameStats struct {
 	LayoutScale float64
 }
 
+// LoadTimings holds the four load-path milestone elapsed times, in milliseconds
+// since launch, that the engine records for the capture bundle. The engine records
+// them only when capture (or the NYALA_DEBUG_TIMING switch) is on; the production
+// live path records nothing. A field is zero when its milestone did not fire, for
+// example a partial capture whose page never published text. Like FrameStats, it is
+// a plain value the capture package maps to its own JSON shape.
+type LoadTimings struct {
+	// ProcessSpawnedMS is the elapsed time to the Chromium process spawn.
+	ProcessSpawnedMS float64
+	// ScreencastStartedMS is the elapsed time to the screencast start.
+	ScreencastStartedMS float64
+	// FirstFrameMS is the elapsed time to the first emitted frame.
+	FirstFrameMS float64
+	// FirstTextMS is the elapsed time to the first published text overlay.
+	FirstTextMS float64
+}
+
 // ScreencastMeta is the neutral screencast frame metadata the capture bundle
 // records: the scroll offset, page scale, and device size of the frame, with no
 // image bytes. It mirrors the fields of the CDP page.ScreencastFrameMetadata

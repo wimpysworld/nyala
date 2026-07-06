@@ -97,6 +97,12 @@ type CaptureSession interface {
 	// text. A nil channel reads as never poked, so the hook's idle timer bounds the
 	// wait.
 	ScrollSettle() <-chan struct{}
+	// LoadTimings returns a snapshot of the four load-path milestone spans the engine
+	// recorded during launch (process spawn, screencast start, first frame, first
+	// text), each the elapsed milliseconds since launch. The capture driver reads it at
+	// finalise and writes it into performance.json's load_timings; a zero field means
+	// that milestone did not fire.
+	LoadTimings() render.LoadTimings
 }
 
 // Stream runs the interactive viewer on tty, drawing the live frames eng pushes,

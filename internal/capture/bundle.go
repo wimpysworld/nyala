@@ -111,6 +111,11 @@ type Bundle struct {
 	perf       []FramePerformance
 	captured   int
 	rasteriser *Rasteriser
+	// loadTimings holds the engine's four load-path milestone spans for
+	// performance.json's load_timings, set by SetLoadTimings before finalise. It is
+	// nil until the driver records it, so a bundle written without it (a direct test)
+	// omits load_timings.
+	loadTimings *render.LoadTimings
 }
 
 // NewBundle creates a fresh nyala-capture-* temp directory, opens
@@ -170,6 +175,14 @@ func (b *Bundle) WriteSession(data []byte) error {
 		return fmt.Errorf("write cdp-session.json: %w", err)
 	}
 	return nil
+}
+
+// SetLoadTimings records the engine's four load-path milestone spans for
+// performance.json's load_timings. The driver calls it once at finalise, after the
+// engine has recorded the spans. It stores a copy, so a later engine write does not
+// mutate the recorded value.
+func (b *Bundle) SetLoadTimings(t render.LoadTimings) {
+	b.loadTimings = &t
 }
 
 // FrameInput carries everything WriteFrame serialises for one drawn frame. The

@@ -122,13 +122,34 @@ func performanceRecord(backend Backend, in FrameInput) FramePerformance {
 	return rec
 }
 
+// loadTimingsView is the load-path milestone record serialised into
+// performance.json under load_timings. Each field is the elapsed milliseconds since
+// launch to that milestone; a zero field means the milestone did not fire (a partial
+// capture whose page never published text). The object is present only when the
+// driver recorded the spans (SetLoadTimings), matching layout_scale's
+// absent-when-unset discipline.
+type loadTimingsView struct {
+	// ProcessSpawnedMS is the elapsed time to the Chromium process spawn.
+	ProcessSpawnedMS float64 `json:"process_spawned_ms"`
+	// ScreencastStartedMS is the elapsed time to the screencast start.
+	ScreencastStartedMS float64 `json:"screencast_started_ms"`
+	// FirstFrameMS is the elapsed time to the first emitted frame.
+	FirstFrameMS float64 `json:"first_frame_ms"`
+	// FirstTextMS is the elapsed time to the first published text overlay.
+	FirstTextMS float64 `json:"first_text_ms"`
+}
+
 // performanceDoc is the JSON view written to performance.json. It always carries
 // the per-frame records; for a multi-frame capture it adds a run summary with the
 // requested and captured counts and the per-phase mean and max over captured
-// frames. A single-frame capture carries no summary.
+// frames. A single-frame capture carries no summary. load_timings carries the
+// session-level load-path spans when the driver recorded them.
 type performanceDoc struct {
 	// Frames is the per-frame performance record, in capture order.
 	Frames []FramePerformance `json:"frames"`
+	// LoadTimings is the session-level load-path milestone record; present only when
+	// the driver recorded the spans.
+	LoadTimings *loadTimingsView `json:"load_timings,omitempty"`
 	// Summary is the run summary; present only for a multi-frame capture.
 	Summary *runSummary `json:"summary,omitempty"`
 }
@@ -161,6 +182,14 @@ type phaseAggregate struct {
 // adds the run summary only when more than one frame was captured.
 func (b *Bundle) performanceDoc() performanceDoc {
 	doc := performanceDoc{Frames: b.perf}
+	if b.loadTimings != nil {
+		doc.LoadTimings = &loadTimingsView{
+			ProcessSpawnedMS:    b.loadTimings.ProcessSpawnedMS,
+			ScreencastStartedMS: b.loadTimings.ScreencastStartedMS,
+			FirstFrameMS:        b.loadTimings.FirstFrameMS,
+			FirstTextMS:         b.loadTimings.FirstTextMS,
+		}
+	}
 	if len(b.perf) > 1 {
 		s := summarise(b.meta.FramesRequested, b.perf)
 		doc.Summary = &s

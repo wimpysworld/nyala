@@ -1,5 +1,6 @@
 .direnv/
 dist/
 /nyala
+/nyala-timings.log
 /result
 /testdata/diagnostics/

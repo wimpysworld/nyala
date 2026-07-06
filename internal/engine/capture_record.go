@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/chromedp/cdproto/page"
+
+	"github.com/wimpysworld/nyala/internal/render"
 )
 
 // captureEventType is the discriminator for one recorded CDP capture event. Only
@@ -174,6 +176,12 @@ type Recorder struct {
 	// the viewer reads it via ScrollSettle so the capture scroll hook draws the
 	// scrolled frame with the settled overlay rather than the stale pre-scroll text.
 	scrollSettle <-chan struct{}
+
+	// loadSpans is the engine's load-timing recorder, set once in EnableCapture
+	// before any goroutine starts and read-only afterwards. The per-session loadTimer
+	// records the four load-path milestones into it; the viewer reads a snapshot via
+	// LoadTimings at bundle-finalise time to write performance.json's load_timings.
+	loadSpans *sessionTimings
 }
 
 // Ensure Recorder satisfies captureRecorder.
@@ -269,6 +277,25 @@ func (r *Recorder) setScrollSettle(scrollSettle <-chan struct{}) {
 // never poked; the hook's idle timer then bounds the wait.
 func (r *Recorder) ScrollSettle() <-chan struct{} {
 	return r.scrollSettle
+}
+
+// setLoadSpans records the engine's load-timing recorder. The engine calls it once
+// in EnableCapture before any goroutine starts; the viewer reads a snapshot with
+// LoadTimings. It is set-once and read-only afterwards, so it takes no lock.
+func (r *Recorder) setLoadSpans(loadSpans *sessionTimings) {
+	r.loadSpans = loadSpans
+}
+
+// LoadTimings returns a snapshot of the four load-path milestone spans the engine
+// recorded during launch. The capture driver reads it at bundle-finalise time and
+// writes it into performance.json's load_timings. Each field is the elapsed
+// milliseconds since launch; a zero field means that milestone did not fire. A nil
+// recorder (no engine wiring, as in a fake) reads as all-zero spans.
+func (r *Recorder) LoadTimings() render.LoadTimings {
+	if r.loadSpans == nil {
+		return render.LoadTimings{}
+	}
+	return r.loadSpans.snapshot()
 }
 
 // cdpSession is the run-metadata view serialised to cdp-session.json. It records
