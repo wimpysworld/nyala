@@ -3,8 +3,11 @@ package engine
 import (
 	"context"
 	"fmt"
+	"image"
 	"math"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/input"
@@ -126,6 +129,33 @@ type ChromiumEngine struct {
 	// the layout generation read in the same sequence, and the updated hold state.
 	snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, int64, overlayState)
 
+	// decode turns a raw base64 screencast payload into an RGBA bitmap. It defaults
+	// to decodeScreencastImage; the frame-loop unit test swaps in a fake so it drives
+	// the raw slot without a real PNG. It is nil in production, where runFrameLoop
+	// falls back to decodeScreencastImage, and read once at the top of runFrameLoop.
+	decode func(string) (*image.RGBA, error)
+
+	// recvNano is the wall-clock nanoseconds of the last screencast frame received on
+	// the listener goroutine, or zero before the first. lastSession is that frame's
+	// SessionID, the id the watchdog re-acks to re-couple a wedged stream. stallPoked
+	// marks that the watchdog already re-acked for the current silent gap, so it
+	// re-couples at most once per gap and a fresh frame clears it. All three are
+	// lock-free (set on the receive path, read on the watchdog goroutine) and always
+	// on, independent of the NYALA_FPS_TIMING ingest counter. startSession resets them
+	// so a rebuild does not treat a stale timestamp as a stall.
+	recvNano    atomic.Int64
+	lastSession atomic.Int64
+	stallPoked  atomic.Bool
+
+	// ingest counts delivered screencast frames at the true ingest point
+	// (handleScreencastFrame), before the latest-wins slot drops any, for the
+	// NYALA_FPS_TIMING In rate. It is armed once in New from the env switch and read
+	// by the viewer over the ingestReporter seam (IngestFPS, IngestSummary). It
+	// persists across sessions, so a resize or backend switch keeps the
+	// engine-lifetime ingest rate. Off the switch it is a disabled no-op counter, so
+	// the listener goroutine pays one bool check per frame.
+	ingest *ingestCounter
+
 	// timing traces the launch to first-frame to first-text load path to stderr when
 	// NYALA_DEBUG_TIMING is set, and is a disabled no-op timer otherwise. startSession
 	// arms it per session under mu before the frame and snapshot goroutines start, so
@@ -215,7 +245,25 @@ func New(browserFlag string) *ChromiumEngine {
 		closing:     make(chan struct{}),
 		proxy:       proxy,
 		proxyErr:    proxyErr,
+		ingest:      newIngestCounter(),
 	}
+}
+
+// IngestFPS returns the rolling screencast-ingest rate over the trailing window,
+// pruned to now, for the fps badge's In figure. It counts frames at the true ingest
+// point before the latest-wins slot drops any, so it reports the pre-drop rate the
+// paint meter cannot see; an idle page decays it to 0. It returns 0 when
+// NYALA_FPS_TIMING is unset. It is the ingestReporter capability the viewer fps
+// meter type-asserts, so the Engine seam stays unchanged.
+func (e *ChromiumEngine) IngestFPS(now time.Time) float64 {
+	return e.ingest.fps(now)
+}
+
+// IngestSummary returns the session ingest frame count and the mean ingest fps over
+// the ingest span, for the fps quit summary's in_frames and in_mean. It returns
+// zero when NYALA_FPS_TIMING is unset.
+func (e *ChromiumEngine) IngestSummary() (frames int, meanFPS float64) {
+	return e.ingest.summary()
 }
 
 // EnableCapture turns on engine-phase timing and event recording, setting rec

@@ -24,11 +24,14 @@ const liveTestPage = "data:text/html," +
 // TestLiveSyncedFrame is the live-tagged integration test (decision 5). It
 // launches a real Chromium, navigates to a self-contained page, and asserts at
 // least one synced frame arrives with non-empty Text (the crisp DOM overlay).
+// The DOM snapshot publishes on its own goroutine, decoupled from frame emit, and
+// ack-on-receive lets the first bitmap arrive before the first text publishes, so
+// it reads frames until one carries text rather than demanding it on the first.
 // The live build tag keeps it off the default build, `just test`, and CI: an
 // untagged `go test ./...` never compiles it and never launches a browser. Run
 // it with `just live`. It skips with a clear message when no Chromium resolves,
 // so the tagged run degrades gracefully on a host without a browser, and uses a
-// context timeout via a select deadline so it fails fast rather than hanging.
+// deadline so it fails fast rather than hanging.
 func TestLiveSyncedFrame(t *testing.T) {
 	if _, err := resolveExecutable(""); err != nil {
 		t.Skipf("no Chromium for the live test: %v", err)
@@ -45,19 +48,22 @@ func TestLiveSyncedFrame(t *testing.T) {
 	deadline := time.NewTimer(30 * time.Second)
 	defer deadline.Stop()
 
-	select {
-	case f, ok := <-e.Frames():
-		if !ok {
-			t.Fatal("frames channel closed before a frame arrived")
+	for {
+		select {
+		case f, ok := <-e.Frames():
+			if !ok {
+				t.Fatal("frames channel closed before a text-bearing frame arrived")
+			}
+			if f.Img == nil {
+				t.Fatal("synced frame has a nil bitmap")
+			}
+			if len(f.Text) > 0 {
+				return // a synced frame with crisp text arrived
+			}
+			// A pre-publish frame carries no text yet; keep reading for the synced one.
+		case <-deadline.C:
+			t.Fatal("no synced frame with crisp text within the deadline")
 		}
-		if f.Img == nil {
-			t.Fatal("synced frame has a nil bitmap")
-		}
-		if len(f.Text) == 0 {
-			t.Fatal("synced frame has no crisp text runs")
-		}
-	case <-deadline.C:
-		t.Fatal("no synced frame within the deadline")
 	}
 }
 
