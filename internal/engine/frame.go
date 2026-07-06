@@ -10,9 +10,13 @@ import (
 	_ "image/png"  // register the PNG decoder for image.Decode
 )
 
-// screencastQuality is the JPEG compression quality for the screencast. The
-// bitmap is downsampled into 2-colour cells, so a high quality keeps JPEG loss
-// below cell visibility while keeping the payload small for the moving viewport.
+// screencastQuality is a JPEG compression quality value. The live screencast is
+// now lossless PNG, so it no longer sets the stream quality; it survives as the
+// quality recorded in the capture bundle's screencast config and as the encode
+// quality for the JPEG decode benchmark fixture. Lossless frames are what the
+// planned per-frame damage diff needs: JPEG's 16x16 MCU decode shifts around every
+// change and its banding can flip gradient cells near the 2-colour threshold, so a
+// tolerance cannot cleanly catch a real change; PNG gives an exact per-cell diff.
 const screencastQuality = 90
 
 // frameChannelBuffer is the buffer size of the emitted-frame channel. A small

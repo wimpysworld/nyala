@@ -368,7 +368,7 @@ func buildCDPSession(
 		CapturePx:            cdpSessionPx{Width: capW, Height: capH},
 		DeviceScaleFactor:    layoutScale,
 		Screencast: cdpSessionScreencast{
-			Format:    string(page.ScreencastFormatJpeg),
+			Format:    string(page.ScreencastFormatPng),
 			Quality:   screencastQuality,
 			MaxWidth:  maxW,
 			MaxHeight: maxH,

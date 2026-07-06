@@ -120,6 +120,7 @@ type frameScratch struct {
 	dstW, dstH int           // current downscale pixel extent
 	out        block.Grid    // reused compose output grid
 	bw         *bufio.Writer // reused buffered tty writer
+	bwSize     int           // current tty buffer capacity in bytes
 }
 
 // downscaleDst returns a width x height *image.RGBA, reusing the held destination
@@ -134,16 +135,32 @@ func (f *frameScratch) downscaleDst(width, height int) *image.RGBA {
 	return f.dst
 }
 
-// writer returns the held bufio.Writer reset onto w, allocating it once. The live
-// diff path wraps the tty so the differ's many small writes coalesce into one
-// syscall, and the held writer is reset per frame rather than reallocated.
-func (f *frameScratch) writer(w io.Writer) *bufio.Writer {
-	if f.bw == nil {
-		f.bw = bufio.NewWriter(w)
+// writer returns the held bufio.Writer reset onto w, sized to hold a whole frame
+// in one flush. size is the per-frame byte budget: a full-refresh or scroll frame
+// runs to ~150KB, so the default 4KB buffer would auto-flush many times mid-frame
+// and each mid-frame flush presents a torn partial frame. Sizing the buffer to the
+// frame keeps the differ's many small writes as one flush and one syscall. The
+// buffer reallocates only when the grid grows the budget; a reset reuses it. The
+// live diff path is single-goroutine, so the held writer never aliases.
+func (f *frameScratch) writer(w io.Writer, size int) *bufio.Writer {
+	if f.bw == nil || f.bwSize < size {
+		f.bw = bufio.NewWriterSize(w, size)
+		f.bwSize = size
 	} else {
 		f.bw.Reset(w)
 	}
 	return f.bw
+}
+
+// frameBufferSize is the per-frame tty buffer budget for the live diff path:
+// enough bytes to hold a full-refresh frame in one flush so the buffered writer
+// does not auto-flush mid-frame. It budgets 48 bytes per cell (a worst-case cell
+// is a CUP move plus an SGR fg+bg plus a multi-byte glyph) and a fixed slack for
+// the frame prefix and the synchronised-output markers.
+func frameBufferSize(cols, rows int) int {
+	const perCell = 48
+	const slack = 256
+	return cols*rows*perCell + slack
 }
 
 // SetDiff sets the live-path cell differ. The interactive stream session passes a
@@ -338,11 +355,22 @@ func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
 	if s.Backend == BackendBlock {
 		return s.renderBlock(frame.Img, frame.Text, w)
 	}
-	fit := s.Fit()
+	fit := s.graphicsFit()
 	if fit.FitCols <= 0 || fit.FitRows <= 0 {
 		return nil
 	}
 	return s.encodeGraphics(frame.Img, fit, w)
+}
+
+// graphicsFit returns the identity placement for a graphics-backend bitmap: no
+// letterbox and no offset, so the engine-sized bitmap fills the whole Cols x Rows
+// grid. The engine sizes the graphics bitmap to exactly the terminal grid
+// geometry (cols*cellW by rows*cellH device pixels via render.GraphicsCaptureSize),
+// so it maps one-to-one onto the grid. The 1:2 FitImage would shrink the extent
+// and centre the bitmap onto fewer cells whenever the real terminal cell aspect
+// is not 1:2 (a 16x33 cell), letterboxing the view; the identity fit avoids that.
+func (s *State) graphicsFit() block.Fit {
+	return block.Fit{Cols: s.Cols, Rows: s.Rows, FitCols: s.Cols, FitRows: s.Rows}
 }
 
 // renderBlock composes the source onto the full Cols x Rows grid and writes it
@@ -358,8 +386,9 @@ func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
 // An aspect-fit would assume a 1:2 cell aspect and letterbox the bitmap onto fewer
 // columns whenever the real terminal cell aspect differs (a 13x27 cell letterboxes
 // 195 columns onto 187), drifting the overlay right of the bitmap by a scale that
-// grows with the column. The graphics backends keep the fit centring in
-// encodeGraphics, since they draw the bitmap alone with no overlay to shear against.
+// grows with the column. The graphics backends draw the same engine-sized full-grid
+// bitmap through the identity graphicsFit, so they fill the whole grid with no
+// letterbox either; the 1:2 FitImage stays out of both paths.
 func (s *State) renderBlock(src *image.RGBA, text []render.GlyphRun, w io.Writer) error {
 	br := block.Renderer{Cols: s.Cols, Rows: s.Rows, Scheme: s.Scheme}
 	pxW, pxH := schemePixels(s.Scheme, s.Cols, s.Rows)
@@ -380,7 +409,7 @@ func (s *State) renderBlock(src *image.RGBA, text []render.GlyphRun, w io.Writer
 			s.captureGrid.Cols, s.captureGrid.Rows = grid.Cols, grid.Rows
 			s.captureGrid.Cells = append(s.captureGrid.Cells[:0], grid.Cells...)
 		}
-		bw := s.scratch.writer(w)
+		bw := s.scratch.writer(w, frameBufferSize(s.Cols, s.Rows))
 		if err := s.diff.Emit(bw, *grid, fgSGRFunc(s.Colour), bgSGRFunc(s.Colour)); err != nil {
 			return err
 		}
@@ -395,10 +424,11 @@ func (s *State) renderBlock(src *image.RGBA, text []render.GlyphRun, w io.Writer
 	return writeGrid(grid, s.Colour, w)
 }
 
-// encodeGraphics positions the cursor at the letterbox offset and encodes img
-// with the active graphics backend. RenderStreamFrame passes the engine-sized
-// bitmap through, so the kitty delete-all and the centring offset stay in one
-// place.
+// encodeGraphics positions the cursor at the fit offset and encodes img with the
+// active graphics backend. RenderStreamFrame passes the engine-sized bitmap and
+// the identity graphicsFit through, so the offset is (0,0) and the bitmap fills
+// the grid from the top-left; the kitty delete-all and the cursor move stay in one
+// place. The fit parameter stays so a caller can still centre a sub-grid image.
 func (s *State) encodeGraphics(img *image.RGBA, fit block.Fit, w io.Writer) error {
 	if s.Backend == BackendKitty {
 		if _, err := io.WriteString(w, kittyDeleteAll); err != nil {
@@ -560,6 +590,16 @@ const clearScreen = "\x1b[H\x1b[2J"
 // every cell in place. Auto-wrap is off and each cell is rewritten, so nothing
 // stale remains after the overwrite.
 const cursorHome = "\x1b[H"
+
+// beginSyncUpdate and endSyncUpdate bracket a frame in a DEC 2026 synchronised
+// update (ESC [ ? 2026 h and ESC [ ? 2026 l), so the terminal presents the whole
+// frame atomically and never scans out a partial frame while the render bytes
+// land. A terminal without DEC 2026 ignores the private mode, so the live draw
+// path emits them unconditionally.
+const (
+	beginSyncUpdate = "\x1b[?2026h"
+	endSyncUpdate   = "\x1b[?2026l"
+)
 
 // kittyDeleteAll deletes every Kitty image and frees its data (a=d,d=A). The
 // viewer writes it before a kitty redraw because clearScreen erases text but

@@ -579,22 +579,21 @@ func TestRenderFrameGraphics(t *testing.T) {
 	}
 }
 
-// TestRenderFrameGraphicsCentres asserts the graphics backends move the cursor to
-// the centred cell offset before the bitmap, matching the block path: a
-// letterboxed fit emits the CUP escape \x1b[<row>;<col>H at the 1-based offset, and
-// a frame that fills the grid emits no cursor move. The kitty delete-all escape
-// (\x1b_Ga=d) must still precede the move on the kitty path.
-func TestRenderFrameGraphicsCentres(t *testing.T) {
+// TestRenderFrameGraphicsFillsGrid asserts the graphics backends fill the whole
+// grid from the top-left and never emit a letterbox CUP move, whatever the image
+// aspect. The engine sizes the graphics bitmap to the full grid, so the identity
+// graphicsFit maps it one-to-one and the 1:2 FitImage stays out of the path; a
+// 1:2 fit would letterbox a non-1:2 grid and shift the bitmap off the corner. The
+// kitty delete-all escape (\x1b_Ga=d) still precedes the bitmap on the kitty path.
+func TestRenderFrameGraphicsFillsGrid(t *testing.T) {
 	cases := []struct {
-		name             string
-		cols, rows       int
-		imgW, imgH       int
-		wantMove         string // empty means assert no CUP escape
-		wantOffsetColRow string
+		name       string
+		cols, rows int
+		imgW, imgH int
 	}{
-		{"column letterbox", 8, 4, 16, 64, "\x1b[1;4H", "OffsetCol 3"},
-		{"row letterbox", 4, 4, 16, 16, "\x1b[2;1H", "OffsetRow 1"},
-		{"fills grid", 8, 4, 16, 16, "", "both offsets 0"},
+		{"tall image", 8, 4, 16, 64},
+		{"square image on square grid", 4, 4, 16, 16},
+		{"fills grid", 8, 4, 16, 16},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -607,21 +606,11 @@ func TestRenderFrameGraphicsCentres(t *testing.T) {
 					t.Fatalf("render backend %d: %v", b, err)
 				}
 				out := buf.String()
-				if c.wantMove == "" {
-					if strings.Contains(out, "\x1b[") && cupPresent(out) {
-						t.Fatalf("backend %d (%s): emitted a CUP move, want none", b, c.wantOffsetColRow)
-					}
-					continue
+				if cupPresent(out) {
+					t.Fatalf("backend %d (%s): emitted a CUP move, want none (identity fit fills the grid)", b, c.name)
 				}
-				if !strings.Contains(out, c.wantMove) {
-					t.Fatalf("backend %d (%s): output missing CUP escape %q", b, c.wantOffsetColRow, c.wantMove)
-				}
-				if b == BackendKitty {
-					di := strings.Index(out, kittyDeleteAll)
-					mi := strings.Index(out, c.wantMove)
-					if di < 0 || mi < 0 || di > mi {
-						t.Fatalf("kitty: delete-all must precede the CUP move (delete=%d move=%d)", di, mi)
-					}
+				if b == BackendKitty && !strings.Contains(out, kittyDeleteAll) {
+					t.Fatalf("kitty: output missing the delete-all escape before the bitmap")
 				}
 			}
 		})

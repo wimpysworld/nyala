@@ -24,9 +24,11 @@ import (
 // read from the engine, never from a dead context, so a rebuild resumes where the
 // crash left off.
 func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
+	timer := newLoadTimer()
 	if err = e.launch(e.browserFlag); err != nil {
 		return nil, err
 	}
+	timer.mark("process spawned")
 	e.mu.Lock()
 	ctx := e.ctx
 	url := e.url
@@ -73,11 +75,13 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	e.reflow = reflow
 	e.scroll = scroll
 	e.reEmit = reEmit
+	e.timing = timer
 	e.mu.Unlock()
 	if err = e.startScreencast(ctx, slot, capW, capH); err != nil {
 		e.teardownSession()
 		return nil, fmt.Errorf("engine: start screencast: %w", err)
 	}
+	timer.mark("screencast started")
 	go e.ackPump(ctx, acks)
 	go e.runTextSync(ctx, ts, reSnap, reflow, scroll, reEmit)
 	go e.runFrameLoop(ctx, slot, frames, ts, scroll, reEmit)
@@ -264,7 +268,10 @@ func (e *ChromiumEngine) watchCrash(crashed chan struct{}) {
 // On a "firstContentfulPaint" lifecycle event it fires markPainted, the primary
 // paint-gate fire source the snapshot goroutine reads as its first-snapshot clock,
 // but only when the event's frame is the main frame; a subframe (iframe) painting
-// first must not close the latch early. On "networkAlmostIdle" it pokes the reflow
+// first must not close the latch early. On that same main-frame paint, off the
+// capture path, it also pokes the reflow channel so the crisp overlay decodes as
+// soon as the page paints rather than waiting on networkAlmostIdle; capture keeps
+// the painted latch and takes no poke. On "networkAlmostIdle" it pokes the reflow
 // channel for a debounced late re-snapshot, catching a reflow that lands without
 // navigation or resize (web fonts loading, async content). On a Runtime.bindingCalled
 // for the layout-shift binding it pokes the same reflow channel, so a layout shift
@@ -300,6 +307,17 @@ func (e *ChromiumEngine) watchPaint() {
 			case "firstContentfulPaint":
 				if mainFrame != "" && t.FrameID == mainFrame {
 					e.markPainted()
+					// Production has no other snapshot trigger at first paint: the painted
+					// latch is capture-only and the first publishSnapshot raced navigation
+					// before the page painted, so on a heavy page text would otherwise wait
+					// on networkAlmostIdle, seconds away. Poke the same debounced reflow the
+					// networkAlmostIdle and layout-shift arms use, so the crisp overlay
+					// decodes as soon as the page paints. Capture drives its first snapshot
+					// off the painted latch and the textReady settle hold, so gating on
+					// captureOn leaves capture's settle timing unchanged.
+					if !e.captureOn {
+						e.pokeReflow()
+					}
 				}
 			case "networkAlmostIdle":
 				e.pokeReflow()
