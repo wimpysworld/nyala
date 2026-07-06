@@ -519,28 +519,54 @@ func bgSGR(c color.RGBA, mode ColourMode) string {
 	}
 }
 
+// appendSGR256 appends an xterm-256 SGR escape, prefix + index + "m", to dst with
+// strconv.AppendInt and returns the extended slice. It is the allocation-free
+// build the differ folds into its reused per-frame buffer.
+func appendSGR256(dst []byte, prefix string, idx uint8) []byte {
+	dst = append(dst, prefix...)
+	dst = strconv.AppendInt(dst, int64(idx), 10)
+	return append(dst, 'm')
+}
+
 // sgr256 builds an xterm-256 SGR escape, prefix + index + "m", with
 // strconv.AppendInt into a stack buffer instead of fmt.Sprintf. The index is a
 // uint8, so the escape never exceeds the buffer. One string allocation remains
 // for the return value; the change drops the fmt reflection path.
 func sgr256(prefix string, idx uint8) string {
 	var buf [16]byte
-	b := append(buf[:0], prefix...)
-	b = strconv.AppendInt(b, int64(idx), 10)
-	b = append(b, 'm')
-	return string(b)
+	return string(appendSGR256(buf[:0], prefix, idx))
 }
 
 // fgSGRFunc binds a colour mode into a block.SGRFunc for the cell differ, so the
-// differ stays colour-mode neutral while reusing the viewer's fg SGR rules.
+// differ stays colour-mode neutral while reusing the viewer's fg SGR rules. Each
+// mode appends into the differ's reused buffer, so no per-cell string allocates.
 func fgSGRFunc(mode ColourMode) block.SGRFunc {
-	return func(c color.RGBA) string { return fgSGR(c, mode) }
+	switch mode {
+	case ColourMono:
+		return func(dst []byte, _ color.RGBA) []byte { return dst }
+	case ColourXTerm256:
+		return func(dst []byte, c color.RGBA) []byte {
+			return appendSGR256(dst, fg256Prefix, block.XTerm256(c))
+		}
+	default:
+		return block.AppendTrueColorFG
+	}
 }
 
 // bgSGRFunc binds a colour mode into a block.SGRFunc for the cell differ, so the
-// differ stays colour-mode neutral while reusing the viewer's bg SGR rules.
+// differ stays colour-mode neutral while reusing the viewer's bg SGR rules. Each
+// mode appends into the differ's reused buffer, so no per-cell string allocates.
 func bgSGRFunc(mode ColourMode) block.SGRFunc {
-	return func(c color.RGBA) string { return bgSGR(c, mode) }
+	switch mode {
+	case ColourMono:
+		return func(dst []byte, _ color.RGBA) []byte { return dst }
+	case ColourXTerm256:
+		return func(dst []byte, c color.RGBA) []byte {
+			return appendSGR256(dst, bg256Prefix, block.XTerm256(c))
+		}
+	default:
+		return block.AppendTrueColorBG
+	}
 }
 
 // cupFormat is the CUP escape that moves the cursor to a 1-based row;column

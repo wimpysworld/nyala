@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"unicode/utf8"
 
 	"github.com/wimpysworld/nyala/internal/render"
 )
@@ -159,7 +160,8 @@ func WriteCell(w io.Writer, c *Cell, fgSGR, bgSGR string) error {
 		_, err := io.WriteString(w, c.Text)
 		return err
 	}
-	_, err := io.WriteString(w, string(c.Glyph))
+	var glyph [utf8.UTFMax]byte
+	_, err := w.Write(utf8.AppendRune(glyph[:0], c.Glyph))
 	return err
 }
 
