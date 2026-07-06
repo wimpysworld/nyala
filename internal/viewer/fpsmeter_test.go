@@ -225,6 +225,42 @@ func TestFPSMeterPeakHold(t *testing.T) {
 	}
 }
 
+// TestFPSMeterPaintSplitSummary checks the paint-phase split reaches the summary:
+// encode and write means and maxes over the post-gate frames, and that a pre-gate
+// (load-period) paint is dropped from the budget.
+func TestFPSMeterPaintSplitSummary(t *testing.T) {
+	m := &fpsMeter{window: time.Second, start: time.Unix(0, 0)}
+	base := time.Unix(0, 0)
+
+	// A text-free load frame before the gate: its paint must not enter the budget.
+	m.tick(base, false)
+	m.recordPaint(999, 999)
+
+	// Gate opens on the first text frame, then two more steady frames. Encode
+	// 10/20/30 -> mean 20, max 30; write 150/160/140 -> mean 150, max 160.
+	m.tick(base.Add(100*time.Millisecond), true)
+	m.recordPaint(10, 150)
+	m.tick(base.Add(200*time.Millisecond), true)
+	m.recordPaint(20, 160)
+	m.tick(base.Add(300*time.Millisecond), true)
+	m.recordPaint(30, 140)
+
+	if m.paintFrames != 3 {
+		t.Fatalf("paintFrames = %d, want 3 (pre-gate paint dropped)", m.paintFrames)
+	}
+	var b strings.Builder
+	m.printSummary(&b)
+	out := b.String()
+	for _, want := range []string{
+		"out_encode_mean_ms=20.0", "out_encode_max_ms=30.0",
+		"out_write_mean_ms=150.0", "out_write_max_ms=160.0",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("summary %q missing %q", out, want)
+		}
+	}
+}
+
 func TestFPSMeterSummaryNilAndEmptyAreSilent(t *testing.T) {
 	var nilMeter *fpsMeter
 	var b strings.Builder
