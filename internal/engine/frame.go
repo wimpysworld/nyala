@@ -19,6 +19,15 @@ import (
 // tolerance cannot cleanly catch a real change; PNG gives an exact per-cell diff.
 const screencastQuality = 90
 
+// movingScreencastQuality is the JPEG quality the adaptive live screencast uses when
+// the page is moving (and the block backend uses for its whole live stream). JPEG at
+// this quality decodes far faster than lossless PNG, cutting the ingest decode cost
+// during animation and scroll; its MCU-scale artefacts are hidden by the motion on
+// the graphics backends and washed out by the block backend's own sub-cell
+// downsample. The capture path never uses it: capture forces PNG for a byte-exact
+// corpus.
+const movingScreencastQuality = 80
+
 // frameChannelBuffer is the buffer size of the emitted-frame channel. A small
 // buffer stops a transient restartStream stall from parking the frame loop on the
 // frames send while the viewer control goroutine runs the restart; the latest-wins

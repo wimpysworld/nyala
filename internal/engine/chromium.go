@@ -89,6 +89,26 @@ type ChromiumEngine struct {
 	// capture event so a wedged browser is observable without spamming.
 	inputFailures int
 
+	// screencastCtl serialises screencast stop/start so a resize or backend switch
+	// (restartStream) and an adaptive format switch (switchScreencastFormat) never run
+	// StopScreencast/StartScreencast concurrently. It is a dedicated lock held only
+	// across those CDP control calls, never nested with e.mu across a chromedp.Run, so
+	// it cannot deadlock with the supervisor.
+	screencastCtl sync.Mutex
+	// screencastFmt is the current screencast format and JPEG quality, guarded by
+	// e.mu. startScreencast reads it so every start (initial, resize, backend switch,
+	// format switch) uses the current format. The block backend runs live JPEG, the
+	// graphics backends run adaptive PNG-settled/JPEG-moving, and the capture path
+	// forces PNG; initialScreencastFormat picks it from the backend and capture flag.
+	screencastFmt screencastFmt
+	// motion carries per-frame arrival instants from the listener goroutine to the
+	// adaptive-format controller, which reads the frame-arrival rate as the page's
+	// motion signal. It is created and the controller started only on the live
+	// graphics-capable path; under capture it stays nil so pokeMotion is a no-op and
+	// the format never switches. Buffered and latest-wins-drop, so the listener never
+	// blocks. Reset per session by teardownSession.
+	motion chan time.Time
+
 	// Frame plumbing.
 	frames chan render.Frame // emitted frames, created once and closed only on Close
 	slot   *frameSlot        // latest-wins single-frame backpressure slot
@@ -134,6 +154,13 @@ type ChromiumEngine struct {
 	// the raw slot without a real PNG. It is nil in production, where runFrameLoop
 	// falls back to decodeScreencastImage, and read once at the top of runFrameLoop.
 	decode func(string) (*image.RGBA, error)
+
+	// switchFmt performs one adaptive screencast format switch. It defaults to
+	// switchScreencastFormat (stop then start with the new format); the format-controller
+	// unit test swaps in a fake that records the switch and updates e.screencastFmt, so
+	// the state machine is exercised without a browser. It is nil in production, where
+	// runScreencastFormat falls back to switchScreencastFormat.
+	switchFmt func(context.Context, page.ScreencastFormat, int)
 
 	// recvNano is the wall-clock nanoseconds of the last screencast frame received on
 	// the listener goroutine, or zero before the first. lastSession is that frame's

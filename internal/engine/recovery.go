@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
@@ -67,6 +68,17 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// frame loop, so a static page repaints with text once the snapshot publishes.
 	// Capacity 1 latest-wins, so a burst of publishes coalesces to one re-emit.
 	reEmit := make(chan struct{}, 1)
+	// motion carries frame-arrival instants to the adaptive-format controller. It is
+	// created and the controller started only on the live path; under capture it stays
+	// nil so the format never switches (capture forces PNG). Buffered so the listener's
+	// non-blocking poke never drops under a normal cadence.
+	var motion chan time.Time
+	if !e.captureOn {
+		motion = make(chan time.Time, 8)
+	}
+	// Pick the initial screencast format from the backend and capture flag before the
+	// first start: capture PNG, live block JPEG, live graphics PNG (settled).
+	fmtSel := e.initialScreencastFormat()
 	e.mu.Lock()
 	e.slot = slot
 	e.acks = acks
@@ -75,6 +87,8 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	e.reflow = reflow
 	e.scroll = scroll
 	e.reEmit = reEmit
+	e.motion = motion
+	e.screencastFmt = fmtSel
 	e.timing = timer
 	e.mu.Unlock()
 	// Register the frame listener once, on this fresh session context, before the
@@ -94,6 +108,11 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	timer.mark(labelScreencastStarted)
 	go e.ackPump(ctx, acks)
 	go e.runScreencastWatchdog(ctx)
+	// The adaptive-format controller runs only on the live path; under capture motion
+	// is nil, so the format stays the deterministic PNG the corpus needs.
+	if motion != nil {
+		go e.runScreencastFormat(ctx, motion)
+	}
 	go e.runTextSync(ctx, ts, reSnap, reflow, scroll, reEmit)
 	go e.runFrameLoop(ctx, slot, frames, ts, scroll, reEmit)
 
@@ -381,6 +400,7 @@ func (e *ChromiumEngine) teardownSession() {
 	cancel := e.cancel
 	e.ctx, e.cancel, e.slot, e.acks, e.text = nil, nil, nil, nil, nil
 	e.reSnap, e.reflow, e.scroll, e.reEmit = nil, nil, nil, nil
+	e.motion = nil
 	e.windowID = 0
 	e.fontForcingID = ""
 	e.layoutShiftID = ""
