@@ -116,6 +116,10 @@ type Bundle struct {
 	// nil until the driver records it, so a bundle written without it (a direct test)
 	// omits load_timings.
 	loadTimings *render.LoadTimings
+	// frameWindow holds the driver-measured sustained-fps window, set by
+	// SetFrameWindow before finalise. It is nil until the driver records it, so a
+	// bundle written without it (a direct test) omits sustained_fps and frame_window.
+	frameWindow *FrameWindow
 }
 
 // NewBundle creates a fresh nyala-capture-* temp directory, opens
@@ -183,6 +187,29 @@ func (b *Bundle) WriteSession(data []byte) error {
 // mutate the recorded value.
 func (b *Bundle) SetLoadTimings(t render.LoadTimings) {
 	b.loadTimings = &t
+}
+
+// FrameWindow carries the raw inputs of the sustained-fps measure: the count of
+// usable frames the capture drew and the wall-clock span in milliseconds they
+// were drawn over (first drawn frame to last). performance.json serialises these
+// under frame_window and derives sustained_fps from them, so the figure is
+// auditable. A single-frame capture carries UsableFrames 1 and SpanMS 0, so
+// sustained_fps is 0, matching load_timings' zero-span convention.
+type FrameWindow struct {
+	// UsableFrames is the count of usable frames (a drawn frame with a non-nil
+	// bitmap) the capture measured the window over.
+	UsableFrames int
+	// SpanMS is the wall-clock span in milliseconds from the first drawn frame to
+	// the last, zero when fewer than two frames drew.
+	SpanMS float64
+}
+
+// SetFrameWindow records the driver-measured sustained-fps window for
+// performance.json's frame_window and sustained_fps. The driver calls it once at
+// finalise, after the counted frames drew, mirroring SetLoadTimings. It stores a
+// copy.
+func (b *Bundle) SetFrameWindow(w FrameWindow) {
+	b.frameWindow = &w
 }
 
 // FrameInput carries everything WriteFrame serialises for one drawn frame. The

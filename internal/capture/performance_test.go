@@ -197,6 +197,77 @@ func TestPerformanceLoadTimingsOmittedWhenUnset(t *testing.T) {
 	}
 }
 
+// writePerformanceWithWindow writes a finalised single-frame block bundle after
+// recording a sustained-fps window, and returns the decoded performance.json.
+func writePerformanceWithWindow(t *testing.T, w FrameWindow) map[string]any {
+	t.Helper()
+	b, err := NewBundle(blockMeta(1))
+	if err != nil {
+		t.Fatalf("NewBundle: %v", err)
+	}
+	if werr := b.WriteFrame(blockFrameInput()); werr != nil {
+		t.Fatalf("WriteFrame: %v", werr)
+	}
+	b.SetFrameWindow(w)
+	if ferr := b.FinaliseFull(); ferr != nil {
+		t.Fatalf("FinaliseFull: %v", ferr)
+	}
+	raw, err := os.ReadFile(filepath.Join(b.Path(), "performance.json"))
+	if err != nil {
+		t.Fatalf("read performance.json: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal performance.json: %v", err)
+	}
+	return doc
+}
+
+// TestPerformanceFrameWindowWritten covers a multi-frame window: sustained_fps is
+// (frames-1)/span, and frame_window carries the raw inputs so it is auditable.
+func TestPerformanceFrameWindowWritten(t *testing.T) {
+	doc := writePerformanceWithWindow(t, FrameWindow{UsableFrames: 3, SpanMS: 400})
+	if doc["sustained_fps"] != float64(5) {
+		t.Errorf("sustained_fps = %v, want 5 ((3-1)/0.4)", doc["sustained_fps"])
+	}
+	fw, ok := doc["frame_window"].(map[string]any)
+	if !ok {
+		t.Fatalf("performance.json missing frame_window: %v", doc["frame_window"])
+	}
+	if fw["usable_frames"] != float64(3) {
+		t.Errorf("frame_window usable_frames = %v, want 3", fw["usable_frames"])
+	}
+	if fw["span_ms"] != float64(400) {
+		t.Errorf("frame_window span_ms = %v, want 400", fw["span_ms"])
+	}
+}
+
+// TestPerformanceFrameWindowZeroSpan covers a single-frame capture: the span is
+// zero, so sustained_fps is 0, and frame_window is still present, matching
+// load_timings' zero-span convention.
+func TestPerformanceFrameWindowZeroSpan(t *testing.T) {
+	doc := writePerformanceWithWindow(t, FrameWindow{UsableFrames: 1, SpanMS: 0})
+	if doc["sustained_fps"] != float64(0) {
+		t.Errorf("sustained_fps = %v, want 0 (no span)", doc["sustained_fps"])
+	}
+	if _, ok := doc["frame_window"].(map[string]any); !ok {
+		t.Errorf("frame_window absent for single-frame capture, want present with zero span")
+	}
+}
+
+// TestPerformanceFrameWindowOmittedWhenUnset covers a bundle written without
+// SetFrameWindow: sustained_fps and frame_window are absent, matching load_timings'
+// omitempty discipline.
+func TestPerformanceFrameWindowOmittedWhenUnset(t *testing.T) {
+	doc := readPerformance(t, 1, BackendBlock)
+	if _, ok := doc["sustained_fps"]; ok {
+		t.Errorf("sustained_fps present without SetFrameWindow, want absent")
+	}
+	if _, ok := doc["frame_window"]; ok {
+		t.Errorf("frame_window present without SetFrameWindow, want absent")
+	}
+}
+
 func TestPerformanceSingleFrameNoSummary(t *testing.T) {
 	doc := readPerformance(t, 1, BackendBlock)
 	if _, ok := doc["summary"]; ok {

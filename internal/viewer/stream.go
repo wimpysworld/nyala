@@ -5,8 +5,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"slices"
+	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	cterm "github.com/charmbracelet/x/term"
 
@@ -124,6 +127,13 @@ type CaptureSession interface {
 // width in CSS pixels, handed to the engine before Navigate.
 func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks string, layoutWidth int) (err error) {
 	scheme := resolveScheme(blocks, os.Environ())
+	// The live fps meter counts every drawn frame for the badge and the quit
+	// summary. Its printSummary defer is registered before setupViewer's restore
+	// below, so LIFO runs it last: after raw mode and the full-screen escapes are
+	// undone, so the summary line lands readable on the normal screen. The meter is
+	// nil unless NYALA_FPS_TIMING is set, so an off run pays only nil checks.
+	fps := newFPSMeter(os.Environ())
+	defer fps.printSummary(os.Stdout)
 	fd, st, restore, err := setupViewer(eng, tty, colourFlag, scheme, layoutWidth)
 	if err != nil {
 		return err
@@ -178,7 +188,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks strin
 	diff := &block.GridDiff{}
 	st.SetDiff(diff)
 
-	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, ctl: ctl, diff: diff}
+	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, ctl: ctl, diff: diff, fps: fps}
 	keys := readKeys(tty, done)
 	navigated := make(chan error, 1)
 	go func() {
@@ -330,6 +340,11 @@ type streamSession struct {
 	firstDrawn   bool
 	nilImageOnce sync.Once // guards the one-shot nil-image diagnostic
 	resizeOnce   sync.Once // guards the one-shot dropped-resize diagnostic
+	// fps is the live fps counter, non-nil only when NYALA_FPS_TIMING is set. When
+	// set, draw stamps each frame and repaints a rolling usable-fps badge after the
+	// grid (at most once per second); when nil the draw path pays only a nil check,
+	// so production is unchanged.
+	fps *fpsMeter
 }
 
 // loop runs the push consumer until the frames or keys channel closes, a quit
@@ -454,8 +469,34 @@ func (s *streamSession) draw(frame render.Frame) error {
 	if err := s.st.RenderStreamFrame(frame, s.tty); err != nil {
 		return err
 	}
-	_, err := io.WriteString(s.tty, endSyncUpdate)
-	return err
+	if _, err := io.WriteString(s.tty, endSyncUpdate); err != nil {
+		return err
+	}
+	// Paint the fps badge after the grid, gated behind NYALA_FPS_TIMING. It is nil
+	// off the timing path, so production pays only this nil check. The meter counts
+	// every draw but rebuilds the badge string at most once per second; the cached
+	// escape-wrapped string is repainted each frame (cheap, no per-frame alloc) so
+	// the grid draw does not leave it overwritten. The badge is a cursor-saved
+	// overlay, so it never enters the block grid the differ tracks and leaves the
+	// golden-gated compose bytes untouched.
+	if s.fps != nil {
+		now := time.Now()
+		// A frame carrying text runs is the first-text-published milestone reaching
+		// the viewer directly, no engine plumbing: it opens the warm-up gate so the
+		// page-load stall stays out of the rate stats.
+		s.fps.tick(now, len(frame.Text) > 0)
+		s.paintFPS(s.fps.badge(now))
+	}
+	return nil
+}
+
+// paintFPS writes the cached badge string (cursor save, home, reverse-video rate,
+// cursor restore) to the terminal. The save/restore brackets keep the badge off
+// the grid cells the differ diffs, so the block differ's next CUP lands where it
+// expects. The write is best-effort like the teardown escapes: a failure surfaces
+// on the next draw.
+func (s *streamSession) paintFPS(badge string) {
+	_, _ = io.WriteString(s.tty, badge)
 }
 
 // resize re-fits to the new terminal size and restarts the stream at the
@@ -595,6 +636,196 @@ func (s *keySender) close() {
 	s.once.Do(func() {
 		close(s.done)
 	})
+}
+
+// fpsTimingEnv is the environment variable that turns on the live fps instrument:
+// the rolling badge and the quit summary. Set to any non-empty value it arms the
+// meter; unset it stays off. It follows the NYALA_* diagnostic-switch convention
+// and is independent of NYALA_DEBUG_TIMING (the load-milestone stderr trace).
+const fpsTimingEnv = "NYALA_FPS_TIMING="
+
+// fpsWindow is the trailing span the badge averages usable-fps over, so it tracks
+// the last second of draws rather than the whole session.
+const fpsWindow = time.Second
+
+// fpsBadgeInterval bounds how often the badge string is rebuilt, so the fps text
+// repaints at most once per second: the meter counts every draw, but the badge
+// string is regenerated no more than once per interval and the cached string is
+// reused between rebuilds.
+const fpsBadgeInterval = time.Second
+
+// fpsWarmupFallback bounds the wait for the first-text-published milestone. A
+// text-free page never trips the warm-up gate, so once this span has elapsed since
+// Stream start the gate opens at the current frame anyway, so a text-free page
+// still measures. It is generous enough that a normal text page gates on its text,
+// not on this fallback.
+const fpsWarmupFallback = 5 * time.Second
+
+// fpsMeter tracks the live usable-frames-per-second figure for the NYALA_FPS_TIMING
+// instrument: a rolling window feeds the badge and running accumulators feed the
+// quit summary. The rate stats are gated to steady state: they accumulate only from
+// the first text-bearing frame (the first-text-published milestone), so the page
+// load stall stays out of the mean, median, min, max, and worst gap. It is nil
+// unless the switch is set, so the draw path pays only a nil check when the switch
+// is off. All access is on the single draw goroutine, so it needs no lock.
+type fpsMeter struct {
+	window time.Duration
+	start  time.Time   // Stream construction, the warm-up span measures from here
+	times  []time.Time // draw instants inside the trailing window, for the badge rate
+
+	gated  bool          // set once the warm-up gate opened, so rate stats accumulate
+	warmup time.Duration // start to the gate frame, the time-to-first-usable-frame
+	gateAt time.Time     // the gate frame, the rate-window wall-clock start
+
+	frames  int             // usable draws counted from the gate frame onward
+	last    time.Time       // most recent counted draw, the wall-clock end
+	prev    time.Time       // previous counted draw, to measure the inter-frame gap
+	haveGap bool            // set once two counted draws exist, so min/max gaps are real
+	minGap  time.Duration   // smallest inter-frame gap seen, the fastest frame
+	maxGap  time.Duration   // largest inter-frame gap seen, the slowest frame
+	gaps    []time.Duration // post-gate inter-frame gaps, sorted once at quit for the median
+
+	badgeStr  string    // cached escape-wrapped badge, rebuilt at most once per interval
+	badgeAt   time.Time // instant badgeStr was last rebuilt
+	haveBadge bool      // set once badgeStr holds a real string
+}
+
+// newFPSMeter returns a meter when NYALA_FPS_TIMING is set in env, or nil
+// otherwise. The env read happens once per Stream, so an off run does no per-frame
+// work beyond the draw path's nil check. start is stamped now, so the warm-up span
+// measures from Stream construction.
+func newFPSMeter(env []string) *fpsMeter {
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, fpsTimingEnv); ok && v != "" {
+			return &fpsMeter{window: fpsWindow, start: time.Now()}
+		}
+	}
+	return nil
+}
+
+// tick records a usable draw at now. hasText is true when the frame carries text
+// runs. It always updates the trailing badge window (so the live badge tracks the
+// load period too), but the rate stats accumulate only from the warm-up gate: the
+// gate opens on the first text-bearing frame, or, for a text-free page, once
+// fpsWarmupFallback has elapsed since start. From the gate frame onward it counts
+// frames, the wall span, the inter-frame gaps (min, max, and the slice the median
+// sorts at quit). It allocates nothing per call beyond the amortised window and gap
+// slices, so an armed run stays cheap.
+func (m *fpsMeter) tick(now time.Time, hasText bool) {
+	cutoff := now.Add(-m.window)
+	m.times = append(m.times, now)
+	drop := 0
+	for drop < len(m.times) && m.times[drop].Before(cutoff) {
+		drop++
+	}
+	m.times = m.times[drop:]
+
+	if !m.gated {
+		if !hasText && now.Sub(m.start) < fpsWarmupFallback {
+			return // still warming up: badge window updated, rate stats held
+		}
+		m.gated = true
+		m.warmup = now.Sub(m.start)
+		m.gateAt = now
+	}
+
+	if m.frames == 0 {
+		m.gateAt = now
+	} else {
+		gap := now.Sub(m.prev)
+		if !m.haveGap || gap < m.minGap {
+			m.minGap = gap
+		}
+		if !m.haveGap || gap > m.maxGap {
+			m.maxGap = gap
+		}
+		m.haveGap = true
+		m.gaps = append(m.gaps, gap)
+	}
+	m.frames++
+	m.prev = now
+	m.last = now
+}
+
+// windowRate returns the rolling usable-fps over the trailing window. F draws in
+// the window leave F-1 intervals over their span, so the rate is (F-1)/span. Fewer
+// than two frames, or a non-positive span, report 0.
+func (m *fpsMeter) windowRate() float64 {
+	if len(m.times) < 2 {
+		return 0
+	}
+	span := m.times[len(m.times)-1].Sub(m.times[0]).Seconds()
+	if span <= 0 {
+		return 0
+	}
+	return float64(len(m.times)-1) / span
+}
+
+// badge returns the escape-wrapped badge string to write this draw. It rebuilds
+// the string (the only per-call allocation) at most once per fpsBadgeInterval and
+// returns the cached string between rebuilds, so the fps text refreshes about once
+// per second while the badge stays painted over every frame.
+func (m *fpsMeter) badge(now time.Time) string {
+	if !m.haveBadge || now.Sub(m.badgeAt) >= fpsBadgeInterval {
+		m.badgeStr = fmt.Sprintf("\x1b7\x1b[1;1H\x1b[7m %.1f fps \x1b[0m\x1b8", m.windowRate())
+		m.badgeAt = now
+		m.haveBadge = true
+	}
+	return m.badgeStr
+}
+
+// printSummary writes one compact fps summary line to w after the session ends. It
+// reports warmup_ms (time to the first counted frame, so the "loads slowly" signal
+// stays visible), then the steady-state rate stats measured from that gate frame
+// onward: frames drawn, wall seconds, mean and median fps, the min and max
+// instantaneous fps (the slowest and fastest single frames), and the worst
+// inter-frame gap in ms, which exposes a post-load stall a mean hides. A nil meter
+// or a session whose gate never opened prints nothing, so an off run and an empty
+// run are both silent.
+func (m *fpsMeter) printSummary(w io.Writer) {
+	if m == nil || m.frames == 0 {
+		return
+	}
+	warmupMS := float64(m.warmup) / float64(time.Millisecond)
+	wall := m.last.Sub(m.gateAt).Seconds()
+	mean := 0.0
+	if wall > 0 {
+		mean = float64(m.frames-1) / wall
+	}
+	minInst, maxInst := 0.0, 0.0
+	if m.haveGap {
+		if s := m.maxGap.Seconds(); s > 0 {
+			minInst = 1 / s
+		}
+		if s := m.minGap.Seconds(); s > 0 {
+			maxInst = 1 / s
+		}
+	}
+	worstGapMS := float64(m.maxGap) / float64(time.Millisecond)
+	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f frames=%d wall=%.2fs mean=%.1f median=%.1f min=%.1f max=%.1f worst_gap_ms=%.1f\n",
+		warmupMS, m.frames, wall, mean, medianFPS(m.gaps), minInst, maxInst, worstGapMS)
+}
+
+// medianFPS returns the median instantaneous fps from the collected inter-frame
+// gaps: it sorts the gaps (once, at quit, off the draw path), takes the middle gap
+// (averaging the two middle gaps for an even count), and inverts it to fps. The
+// median ignores a one-off stall, so it reads the typical frame rate. An empty or
+// non-positive-median slice reports 0.
+func medianFPS(gaps []time.Duration) float64 {
+	if len(gaps) == 0 {
+		return 0
+	}
+	slices.Sort(gaps)
+	n := len(gaps)
+	med := gaps[n/2]
+	if n%2 == 0 {
+		med = (gaps[n/2-1] + gaps[n/2]) / 2
+	}
+	s := med.Seconds()
+	if s <= 0 {
+		return 0
+	}
+	return 1 / s
 }
 
 // resolveScheme maps the --blocks mode to a block.Scheme for the interactive
