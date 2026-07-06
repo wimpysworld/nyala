@@ -106,7 +106,13 @@ func recomposeBoundaryCells(g *Grid, img *image.RGBA, run render.GlyphRun, schem
 		return
 	}
 	row := run.Row
-	displayCells := runDisplayCells(run.Text)
+	// Prefer the run's cached display width; the engine sets it at decode, so the
+	// hot path never re-segments here. A hand-built run leaves it zero and falls
+	// back to measuring Text, which yields the same count.
+	displayCells := run.DisplayCells
+	if displayCells == 0 {
+		displayCells = runDisplayCells(run.Text)
+	}
 	for _, gridCol := range [2]int{run.Col - 1, run.Col + displayCells} {
 		if gridCol < 0 || gridCol >= g.Cols {
 			continue

@@ -333,16 +333,17 @@ func decodeWalkRuns(res walkResult, cellW float64, cols int) []render.GlyphRun {
 			continue
 		}
 		runs = append(runs, render.GlyphRun{
-			Col:   r.Col,
-			Row:   r.Row,
-			Text:  clipped,
-			FG:    color.RGBA{R: r.FG.R, G: r.FG.G, B: r.FG.B, A: r.FG.A},
-			BG:    color.RGBA{R: r.BG.R, G: r.BG.G, B: r.BG.B, A: r.BG.A},
-			X:     r.X,
-			Y:     r.Y,
-			W:     r.W,
-			H:     r.H,
-			CellW: cellW,
+			Col:          r.Col,
+			Row:          r.Row,
+			Text:         clipped,
+			FG:           color.RGBA{R: r.FG.R, G: r.FG.G, B: r.FG.B, A: r.FG.A},
+			BG:           color.RGBA{R: r.BG.R, G: r.BG.G, B: r.BG.B, A: r.BG.A},
+			X:            r.X,
+			Y:            r.Y,
+			W:            r.W,
+			H:            r.H,
+			CellW:        cellW,
+			DisplayCells: render.DisplayWidth(clipped),
 		})
 	}
 	return runs
