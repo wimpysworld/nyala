@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/wimpysworld/nyala/internal/render"
 )
 
 // readPerformance writes a finalised bundle of n block frames and returns the
@@ -115,6 +117,83 @@ func TestPerformanceLayoutScaleOmittedAtOne(t *testing.T) {
 		if rec.LayoutScale != nil {
 			t.Errorf("layout_scale = %v at Z=%v, want nil (omitted)", *rec.LayoutScale, z)
 		}
+	}
+}
+
+// writePerformanceWithLoad writes a finalised single-frame block bundle after
+// recording load spans, and returns the decoded performance.json.
+func writePerformanceWithLoad(t *testing.T, spans render.LoadTimings) map[string]any {
+	t.Helper()
+	b, err := NewBundle(blockMeta(1))
+	if err != nil {
+		t.Fatalf("NewBundle: %v", err)
+	}
+	if werr := b.WriteFrame(blockFrameInput()); werr != nil {
+		t.Fatalf("WriteFrame: %v", werr)
+	}
+	b.SetLoadTimings(spans)
+	if ferr := b.FinaliseFull(); ferr != nil {
+		t.Fatalf("FinaliseFull: %v", ferr)
+	}
+	raw, err := os.ReadFile(filepath.Join(b.Path(), "performance.json"))
+	if err != nil {
+		t.Fatalf("read performance.json: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal performance.json: %v", err)
+	}
+	return doc
+}
+
+func TestPerformanceLoadTimingsWritten(t *testing.T) {
+	doc := writePerformanceWithLoad(t, render.LoadTimings{
+		ProcessSpawnedMS:    12,
+		ScreencastStartedMS: 34.5,
+		FirstFrameMS:        56.5,
+		FirstTextMS:         78.25,
+	})
+	lt, ok := doc["load_timings"].(map[string]any)
+	if !ok {
+		t.Fatalf("performance.json missing load_timings: %v", doc["load_timings"])
+	}
+	want := map[string]float64{
+		"process_spawned_ms":    12,
+		"screencast_started_ms": 34.5,
+		"first_frame_ms":        56.5,
+		"first_text_ms":         78.25,
+	}
+	for k, v := range want {
+		got, present := lt[k]
+		if !present {
+			t.Errorf("load_timings missing field %q", k)
+			continue
+		}
+		if got != v {
+			t.Errorf("load_timings %q = %v, want %v", k, got, v)
+		}
+	}
+}
+
+// TestPerformanceLoadTimingsZeroSpan covers a partial capture where a milestone
+// never fired: the span is an explicit zero, and the object is still present.
+func TestPerformanceLoadTimingsZeroSpan(t *testing.T) {
+	doc := writePerformanceWithLoad(t, render.LoadTimings{ProcessSpawnedMS: 12})
+	lt, ok := doc["load_timings"].(map[string]any)
+	if !ok {
+		t.Fatalf("performance.json missing load_timings: %v", doc["load_timings"])
+	}
+	if lt["first_text_ms"] != float64(0) {
+		t.Errorf("load_timings first_text_ms = %v, want 0 (milestone did not fire)", lt["first_text_ms"])
+	}
+}
+
+// TestPerformanceLoadTimingsOmittedWhenUnset covers a bundle written without
+// SetLoadTimings: load_timings is absent, matching layout_scale's omitempty.
+func TestPerformanceLoadTimingsOmittedWhenUnset(t *testing.T) {
+	doc := readPerformance(t, 1, BackendBlock)
+	if _, ok := doc["load_timings"]; ok {
+		t.Errorf("load_timings present without SetLoadTimings, want absent")
 	}
 }
 

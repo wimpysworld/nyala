@@ -128,6 +128,49 @@ run url="https://wimpys.world" *flags: build
         SHELL=/bin/sh script -qec "$wrapped" /dev/null
     fi
 
+# Run Nyala with load-path timing. Interactive tty streams and writes the stderr
+# timing to NYALA_TIMING_FILE (default nyala-timings.log); headless runs the bounded
+# capture path and print its performance.json load_timings, so it works with no tty.
+[positional-arguments]
+debug-run url="https://wimpys.world" *flags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if [ -t 0 ] && [ -t 1 ]; then
+        # Interactive tty: NYALA_DEBUG_TIMING makes the engine print one stderr line
+        # per load milestone; just run forwards the ambient env to nyala. The viewer
+        # draws to the tty (fd 0), so redirecting stderr (fd 2) captures the timings
+        # without touching the TUI. Quit nyala to end the run.
+        out="${NYALA_TIMING_FILE:-nyala-timings.log}"
+        rc=0
+        NYALA_DEBUG_TIMING=1 just run "$@" 2>"$out" || rc=$?
+        printf '\nload timings (%s):\n' "$out" >&2
+        grep '^nyala timing:' "$out" >&2 || printf '  none captured\n' >&2
+        exit "$rc"
+    fi
+
+    # No tty (agent, CI, fenced): the interactive viewer never self-exits and script
+    # binds stderr to the pty, so run the bounded capture path, which records the load
+    # milestones into performance.json by construction. The throwaway bundle is deleted
+    # after its timings print; it can hold page content, so it is not kept.
+    log="$(mktemp)"
+    rc=0
+    just capture=1 run "$@" >"$log" 2>&1 || rc=$?
+    # The capture prints "capture bundle: <path>" on the pty, glued to the frame
+    # escape stream and ending in a carriage return, so match just the path token.
+    bundle="$(grep -aoE 'capture bundle: [^[:space:]]+' "$log" | tail -n1 || true)"
+    bundle="${bundle#capture bundle: }"
+    if [ -n "$bundle" ] && [ -f "$bundle/performance.json" ]; then
+        printf 'load timings from %s\n' "$bundle/performance.json" >&2
+        cat "$bundle/performance.json"
+        rm -rf "$bundle"
+    else
+        printf 'debug-run: capture produced no bundle; tail of output:\n' >&2
+        tail -c 2000 "$log" >&2
+    fi
+    rm -f "$log"
+    exit "$rc"
+
 # Capture every corpus fixture on the block backend for a text-layout sweep
 corpus:
     #!/usr/bin/env bash

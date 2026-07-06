@@ -99,6 +99,10 @@ type fakeBundle struct {
 	onWriteFrame  func()
 	finalise      string // "full", or "partial: <reason>", empty until finalised
 	writeErr      error  // when set, WriteFrame returns it instead of recording
+	// loadTimings records the last SetLoadTimings value; loadTimingsBefore is true
+	// when the driver recorded it before any finalise, mirroring sessionBefore.
+	loadTimings       render.LoadTimings
+	loadTimingsBefore bool
 }
 
 func (b *fakeBundle) RawFile() io.Writer       { return &b.raw }
@@ -122,6 +126,13 @@ func (b *fakeBundle) WriteSession(data []byte) error {
 		b.sessionBefore = true
 	}
 	return nil
+}
+
+func (b *fakeBundle) SetLoadTimings(t render.LoadTimings) {
+	b.loadTimings = t
+	if !b.finalised {
+		b.loadTimingsBefore = true
+	}
 }
 
 func (b *fakeBundle) FinaliseFull() error {
@@ -159,6 +170,9 @@ type fakeSession struct {
 	// the non-gate tests fall back to the advanced-offset wait. The settle-gate test
 	// sets its own channel and pokes it after the stale advanced frame.
 	scrollSettle <-chan struct{}
+	// loadTimings is the load-path span snapshot LoadTimings returns, so a test can
+	// assert the driver records it into the bundle at finalise.
+	loadTimings render.LoadTimings
 }
 
 func (s *fakeSession) SessionJSON() []byte {
@@ -196,6 +210,10 @@ func (s *fakeSession) ScrollSettle() <-chan struct{} {
 		return closedChan
 	}
 	return s.scrollSettle
+}
+
+func (s *fakeSession) LoadTimings() render.LoadTimings {
+	return s.loadTimings
 }
 
 // fakeCaptureEngine is the viewer.Engine the capture-driver tests drive. It
@@ -467,6 +485,31 @@ func TestCaptureLoopWritesSessionAtFinalise(t *testing.T) {
 	}
 	if !bundle.sessionBefore {
 		t.Error("WriteSession ran after finalise, want it before FinaliseFull")
+	}
+}
+
+// TestCaptureLoopRecordsLoadTimingsAtFinalise asserts captureLoop reads the
+// engine's load spans from the session and records them into the bundle before
+// finalise, so performance.json's load_timings carries the launch milestones.
+func TestCaptureLoopRecordsLoadTimingsAtFinalise(t *testing.T) {
+	want := render.LoadTimings{ProcessSpawnedMS: 10, ScreencastStartedMS: 20, FirstFrameMS: 30, FirstTextMS: 40}
+	sess := &fakeSession{loadTimings: want}
+
+	ch := make(chan render.Frame, 1)
+	ch <- blockFrame()
+	eng := &fakeCaptureEngine{frames: ch}
+	bundle := &fakeBundle{}
+	var tty bytes.Buffer
+
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, 1, 0, true, captureIdle, captureIdle)
+	if err != nil {
+		t.Fatalf("captureLoop err = %v, want nil for a full capture", err)
+	}
+	if bundle.loadTimings != want {
+		t.Errorf("bundle loadTimings = %+v, want %+v", bundle.loadTimings, want)
+	}
+	if !bundle.loadTimingsBefore {
+		t.Error("SetLoadTimings ran after finalise, want it before FinaliseFull")
 	}
 }
 

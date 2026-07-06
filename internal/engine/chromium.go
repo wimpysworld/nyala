@@ -146,6 +146,13 @@ type ChromiumEngine struct {
 	// in composeFrame; recorder is the event sink the emit sites use behind a
 	// nil check. Both stay unset on the production path, so it pays zero cost.
 	captureOn bool // true once EnableCapture turned capture on
+	// loadSpans is the capture-run load-timing recorder. EnableCapture allocates it
+	// before any goroutine starts and hands it to the capture recorder; startSession
+	// hands it to the per-session loadTimer, which records the four load-path
+	// milestones into it. The capture driver reads it at bundle-finalise time via the
+	// recorder's LoadTimings. It stays nil off the capture path, so the loadTimer
+	// records nothing and production pays only its existing nil checks.
+	loadSpans *sessionTimings
 	// settleHold gates the initial-layout settle hold on textReady. The capture driver
 	// sets it true only for a single-frame capture (n == 1), where the one bundled
 	// frame must be the settled page, and leaves it false for a multi-frame capture,
@@ -237,10 +244,16 @@ func (e *ChromiumEngine) EnableCapture(rec captureRecorder) {
 	// that landed after its scroll injection. It is latest-wins, capacity 1, so a
 	// burst of settle pokes collapses to one and the snapshot goroutine never blocks.
 	e.scrollSettle = make(chan struct{}, 1)
+	// The load-timing recorder holds the four load-path spans the per-session
+	// loadTimer records. It is allocated here, before any goroutine starts, and shared
+	// with the recorder so the capture driver reads the spans at finalise; startSession
+	// hands the same holder to newLoadTimer.
+	e.loadSpans = &sessionTimings{}
 	if r, ok := rec.(*Recorder); ok {
 		r.setPainted(e.painted)
 		r.setTextReady(e.textReady)
 		r.setScrollSettle(e.scrollSettle)
+		r.setLoadSpans(e.loadSpans)
 	}
 }
 
