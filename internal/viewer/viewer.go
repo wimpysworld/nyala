@@ -136,6 +136,13 @@ type frameScratch struct {
 	out        block.Grid    // reused compose output grid
 	bw         *bufio.Writer // reused buffered tty writer
 	bwSize     int           // current tty buffer capacity in bytes
+
+	// pool parallelises the block downscale across a persistent worker set. It is
+	// built once, lazily on the first diff draw, and reused every frame, so the hot
+	// path spawns no goroutine. The live diff path is single-goroutine, so the one
+	// pool is driven from one caller and never overlaps calls. It stays nil off the
+	// diff path (capture and static image), which keep the serial downscale.
+	pool *metrics.DownscalePool
 }
 
 // downscaleDst returns a width x height *image.RGBA, reusing the held destination
@@ -416,7 +423,10 @@ func (s *State) renderBlock(src *image.RGBA, text []render.GlyphRun, w io.Writer
 	// capture and static-image paths (diff nil) keep the fresh-allocation path so
 	// their byte output stays identical.
 	if s.diff != nil {
-		sub := metrics.DownscaleLiveInto(s.scratch.downscaleDst(pxW, pxH), src)
+		if s.scratch.pool == nil {
+			s.scratch.pool = metrics.NewDownscalePool()
+		}
+		sub := s.scratch.pool.DownscaleLiveInto(s.scratch.downscaleDst(pxW, pxH), src)
 		grid := br.ComposeInto(&s.scratch.out, render.Frame{Img: sub, Text: text})
 		if s.captureGrid != nil {
 			// Copy the cells, never alias: the live scratch grid is reused next frame,
