@@ -106,6 +106,14 @@ type State struct {
 	// and static image) it stays untouched and those paths keep their
 	// fresh-allocation byte output.
 	scratch frameScratch
+
+	// kittyID is the Kitty image id the last drawn kitty frame placed, or 0 before
+	// the first kitty frame. The kitty path double-buffers by alternating id 1 and
+	// 2: each frame places the new image under the next id, then deletes the
+	// previous id, so the swap never blanks the screen. resetKitty clears it back
+	// to 0 when Tab cycles the backend away from kitty. It stays 0 on the block and
+	// sixel paths.
+	kittyID int
 }
 
 // frameScratch is the live diff path's reusable per-frame buffers. Each draw
@@ -427,20 +435,65 @@ func (s *State) renderBlock(src *image.RGBA, text []render.GlyphRun, w io.Writer
 // encodeGraphics positions the cursor at the fit offset and encodes img with the
 // active graphics backend. RenderStreamFrame passes the engine-sized bitmap and
 // the identity graphicsFit through, so the offset is (0,0) and the bitmap fills
-// the grid from the top-left; the kitty delete-all and the cursor move stay in one
-// place. The fit parameter stays so a caller can still centre a sub-grid image.
+// the grid from the top-left. The fit parameter stays so a caller can still
+// centre a sub-grid image. The kitty path double-buffers the image id (see
+// encodeKitty); sixel draws the bitmap alone.
 func (s *State) encodeGraphics(img *image.RGBA, fit block.Fit, w io.Writer) error {
-	if s.Backend == BackendKitty {
-		if _, err := io.WriteString(w, kittyDeleteAll); err != nil {
-			return err
-		}
-	}
 	if move := cursorPosition(fit.OffsetRow, fit.OffsetCol); move != "" {
 		if _, err := io.WriteString(w, move); err != nil {
 			return err
 		}
 	}
+	if s.Backend == BackendKitty {
+		return s.encodeKitty(img, w)
+	}
 	return s.Renderer().Render(render.Frame{Img: img}, w)
+}
+
+// encodeKitty draws one kitty frame with double-buffered image ids so the swap
+// never blanks the screen. It places the new image under the next id (a=T,
+// i=<next>), then deletes the previous id and frees its data (a=d,d=I,i=<prev>).
+// The new placement lands before the old image is deleted, so there is never a
+// blank frame, unlike a delete-all before the transmit. The first frame has no
+// previous id and deletes nothing. It tracks the placed id on State so the next
+// frame alternates and the reset can target both ids.
+func (s *State) encodeKitty(img *image.RGBA, w io.Writer) error {
+	next := nextKittyID(s.kittyID)
+	r := kitty.Renderer{}
+	if err := r.RenderID(render.Frame{Img: img}, next, w); err != nil {
+		return err
+	}
+	if s.kittyID != 0 {
+		if _, err := io.WriteString(w, kitty.DeleteImage(s.kittyID)); err != nil {
+			return err
+		}
+	}
+	s.kittyID = next
+	return nil
+}
+
+// nextKittyID returns the next double-buffer image id, alternating between 1 and
+// 2. A zero prev (no image placed yet) yields 1, so the first frame uses id 1.
+func nextKittyID(prev int) int {
+	if prev == 1 {
+		return 2
+	}
+	return 1
+}
+
+// resetKitty deletes both double-buffer image ids and frees their data, then
+// clears the tracked id so a later return to the kitty backend rebuilds from a
+// clean slate with id 1. It is a no-op when no kitty image has been placed. The
+// stream session calls it when Tab cycles the backend away from kitty.
+func (s *State) resetKitty(w io.Writer) error {
+	if s.kittyID == 0 {
+		return nil
+	}
+	if _, err := io.WriteString(w, kitty.DeleteImage(1)+kitty.DeleteImage(2)); err != nil {
+		return err
+	}
+	s.kittyID = 0
+	return nil
 }
 
 // cursorPosition returns the CUP escape (\x1b[<row>;<col>H) that moves the
@@ -626,12 +679,6 @@ const (
 	beginSyncUpdate = "\x1b[?2026h"
 	endSyncUpdate   = "\x1b[?2026l"
 )
-
-// kittyDeleteAll deletes every Kitty image and frees its data (a=d,d=A). The
-// viewer writes it before a kitty redraw because clearScreen erases text but
-// not Kitty images, so without it each redraw would layer a new image over the
-// old ones.
-const kittyDeleteAll = "\x1b_Ga=d,d=A\x1b\\"
 
 // enterFullScreen disables auto-wrap (DECAWM, "\x1b[?7l") and hides the cursor
 // ("\x1b[?25l"). With auto-wrap off, a full-width row does not enter the
