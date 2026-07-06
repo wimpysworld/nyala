@@ -10,8 +10,25 @@ import (
 	_ "image/jpeg" // register the JPEG decoder for image.Decode
 	_ "image/png"  // register the PNG decoder for image.Decode
 
+	emmb64 "github.com/emmansun/base64"
 	"github.com/gen2brain/jpegn"
 )
+
+// decodeBase64Fast decodes one base64 screencast payload to raw bytes, preferring
+// the SIMD emmansun decoder and falling back to stdlib encoding/base64 on any error,
+// so a declined input decodes exactly as it does today. The Chromium screencast Data
+// field is standard base64; emmansun's StdEncoding is a drop-in for the stdlib
+// StdEncoding, dispatches to a SIMD kernel at runtime (SSE/AVX2/AVX512-VBMI on amd64,
+// NEON on arm64), and ignores embedded newlines the same way. It sits inside the
+// measured in_decode span, ahead of the image decode. A pooled Decode(dst, src) form
+// would also kill the per-call output alloc; it is a follow-up, held back here so the
+// raw bytes' lifetime across the downstream image decode stays trivially correct.
+func decodeBase64Fast(data string) ([]byte, error) {
+	if raw, err := emmb64.StdEncoding.DecodeString(data); err == nil {
+		return raw, nil
+	}
+	return base64.StdEncoding.DecodeString(data)
+}
 
 // screencastQuality is a JPEG compression quality value. The live screencast is
 // now lossless PNG, so it no longer sets the stream quality; it survives as the
@@ -93,7 +110,7 @@ func (e *ChromiumEngine) snapshotCellPx() (cellW, cellH float64) {
 // bytes before the image decoder. A non-RGBA decode is converted with the same
 // copy idiom the viewer's LoadPNG uses, so the render path reads one pixel layout.
 func decodeScreencastImage(data string) (*image.RGBA, error) {
-	raw, err := base64.StdEncoding.DecodeString(data)
+	raw, err := decodeBase64Fast(data)
 	if err != nil {
 		return nil, fmt.Errorf("engine: base64-decode frame: %w", err)
 	}
@@ -166,7 +183,7 @@ func decodeJPEGFast(raw []byte) (image.Image, error) {
 // The capture path never calls this: capture forces PNG and keeps runFrameLoop with
 // decodeScreencastImage, so the byte-exact corpus is untouched.
 func (e *ChromiumEngine) decodeLiveFrame(data string) (*image.RGBA, error) {
-	raw, err := base64.StdEncoding.DecodeString(data)
+	raw, err := decodeBase64Fast(data)
 	if err != nil {
 		return nil, fmt.Errorf("engine: base64-decode frame: %w", err)
 	}

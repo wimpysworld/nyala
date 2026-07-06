@@ -57,6 +57,8 @@ github.com/clipperhouse/uax29/v2 v2.7.0 h1:+gs4oBZ2gPfVrKPthwbMzWZDaAFPGYK72F0NJ
 github.com/clipperhouse/uax29/v2 v2.7.0/go.mod h1:EFJ2TJMRUaplDxHKj1qAEhCtQPW2tJSwu5BF98AuoVM=
 github.com/dgryski/trifles v0.0.0-20230903005119-f50d829f2e54 h1:SG7nF6SRlWhcT7cNTs5R6Hk4V2lcmLz2NsG2VnInyNo=
 github.com/dgryski/trifles v0.0.0-20230903005119-f50d829f2e54/go.mod h1:if7Fbed8SFyPtHLHbg49SI7NAdJiC5WIA09pe59rfAA=
+github.com/emmansun/base64 v0.10.0 h1:sMW+wqusjjq6wPIhIS9+kAMq+UXL4/qRPy7dX9oLFNI=
+github.com/emmansun/base64 v0.10.0/go.mod h1:BD7xc9SDECKNzG6q5kX4wMXmIdgHJ+HXWvQv3ImB1V4=
 github.com/fogleman/gg v1.3.0 h1:/7zJX8F6AaYQc57WQCyN9cAIz+4bCJGO9B+dyW29am8=
 github.com/fogleman/gg v1.3.0/go.mod h1:R/bRT+9gY/C5z7JzPU0zXsXHKM4/ayA+zqcVNZzPa1k=
 github.com/gen2brain/jpegn v0.4.4 h1:KIM1n1161Jq2cm+wXBf7a63hH6XFnZX40j/uQq/McSw=
