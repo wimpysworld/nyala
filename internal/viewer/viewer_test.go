@@ -584,7 +584,8 @@ func TestRenderFrameGraphics(t *testing.T) {
 // aspect. The engine sizes the graphics bitmap to the full grid, so the identity
 // graphicsFit maps it one-to-one and the 1:2 FitImage stays out of the path; a
 // 1:2 fit would letterbox a non-1:2 grid and shift the bitmap off the corner. The
-// kitty delete-all escape (\x1b_Ga=d) still precedes the bitmap on the kitty path.
+// first kitty frame transmits under image id 1 (i=1) with no preceding delete, the
+// double-buffer start state.
 func TestRenderFrameGraphicsFillsGrid(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -609,8 +610,13 @@ func TestRenderFrameGraphicsFillsGrid(t *testing.T) {
 				if cupPresent(out) {
 					t.Fatalf("backend %d (%s): emitted a CUP move, want none (identity fit fills the grid)", b, c.name)
 				}
-				if b == BackendKitty && !strings.Contains(out, kittyDeleteAll) {
-					t.Fatalf("kitty: output missing the delete-all escape before the bitmap")
+				if b == BackendKitty {
+					if !strings.Contains(out, "i=1") || !strings.Contains(out, "a=T") {
+						t.Fatalf("kitty: first frame missing the i=1 transmit-and-place")
+					}
+					if strings.Contains(out, "a=d") {
+						t.Fatalf("kitty: first frame emitted a delete, want none")
+					}
 				}
 			}
 		})

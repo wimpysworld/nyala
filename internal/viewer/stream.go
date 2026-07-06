@@ -500,11 +500,18 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		}
 		return false
 	}
+	wasKitty := s.st.Backend == BackendKitty
 	act := s.st.HandleKey(ev.b)
 	if act.Quit {
 		return true
 	}
 	if act.Redraw && ev.b == keyTab {
+		if wasKitty && s.st.Backend != BackendKitty {
+			// Free both double-buffer images when leaving kitty, so the terminal keeps
+			// no stale image and a later return rebuilds from id 1. Best-effort like the
+			// teardown escapes: a write failure surfaces on the next draw.
+			_ = s.st.resetKitty(s.tty)
+		}
 		// Cycle the backend off the consumer loop: the engine restart runs on the
 		// control goroutine so a slow restartStream cannot freeze draw or quit.
 		name := backendName(s.st.Backend)

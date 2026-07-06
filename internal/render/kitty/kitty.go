@@ -58,14 +58,32 @@ func (*Renderer) Name() string { return "kitty" }
 // protocol chunk limit is split across successive APC frames with the m= key. A
 // nil frame image emits an empty but well-framed payload. The frame image is
 // RGBA; the encoder reads it through the image.Image colour interface, so
-// channel order holds.
-func (*Renderer) Render(f render.Frame, w io.Writer) error {
+// channel order holds. It transmits without an explicit image id, so the capture
+// round-trip stays stateless.
+func (r *Renderer) Render(f render.Frame, w io.Writer) error {
+	return r.render(f, 0, w)
+}
+
+// RenderID renders like Render but tags the transmitted image with the given
+// Kitty image id (i=<id>), so a caller can double-buffer by alternating two ids
+// and deleting the previous one with DeleteImage. An id of zero omits the i= key
+// and matches Render byte for byte, so the stateless capture path is unchanged.
+func (r *Renderer) RenderID(f render.Frame, id int, w io.Writer) error {
+	return r.render(f, id, w)
+}
+
+// render is the shared transmit-and-place body for Render and RenderID. A
+// positive id adds the i= key; a zero id omits it.
+func (*Renderer) render(f render.Frame, id int, w io.Writer) error {
 	opts := kitty.Options{
 		Format:       kitty.RGBA,
 		Compression:  kitty.Zlib,
 		Transmission: kitty.Direct,
 		Action:       kitty.TransmitAndPut,
 		Quite:        2, // upstream spelling; sets q=2, suppress replies
+	}
+	if id > 0 {
+		opts.ID = id
 	}
 
 	var payload []byte
@@ -92,6 +110,23 @@ func (*Renderer) Render(f render.Frame, w io.Writer) error {
 	}
 
 	return writeChunks(w, payload, opts.Options())
+}
+
+// DeleteImage returns the Kitty escape that deletes the image with the given id
+// and frees its data (a=d,d=I,i=<id>). The capital d=I frees the stored image
+// bytes, not just its on-screen placements. A double-buffered caller emits it
+// after placing the next frame under the other id, so the old image leaves the
+// screen and its memory frees without a blank frame in between. The q=2 key
+// suppresses the terminal's OK and error replies.
+func DeleteImage(id int) string {
+	opts := kitty.Options{
+		Action:          kitty.Delete,
+		Delete:          kitty.DeleteID,
+		DeleteResources: true,
+		ID:              id,
+		Quite:           2,
+	}
+	return ansi.KittyGraphics(nil, opts.Options()...)
 }
 
 // writeChunks splits payload into frames of at most kitty.MaxChunkSize bytes and
