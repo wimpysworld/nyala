@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image"
+	"image/color"
 	"image/draw"
 	_ "image/jpeg" // register the JPEG decoder for image.Decode
 	_ "image/png"  // register the PNG decoder for image.Decode
@@ -109,11 +110,177 @@ func decodeImageBytes(raw []byte) (*image.RGBA, error) {
 	if err != nil {
 		return nil, fmt.Errorf("engine: decode frame image: %w", err)
 	}
+	return imageToRGBA(img), nil
+}
+
+// imageToRGBA returns img as an *image.RGBA in RGBA channel order. An image that is
+// already *image.RGBA is returned as-is with no copy; any other layout (a JPEG
+// YCbCr, for example) is converted with a bulk draw.Draw in draw.Src mode, the same
+// colour conversion the render path expects, far faster than a per-pixel copy.
+func imageToRGBA(img image.Image) *image.RGBA {
 	if rgba, ok := img.(*image.RGBA); ok {
-		return rgba, nil
+		return rgba
 	}
 	b := img.Bounds()
 	rgba := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
 	draw.Draw(rgba, rgba.Bounds(), img, b.Min, draw.Src)
-	return rgba, nil
+	return rgba
+}
+
+// decodeLiveFrame is the live decode-pool's decode: it decodes one base64 screencast
+// payload to an *image.RGBA, fusing the YCbCr-to-RGBA convert into the sub-cell
+// downscale on the live block JPEG path so that path never materialises a
+// full-resolution RGBA surface only to average ~15/16 of it away.
+//
+// The fuse is gated tightly to the case it helps. When the active backend is block
+// and the decoded image is *image.YCbCr (a JPEG frame, which the live block stream
+// always is) and the engine holds a sub-cell target smaller than the surface, it
+// box-averages the Y/Cb/Cr planes straight down to that sub-cell footprint
+// (e.captureW x e.captureH, the same BlockCaptureSize the viewer downscales to) and
+// converts only the small result, emitting a frame already at sub-cell resolution.
+// The viewer's renderBlock detects that resolution and skips its own downscale.
+//
+// Every other case falls back to the full-surface convert (imageToRGBA): a graphics
+// backend JPEG (which needs the full-resolution bitmap and takes no overlay), a block
+// PNG frame (already RGBA, no YCbCr to fuse), or an unset/degenerate sub-cell target.
+// The capture path never calls this: capture forces PNG and keeps runFrameLoop with
+// decodeScreencastImage, so the byte-exact corpus is untouched.
+func (e *ChromiumEngine) decodeLiveFrame(data string) (*image.RGBA, error) {
+	raw, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return nil, fmt.Errorf("engine: base64-decode frame: %w", err)
+	}
+	img, _, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("engine: decode frame image: %w", err)
+	}
+	yc, isYCbCr := img.(*image.YCbCr)
+	e.mu.Lock()
+	onBlock := e.backend == "block"
+	cw, ch := e.captureW, e.captureH
+	e.mu.Unlock()
+	if onBlock && isYCbCr && cw > 0 && ch > 0 {
+		b := yc.Bounds()
+		if cw < b.Dx() && ch < b.Dy() {
+			dst := image.NewRGBA(image.Rect(0, 0, cw, ch))
+			averageYCbCrToRGBA(dst, yc)
+			return dst, nil
+		}
+	}
+	return imageToRGBA(img), nil
+}
+
+// averageYCbCrToRGBA box-averages the Y/Cb/Cr planes of src straight down to dst's
+// sub-cell footprint, then converts each destination pixel once from the averaged
+// YCbCr to RGBA. dst's bounds set the output size; every destination pixel is fully
+// written, so a reused dst carries no stale content. Byte order is RGBA and alpha is
+// opaque, matching the screencast surface.
+//
+// Averaging in YCbCr then converting equals converting then averaging apart from
+// chroma subsampling replication and the clamp in YCbCrToRGB, because YCbCr-to-RGB is
+// an affine per-pixel transform; the result is near-identical to the current
+// decode-then-convert-then-area-average, not byte-identical. The averaged Y plane is
+// read once (the same source reads the full convert makes) but only the small
+// sub-cell result is written and converted, so no full-resolution RGBA surface is
+// materialised. A per-source-column chroma index is precomputed once from the
+// subsample ratio, so the inner loop needs no per-pixel division and the kernel
+// handles every subsample ratio, not only 4:2:0.
+func averageYCbCrToRGBA(dst *image.RGBA, src *image.YCbCr) {
+	db := dst.Bounds()
+	dw, dh := db.Dx(), db.Dy()
+	sb := src.Bounds()
+	sw, sh := sb.Dx(), sb.Dy()
+	if dw == 0 || dh == 0 || sw == 0 || sh == 0 {
+		return
+	}
+	ratH, ratV := subsampleShift(src.SubsampleRatio)
+	// Per-source-column chroma index, the same for every source row: it removes the
+	// per-pixel divide from the inner loop and folds the subsample ratio in once.
+	cxIdx := make([]int, sw)
+	for px := range sw {
+		cxIdx[px] = (sb.Min.X + px) / ratH
+	}
+	// Per-destination-column source x-range, the same for every destination row.
+	sx0s := make([]int, dw)
+	sx1s := make([]int, dw)
+	for dx := range dw {
+		sx0s[dx] = dx * sw / dw
+		sx1s[dx] = (dx + 1) * sw / dw
+	}
+	// Per-destination-column accumulators for one destination row, reused per row.
+	sumY := make([]uint64, dw)
+	sumCb := make([]uint64, dw)
+	sumCr := make([]uint64, dw)
+	cnt := make([]uint64, dw)
+	for dy := range dh {
+		for dx := range dw {
+			sumY[dx], sumCb[dx], sumCr[dx], cnt[dx] = 0, 0, 0, 0
+		}
+		sy0 := dy * sh / dh
+		sy1 := (dy + 1) * sh / dh
+		if sy1 <= sy0 {
+			sy1 = sy0 + 1
+		}
+		for py := sy0; py < sy1; py++ {
+			yRow := src.Y[(sb.Min.Y+py)*src.YStride:]
+			cBase := ((sb.Min.Y + py) / ratV) * src.CStride
+			cb := src.Cb[cBase:]
+			cr := src.Cr[cBase:]
+			for dx := range dw {
+				sx0, sx1 := sx0s[dx], sx1s[dx]
+				if sx1 <= sx0 {
+					sx1 = sx0 + 1
+				}
+				var ay, acb, acr, an uint64
+				for px := sx0; px < sx1; px++ {
+					ci := cxIdx[px]
+					ay += uint64(yRow[sb.Min.X+px])
+					acb += uint64(cb[ci])
+					acr += uint64(cr[ci])
+					an++
+				}
+				sumY[dx] += ay
+				sumCb[dx] += acb
+				sumCr[dx] += acr
+				cnt[dx] += an
+			}
+		}
+		for dx := range dw {
+			n := cnt[dx]
+			if n == 0 {
+				n = 1
+			}
+			// The mean of bytes stays in 0..255, so the low-byte mask is a no-op that
+			// keeps the conversion in range without a per-pixel bounds check.
+			yv := byte(sumY[dx] / n & 0xFF)
+			cbv := byte(sumCb[dx] / n & 0xFF)
+			crv := byte(sumCr[dx] / n & 0xFF)
+			r, g, b := color.YCbCrToRGB(yv, cbv, crv)
+			o := dst.PixOffset(db.Min.X+dx, db.Min.Y+dy)
+			dst.Pix[o] = r
+			dst.Pix[o+1] = g
+			dst.Pix[o+2] = b
+			dst.Pix[o+3] = 0xff
+		}
+	}
+}
+
+// subsampleShift returns the horizontal and vertical chroma downsample divisors for
+// a YCbCr subsample ratio: the amount a luma coordinate divides by to index the
+// chroma planes. 4:2:0 is (2, 2), 4:2:2 is (2, 1), 4:4:0 is (1, 2), 4:1:1 is (4, 1),
+// and 4:4:4 is (1, 1). The live block JPEG stream is 4:2:0; the others keep the
+// kernel correct for any ratio a frame might carry.
+func subsampleShift(r image.YCbCrSubsampleRatio) (h, v int) {
+	switch r {
+	case image.YCbCrSubsampleRatio420:
+		return 2, 2
+	case image.YCbCrSubsampleRatio422:
+		return 2, 1
+	case image.YCbCrSubsampleRatio440:
+		return 1, 2
+	case image.YCbCrSubsampleRatio411:
+		return 4, 1
+	default: // YCbCrSubsampleRatio444
+		return 1, 1
+	}
 }

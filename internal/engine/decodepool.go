@@ -119,7 +119,10 @@ func (e *ChromiumEngine) runDecodeWorker(ctx context.Context, q *rawFrameQueue, 
 	decode := e.decode
 	e.mu.Unlock()
 	if decode == nil {
-		decode = decodeScreencastImage
+		// The live pool's default fuses the YCbCr-to-RGBA convert into the sub-cell
+		// downscale on the block JPEG path (decodeLiveFrame); every other case falls
+		// back to the full-surface convert. A test-swapped e.decode overrides it.
+		decode = e.decodeLiveFrame
 	}
 	// Time the decode only when the ingest counter is armed. On the live path
 	// captureOn is false, so the per-frame decodeMS the bundle records is never needed

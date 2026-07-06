@@ -438,7 +438,15 @@ func (s *State) renderBlock(src *image.RGBA, text []render.GlyphRun, w io.Writer
 			s.scratch.downscale = metrics.NewParallelDownscale()
 			s.scratch.compose = block.NewParallelCompose()
 		}
-		sub := s.scratch.downscale.DownscaleInto(s.scratch.downscaleDst(pxW, pxH), src, s.scratch.pool)
+		// The live block JPEG decode fuses the downscale into the decode worker, so a
+		// fused frame already arrives at the sub-cell resolution. Skip the downscale
+		// then and compose the frame's own bitmap: a full-surface block bitmap (a PNG
+		// frame, or a not-yet-fused path) can never equal the sub-cell extent, so an
+		// exact size match is a safe signal that the engine pre-averaged this frame.
+		sub := src
+		if src.Bounds().Dx() != pxW || src.Bounds().Dy() != pxH {
+			sub = s.scratch.downscale.DownscaleInto(s.scratch.downscaleDst(pxW, pxH), src, s.scratch.pool)
+		}
 		grid := s.scratch.compose.ComposeInto(&br, &s.scratch.out, render.Frame{Img: sub, Text: text}, s.scratch.pool)
 		if s.captureGrid != nil {
 			// Copy the cells, never alias: the live scratch grid is reused next frame,
