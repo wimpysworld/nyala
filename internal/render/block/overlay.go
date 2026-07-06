@@ -149,13 +149,8 @@ func runDisplayCells(text string) int {
 }
 
 // anyCovered reports whether the mask covers at least one source column.
-func anyCovered(mask []bool) bool {
-	for _, c := range mask {
-		if c {
-			return true
-		}
-	}
-	return false
+func anyCovered(mask uint) bool {
+	return mask != 0
 }
 
 // runCellCSSWidth is the CSS-pixel width of one grid cell the run was snapped
@@ -211,14 +206,15 @@ func cellBGAverage(img *image.RGBA, col, row int, scheme Scheme, run render.Glyp
 }
 
 // averageUncovered averages the source pixels of the cell block at (x0, y0)
-// whose column is not marked covered, in RGBA channel order. When every source
-// column is covered it falls back to the whole-cell mean, so a fully-covered
-// cell keeps a sensible background rather than black and reproduces the
-// geometry-free identity byte for byte.
-func averageUncovered(img *image.RGBA, x0, y0, pxW, pxH int, covered []bool) color.RGBA {
+// whose column is not marked covered, in RGBA channel order. covered is a
+// bitmask, one bit per source column. When every source column is covered it
+// falls back to the whole-cell mean, so a fully-covered cell keeps a sensible
+// background rather than black and reproduces the geometry-free identity byte
+// for byte.
+func averageUncovered(img *image.RGBA, x0, y0, pxW, pxH int, covered uint) color.RGBA {
 	var rs, gs, bs, n int
 	for dx := range pxW {
-		if covered[dx] {
+		if covered&(1<<uint(dx)) != 0 {
 			continue
 		}
 		for dy := range pxH {
@@ -240,18 +236,18 @@ func averageUncovered(img *image.RGBA, x0, y0, pxW, pxH int, covered []bool) col
 	}
 }
 
-// coveredColumns returns a pxW-long mask of the source columns the run's box
-// covers within cell (run.Col + off). A false entry everywhere (cellCSSW <= 0,
-// or the box covers no whole source column) leaves the whole-cell average
-// intact, so a run without geometry reproduces the geometry-free result. The
-// cell is anchored at its snapped grid position: its page CSS span is
+// coveredColumns returns a pxW-bit mask of the source columns the run's box
+// covers within cell (run.Col + off). A zero mask (cellCSSW <= 0, or the box
+// covers no whole source column) leaves the whole-cell average intact, so a run
+// without geometry reproduces the geometry-free result. The cell is anchored at
+// its snapped grid position: its page CSS span is
 // [(run.Col + off) * cellCSSW, +cellCSSW), compared against the box's own span
 // [run.X, run.X+run.W). Because the box left edge (run.X) need not equal the
 // snapped cell edge, a positive residue (box left of the snapped cells) leaves
 // the leading cell's left sub-column genuinely uncovered. A source column dx
 // counts as covered only when its whole width lies inside the box, so the mask
 // never removes a column the box only partly overlaps.
-func coveredColumns(run render.GlyphRun, off int, cellCSSW float64, pxW int) []bool {
+func coveredColumns(run render.GlyphRun, off int, cellCSSW float64, pxW int) uint {
 	return coveredColumnsAt(run, run.Col+off, cellCSSW, pxW)
 }
 
@@ -260,11 +256,11 @@ func coveredColumns(run render.GlyphRun, off int, cellCSSW float64, pxW int) []b
 // column's snapped page position gridCol*cellCSSW. coveredColumns passes the
 // run's own cell (run.Col + off); the boundary recompose passes a neighbour
 // column the run never wrote.
-func coveredColumnsAt(run render.GlyphRun, gridCol int, cellCSSW float64, pxW int) []bool {
-	mask := make([]bool, pxW)
+func coveredColumnsAt(run render.GlyphRun, gridCol int, cellCSSW float64, pxW int) uint {
 	if cellCSSW <= 0 {
-		return mask
+		return 0
 	}
+	var mask uint
 	cellLeft := float64(gridCol) * cellCSSW
 	boxLeft := run.X
 	boxRight := run.X + run.W
@@ -273,7 +269,7 @@ func coveredColumnsAt(run render.GlyphRun, gridCol int, cellCSSW float64, pxW in
 		colLeft := cellLeft + float64(dx)*colCSSW
 		colRight := colLeft + colCSSW
 		if colLeft >= boxLeft && colRight <= boxRight {
-			mask[dx] = true
+			mask |= 1 << uint(dx)
 		}
 	}
 	return mask

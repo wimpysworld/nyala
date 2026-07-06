@@ -12,6 +12,19 @@ import (
 	"strconv"
 )
 
+// decByte holds the decimal text of each byte value 0..255, with no leading
+// zeros, so a truecolour SGR component appends as a direct string copy rather
+// than a per-call strconv digit build.
+var decByte = buildDecByte()
+
+func buildDecByte() [256]string {
+	var t [256]string
+	for i := range t {
+		t[i] = strconv.Itoa(i)
+	}
+	return t
+}
+
 // cubeIndex projects one 8-bit channel onto the 0..5 cube axis. It mirrors
 // Carbonyl's xterm.rs: the first break sits below the 0/95 midpoint, then each
 // further step lands on the midpoint between adjacent cube levels.
@@ -64,16 +77,17 @@ const (
 	trueBGPrefix = "\x1b[48;2;"
 )
 
-// appendTrueColor appends prefix + "R;G;Bm" to dst with strconv.AppendInt and
-// returns the extended slice, building the SGR with no fmt reflection and no
-// intermediate string. The alpha channel is ignored; channel order is RGBA.
+// appendTrueColor appends prefix + "R;G;Bm" to dst from the precomputed decByte
+// table and returns the extended slice, building the SGR with no fmt reflection,
+// no per-call digit build, and no intermediate string. The alpha channel is
+// ignored; channel order is RGBA.
 func appendTrueColor(dst []byte, prefix string, c color.RGBA) []byte {
 	dst = append(dst, prefix...)
-	dst = strconv.AppendInt(dst, int64(c.R), 10)
+	dst = append(dst, decByte[c.R]...)
 	dst = append(dst, ';')
-	dst = strconv.AppendInt(dst, int64(c.G), 10)
+	dst = append(dst, decByte[c.G]...)
 	dst = append(dst, ';')
-	dst = strconv.AppendInt(dst, int64(c.B), 10)
+	dst = append(dst, decByte[c.B]...)
 	return append(dst, 'm')
 }
 
