@@ -78,9 +78,14 @@ func buildTextWalkScript(cellW, cellH float64) string {
 	// hiddenStyle folds the client-side computed-style drops into the page: a
 	// visibility of hidden or collapse, an effective opacity below the floor, or the
 	// screen-reader-only clip-offscreen pattern (absolute or fixed positioning with a
-	// collapsed clip rect or an inset(50%) clip-path). The opacity walks ancestors so
-	// an ancestor opacity:0 zeroes a child whose own opacity is 1, matching the
-	// blended text opacity the DOMSnapshot decode read.
+	// collapsed clip rect, a collapsed inset clip-path, or a 1px-square overflow-hidden
+	// box). The clip-path test parses the inset shorthand and drops the box when its
+	// left+right or top+bottom percentages reach 100, so it catches the literal
+	// inset(50%) and Chrome's normalised inset(0px 100% 100% 0px) alike. The 1px
+	// overflow-hidden test catches the width:1px;height:1px;overflow:hidden variant of
+	// the same visually-hidden idiom. The opacity walks ancestors so an ancestor
+	// opacity:0 zeroes a child whose own opacity is 1, matching the blended text opacity
+	// the DOMSnapshot decode read.
 	b.WriteString("function collapsed(clip){")
 	b.WriteString("var m=/^rect\\((.+)\\)$/.exec(clip);if(!m)return false;")
 	b.WriteString("var f=m[1].split(/[ ,]+/);if(f.length!==4)return false;")
@@ -88,11 +93,27 @@ func buildTextWalkScript(cellW, cellH float64) string {
 	b.WriteString("var t=off(f[0]),r=off(f[1]),bo=off(f[2]),l=off(f[3]);")
 	b.WriteString("var hc=(r!==null&&l!==null&&r<=l);var vc=(bo!==null&&t!==null&&bo<=t);")
 	b.WriteString("return hc||vc;}")
+	// clipPathHidden parses an inset() clip-path shorthand (1 to 4 space-separated
+	// values, CSS expansion: 1=all, 2=t/b l/r, 3=t l/r b, 4=t r b l) and returns true
+	// when the insets collapse the box: left%+right%>=100 or top%+bottom%>=100. A
+	// percentage contributes its number; a non-percentage length contributes 0. This
+	// subsumes the literal inset(50%) and catches inset(0px 100% 100% 0px).
+	b.WriteString("function clipPathHidden(cp){")
+	b.WriteString("var m=/^inset\\(([^)]+)\\)$/.exec(cp);if(!m)return false;")
+	b.WriteString("var p=m[1].trim().split(/\\s+/);var ri=p.indexOf('round');if(ri>=0)p=p.slice(0,ri);")
+	b.WriteString("if(p.length<1||p.length>4)return false;")
+	b.WriteString("function pc(s){return /%$/.test(s)?(parseFloat(s)||0):0;}")
+	b.WriteString("var t,r,bo,l;")
+	b.WriteString("if(p.length===1){t=r=bo=l=pc(p[0]);}")
+	b.WriteString("else if(p.length===2){t=bo=pc(p[0]);r=l=pc(p[1]);}")
+	b.WriteString("else if(p.length===3){t=pc(p[0]);r=l=pc(p[1]);bo=pc(p[2]);}")
+	b.WriteString("else{t=pc(p[0]);r=pc(p[1]);bo=pc(p[2]);l=pc(p[3]);}")
+	b.WriteString("return (l+r>=100)||(t+bo>=100);}")
 	b.WriteString("function hiddenStyle(el){")
 	b.WriteString("var s=getComputedStyle(el);")
 	b.WriteString("if(s.visibility==='hidden'||s.visibility==='collapse')return true;")
 	b.WriteString("var pos=s.position;")
-	b.WriteString("if((pos==='absolute'||pos==='fixed')&&(s.clipPath==='inset(50%)'||collapsed(s.clip)))return true;")
+	b.WriteString("if((pos==='absolute'||pos==='fixed')&&(clipPathHidden(s.clipPath)||collapsed(s.clip)||(s.overflow==='hidden'&&parseFloat(s.width)<=1&&parseFloat(s.height)<=1)))return true;")
 	b.WriteString("var op=1;for(var a=el;a;a=a.parentElement){var ao=parseFloat(getComputedStyle(a).opacity);if(!isNaN(ao))op*=ao;}")
 	fmt.Fprintf(&b, "if(op<%g)return true;", hiddenOpacityEps)
 	b.WriteString("return false;}")
