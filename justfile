@@ -171,6 +171,22 @@ debug-run url="https://wimpys.world" *flags:
     rm -f "$log"
     exit "$rc"
 
+# Run Nyala with the live FPS meter. Sets NYALA_FPS_TIMING so the viewer draws a
+# ~1 Hz fps badge over the page and prints a summary line to stdout on quit. It
+# forwards the same url and flags as just run (backend=, cell=, --browser, ...).
+# Interactive tty only: the meter measures the on-screen render, so a headless run
+# has nothing to draw. Quit nyala to end the run and print the summary.
+[positional-arguments]
+fps url="https://wimpys.world" *flags: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if ! { [ -t 0 ] && [ -t 1 ]; }; then
+        printf 'just fps: needs an interactive terminal; the live meter measures the on-screen render.\n' >&2
+        exit 1
+    fi
+    NYALA_FPS_TIMING=1 just run "$@"
+
 # Capture every corpus fixture on the block backend for a text-layout sweep
 corpus:
     #!/usr/bin/env bash

@@ -103,6 +103,10 @@ type fakeBundle struct {
 	// when the driver recorded it before any finalise, mirroring sessionBefore.
 	loadTimings       render.LoadTimings
 	loadTimingsBefore bool
+	// frameWindow records the last SetFrameWindow value; frameWindowBefore is true
+	// when the driver recorded it before any finalise, mirroring loadTimingsBefore.
+	frameWindow       capture.FrameWindow
+	frameWindowBefore bool
 }
 
 func (b *fakeBundle) RawFile() io.Writer       { return &b.raw }
@@ -132,6 +136,13 @@ func (b *fakeBundle) SetLoadTimings(t render.LoadTimings) {
 	b.loadTimings = t
 	if !b.finalised {
 		b.loadTimingsBefore = true
+	}
+}
+
+func (b *fakeBundle) SetFrameWindow(w capture.FrameWindow) {
+	b.frameWindow = w
+	if !b.finalised {
+		b.frameWindowBefore = true
 	}
 }
 
@@ -510,6 +521,34 @@ func TestCaptureLoopRecordsLoadTimingsAtFinalise(t *testing.T) {
 	}
 	if !bundle.loadTimingsBefore {
 		t.Error("SetLoadTimings ran after finalise, want it before FinaliseFull")
+	}
+}
+
+// TestCaptureLoopRecordsFrameWindowAtFinalise asserts captureLoop measures the
+// sustained-fps window over the drawn frames and records it into the bundle before
+// finalise. A single-frame capture leaves the span zero (only one draw), so
+// sustained_fps is 0, and the count reflects the frame drawn.
+func TestCaptureLoopRecordsFrameWindowAtFinalise(t *testing.T) {
+	sess := &fakeSession{}
+
+	ch := make(chan render.Frame, 1)
+	ch <- blockFrame()
+	eng := &fakeCaptureEngine{frames: ch}
+	bundle := &fakeBundle{}
+	var tty bytes.Buffer
+
+	err := captureLoop(eng, "https://example.test", blockState(), &tty, bundle, sess, 1, 0, true, captureIdle, captureIdle)
+	if err != nil {
+		t.Fatalf("captureLoop err = %v, want nil for a full capture", err)
+	}
+	if bundle.frameWindow.UsableFrames != 1 {
+		t.Errorf("bundle frameWindow.UsableFrames = %d, want 1", bundle.frameWindow.UsableFrames)
+	}
+	if bundle.frameWindow.SpanMS != 0 {
+		t.Errorf("bundle frameWindow.SpanMS = %v, want 0 (single frame, no span)", bundle.frameWindow.SpanMS)
+	}
+	if !bundle.frameWindowBefore {
+		t.Error("SetFrameWindow ran after finalise, want it before FinaliseFull")
 	}
 }
 
@@ -1011,10 +1050,7 @@ func TestFirstFrameUnpainted(t *testing.T) {
 func sparseImg(w, h int, fraction float64) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	white := color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
-	period := int(math.Round(1.0 / fraction))
-	if period < 1 {
-		period = 1
-	}
+	period := max(int(math.Round(1.0/fraction)), 1)
 	for y := range h {
 		for x := range w {
 			// Two coprime multipliers spread the inked pixels so no stride aligns with

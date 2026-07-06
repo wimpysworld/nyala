@@ -70,6 +70,10 @@ type bundleWriter interface {
 	// performance.json's load_timings. The driver calls it once at finalise, after the
 	// engine has recorded the spans, before each finalise.
 	SetLoadTimings(t render.LoadTimings)
+	// SetFrameWindow records the driver-measured sustained-fps window for
+	// performance.json's sustained_fps and frame_window. The driver calls it once at
+	// finalise, after the counted frames drew, before each finalise.
+	SetFrameWindow(w capture.FrameWindow)
 	// FinaliseFull writes the full-bundle root files and closes the bundle after
 	// n frames drew.
 	FinaliseFull() error
@@ -248,14 +252,23 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 	// session write must wait until finalise, after frames have flowed or the run
 	// timed out. Funnelling every exit through these two helpers writes the session
 	// exactly once before each finalise, on every full and partial path.
+	// firstDrawAt and lastDrawAt bound the sustained-fps window: the driver stamps
+	// each counted draw, so the span is the wall-clock time from the first counted
+	// frame to the last. drawnForWindow is the count the window covers (the n main
+	// frames, not the scroll frame, which draws outside drawOne). writeFrameWindow
+	// folds these into the bundle at finalise.
+	var firstDrawAt, lastDrawAt time.Time
+	drawnForWindow := 0
 	finaliseFull := func() error {
 		writeSession(bundle, session)
 		writeLoadTimings(bundle, session)
+		writeFrameWindow(bundle, drawnForWindow, firstDrawAt, lastDrawAt)
 		return bundle.FinaliseFull()
 	}
 	finalisePartial := func(reason string) error {
 		writeSession(bundle, session)
 		writeLoadTimings(bundle, session)
+		writeFrameWindow(bundle, drawnForWindow, firstDrawAt, lastDrawAt)
 		return bundle.FinalisePartial(reason)
 	}
 
@@ -318,6 +331,15 @@ func captureLoop(eng Engine, url string, st *State, tty io.Writer, bundle bundle
 			return fmt.Sprintf("write frame %d of %d: %v", drawn+1, n, werr), false
 		}
 		drawn++
+		// Stamp the sustained-fps window: the first counted frame opens it, every
+		// counted frame moves its close. Wall-clock time.Now carries a monotonic
+		// reading, so the span is a monotonic delta.
+		now := time.Now()
+		if drawnForWindow == 0 {
+			firstDrawAt = now
+		}
+		lastDrawAt = now
+		drawnForWindow = drawn
 		// Reset the per-frame idle deadline. Stop and drain before reset so a fire
 		// that raced the draw does not leak onto the next select.
 		if !timer.Stop() {
@@ -594,6 +616,19 @@ func writeLoadTimings(bundle bundleWriter, session CaptureSession) {
 		return
 	}
 	bundle.SetLoadTimings(session.LoadTimings())
+}
+
+// writeFrameWindow records the driver-measured sustained-fps window into the
+// bundle before finalise. The span is the wall-clock time from the first counted
+// draw to the last; fewer than two frames leaves it zero, so sustained_fps is 0
+// (the number is meaningful only for n>1). Unlike writeLoadTimings it is measured
+// by the driver, not the session, so it records on every capture exit.
+func writeFrameWindow(bundle bundleWriter, count int, first, last time.Time) {
+	var spanMS float64
+	if count > 1 && last.After(first) {
+		spanMS = float64(last.Sub(first)) / float64(time.Millisecond)
+	}
+	bundle.SetFrameWindow(capture.FrameWindow{UsableFrames: count, SpanMS: spanMS})
 }
 
 // drawCaptureFrame draws one frame through the tee and returns the FrameInput the

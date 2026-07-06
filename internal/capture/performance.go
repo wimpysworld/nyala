@@ -139,17 +139,37 @@ type loadTimingsView struct {
 	FirstTextMS float64 `json:"first_text_ms"`
 }
 
+// frameWindowView is the sustained-fps window serialised into performance.json
+// under frame_window. It records the raw inputs, so sustained_fps is auditable:
+// usable_frames is the count of drawn frames, span_ms the wall-clock span they
+// were drawn over. A single-frame capture carries usable_frames 1 and span_ms 0.
+type frameWindowView struct {
+	// UsableFrames is the count of usable frames the window was measured over.
+	UsableFrames int `json:"usable_frames"`
+	// SpanMS is the wall-clock span in milliseconds from the first drawn frame to
+	// the last.
+	SpanMS float64 `json:"span_ms"`
+}
+
 // performanceDoc is the JSON view written to performance.json. It always carries
 // the per-frame records; for a multi-frame capture it adds a run summary with the
 // requested and captured counts and the per-phase mean and max over captured
 // frames. A single-frame capture carries no summary. load_timings carries the
-// session-level load-path spans when the driver recorded them.
+// session-level load-path spans when the driver recorded them; sustained_fps and
+// frame_window carry the driver-measured sustained-fps window when it recorded them.
 type performanceDoc struct {
 	// Frames is the per-frame performance record, in capture order.
 	Frames []FramePerformance `json:"frames"`
 	// LoadTimings is the session-level load-path milestone record; present only when
 	// the driver recorded the spans.
 	LoadTimings *loadTimingsView `json:"load_timings,omitempty"`
+	// SustainedFPS is the usable frames per wall-second over the frame window;
+	// present only when the driver recorded the window. It is 0 for a single-frame
+	// capture (no span). The pointer is set even when 0, so the field is emitted.
+	SustainedFPS *float64 `json:"sustained_fps,omitempty"`
+	// FrameWindow is the raw sustained-fps window inputs; present only when the
+	// driver recorded the window.
+	FrameWindow *frameWindowView `json:"frame_window,omitempty"`
 	// Summary is the run summary; present only for a multi-frame capture.
 	Summary *runSummary `json:"summary,omitempty"`
 }
@@ -190,11 +210,31 @@ func (b *Bundle) performanceDoc() performanceDoc {
 			FirstTextMS:         b.loadTimings.FirstTextMS,
 		}
 	}
+	if b.frameWindow != nil {
+		fps := sustainedFPS(*b.frameWindow)
+		doc.SustainedFPS = &fps
+		doc.FrameWindow = &frameWindowView{
+			UsableFrames: b.frameWindow.UsableFrames,
+			SpanMS:       b.frameWindow.SpanMS,
+		}
+	}
 	if len(b.perf) > 1 {
 		s := summarise(b.meta.FramesRequested, b.perf)
 		doc.Summary = &s
 	}
 	return doc
+}
+
+// sustainedFPS derives usable frames per wall-second from the window. With F
+// frames drawn over span S, the F draws leave F-1 inter-frame intervals, so the
+// achieved rate is (F-1)/S. Fewer than two frames or a non-positive span yields 0,
+// matching load_timings' zero-span convention (the number is meaningful only for
+// n>1).
+func sustainedFPS(w FrameWindow) float64 {
+	if w.UsableFrames < 2 || w.SpanMS <= 0 {
+		return 0
+	}
+	return float64(w.UsableFrames-1) / (w.SpanMS / 1000)
 }
 
 // summarise computes the run summary over the captured per-frame records: the
