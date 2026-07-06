@@ -774,6 +774,13 @@ func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, fram
 	if decode == nil {
 		decode = decodeScreencastImage
 	}
+	// timeDecode gates the worker decode-clock read. It is on under capture (for the
+	// per-frame decodeMS the bundle records) or when the ingest counter is armed (for
+	// the NYALA_FPS_TIMING decode budget). Off both, the decode is not timed, so an
+	// off run reads no clock on the worker. Read once here: captureOn is set before
+	// the goroutine starts, and the ingest arming is fixed at construction.
+	ingestArmed := e.ingest.armed()
+	timeDecode := e.captureOn || ingestArmed
 	var held pendingFrame
 	var haveHeld bool
 	// lastScroll tracks the scroll offset of the last consumed frame so a change
@@ -810,17 +817,28 @@ func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, fram
 				}
 				continue
 			}
-			// Decode off the listener goroutine. Time it only under capture. A corrupt
-			// frame fails here and is dropped; it was already acked on receive.
-			start := time.Now()
+			// Decode off the listener goroutine. Time it only when capture or the ingest
+			// counter needs it. A corrupt frame fails here and is dropped; it was already
+			// acked on receive, and it does not count toward the decode budget.
+			var start time.Time
+			if timeDecode {
+				start = time.Now()
+			}
 			img, derr := decode(raw.data)
 			if derr != nil {
 				continue
 			}
+			var decodeMS float64
+			if timeDecode {
+				decodeMS = msSince(start)
+			}
+			if ingestArmed {
+				e.ingest.recordDecode(decodeMS)
+			}
 			pending := pendingFrame{img: img, meta: raw.meta}
 			if e.captureOn {
 				pending.bytes = len(raw.data)
-				pending.decodeMS = msSince(start)
+				pending.decodeMS = decodeMS
 			}
 			held, haveHeld = pending, true
 			off, offOK := frameScrollOffset(pending)

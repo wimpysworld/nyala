@@ -745,9 +745,9 @@ type fpsMeter struct {
 type ingestReporter interface {
 	// IngestFPS returns the rolling window ingest rate at now, for the live badge.
 	IngestFPS(now time.Time) float64
-	// IngestSummary returns the session ingest frame count and mean fps, for the
-	// quit summary line.
-	IngestSummary() (frames int, meanFPS float64)
+	// IngestSummary returns the session ingest statistics (frame count, mean/min/max/
+	// median fps, worst gap, and the worker decode mean and max) for the quit summary.
+	IngestSummary() render.IngestStats
 }
 
 // newFPSMeter returns a meter when NYALA_FPS_TIMING is set in env, or nil
@@ -920,14 +920,17 @@ func (m *fpsMeter) refresh(now time.Time) string {
 // printSummary writes one compact fps summary line to w after the session ends. It
 // reports warmup_ms (time to the first counted frame, so the "loads slowly" signal
 // stays visible), then the two rate streams. The In stream (screencast ingest) gets
-// in_frames and in_mean over the ingest span; its timestamps are burst-clustered, so
-// a gap-based median or min/max would be noisy, and frames plus mean read true. The
-// Out stream (paint) gets the full steady-state stats measured from the gate frame
-// onward: out_frames, wall seconds, out_mean and out_median fps, the out_min and
-// out_max instantaneous fps (the slowest and fastest single frames), and
-// out_worst_gap_ms, which exposes a post-load stall a mean hides. When no ingest
-// reporter is wired the In fields read zero. A nil meter or a session whose gate
-// never opened prints nothing, so an off run and an empty run are both silent.
+// the full steady-state stats over the ingest span: in_frames, in_mean, the in_min
+// and in_max instantaneous fps (the slowest and fastest single frames), in_median,
+// and in_worst_gap_ms, plus the worker decode budget in_decode_mean_ms and
+// in_decode_max_ms (how close each frame sits to the ~16.6ms 60fps ceiling the decode
+// wall imposes). Under the decoupled receiver/worker model the arrival times are true
+// per-frame instants, so the In extremes are meaningful and mirror Out exactly
+// (in_min is 1/maxGap, and so on). The Out stream (paint) gets out_frames, wall
+// seconds, out_mean and out_median fps, out_min and out_max, and out_worst_gap_ms,
+// which exposes a post-load stall a mean hides. When no ingest reporter is wired the
+// In fields read zero. A nil meter or a session whose gate never opened prints
+// nothing, so an off run and an empty run are both silent.
 func (m *fpsMeter) printSummary(w io.Writer) {
 	if m == nil || m.frames == 0 {
 		return
@@ -948,12 +951,13 @@ func (m *fpsMeter) printSummary(w io.Writer) {
 		}
 	}
 	worstGapMS := float64(m.maxGap) / float64(time.Millisecond)
-	inFrames, inMean := 0, 0.0
+	var in render.IngestStats
 	if m.ingest != nil {
-		inFrames, inMean = m.ingest.IngestSummary()
+		in = m.ingest.IngestSummary()
 	}
-	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f in_frames=%d in_mean=%.1f out_frames=%d wall=%.2fs out_mean=%.1f out_median=%.1f out_min=%.1f out_max=%.1f out_worst_gap_ms=%.1f\n",
-		warmupMS, inFrames, inMean, m.frames, wall, mean, medianFPS(m.gaps), minInst, maxInst, worstGapMS)
+	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f in_frames=%d in_mean=%.1f in_min=%.1f in_max=%.1f in_median=%.1f in_worst_gap_ms=%.1f in_decode_mean_ms=%.1f in_decode_max_ms=%.1f out_frames=%d wall=%.2fs out_mean=%.1f out_median=%.1f out_min=%.1f out_max=%.1f out_worst_gap_ms=%.1f\n",
+		warmupMS, in.Frames, in.MeanFPS, in.MinFPS, in.MaxFPS, in.MedianFPS, in.WorstGapMS, in.DecodeMeanMS, in.DecodeMaxMS,
+		m.frames, wall, mean, medianFPS(m.gaps), minInst, maxInst, worstGapMS)
 }
 
 // medianFPS returns the median instantaneous fps from the collected inter-frame
