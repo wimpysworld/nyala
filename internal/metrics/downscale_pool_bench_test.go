@@ -3,6 +3,8 @@ package metrics
 import (
 	"image"
 	"testing"
+
+	"github.com/wimpysworld/nyala/internal/rowband"
 )
 
 // downscaleBenchCase is one grid at cell 16x33: the full screencast source extent
@@ -45,11 +47,13 @@ func BenchmarkDownscaleSerial(b *testing.B) {
 }
 
 // BenchmarkDownscaleParallel measures the pool downscale at both grids. It uses the
-// production pool (sized from GOMAXPROCS) built once outside the timed loop, so the
-// benchmark times the per-frame fan-out, not the one-off pool build.
+// production pool (sized from GOMAXPROCS) and one reused driver built once outside
+// the timed loop, so the benchmark times the per-frame fan-out, not the one-off
+// pool build.
 func BenchmarkDownscaleParallel(b *testing.B) {
-	pool := NewDownscalePool()
+	pool := rowband.New()
 	defer pool.Close()
+	pd := NewParallelDownscale()
 	for _, c := range downscaleBenchCases {
 		b.Run(c.name, func(b *testing.B) {
 			src := benchSource(c.srcW, c.srcH)
@@ -57,7 +61,7 @@ func BenchmarkDownscaleParallel(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {
-				pool.DownscaleLiveInto(dst, src)
+				pd.DownscaleInto(dst, src, pool)
 			}
 		})
 	}

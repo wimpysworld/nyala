@@ -140,8 +140,36 @@ func (s *frameSlot) drain() {
 // recorder carries metadata only, never the frame image bytes, so the event stream
 // holds no payload.
 func (e *ChromiumEngine) handleScreencastFrame(slot *frameSlot, f *page.EventScreencastFrame) {
+	e.receiveScreencastFrame(f)
+	// Hand the raw frame to the coalescing slot; the worker decodes it. An older
+	// undecoded frame is dropped without decode, and it is already acked.
+	slot.put(rawFrame{data: f.Data, meta: f.Metadata})
+}
+
+// handleScreencastFrameLive is the live-path arm of the listener: it runs the same
+// receive-side work as handleScreencastFrame (count, watchdog stamp, motion poke,
+// record, ack) then hands the raw frame, tagged with its arrival sequence, to the
+// bounded decode-pool queue rather than the single-worker slot. The pool decodes in
+// parallel and the collector re-serialises by sequence, so several frames decode at
+// once while the screen stays monotonic. Capture never takes this arm: it keeps the
+// ordered slot via handleScreencastFrame. The frame is acked here on receive, so a
+// frame the queue later drops (oldest, under load) is already acked.
+func (e *ChromiumEngine) handleScreencastFrameLive(q *rawFrameQueue, seq uint64, f *page.EventScreencastFrame) {
+	e.receiveScreencastFrame(f)
+	q.put(seqRawFrame{seq: seq, data: f.Data, meta: f.Metadata})
+}
+
+// receiveScreencastFrame runs the sink-independent receive-side work both the slot
+// (capture) and queue (live) arms share: it counts true ingest before any coalescing,
+// stamps the stuck-state watchdog, feeds the adaptive-format controller its motion
+// signal, records the metadata event (never the image bytes), and acks the frame. The
+// ack lands on receive, before any decode, so Chrome's in-flight credit is released at
+// once and decoupled from decode and any downstream stall. It runs on the chromedp
+// ListenTarget event goroutine, so it does no PNG decode and no chromedp.Run: the ack
+// is enqueued for ackPump to run off this goroutine (the #920-safe off-goroutine ack).
+func (e *ChromiumEngine) receiveScreencastFrame(f *page.EventScreencastFrame) {
 	now := time.Now()
-	// Count true ingest for every delivered frame, before the slot coalesces any.
+	// Count true ingest for every delivered frame, before any coalescing or drop.
 	// Gated behind the armed check so an off run pays one bool check and no clock read.
 	if e.ingest.armed() {
 		e.ingest.record(now)
@@ -160,28 +188,35 @@ func (e *ChromiumEngine) handleScreencastFrame(slot *frameSlot, f *page.EventScr
 	}
 	// Ack on receive, before any decode. The enqueue is #920-safe: ackPump runs the
 	// chromedp.Run off this event goroutine. Whether this frame is later decoded or
-	// dropped from the slot, it is acked exactly once, here.
+	// dropped, it is acked exactly once, here.
 	e.ackFrame(f.SessionID)
-	// Hand the raw frame to the coalescing slot; the worker decodes it. An older
-	// undecoded frame is dropped without decode, and it is already acked.
-	slot.put(rawFrame{data: f.Data, meta: f.Metadata})
 }
 
-// registerScreencastListener registers the one ListenTarget handler that decodes
-// each EventScreencastFrame and feeds it into the slot, acking displaced frames as
-// they are replaced. It is called once per session, on the fresh session context,
-// so a stream restart (restartStream) does not add a second handler. chromedp
-// appends listeners and drops them only when the context is done, so re-registering
-// on every backend switch or resize would pile up handlers that each decode and ack
-// every frame, over-delivering into the slot. The capture paint latch is not fired
-// here: the navigate waiter's matched load signal closes it (markPainted from
-// navigateAsync), so this listener handles only screencast frames.
-func (e *ChromiumEngine) registerScreencastListener(ctx context.Context, slot *frameSlot) {
-	if ctx == nil || slot == nil {
+// registerScreencastListener registers the one ListenTarget handler that feeds each
+// EventScreencastFrame into the frame sink, acking it on receive. It routes to the
+// live decode-pool queue when one is set (rawQ non-nil) and to the ordered slot
+// otherwise (capture), so the pool is gated to the live path exactly like the GPU
+// flag. It stamps each delivered frame with a strictly increasing arrival sequence
+// (a closure-local counter, single-goroutine on the event goroutine, lock-free), so
+// the pool collector can drop a stale out-of-order decode. It is called once per
+// session, on the fresh session context, so a stream restart (restartStream) does not
+// add a second handler. chromedp appends listeners and drops them only when the
+// context is done, so re-registering on every backend switch or resize would pile up
+// handlers that each ack every frame. The capture paint latch is not fired here: the
+// navigate waiter's matched load signal closes it (markPainted from navigateAsync),
+// so this listener handles only screencast frames.
+func (e *ChromiumEngine) registerScreencastListener(ctx context.Context, slot *frameSlot, rawQ *rawFrameQueue) {
+	if ctx == nil || (slot == nil && rawQ == nil) {
 		return
 	}
+	var seq uint64
 	chromedp.ListenTarget(ctx, func(ev any) {
 		if f, ok := ev.(*page.EventScreencastFrame); ok {
+			if rawQ != nil {
+				seq++
+				e.handleScreencastFrameLive(rawQ, seq, f)
+				return
+			}
 			e.handleScreencastFrame(slot, f)
 		}
 	})
@@ -1337,14 +1372,14 @@ func screencastMeta(meta *page.ScreencastFrameMetadata) *render.ScreencastMeta {
 func (e *ChromiumEngine) restartStream() error {
 	e.mu.Lock()
 	ctx := e.ctx
-	slot := e.slot
+	streaming := e.streamingLocked()
 	windowID := e.windowID
 	reSnap := e.reSnap
 	surfW, surfH := e.surfaceSize(e.cols, e.rows)
 	capW, capH := e.screencastCap(e.cols, e.rows)
 	z := e.layoutScale()
 	e.mu.Unlock()
-	if ctx == nil || slot == nil {
+	if ctx == nil || !streaming {
 		return nil
 	}
 	if e.recorder != nil {

@@ -233,7 +233,17 @@ func (br *Renderer) composeQuadrant(f render.Frame) Grid {
 // already sized to Cols x Rows. It is the shared body of composeQuadrant (fresh
 // grid) and ComposeInto (reused grid), so both fill cells the same way.
 func (br *Renderer) composeQuadrantInto(g *Grid, f render.Frame) {
-	for row := range g.Rows {
+	br.composeQuadrantRows(g, f, 0, g.Rows)
+}
+
+// composeQuadrantRows binarises grid rows [row0, row1) of g from the frame image.
+// It is the per-band body of composeQuadrantInto: each cell samples its own 2x4
+// source block and writes only its own cell, so a call over a disjoint row range
+// writes byte-for-byte the same cells the whole-grid pass writes for those rows.
+// The row split is purely which rows a call fills, so the parallel band-join is
+// byte-identical to the serial pass.
+func (br *Renderer) composeQuadrantRows(g *Grid, f render.Frame, row0, row1 int) {
+	for row := row0; row < row1; row++ {
 		for col := range g.Cols {
 			x, y, z, wq := sampleQuadrant(f.Img, col, row)
 			glyph, fg, bg := binarizeQuadrant(x, y, z, wq)
@@ -260,7 +270,15 @@ func (br *Renderer) composeHalfBlock(f render.Frame) Grid {
 // sized to Cols x Rows. It is the shared body of composeHalfBlock (fresh grid)
 // and ComposeInto (reused grid).
 func (br *Renderer) composeHalfBlockInto(g *Grid, f render.Frame) {
-	for row := range g.Rows {
+	br.composeHalfBlockRows(g, f, 0, g.Rows)
+}
+
+// composeHalfBlockRows maps grid rows [row0, row1) of g from the frame image. It
+// is the per-band body of composeHalfBlockInto: each cell samples its own 1x2
+// source column and writes only its own cell, so a call over a disjoint row range
+// writes the same cells the whole-grid pass writes for those rows.
+func (br *Renderer) composeHalfBlockRows(g *Grid, f render.Frame, row0, row1 int) {
+	for row := row0; row < row1; row++ {
 		for col := range g.Cols {
 			top, bottom := sampleHalfBlock(f.Img, col, row)
 			*g.At(col, row) = Cell{Glyph: lowerHalfBlock, FG: bottom, BG: top}
