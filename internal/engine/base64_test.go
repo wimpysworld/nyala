@@ -2,14 +2,14 @@ package engine
 
 // base64 wiring guard: the live and capture screencast paths base64-decode the
 // Chromium Data field through github.com/emmansun/base64 (SIMD, drop-in
-// encoding/base64 API) with a stdlib fallback (decodeBase64Fast in frame.go). These
+// encoding/base64 API) with a stdlib fallback (decodeBase64Pooled in frame.go). These
 // tests guard the byte-identical decode across the blob and the padding/newline edge
 // cases, prove the fallback engages on a malformed input, and keep an emmansun-vs-
 // stdlib decode benchmark so the win stays measurable. The decode sits inside the
 // measured in_decode span, ahead of the image decode.
 //
 // Run:
-//   go test -run 'TestEmmansunBase64|TestDecodeBase64Fast' ./internal/engine/
+//   go test -run 'TestEmmansunBase64|TestDecodeBase64Pooled' ./internal/engine/
 //   go test -bench BenchmarkBase64Decode -benchmem ./internal/engine/
 
 import (
@@ -77,39 +77,66 @@ func TestEmmansunBase64Equivalence(t *testing.T) {
 	}
 }
 
-// TestDecodeBase64FastEquivalence confirms the wired helper is byte-identical to
-// stdlib on a real screencast blob, so the decoded bytes feeding the image decode do
-// not change.
-func TestDecodeBase64FastEquivalence(t *testing.T) {
-	s := spikeBlob(t)
-	want, err := stdb64.StdEncoding.DecodeString(s)
-	if err != nil {
-		t.Fatalf("stdlib decode: %v", err)
+// TestDecodeBase64PooledEquivalence confirms the pooled helper is byte-identical to
+// stdlib across a real blob and the edge cases (empty, each padding tail, embedded
+// CRLF), and that reusing the pooled buffer across calls never leaks stale bytes into a
+// later, shorter decode.
+func TestDecodeBase64PooledEquivalence(t *testing.T) {
+	cases := map[string]string{
+		"empty": stdb64.StdEncoding.EncodeToString(nil),
+		"pad0":  stdb64.StdEncoding.EncodeToString([]byte("abc")),
+		"pad1":  stdb64.StdEncoding.EncodeToString([]byte("abcde")),
+		"pad2":  stdb64.StdEncoding.EncodeToString([]byte("abcd")),
+		"blob":  spikeBlob(t),
 	}
-	got, err := decodeBase64Fast(s)
-	if err != nil {
-		t.Fatalf("decodeBase64Fast: %v", err)
-	}
-	if len(got) != len(want) {
-		t.Fatalf("length %d, want %d", len(got), len(want))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("byte %d = %d, want %d", i, got[i], want[i])
+	blob := cases["blob"]
+	var wrapped []byte
+	for i := 0; i < len(blob); i += 76 {
+		end := i + 76
+		if end > len(blob) {
+			end = len(blob)
 		}
+		wrapped = append(wrapped, blob[i:end]...)
+		wrapped = append(wrapped, '\r', '\n')
+	}
+	cases["blob_crlf"] = string(wrapped)
+
+	// Order the calls big-then-small so a reused buffer would expose stale tail bytes if
+	// the helper ever returned more than n bytes.
+	order := []string{"blob", "pad2", "blob_crlf", "pad0", "empty", "pad1"}
+	for _, name := range order {
+		s := cases[name]
+		want, err := stdb64.StdEncoding.DecodeString(s)
+		if err != nil {
+			t.Fatalf("%s: stdlib decode: %v", name, err)
+		}
+		got, release, err := decodeBase64Pooled(s)
+		if err != nil {
+			t.Fatalf("%s: decodeBase64Pooled: %v", name, err)
+		}
+		if len(got) != len(want) {
+			release()
+			t.Fatalf("%s: length %d, want %d", name, len(got), len(want))
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				release()
+				t.Fatalf("%s: byte %d = %d, want %d", name, i, got[i], want[i])
+			}
+		}
+		release()
 	}
 }
 
-// TestDecodeBase64FastFallback proves the stdlib fallback engages on an input the
-// emmansun decoder declines, so a malformed payload decodes exactly as it does today.
-// A lone '!' is not a base64 alphabet character; both decoders reject it, and the
-// helper must surface the stdlib error, not panic or diverge.
-func TestDecodeBase64FastFallback(t *testing.T) {
+// TestDecodeBase64PooledFallback proves the stdlib fallback engages on an input the
+// emmansun decoder declines, and returns a callable no-op release.
+func TestDecodeBase64PooledFallback(t *testing.T) {
 	const bad = "!!!!"
-	_, gErr := decodeBase64Fast(bad)
+	_, release, gErr := decodeBase64Pooled(bad)
+	release()
 	_, sErr := stdb64.StdEncoding.DecodeString(bad)
 	if (gErr == nil) != (sErr == nil) {
-		t.Fatalf("error mismatch: decodeBase64Fast=%v stdlib=%v", gErr, sErr)
+		t.Fatalf("error mismatch: decodeBase64Pooled=%v stdlib=%v", gErr, sErr)
 	}
 	if sErr == nil {
 		t.Fatal("expected stdlib to reject malformed input; the fallback branch is not exercised")
@@ -156,11 +183,29 @@ func benchB64EmmansunPooled(b *testing.B, s string) {
 	}
 }
 
-// BenchmarkBase64Decode compares stdlib, emmansun DecodeString, and emmansun pooled
-// Decode on the representative screencast blob.
+// benchB64Pooled measures the wired pooled path on a string input: it calls the real
+// decodeBase64Pooled helper, so it captures the string-src zero-copy view and the
+// pooled-buffer reuse exactly as the live and capture decode paths run them.
+func benchB64Pooled(b *testing.B, s string) {
+	b.SetBytes(int64(len(s)))
+	b.ReportAllocs()
+	for range b.N {
+		out, release, err := decodeBase64Pooled(s)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_ = out
+		release()
+	}
+}
+
+// BenchmarkBase64Decode compares stdlib, emmansun DecodeString, emmansun pooled Decode
+// over a []byte src, and the wired string-input decodeBase64Pooled helper on the
+// representative screencast blob.
 func BenchmarkBase64Decode(b *testing.B) {
 	s := spikeBlob(b)
 	b.Run(fmt.Sprintf("blob-%dB/stdlib", len(s)), func(b *testing.B) { benchB64Stdlib(b, s) })
 	b.Run(fmt.Sprintf("blob-%dB/emmansun", len(s)), func(b *testing.B) { benchB64Emmansun(b, s) })
 	b.Run(fmt.Sprintf("blob-%dB/emmansun-pooled", len(s)), func(b *testing.B) { benchB64EmmansunPooled(b, s) })
+	b.Run(fmt.Sprintf("blob-%dB/pooled-str", len(s)), func(b *testing.B) { benchB64Pooled(b, s) })
 }

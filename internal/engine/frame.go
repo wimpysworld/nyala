@@ -9,25 +9,60 @@ import (
 	"image/draw"
 	_ "image/jpeg" // register the JPEG decoder for image.Decode
 	_ "image/png"  // register the PNG decoder for image.Decode
+	"sync"
+	"unsafe"
 
 	emmb64 "github.com/emmansun/base64"
 	"github.com/gen2brain/jpegn"
 )
 
-// decodeBase64Fast decodes one base64 screencast payload to raw bytes, preferring
-// the SIMD emmansun decoder and falling back to stdlib encoding/base64 on any error,
-// so a declined input decodes exactly as it does today. The Chromium screencast Data
-// field is standard base64; emmansun's StdEncoding is a drop-in for the stdlib
-// StdEncoding, dispatches to a SIMD kernel at runtime (SSE/AVX2/AVX512-VBMI on amd64,
-// NEON on arm64), and ignores embedded newlines the same way. It sits inside the
-// measured in_decode span, ahead of the image decode. A pooled Decode(dst, src) form
-// would also kill the per-call output alloc; it is a follow-up, held back here so the
-// raw bytes' lifetime across the downstream image decode stays trivially correct.
-func decodeBase64Fast(data string) ([]byte, error) {
-	if raw, err := emmb64.StdEncoding.DecodeString(data); err == nil {
-		return raw, nil
+// base64DecodeBufPool pools the decoded-bytes output buffer for decodeBase64Pooled,
+// so the ~188 KB output allocation each screencast frame makes is reused across frames
+// instead of allocated fresh. sync.Pool is safe under the concurrent live decode-pool
+// workers: each Get hands one worker its own buffer.
+var base64DecodeBufPool = sync.Pool{New: func() any { b := make([]byte, 0); return &b }}
+
+// decodeBase64Pooled decodes one base64 screencast payload into a pooled output buffer,
+// returning the raw bytes plus a release func the caller must call once the downstream
+// image decode has finished with the bytes. It prefers the SIMD emmansun Decode(dst,
+// src) form, which decodes into the reused pooled dst and so makes no per-call output
+// allocation, and falls back to stdlib DecodeString on any error so a declined input
+// decodes exactly as it does today (the fallback allocates fresh; its release is a
+// no-op).
+//
+// src is a read-only, zero-copy view of data via unsafe.Slice: the decoder only reads
+// src, never writes it, so aliasing the string's backing bytes is safe, and it avoids
+// the ~245 KB string-to-[]byte copy a plain conversion would make. This mirrors what
+// emmansun's own DecodeString does internally.
+//
+// The returned raw slice aliases the pooled buffer, so it must not escape past release:
+// decodeScreencastImage and decodeLiveFrame consume it synchronously into an independent
+// image and defer release before returning, so the buffer never reaches the decode
+// collector or the emitted frame.
+func decodeBase64Pooled(data string) (raw []byte, release func(), err error) {
+	decLen := emmb64.StdEncoding.DecodedLen(len(data))
+	bp, _ := base64DecodeBufPool.Get().(*[]byte)
+	buf := *bp
+	if cap(buf) < decLen {
+		buf = make([]byte, decLen)
+	} else {
+		buf = buf[:decLen]
 	}
-	return base64.StdEncoding.DecodeString(data)
+	// Read-only zero-copy view of the string bytes; the decoder never writes src.
+	src := unsafe.Slice(unsafe.StringData(data), len(data))
+	n, derr := emmb64.StdEncoding.Decode(buf, src)
+	*bp = buf
+	if derr == nil {
+		return buf[:n], func() { base64DecodeBufPool.Put(bp) }, nil
+	}
+	// Fallback: hand the pooled buffer back and decode fresh with stdlib on a declined
+	// input.
+	base64DecodeBufPool.Put(bp)
+	out, serr := base64.StdEncoding.DecodeString(data)
+	if serr != nil {
+		return nil, func() {}, serr
+	}
+	return out, func() {}, nil
 }
 
 // screencastQuality is a JPEG compression quality value. The live screencast is
@@ -110,10 +145,11 @@ func (e *ChromiumEngine) snapshotCellPx() (cellW, cellH float64) {
 // bytes before the image decoder. A non-RGBA decode is converted with the same
 // copy idiom the viewer's LoadPNG uses, so the render path reads one pixel layout.
 func decodeScreencastImage(data string) (*image.RGBA, error) {
-	raw, err := decodeBase64Fast(data)
+	raw, release, err := decodeBase64Pooled(data)
 	if err != nil {
 		return nil, fmt.Errorf("engine: base64-decode frame: %w", err)
 	}
+	defer release()
 	return decodeImageBytes(raw)
 }
 
@@ -183,10 +219,11 @@ func decodeJPEGFast(raw []byte) (image.Image, error) {
 // The capture path never calls this: capture forces PNG and keeps runFrameLoop with
 // decodeScreencastImage, so the byte-exact corpus is untouched.
 func (e *ChromiumEngine) decodeLiveFrame(data string) (*image.RGBA, error) {
-	raw, err := decodeBase64Fast(data)
+	raw, release, err := decodeBase64Pooled(data)
 	if err != nil {
 		return nil, fmt.Errorf("engine: base64-decode frame: %w", err)
 	}
+	defer release()
 	img, err := decodeJPEGFast(raw)
 	if err != nil {
 		return nil, fmt.Errorf("engine: decode frame image: %w", err)
