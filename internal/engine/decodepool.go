@@ -18,12 +18,13 @@ import (
 const decodeWorkersEnv = "NYALA_DECODE_WORKERS"
 
 // defaultDecodeWorkers is the live decode-pool size when the env override is unset.
-// A single screencast decode runs ~28 ms on the block backend, so one worker caps
-// throughput at ~35 frames/s and Out tracks it. Chromium delivers at most 60
-// frames/s (a ~17 ms arrival gap), so 2-3 workers clear that arrival while leaving
-// cores for the render, encode, the engine goroutines, and Chromium itself. Three is
-// the modest default: enough to lift Out toward 60 without oversubscribing the CPU.
-const defaultDecodeWorkers = 3
+// The jpegn SIMD decoder roughly halves a screencast decode (measured ~29 ms on a
+// large block frame), so two workers clear the 60 fps arrival (a ~17 ms gap) with
+// headroom while leaving cores for the render, encode, the engine goroutines, and
+// Chromium itself. Two is the floor default: it locks Out at 60 on a strong CPU and
+// oversubscribes nothing. A core-adaptive default is a follow-up (see docs/TODO.md),
+// so a weaker CPU (no AVX2, jpegn on its slower path) can be given more workers.
+const defaultDecodeWorkers = 2
 
 // maxDecodeWorkers caps the env override so a stray large value cannot spawn an
 // unbounded pool and starve the render, encode, and browser of cores.
