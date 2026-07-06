@@ -137,6 +137,33 @@ type LoadTimings struct {
 	FirstTextMS float64
 }
 
+// IngestStats is the session ingest summary the NYALA_FPS_TIMING quit line
+// reports: the screencast ingest frame count and rate statistics, plus the worker
+// decode budget. The engine computes it from the true per-frame arrival times
+// (recorded before the coalescing slot drops any) and the per-frame worker decode
+// times, so under the decoupled receiver/worker model the gap-based extremes are
+// meaningful. The viewer reads it over the ingestReporter seam without importing the
+// engine, so it lives here beside LoadTimings. Every field is zero when the switch
+// is off or the session recorded no frame.
+type IngestStats struct {
+	// Frames is the count of delivered screencast frames over the session.
+	Frames int
+	// MeanFPS is the mean ingest rate over the first-to-last-frame span.
+	MeanFPS float64
+	// MinFPS is the slowest instantaneous rate, 1 over the largest inter-arrival gap.
+	MinFPS float64
+	// MaxFPS is the fastest instantaneous rate, 1 over the smallest inter-arrival gap.
+	MaxFPS float64
+	// MedianFPS is the median instantaneous rate, the median inter-arrival gap inverted.
+	MedianFPS float64
+	// WorstGapMS is the largest inter-arrival gap in milliseconds, the worst ingest stall.
+	WorstGapMS float64
+	// DecodeMeanMS is the mean worker decode wall time per frame in milliseconds.
+	DecodeMeanMS float64
+	// DecodeMaxMS is the slowest single worker decode in milliseconds.
+	DecodeMaxMS float64
+}
+
 // ScreencastMeta is the neutral screencast frame metadata the capture bundle
 // records: the scroll offset, page scale, and device size of the frame, with no
 // image bytes. It mirrors the fields of the CDP page.ScreencastFrameMetadata

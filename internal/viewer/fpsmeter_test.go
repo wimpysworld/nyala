@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wimpysworld/nyala/internal/render"
 )
 
 func TestNewFPSMeterSwitch(t *testing.T) {
@@ -82,12 +84,17 @@ func TestFPSMeterWarmupGate(t *testing.T) {
 	if m.maxGap != 100*time.Millisecond {
 		t.Fatalf("worst gap: got %v, want 100ms (load stall excluded)", m.maxGap)
 	}
-	m.ingest = fakeIngest{frames: 40, mean: 23.6}
+	m.ingest = fakeIngest{stats: render.IngestStats{
+		Frames: 40, MeanFPS: 23.6, MinFPS: 6.8, MaxFPS: 59.4,
+		MedianFPS: 50.1, WorstGapMS: 147.4, DecodeMeanMS: 8.2, DecodeMaxMS: 21.0,
+	}}
 	var b strings.Builder
 	m.printSummary(&b)
 	out := b.String()
 	for _, want := range []string{
 		"warmup_ms=1800", "in_frames=40", "in_mean=23.6",
+		"in_min=6.8", "in_max=59.4", "in_median=50.1", "in_worst_gap_ms=147.4",
+		"in_decode_mean_ms=8.2", "in_decode_max_ms=21.0",
 		"out_frames=4", "wall=0.30s", "out_worst_gap_ms=100.0", "out_median=10.0",
 	} {
 		if !strings.Contains(out, want) {
@@ -97,15 +104,15 @@ func TestFPSMeterWarmupGate(t *testing.T) {
 }
 
 // fakeIngest is a stub ingestReporter for the meter tests: it returns fixed In
-// values so the badge and summary shape can be asserted without a real engine.
+// values so the badge and summary shape can be asserted without a real engine. fps
+// feeds the live badge; stats feeds the quit summary.
 type fakeIngest struct {
-	fps    float64
-	frames int
-	mean   float64
+	fps   float64
+	stats render.IngestStats
 }
 
-func (f fakeIngest) IngestFPS(time.Time) float64   { return f.fps }
-func (f fakeIngest) IngestSummary() (int, float64) { return f.frames, f.mean }
+func (f fakeIngest) IngestFPS(time.Time) float64       { return f.fps }
+func (f fakeIngest) IngestSummary() render.IngestStats { return f.stats }
 
 // TestFPSMeterBadgeInOut checks the badge shows both streams when an ingest reporter
 // is wired, and Out only when it is not.

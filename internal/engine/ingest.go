@@ -2,8 +2,11 @@ package engine
 
 import (
 	"os"
+	"slices"
 	"sync"
 	"time"
+
+	"github.com/wimpysworld/nyala/internal/render"
 )
 
 // fpsTimingEnv is the environment variable that arms the screencast ingest
@@ -21,9 +24,14 @@ const ingestWindow = time.Second
 // ingestCounter counts screencast frames at the true ingest point
 // (handleScreencastFrame), before the latest-wins slot drops any, so it reports the
 // pre-drop ingest rate the paint meter cannot see. It holds a trailing window of
-// frame instants for the live rolling rate and session totals (count, first and
-// last instant) for the summary mean. The listener goroutine records; the viewer
-// draw goroutine reads; a mutex guards both, and a screencast frame arrives at only
+// frame instants for the live rolling rate, session totals (count, first and last
+// instant) for the summary mean, and the per-frame inter-arrival gaps for the
+// min/max/median/worst-gap extremes that mirror the paint meter's Out stats. Under
+// the decoupled receiver/worker model the arrival times are true per-frame instants,
+// not coalesced bursts, so the gap extremes are meaningful. It also accumulates the
+// worker decode budget (mean and max), fed from runFrameLoop when armed. The listener
+// goroutine records arrivals, the worker records decode times, the viewer draw
+// goroutine reads; one mutex guards all three, and a screencast frame arrives at only
 // ~10-60/s, so the lock cost is nil. It is armed once at engine construction from
 // NYALA_FPS_TIMING; off, record is a bool check and the reporters return zero. It
 // persists across sessions, so a resize or backend switch keeps the engine-lifetime
@@ -38,6 +46,22 @@ type ingestCounter struct {
 	frames int
 	first  time.Time
 	last   time.Time
+
+	// prev is the previous arrival instant, so record measures the inter-arrival gap.
+	// minGap/maxGap track the extremes; gaps collects every gap, sorted once at quit
+	// for the median. haveGap is set once two frames have arrived.
+	prev    time.Time
+	haveGap bool
+	minGap  time.Duration
+	maxGap  time.Duration
+	gaps    []time.Duration
+
+	// decodeFrames/decodeTotal/decodeMax accumulate the worker decode budget: the
+	// count and sum give the mean, decodeMax the slowest single decode. Fed by
+	// recordDecode from the worker goroutine only when armed.
+	decodeFrames int
+	decodeTotal  float64
+	decodeMax    float64
 }
 
 // newIngestCounter returns a counter armed when NYALA_FPS_TIMING is set, or a
@@ -55,8 +79,11 @@ func (c *ingestCounter) armed() bool {
 }
 
 // record stamps one delivered screencast frame at now. It is called once per frame
-// on the listener goroutine, before the slot drops any, so it counts true ingest. A
-// nil or disabled counter returns at once, so a stray call is safe.
+// on the listener goroutine, before the slot drops any, so it counts true ingest and
+// the inter-arrival gaps are the real per-frame arrival intervals. From the second
+// frame on it measures the gap since the previous arrival, tracking the min and max
+// and appending to the gap slice for the quit-time median. A nil or disabled counter
+// returns at once, so a stray call is safe.
 func (c *ingestCounter) record(now time.Time) {
 	if !c.armed() {
 		return
@@ -65,9 +92,38 @@ func (c *ingestCounter) record(now time.Time) {
 	c.times = append(c.times, now)
 	if c.frames == 0 {
 		c.first = now
+	} else {
+		gap := now.Sub(c.prev)
+		if !c.haveGap || gap < c.minGap {
+			c.minGap = gap
+		}
+		if !c.haveGap || gap > c.maxGap {
+			c.maxGap = gap
+		}
+		c.haveGap = true
+		c.gaps = append(c.gaps, gap)
 	}
 	c.frames++
+	c.prev = now
 	c.last = now
+	c.mu.Unlock()
+}
+
+// recordDecode adds one worker decode wall time in milliseconds to the decode
+// budget: the count and running sum feed the mean, and it tracks the slowest single
+// decode. runFrameLoop calls it on the worker goroutine per successfully decoded
+// frame, gated on the armed check, so an off run reads no clock and does no work
+// here. A nil or disabled counter returns at once.
+func (c *ingestCounter) recordDecode(ms float64) {
+	if !c.armed() {
+		return
+	}
+	c.mu.Lock()
+	c.decodeFrames++
+	c.decodeTotal += ms
+	if ms > c.decodeMax {
+		c.decodeMax = ms
+	}
 	c.mu.Unlock()
 }
 
@@ -98,21 +154,61 @@ func (c *ingestCounter) fps(now time.Time) float64 {
 	return float64(len(c.times)-1) / span
 }
 
-// summary returns the session ingest frame count and the mean fps over the ingest
-// span (first to last frame). It is read once at quit on the viewer draw goroutine.
-// A nil or disabled counter, or a span too short to divide, reports zero.
-func (c *ingestCounter) summary() (frames int, meanFPS float64) {
+// summary returns the session ingest statistics: the frame count, the mean fps over
+// the ingest span (first to last frame), the min/max/median instantaneous fps and
+// the worst inter-arrival gap from the collected gaps, and the worker decode mean and
+// max. It is read once at quit on the viewer draw goroutine. It sorts the gap slice
+// once here, off the hot path, for the median. A nil or disabled counter, or a
+// session with no frame, reports the zero value.
+func (c *ingestCounter) summary() render.IngestStats {
 	if !c.armed() {
-		return 0, 0
+		return render.IngestStats{}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.frames == 0 {
-		return 0, 0
+		return render.IngestStats{}
 	}
-	span := c.last.Sub(c.first).Seconds()
-	if span <= 0 {
-		return c.frames, 0
+	stats := render.IngestStats{Frames: c.frames}
+	if span := c.last.Sub(c.first).Seconds(); span > 0 {
+		stats.MeanFPS = float64(c.frames-1) / span
 	}
-	return c.frames, float64(c.frames-1) / span
+	if c.haveGap {
+		if s := c.maxGap.Seconds(); s > 0 {
+			stats.MinFPS = 1 / s
+		}
+		if s := c.minGap.Seconds(); s > 0 {
+			stats.MaxFPS = 1 / s
+		}
+		stats.WorstGapMS = float64(c.maxGap) / float64(time.Millisecond)
+		stats.MedianFPS = medianFPSFromGaps(c.gaps)
+	}
+	if c.decodeFrames > 0 {
+		stats.DecodeMeanMS = c.decodeTotal / float64(c.decodeFrames)
+		stats.DecodeMaxMS = c.decodeMax
+	}
+	return stats
+}
+
+// medianFPSFromGaps returns the median instantaneous fps from the inter-arrival
+// gaps: it sorts them (once, at quit, off the hot path), takes the middle gap
+// (averaging the two middle gaps for an even count), and inverts it to fps. The
+// median ignores a one-off stall, so it reads the typical ingest rate. An empty or
+// non-positive-median slice reports 0. It mirrors the viewer paint meter's medianFPS
+// so In and Out share the same median semantics.
+func medianFPSFromGaps(gaps []time.Duration) float64 {
+	if len(gaps) == 0 {
+		return 0
+	}
+	slices.Sort(gaps)
+	n := len(gaps)
+	med := gaps[n/2]
+	if n%2 == 0 {
+		med = (gaps[n/2-1] + gaps[n/2]) / 2
+	}
+	s := med.Seconds()
+	if s <= 0 {
+		return 0
+	}
+	return 1 / s
 }
