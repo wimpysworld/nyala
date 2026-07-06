@@ -124,16 +124,27 @@ func sextantColours(mask int, tl, tr, ml, mr, bl, br color.RGBA) (fg, bg color.R
 		all := avgRGBA(tl, tr, ml, mr, bl, br)
 		return all, all
 	}
+	// Accumulate the bright and dark channel sums in scalars rather than two
+	// heap-allocated slices, mirroring quadrantColours: the compose path runs this
+	// per non-flat cell. The arithmetic matches avgRGBA summed over the same
+	// sub-cells in cell order, so the result is byte-identical.
 	cells := [6]color.RGBA{tl, tr, ml, mr, bl, br}
-	var bright, dark []color.RGBA
+	var brs, bgs, bbs, bn int
+	var drs, dgs, dbs, dn int
 	for i, c := range cells {
 		if mask&(1<<i) != 0 {
-			bright = append(bright, c)
+			brs += int(c.R)
+			bgs += int(c.G)
+			bbs += int(c.B)
+			bn++
 		} else {
-			dark = append(dark, c)
+			drs += int(c.R)
+			dgs += int(c.G)
+			dbs += int(c.B)
+			dn++
 		}
 	}
-	return avgRGBA(bright...), avgRGBA(dark...)
+	return avgChannels(brs, bgs, bbs, bn), avgChannels(drs, dgs, dbs, dn)
 }
 
 // composeSextant binarises the frame image onto a fresh Cols x Rows sextant

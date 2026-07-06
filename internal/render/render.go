@@ -34,6 +34,19 @@ func CellWidth(grapheme string) int {
 	return 1
 }
 
+// DisplayWidth returns the total display-cell width of text, summing each
+// grapheme cluster's CellWidth. It is the whole-run counterpart of CellWidth and
+// lets a run cache its display width at decode, so the compose path reads the
+// cached value instead of re-segmenting the run every frame.
+func DisplayWidth(text string) int {
+	cells := 0
+	gr := uniseg.NewGraphemes(text)
+	for gr.Next() {
+		cells += CellWidth(gr.Str())
+	}
+	return cells
+}
+
 // ClipToCells trims text to at most maxCells display cells, measuring each
 // grapheme cluster with CellWidth. A width-2 cluster that would exceed the
 // budget is dropped whole, never half-emitted. A non-positive maxCells yields
@@ -78,6 +91,12 @@ type GlyphRun struct {
 	// CellW is the CSS-pixel cell width the run was snapped with. It is zero when
 	// unknown, which disables the sub-cell recompose for the run.
 	CellW float64
+	// DisplayCells is the run's total display-cell width, cached at decode via
+	// DisplayWidth so the compose boundary recompose reads it instead of
+	// re-segmenting the run every frame. It is zero when unset (a hand-built run),
+	// in which case the compose path falls back to measuring Text. It is excluded
+	// from the serialised text-map so the capture bundle shape is unchanged.
+	DisplayCells int `json:"-"`
 }
 
 // FrameStats holds the engine-phase timings and sizes captured while building

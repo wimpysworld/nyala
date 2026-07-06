@@ -409,32 +409,50 @@ func quadrantColours(mask int, x, y, z, w color.RGBA) (fg, bg color.RGBA) {
 		all := avgRGBA(x, y, z, w)
 		return all, all
 	}
+	// Accumulate the bright and dark channel sums in scalars rather than two
+	// heap-allocated slices: the compose path runs this per non-flat cell, so the
+	// slices were the largest allocation source. The arithmetic matches avgRGBA
+	// summed over the same sub-cells in cell order, so the result is byte-identical.
 	cells := [4]color.RGBA{x, y, z, w}
-	var bright, dark []color.RGBA
+	var brs, bgs, bbs, bn int
+	var drs, dgs, dbs, dn int
 	for i, c := range cells {
 		if mask&(1<<(3-i)) != 0 {
-			bright = append(bright, c)
+			brs += int(c.R)
+			bgs += int(c.G)
+			bbs += int(c.B)
+			bn++
 		} else {
-			dark = append(dark, c)
+			drs += int(c.R)
+			dgs += int(c.G)
+			dbs += int(c.B)
+			dn++
 		}
 	}
-	return avgRGBA(bright...), avgRGBA(dark...)
+	return avgChannels(brs, bgs, bbs, bn), avgChannels(drs, dgs, dbs, dn)
 }
 
 // avgRGBA averages a set of RGBA colours per channel, with alpha forced opaque.
 // Channel order is RGBA. An empty set returns opaque black. It averages any
 // number of sub-cells, mirroring Carbonyl's avg_with for two.
 func avgRGBA(cs ...color.RGBA) color.RGBA {
-	if len(cs) == 0 {
-		return color.RGBA{A: 0xff}
-	}
 	var rs, gs, bs int
 	for _, c := range cs {
 		rs += int(c.R)
 		gs += int(c.G)
 		bs += int(c.B)
 	}
-	n := len(cs)
+	return avgChannels(rs, gs, bs, len(cs))
+}
+
+// avgChannels averages pre-summed R, G, B channel sums over n sub-cells, with
+// alpha forced opaque and channel order RGBA. It is the shared tail of avgRGBA
+// and the inlined quadrant/sextant colour sums, so all three round identically.
+// A zero count returns opaque black, matching an empty avgRGBA set.
+func avgChannels(rs, gs, bs, n int) color.RGBA {
+	if n == 0 {
+		return color.RGBA{A: 0xff}
+	}
 	return color.RGBA{
 		R: clampByte(rs / n),
 		G: clampByte(gs / n),
