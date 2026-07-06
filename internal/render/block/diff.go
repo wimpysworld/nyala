@@ -1,16 +1,18 @@
 package block
 
 import (
+	"bytes"
 	"image/color"
 	"io"
 	"unicode/utf8"
 )
 
-// SGRFunc maps a cell colour to the SGR escape that sets it for the chosen
-// colour mode. The caller owns the colour mode, so the differ stays mode-neutral:
-// truecolour, xterm-256, and monochrome (which returns "") all flow through the
-// same compare and coalescing.
-type SGRFunc func(color.RGBA) string
+// SGRFunc appends the SGR escape that sets a cell colour for the chosen colour
+// mode to dst and returns the extended slice. The caller owns the colour mode, so
+// the differ stays mode-neutral: truecolour, xterm-256, and monochrome (which
+// appends nothing) all flow through the same compare and coalescing. Appending
+// into the differ's reused buffer keeps the per-cell colour build allocation-free.
+type SGRFunc func(dst []byte, c color.RGBA) []byte
 
 // GridDiff retains the last drawn grid and the last emitted foreground and
 // background SGR, so Emit writes only the cells that changed since the previous
@@ -19,9 +21,13 @@ type SGRFunc func(color.RGBA) string
 // fresh differ that full-repaints its first frame. The capture path may reuse it
 // once that path unifies.
 type GridDiff struct {
-	prev   Grid   // last drawn grid; empty Cells means no previous frame
-	lastFG string // last emitted foreground SGR this frame, "" until set
-	lastBG string // last emitted background SGR this frame, "" until set
+	prev    Grid       // last drawn grid; empty Cells means no previous frame
+	lastFG  []byte     // last emitted foreground SGR this frame, empty until set
+	lastBG  []byte     // last emitted background SGR this frame, empty until set
+	fgCol   color.RGBA // colour that built lastFG; zero (A==0) until set
+	bgCol   color.RGBA // colour that built lastBG; zero (A==0) until set
+	sgrBuf  []byte     // reused scratch for building an SGR before its compare
+	runeBuf []byte     // reused scratch for encoding a bitmap glyph rune
 }
 
 // Emit writes grid to w as the minimal escape stream that turns the previously
@@ -54,8 +60,11 @@ func (d *GridDiff) Emit(w io.Writer, grid Grid, fg, bg SGRFunc) error {
 	full := len(d.prev.Cells) == 0 || d.prev.Cols != grid.Cols || d.prev.Rows != grid.Rows
 
 	// Reset the colour cache and the virtual cursor for this frame. A cursor row
-	// of -1 means unknown, so the first emitted cell always moves with a CUP.
-	d.lastFG, d.lastBG = "", ""
+	// of -1 means unknown, so the first emitted cell always moves with a CUP. The
+	// zero colour (alpha 0) is the unset sentinel: pipeline cells are always
+	// opaque, so the first emitted cell always builds and emits its colour.
+	d.lastFG, d.lastBG = d.lastFG[:0], d.lastBG[:0]
+	d.fgCol, d.bgCol = color.RGBA{}, color.RGBA{}
 	curRow, curCol := -1, -1
 
 	for row := range grid.Rows {
@@ -79,7 +88,7 @@ func (d *GridDiff) Emit(w io.Writer, grid Grid, fg, bg SGRFunc) error {
 			if err := d.writeColour(w, c, fg, bg); err != nil {
 				return err
 			}
-			if err := writeCellGlyph(w, c); err != nil {
+			if err := d.writeCellGlyph(w, c); err != nil {
 				return err
 			}
 			adv := cellAdvance(c, grid, col, row)
@@ -107,20 +116,32 @@ func (d *GridDiff) Reset() {
 }
 
 // writeColour emits the cell's foreground and background SGR, but only when the
-// SGR string changed since the last emitted cell. It updates the cache so a
-// same-colour run sends one SGR pair.
+// emitted bytes changed since the last emitted cell. It updates the cache so a
+// same-colour run sends one SGR pair. A same-colour cell (RGBA equal to the last
+// colour built) skips the rebuild entirely, the common run fast path; on a colour
+// change it rebuilds into the reused buffer and compares the bytes, so two colours
+// that collapse to the same escape (an xterm-256 palette collision, or monochrome
+// which emits nothing) still coalesce exactly as the old string cache did.
 func (d *GridDiff) writeColour(w io.Writer, c *Cell, fg, bg SGRFunc) error {
-	if s := fg(c.FG); s != d.lastFG {
-		if _, err := io.WriteString(w, s); err != nil {
-			return err
+	if c.FG != d.fgCol {
+		d.sgrBuf = fg(d.sgrBuf[:0], c.FG)
+		if !bytes.Equal(d.sgrBuf, d.lastFG) {
+			if _, err := w.Write(d.sgrBuf); err != nil {
+				return err
+			}
+			d.lastFG = append(d.lastFG[:0], d.sgrBuf...)
 		}
-		d.lastFG = s
+		d.fgCol = c.FG
 	}
-	if s := bg(c.BG); s != d.lastBG {
-		if _, err := io.WriteString(w, s); err != nil {
-			return err
+	if c.BG != d.bgCol {
+		d.sgrBuf = bg(d.sgrBuf[:0], c.BG)
+		if !bytes.Equal(d.sgrBuf, d.lastBG) {
+			if _, err := w.Write(d.sgrBuf); err != nil {
+				return err
+			}
+			d.lastBG = append(d.lastBG[:0], d.sgrBuf...)
 		}
-		d.lastBG = s
+		d.bgCol = c.BG
 	}
 	return nil
 }
@@ -128,13 +149,15 @@ func (d *GridDiff) writeColour(w io.Writer, c *Cell, fg, bg SGRFunc) error {
 // writeCellGlyph writes the cell's drawable text alone: the overlay grapheme when
 // Text is set, otherwise the bitmap glyph rune. It mirrors WriteCell's Text-over-
 // Glyph rule without re-emitting the SGR, because writeColour already owns the
-// colour with caching.
-func writeCellGlyph(w io.Writer, c *Cell) error {
+// colour with caching. The bitmap rune encodes into the reused buffer with
+// utf8.AppendRune, so a bitmap cell costs no per-cell string allocation.
+func (d *GridDiff) writeCellGlyph(w io.Writer, c *Cell) error {
 	if c.Text != "" {
 		_, err := io.WriteString(w, c.Text)
 		return err
 	}
-	_, err := io.WriteString(w, string(c.Glyph))
+	d.runeBuf = utf8.AppendRune(d.runeBuf[:0], c.Glyph)
+	_, err := w.Write(d.runeBuf)
 	return err
 }
 

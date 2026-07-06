@@ -8,8 +8,8 @@
 package block
 
 import (
-	"fmt"
 	"image/color"
+	"strconv"
 )
 
 // cubeIndex projects one 8-bit channel onto the 0..5 cube axis. It mirrors
@@ -46,10 +46,7 @@ func XTerm256(c color.RGBA) uint8 {
 		if r > 248 {
 			return 231
 		}
-		step := (int(r) - 8) / 10
-		if step > 23 {
-			step = 23
-		}
+		step := min((int(r)-8)/10, 23)
 		return clampByte(232 + step)
 	}
 
@@ -60,16 +57,52 @@ func XTerm256(c color.RGBA) uint8 {
 	return clampByte(16 + 36*ri + 6*gi + bi)
 }
 
+// trueFGPrefix and trueBGPrefix are the truecolour foreground and background SGR
+// prefixes (ESC [ 38;2; and ESC [ 48;2;). The RGB triple and trailing "m" follow.
+const (
+	trueFGPrefix = "\x1b[38;2;"
+	trueBGPrefix = "\x1b[48;2;"
+)
+
+// appendTrueColor appends prefix + "R;G;Bm" to dst with strconv.AppendInt and
+// returns the extended slice, building the SGR with no fmt reflection and no
+// intermediate string. The alpha channel is ignored; channel order is RGBA.
+func appendTrueColor(dst []byte, prefix string, c color.RGBA) []byte {
+	dst = append(dst, prefix...)
+	dst = strconv.AppendInt(dst, int64(c.R), 10)
+	dst = append(dst, ';')
+	dst = strconv.AppendInt(dst, int64(c.G), 10)
+	dst = append(dst, ';')
+	dst = strconv.AppendInt(dst, int64(c.B), 10)
+	return append(dst, 'm')
+}
+
+// AppendTrueColorFG appends the foreground SGR that sets an exact 24-bit RGBA
+// colour ("\x1b[38;2;R;G;Bm") to dst and returns the extended slice. It is the
+// allocation-free build the differ folds into its reused per-frame buffer; the
+// alpha channel is ignored.
+func AppendTrueColorFG(dst []byte, c color.RGBA) []byte {
+	return appendTrueColor(dst, trueFGPrefix, c)
+}
+
+// AppendTrueColorBG appends the background SGR that sets an exact 24-bit RGBA
+// colour ("\x1b[48;2;R;G;Bm") to dst and returns the extended slice. It is the
+// allocation-free build the differ folds into its reused per-frame buffer; the
+// alpha channel is ignored.
+func AppendTrueColorBG(dst []byte, c color.RGBA) []byte {
+	return appendTrueColor(dst, trueBGPrefix, c)
+}
+
 // TrueColorFG returns the SGR sequence that sets the foreground to an exact
 // 24-bit RGBA colour. The alpha channel is ignored. The form is
 // "\x1b[38;2;R;G;Bm".
 func TrueColorFG(c color.RGBA) string {
-	return fmt.Sprintf("\x1b[38;2;%d;%d;%dm", c.R, c.G, c.B)
+	return string(AppendTrueColorFG(nil, c))
 }
 
 // TrueColorBG returns the SGR sequence that sets the background to an exact
 // 24-bit RGBA colour. The alpha channel is ignored. The form is
 // "\x1b[48;2;R;G;Bm".
 func TrueColorBG(c color.RGBA) string {
-	return fmt.Sprintf("\x1b[48;2;%d;%d;%dm", c.R, c.G, c.B)
+	return string(AppendTrueColorBG(nil, c))
 }

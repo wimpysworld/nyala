@@ -10,8 +10,8 @@ import (
 // fixedFG and fixedBG are colour-mode-neutral SGR funcs for the differ tests: a
 // short stable token per colour, so the assertions read the escape stream
 // without truecolour noise.
-func fixedFG(c color.RGBA) string { return "<f" + string(rune('0'+c.R)) + ">" }
-func fixedBG(c color.RGBA) string { return "<b" + string(rune('0'+c.B)) + ">" }
+func fixedFG(dst []byte, c color.RGBA) []byte { return append(dst, '<', 'f', '0'+c.R, '>') }
+func fixedBG(dst []byte, c color.RGBA) []byte { return append(dst, '<', 'b', '0'+c.B, '>') }
 
 func gridOf(cols, rows int, fill Cell) Grid {
 	g := Grid{Cols: cols, Rows: rows, Cells: make([]Cell, cols*rows)}
