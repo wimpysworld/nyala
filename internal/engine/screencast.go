@@ -148,6 +148,9 @@ func (e *ChromiumEngine) handleScreencastFrame(slot *frameSlot, f *page.EventScr
 	}
 	// Stamp the receive for the stuck-state watchdog (always on, lock-free).
 	e.markFrameReceived(now, f.SessionID)
+	// Feed the frame-arrival instant to the adaptive-format controller, the motion
+	// signal. A nil channel (capture, or before the controller starts) drops it.
+	e.pokeMotion(now)
 	if e.recorder != nil {
 		e.recorder.Record(captureEvent{
 			Type:      captureEventScreencastFrame,
@@ -184,25 +187,225 @@ func (e *ChromiumEngine) registerScreencastListener(ctx context.Context, slot *f
 	})
 }
 
-// startScreencast starts (or restarts) a lossless PNG screencast capped at the
-// engine's active capture size. The frame listener is registered once per session
-// by registerScreencastListener, so this issues only the CDP StartScreencast
-// command; restartStream re-issues it after a resize or backend switch without
-// leaking a second listener. The stream couples to the consume rate because Chrome
-// withholds frames until acked.
+// screencastFmt is the current screencast wire format and its JPEG quality. quality
+// applies only to the JPEG format; the PNG format is lossless and ignores it. The
+// engine holds it under e.mu and startScreencast reads it, so a start after a format
+// switch, resize, or backend switch uses the current format.
+type screencastFmt struct {
+	format  page.ScreencastFormat // page.ScreencastFormatPng or ...Jpeg
+	quality int                   // JPEG quality (0-100); ignored for PNG
+}
+
+// motionShortGap is the inter-arrival gap at or below which a screencast frame counts
+// as a motion frame. The screencast delivers a frame only on a visual change, so
+// frames arriving this close together mean the page is animating, scrolling, or
+// playing video. A static page delivers no frames (an unbounded gap), so it never
+// trips this.
+const motionShortGap = 200 * time.Millisecond
+
+// motionOnsetCount is how many short-gap frames within motionOnsetWindow flip a
+// graphics-backend stream from PNG (settled) to JPEG (moving). It is above one so a
+// single one-off repaint does not flip the format, but low so brief sustained motion
+// still gets the fast JPEG decode.
+const motionOnsetCount = 2
+
+// motionOnsetWindow is the trailing window the short-gap frames must fall within to
+// count toward the onset, so an old burst ages out and only current motion flips the
+// format.
+const motionOnsetWindow = 600 * time.Millisecond
+
+// screencastSettleIdle is how long the stream must be silent (no new frame) before a
+// graphics-backend stream flips back from JPEG (moving) to PNG (settled), so the
+// resting frame is lossless. It is the trailing hysteresis: each moving frame re-arms
+// it, so the format flips back only once the motion truly stops. It is a var, not a
+// const, so a test shrinks it to fire quickly; production reads the 400 ms default.
+var screencastSettleIdle = 400 * time.Millisecond
+
+// startScreencast starts (or restarts) the screencast at the engine's active capture
+// size, in the current screencast format (screencastFmt). The frame listener is
+// registered once per session by registerScreencastListener, so this issues only the
+// CDP StartScreencast command; restartStream and switchScreencastFormat re-issue it
+// without leaking a second listener. It sets the JPEG quality only for the JPEG
+// format. The stream couples to the consume rate because Chrome withholds frames
+// until acked.
 func (e *ChromiumEngine) startScreencast(ctx context.Context, capW, capH int) error {
 	if ctx == nil {
 		return fmt.Errorf("engine: start screencast: no browser context")
 	}
+	e.mu.Lock()
+	fmtSel := e.screencastFmt
+	e.mu.Unlock()
+	if fmtSel.format == "" {
+		fmtSel.format = page.ScreencastFormatPng
+	}
 	if e.recorder != nil {
 		e.recorder.Record(captureEvent{Type: captureEventScreencastControl, Action: "start"})
 	}
-	return chromedp.Run(ctx,
-		page.StartScreencast().
-			WithFormat(page.ScreencastFormatPng).
-			WithMaxWidth(int64(capW)).
-			WithMaxHeight(int64(capH)),
-	)
+	action := page.StartScreencast().
+		WithFormat(fmtSel.format).
+		WithMaxWidth(int64(capW)).
+		WithMaxHeight(int64(capH))
+	if fmtSel.format == page.ScreencastFormatJpeg {
+		action = action.WithQuality(int64(fmtSel.quality))
+	}
+	return chromedp.Run(ctx, action)
+}
+
+// initialScreencastFormat picks the screencast format for a stream (re)start from the
+// active backend and the capture flag, read under e.mu. Capture forces PNG for a
+// byte-exact corpus. Live block runs JPEG for its whole stream, since the block
+// backend's sub-cell downsample washes out JPEG artefacts and a static page under
+// JPEG is deterministic. Live graphics start in PNG (settled); the adaptive
+// controller flips them to JPEG on motion. startSession and restartStream set
+// e.screencastFmt from this, so a Tab between backends re-picks the format.
+func (e *ChromiumEngine) initialScreencastFormat() screencastFmt {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.captureOn {
+		return screencastFmt{format: page.ScreencastFormatPng}
+	}
+	if e.backend == "block" {
+		return screencastFmt{format: page.ScreencastFormatJpeg, quality: movingScreencastQuality}
+	}
+	return screencastFmt{format: page.ScreencastFormatPng}
+}
+
+// graphicsBackendLive reports whether the adaptive format controller should run its
+// state machine now: a live (non-capture) graphics backend. The block backend runs a
+// fixed live JPEG stream and takes no switching, and capture forces PNG, so both read
+// false. It takes e.mu because the backend changes on a Tab.
+func (e *ChromiumEngine) graphicsBackendLive() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return !e.captureOn && e.backend != "block"
+}
+
+// currentScreencastPNG reports whether the active screencast format is PNG (settled),
+// so the adaptive controller derives its state from the actual format rather than a
+// separate copy: this way a restartStream that re-picks the format keeps the
+// controller in sync with no cross-goroutine state to reconcile. It takes e.mu.
+func (e *ChromiumEngine) currentScreencastPNG() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.screencastFmt.format != page.ScreencastFormatJpeg
+}
+
+// switchScreencastFormat stops and restarts the screencast in the given format,
+// off the ListenTarget receiver goroutine (it runs on the adaptive controller
+// goroutine), so the switch's chromedp.Run is never the chromedp #920 self-deadlock.
+// It holds screencastCtl across the stop/start so it never races a concurrent
+// restartStream, and it does not touch the per-session frame listener, which stays
+// registered once: only the stream stops and starts, so the slot, ack-on-receive,
+// off-goroutine decode, and watchdog all keep working across the switch. It sets
+// e.screencastFmt so startScreencast uses the new format.
+func (e *ChromiumEngine) switchScreencastFormat(ctx context.Context, format page.ScreencastFormat, quality int) {
+	if ctx == nil {
+		return
+	}
+	e.screencastCtl.Lock()
+	defer e.screencastCtl.Unlock()
+	e.mu.Lock()
+	e.screencastFmt = screencastFmt{format: format, quality: quality}
+	capW, capH := e.screencastCap(e.cols, e.rows)
+	e.mu.Unlock()
+	_ = chromedp.Run(ctx, page.StopScreencast())
+	_ = e.startScreencast(ctx, capW, capH)
+}
+
+// pokeMotion sends one frame-arrival instant to the adaptive-format controller. The
+// send is non-blocking on a buffered channel, so the listener goroutine never blocks;
+// a full channel drops the sample, which the controller's rate-based decision
+// tolerates. A nil channel (capture, or before the controller starts) drops it.
+func (e *ChromiumEngine) pokeMotion(now time.Time) {
+	e.mu.Lock()
+	motion := e.motion
+	e.mu.Unlock()
+	if motion == nil {
+		return
+	}
+	select {
+	case motion <- now:
+	default:
+	}
+}
+
+// runScreencastFormat is the adaptive-format controller for the graphics backends: it
+// flips the live screencast between PNG (settled, crisp static) and JPEG (moving, fast
+// decode) from the frame-arrival rate. It runs per session on its own goroutine, off
+// the ListenTarget receiver goroutine, so its stop/start chromedp.Run is #920-safe. It
+// derives the current state from the actual screencast format (currentScreencastPNG),
+// so a restartStream that re-picks the format keeps it in sync with no separate state
+// to reconcile. It acts only when graphicsBackendLive: on the block backend (fixed
+// live JPEG) and under capture (fixed PNG) it clears its motion tracking and switches
+// nothing, so a Tab to block and back is handled by restartStream's format pick alone.
+// From SETTLED it flips to JPEG once motionOnsetCount short-gap frames land within
+// motionOnsetWindow (so a lone repaint does not flip it); from MOVING it flips back to
+// PNG once no frame has arrived for screencastSettleIdle (the trailing hysteresis, each
+// moving frame re-arming it). So it switches at most twice per motion episode. It exits
+// when ctx is cancelled.
+func (e *ChromiumEngine) runScreencastFormat(ctx context.Context, motion <-chan time.Time) {
+	if ctx == nil || motion == nil {
+		return
+	}
+	switchFmt := e.switchFmt
+	if switchFmt == nil {
+		switchFmt = e.switchScreencastFormat
+	}
+	// Read the settle idle once at start, so the controller uses a stable value for its
+	// whole life and never re-reads the package var (a test shrinks it before start).
+	settleIdle := screencastSettleIdle
+	var lastArrival time.Time
+	var shortGaps []time.Time
+	var settle *time.Timer
+	var settleC <-chan time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-motion:
+			if !e.graphicsBackendLive() {
+				// Block (fixed JPEG) or capture (fixed PNG): no switching. Clear the motion
+				// tracking so a later graphics phase starts clean, and disarm the settle timer.
+				shortGaps = shortGaps[:0]
+				lastArrival = time.Time{}
+				settleC = nil
+				if settle != nil {
+					settle.Stop()
+				}
+				continue
+			}
+			if !lastArrival.IsZero() && now.Sub(lastArrival) <= motionShortGap {
+				shortGaps = append(shortGaps, now)
+			}
+			lastArrival = now
+			cutoff := now.Add(-motionOnsetWindow)
+			drop := 0
+			for drop < len(shortGaps) && shortGaps[drop].Before(cutoff) {
+				drop++
+			}
+			shortGaps = shortGaps[drop:]
+			if e.currentScreencastPNG() {
+				// SETTLED: flip to MOVING (JPEG) once sustained motion crosses the onset.
+				if len(shortGaps) >= motionOnsetCount {
+					switchFmt(ctx, page.ScreencastFormatJpeg, movingScreencastQuality)
+				}
+			}
+			if !e.currentScreencastPNG() {
+				// MOVING: each frame re-arms the settle timer, so the flip back to PNG lands
+				// only once the motion stops for settleIdle.
+				settle = armDebounce(settle, settleIdle)
+				settleC = settle.C
+			}
+		case <-settleC:
+			settleC = nil
+			if e.graphicsBackendLive() && !e.currentScreencastPNG() {
+				// MOVING -> SETTLED: the motion stopped, so restore the lossless PNG.
+				shortGaps = shortGaps[:0]
+				lastArrival = time.Time{}
+				switchFmt(ctx, page.ScreencastFormatPng, 0)
+			}
+		}
+	}
 }
 
 // ackFrame enqueues one frame's SessionID onto the pump channel for ackPump to run
@@ -1127,7 +1330,10 @@ func screencastMeta(meta *page.ScreencastFrameMetadata) *render.ScreencastMeta {
 // viewport via applySizing, and the screencast cap (the painted device surface
 // from screencastCap) via startScreencast. Moving them as one triple keeps a
 // backend switch from leaving the surface pinned at the launch size with a moved
-// cap. A stop error is ignored because the next start re-establishes the stream.
+// cap. A stop error is ignored because the next start re-establishes the stream. It
+// re-picks the screencast format for the (possibly new) backend, so a Tab from block
+// to a graphics backend lands on the right format on the restart, and holds
+// screencastCtl across the stop/start so it never races an adaptive format switch.
 func (e *ChromiumEngine) restartStream() error {
 	e.mu.Lock()
 	ctx := e.ctx
@@ -1154,6 +1360,14 @@ func (e *ChromiumEngine) restartStream() error {
 		default:
 		}
 	}
+	// Re-pick the format for the current backend, so a Tab between block (live JPEG)
+	// and a graphics backend (PNG settled) restarts in the right format.
+	fmtSel := e.initialScreencastFormat()
+	e.screencastCtl.Lock()
+	defer e.screencastCtl.Unlock()
+	e.mu.Lock()
+	e.screencastFmt = fmtSel
+	e.mu.Unlock()
 	_ = chromedp.Run(ctx, page.StopScreencast())
 	if err := applySizing(ctx, windowID, surfW, surfH, z); err != nil {
 		return fmt.Errorf("engine: resize viewport: %w", err)

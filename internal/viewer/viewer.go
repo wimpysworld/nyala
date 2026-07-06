@@ -114,6 +114,13 @@ type State struct {
 	// to 0 when Tab cycles the backend away from kitty. It stays 0 on the block and
 	// sixel paths.
 	kittyID int
+
+	// kittyEnc is the reused Kitty live encoder. It holds the per-frame scratch
+	// buffers (RGB pack, zlib output, base64 destination, APC frame assembly) so a
+	// kitty draw allocates nothing per frame after warmup. It is lazily built on the
+	// first kitty frame and driven from the single draw goroutine, so it never
+	// aliases. It stays nil on the block and sixel paths.
+	kittyEnc *kitty.LiveEncoder
 }
 
 // frameScratch is the live diff path's reusable per-frame buffers. Each draw
@@ -456,11 +463,15 @@ func (s *State) encodeGraphics(img *image.RGBA, fit block.Fit, w io.Writer) erro
 // The new placement lands before the old image is deleted, so there is never a
 // blank frame, unlike a delete-all before the transmit. The first frame has no
 // previous id and deletes nothing. It tracks the placed id on State so the next
-// frame alternates and the reset can target both ids.
+// frame alternates and the reset can target both ids. The transmit runs through
+// the reused kitty.LiveEncoder (24-bit RGB, BestSpeed zlib, reused scratch
+// buffers), so a warm kitty frame allocates nothing for the encode.
 func (s *State) encodeKitty(img *image.RGBA, w io.Writer) error {
 	next := nextKittyID(s.kittyID)
-	r := kitty.Renderer{}
-	if err := r.RenderID(render.Frame{Img: img}, next, w); err != nil {
+	if s.kittyEnc == nil {
+		s.kittyEnc = &kitty.LiveEncoder{}
+	}
+	if err := s.kittyEnc.EncodeID(img, next, w); err != nil {
 		return err
 	}
 	if s.kittyID != 0 {
