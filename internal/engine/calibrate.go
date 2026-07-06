@@ -11,7 +11,7 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// fontCalibrationTimeout bounds one calibration pass. document.fonts.ready plus a
+// fontCalibrationTimeout bounds one calibration pass. The forced-face load plus a
 // probe measurement and a single re-inject must complete inside this deadline; on
 // expiry the seed size stands and the session proceeds, so a wedged browser
 // degrades placement rather than the session. It mirrors inputDispatchTimeout.
@@ -62,7 +62,7 @@ func buildReinjectScript(sizePx float64) string {
 }
 
 // calibrateFonts corrects the seed font-size on the current document so N forced
-// glyphs land on N cells. It awaits document.fonts.ready, measures an offscreen
+// glyphs land on N cells. It awaits our own forced face at the seed size, measures an offscreen
 // probe box through Runtime.evaluate, computes the corrected size with the pure
 // calibratedFontSize, and re-injects it by rewriting the injected <style>. The
 // whole pass runs under fontCalibrationTimeout; on timeout or any error the seed
@@ -82,7 +82,11 @@ func (e *ChromiumEngine) calibrateFonts(ctx context.Context) {
 	runCtx, cancel := context.WithTimeout(ctx, fontCalibrationTimeout)
 	defer cancel()
 
-	if err := evaluateVoid(runCtx, "font readiness await", "document.fonts.ready", true); err != nil {
+	// Await only our own face at the seed size, not document.fonts.ready. The page's
+	// own in-flight web fonts do not affect the forced-face probe, so waiting on the
+	// whole set adds their load latency to the calibration base for no gain.
+	loadFace := fmt.Sprintf(`document.fonts.load('%gpx "%s"')`, seed, fontFamily)
+	if err := evaluateVoid(runCtx, "font readiness await", loadFace, true); err != nil {
 		e.recordCalibration()
 		return
 	}

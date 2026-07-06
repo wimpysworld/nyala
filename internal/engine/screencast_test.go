@@ -16,11 +16,13 @@ import (
 
 // TestRunTextSyncSnapshotsOncePerPaint proves the snapshot goroutine takes its
 // first snapshot off the painted latch, not off frame delivery, and then holds: a
-// static page that produces no further frames and no re-snapshot triggers
-// publishes its text once and stops (AC 1). It injects a counting snapshot fn that
-// returns a real run and a closed painted latch, so no browser is involved. It
-// asserts the published run reaches textSync, so a later frame can fold it on, and
-// that a free-spinning loop (which would run far past one) does not occur.
+// static page that produces no further frames and no re-snapshot triggers publishes
+// its text and stops (AC 1). Paint publishes twice, the uncalibrated first publish
+// then the calibrated re-publish, so the count settles at 2 and holds. It injects a
+// counting snapshot fn that returns a real run and a closed painted latch, so no
+// browser is involved (calibrateFonts finds no executor and no-ops). It asserts the
+// published run reaches textSync, so a later frame can fold it on, and that a
+// free-spinning loop (which would run far past two) does not occur.
 func TestRunTextSyncSnapshotsOncePerPaint(t *testing.T) {
 	t.Parallel()
 	var snaps int64
@@ -46,18 +48,19 @@ func TestRunTextSyncSnapshotsOncePerPaint(t *testing.T) {
 		close(done)
 	}()
 
-	// The first snapshot fires off paint with no frame ever delivered.
-	waitForCount(t, &snaps, 1)
+	// Paint fires the uncalibrated first publish then the calibrated re-publish, two
+	// snapshots, with no frame ever delivered.
+	waitForCount(t, &snaps, 2)
 
 	// No triggers: the goroutine must park, not spin. Give it time to misbehave,
 	// then confirm the count is unchanged.
 	time.Sleep(50 * time.Millisecond)
-	if got := atomic.LoadInt64(&snaps); got != 1 {
-		t.Fatalf("snapshots = %d on a static page after paint, want 1 (loop is free-spinning)", got)
+	if got := atomic.LoadInt64(&snaps); got != 2 {
+		t.Fatalf("snapshots = %d on a static page after paint, want 2 (loop is free-spinning)", got)
 	}
 
-	// The single post-paint snapshot published its runs to textSync as sticky state,
-	// so a later frame folds them on without re-snapshotting.
+	// The post-paint snapshots published their runs to textSync as sticky state, so a
+	// later frame folds them on without re-snapshotting.
 	if got, _, _, _ := ts.latest(); len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("published runs = %v, want %v", got, want)
 	}
@@ -167,11 +170,11 @@ func TestRunTextSyncReSnapTriggers(t *testing.T) {
 		close(done)
 	}()
 
-	// First snapshot off paint.
-	waitForCount(t, &snaps, 1)
-	// A reSnap poke drives a second snapshot.
-	reSnap <- struct{}{}
+	// Paint publishes twice, the uncalibrated first publish then the calibrated re-publish.
 	waitForCount(t, &snaps, 2)
+	// A reSnap poke drives a further snapshot.
+	reSnap <- struct{}{}
+	waitForCount(t, &snaps, 3)
 
 	cancel()
 	select {
@@ -213,8 +216,9 @@ func TestRunTextSyncHoldsTextReadyUntilSettle(t *testing.T) {
 		close(done)
 	}()
 
-	// The first snapshot publishes, but the latch is held for the settle.
-	waitForCount(t, &snaps, 1)
+	// Paint publishes twice (uncalibrated then calibrated), but the latch is held for
+	// the settle.
+	waitForCount(t, &snaps, 2)
 	time.Sleep(50 * time.Millisecond)
 	if isClosed(e.textReady) {
 		t.Fatal("textReady closed on the first publish, want it held until the layout settles")
@@ -266,8 +270,8 @@ func TestRunTextSyncTextReadyBackstop(t *testing.T) {
 		close(done)
 	}()
 
-	// First publish, then no reflow: the backstop releases the latch on its own.
-	waitForCount(t, &snaps, 1)
+	// Paint publishes twice, then no reflow: the backstop releases the latch on its own.
+	waitForCount(t, &snaps, 2)
 	if !waitClosed(e.textReady, time.Second) {
 		t.Fatal("textReady did not close on the settle backstop with no reflow")
 	}
@@ -320,11 +324,11 @@ func TestRunTextSyncScrollTriggers(t *testing.T) {
 		close(done)
 	}()
 
-	// First snapshot off paint.
-	waitForCount(t, &snaps, 1)
+	// Paint publishes twice (uncalibrated then calibrated).
+	waitForCount(t, &snaps, 2)
 	// A scroll poke fires the leading throttle at once (no prior scroll snapshot).
 	scroll <- struct{}{}
-	waitForCount(t, &snaps, 2)
+	waitForCount(t, &snaps, 3)
 	// The re-snapshot pokes reEmit so the held frame repaints with the new text.
 	select {
 	case <-reEmit:
@@ -396,8 +400,8 @@ func TestRunTextSyncScrollCadence(t *testing.T) {
 		close(done)
 	}()
 
-	// First snapshot off paint.
-	waitForCount(t, &snaps, 1)
+	// Paint publishes twice (uncalibrated then calibrated).
+	waitForCount(t, &snaps, 2)
 
 	// A sustained scroll: pokes spaced just over scrollCadence keep the leading
 	// throttle firing, so the count climbs mid-scroll without waiting for settle. The
@@ -409,8 +413,8 @@ func TestRunTextSyncScrollCadence(t *testing.T) {
 		scroll <- struct{}{}
 		time.Sleep(step)
 	}
-	// At least two mid-scroll snapshots past the first-after-paint one.
-	waitForCount(t, &snaps, 3)
+	// At least two mid-scroll snapshots past the two-publish paint.
+	waitForCount(t, &snaps, 4)
 
 	cancel()
 	select {

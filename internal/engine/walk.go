@@ -79,6 +79,15 @@ func buildTextWalkScript(cellW, cellH float64) string {
 	b.WriteString("(function(){")
 	fmt.Fprintf(&b, "var cw=%g,ch=%g;", cellW, cellH)
 	b.WriteString("var runs=[];")
+	// gcs memoises getComputedStyle per element for the walk's lifetime. A single text
+	// node otherwise triggers getComputedStyle on its parent from hiddenStyle, rgba, and
+	// bgOf, plus one call per ancestor from the hiddenStyle opacity walk and the bgOf
+	// background walk, and again from an occlusion hit-test's bgOf. The walk never mutates
+	// layout, so a cached CSSStyleDeclaration reads the same values as a fresh fetch; the
+	// cache dedups the repeats without changing any run. The Map is keyed by element and
+	// lives only for this synchronous evaluate.
+	b.WriteString("var csCache=new Map();")
+	b.WriteString("function gcs(el){if(!csCache.has(el)){csCache.set(el,getComputedStyle(el));}return csCache.get(el);}")
 	// hiddenStyle folds the client-side computed-style drops into the page: a
 	// visibility of hidden or collapse, an effective opacity below the floor, or the
 	// screen-reader-only clip-offscreen pattern (absolute or fixed positioning with a
@@ -114,14 +123,14 @@ func buildTextWalkScript(cellW, cellH float64) string {
 	b.WriteString("else{t=pc(p[0]);r=pc(p[1]);bo=pc(p[2]);l=pc(p[3]);}")
 	b.WriteString("return (l+r>=100)||(t+bo>=100);}")
 	b.WriteString("function hiddenStyle(el){")
-	b.WriteString("var s=getComputedStyle(el);")
+	b.WriteString("var s=gcs(el);")
 	b.WriteString("if(s.visibility==='hidden'||s.visibility==='collapse')return true;")
 	b.WriteString("var pos=s.position;")
 	b.WriteString("if((pos==='absolute'||pos==='fixed')&&(clipPathHidden(s.clipPath)||collapsed(s.clip)||(s.overflow==='hidden'&&parseFloat(s.width)<=1&&parseFloat(s.height)<=1)))return true;")
-	b.WriteString("var op=1;for(var a=el;a;a=a.parentElement){var ao=parseFloat(getComputedStyle(a).opacity);if(!isNaN(ao))op*=ao;}")
+	b.WriteString("var op=1;for(var a=el;a;a=a.parentElement){var ao=parseFloat(gcs(a).opacity);if(!isNaN(ao))op*=ao;}")
 	fmt.Fprintf(&b, "if(op<%g)return true;", hiddenOpacityEps)
 	b.WriteString("return false;}")
-	b.WriteString("function rgba(el){var c=getComputedStyle(el).color;")
+	b.WriteString("function rgba(el){var c=gcs(el).color;")
 	b.WriteString("var m=/rgba?\\(([^)]+)\\)/.exec(c);if(!m)return{r:0,g:0,b:0,a:255};")
 	b.WriteString("var p=m[1].split(/[ ,\\/]+/).filter(function(x){return x.length;});")
 	b.WriteString("var a=p.length>3?Math.round(Math.max(0,Math.min(1,parseFloat(p[3])))*255):255;")
@@ -141,10 +150,10 @@ func buildTextWalkScript(cellW, cellH float64) string {
 	b.WriteString("var a=p.length>3?Math.max(0,Math.min(1,parseFloat(p[3]))):1;")
 	b.WriteString("return{r:parseInt(p[0])||0,g:parseInt(p[1])||0,b:parseInt(p[2])||0,a:a};}")
 	b.WriteString("var or=0,og=0,ob=0,cov=0;")
-	b.WriteString("for(var a=el;a;a=a.parentElement){var s=parse(getComputedStyle(a).backgroundColor);")
+	b.WriteString("for(var a=el;a;a=a.parentElement){var s=parse(gcs(a).backgroundColor);")
 	b.WriteString("if(!s||s.a<=0)continue;var w=s.a*(1-cov);")
 	b.WriteString("or+=s.r*w;og+=s.g*w;ob+=s.b*w;cov+=w;if(cov>=0.999)break;}")
-	b.WriteString("if(cov<0.999){var ds=parse(getComputedStyle(document.documentElement).backgroundColor)||parse(document.body?getComputedStyle(document.body).backgroundColor:'');")
+	b.WriteString("if(cov<0.999){var ds=parse(gcs(document.documentElement).backgroundColor)||parse(document.body?gcs(document.body).backgroundColor:'');")
 	b.WriteString("if(ds&&ds.a>0){var w=ds.a*(1-cov);or+=ds.r*w;og+=ds.g*w;ob+=ds.b*w;cov+=w;}}")
 	b.WriteString("if(cov<=0)return{r:0,g:0,b:0,a:0};")
 	b.WriteString("return{r:Math.round(or/cov),g:Math.round(og/cov),b:Math.round(ob/cov),a:Math.round(Math.min(1,cov)*255)};}")
