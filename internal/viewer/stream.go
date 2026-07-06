@@ -422,6 +422,11 @@ func startupQuit(ev keyEvent) bool {
 // overwrite every cell in place, because auto-wrap is off and each cell is
 // rewritten, so nothing stale remains. Resize re-emits the full clear. A nil-image
 // frame is skipped with a one-shot diagnostic so the dropped frame is observable.
+//
+// The whole frame, prefix and render bytes both, is bracketed in a DEC 2026
+// synchronised update so the terminal presents it atomically and never shows a
+// torn partial frame during a full refresh or a scroll. It wraps the block and the
+// graphics paths alike, since both flow through RenderStreamFrame here.
 func (s *streamSession) draw(frame render.Frame) error {
 	if frame.Img == nil {
 		s.nilImageOnce.Do(func() {
@@ -432,11 +437,18 @@ func (s *streamSession) draw(frame render.Frame) error {
 	b := frame.Img.Bounds()
 	s.st.ImgW, s.st.ImgH = b.Dx(), b.Dy()
 	prefix := framePrefix(s.firstDrawn, s.diff)
+	if _, err := io.WriteString(s.tty, beginSyncUpdate); err != nil {
+		return err
+	}
 	if _, err := io.WriteString(s.tty, prefix); err != nil {
 		return err
 	}
 	s.firstDrawn = true
-	return s.st.RenderStreamFrame(frame, s.tty)
+	if err := s.st.RenderStreamFrame(frame, s.tty); err != nil {
+		return err
+	}
+	_, err := io.WriteString(s.tty, endSyncUpdate)
+	return err
 }
 
 // resize re-fits to the new terminal size and restarts the stream at the

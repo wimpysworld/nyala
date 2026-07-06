@@ -126,6 +126,13 @@ type ChromiumEngine struct {
 	// the layout generation read in the same sequence, and the updated hold state.
 	snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, int64, overlayState)
 
+	// timing traces the launch to first-frame to first-text load path to stderr when
+	// NYALA_DEBUG_TIMING is set, and is a disabled no-op timer otherwise. startSession
+	// arms it per session under mu before the frame and snapshot goroutines start, so
+	// each reads it once at its top; a nil timer is a valid disabled timer, so an
+	// unstarted session (a unit test) is safe.
+	timing *loadTimer
+
 	// Proxy config parsed once in New, read-only afterwards. Unlike the
 	// mutex-guarded group above, these are set before any goroutine starts and
 	// never written again, so they need no mu guard.

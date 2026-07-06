@@ -171,8 +171,8 @@ func (e *ChromiumEngine) handleScreencastFrame(slot *frameSlot, f *page.EventScr
 	slot.put(pending, e.ackFrame)
 }
 
-// startScreencast starts a JPEG screencast capped at the engine's active capture
-// size and registers a ListenTarget handler that decodes each EventScreencastFrame
+// startScreencast starts a lossless PNG screencast capped at the engine's active
+// capture size and registers a ListenTarget handler that decodes each EventScreencastFrame
 // and feeds it into the slot, acking displaced frames as they are replaced. The
 // stream couples to the consume rate because Chrome withholds frames until acked.
 // The capture paint latch is no longer fired here: the navigate waiter's matched
@@ -195,8 +195,7 @@ func (e *ChromiumEngine) startScreencast(ctx context.Context, slot *frameSlot, c
 	}
 	return chromedp.Run(ctx,
 		page.StartScreencast().
-			WithFormat(page.ScreencastFormatJpeg).
-			WithQuality(screencastQuality).
+			WithFormat(page.ScreencastFormatPng).
 			WithMaxWidth(int64(capW)).
 			WithMaxHeight(int64(capH)),
 	)
@@ -370,6 +369,11 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 	if snapshot == nil {
 		snapshot = e.snapshotRuns
 	}
+	// Read the per-session load timer once here, on the goroutine start ordering, so
+	// no rebuild race with startSession's write. A nil timer is a valid disabled timer.
+	e.mu.Lock()
+	timer := e.timing
+	e.mu.Unlock()
 	var state overlayState
 	// lastCalCellW/H track the (cellW, cellH) pair the last calibration corrected
 	// for. The reSnap arm skips recalibration when the pair is unchanged, so a
@@ -395,6 +399,7 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 	// First snapshot on the painted latch: the navigation trigger, single-shot per
 	// session, and the new reader of the painted latch replacing firstSnapshotAfterPaint.
 	state = e.publishSnapshot(ctx, snapshot, ts, state)
+	timer.markText()
 	pokeReEmit(reEmit)
 	// Signal the capture driver that the overlay runs have published, so it counts a
 	// usable frame only once the text has landed rather than racing the
@@ -673,6 +678,12 @@ func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, fram
 	if ctx == nil || slot == nil || frames == nil {
 		return
 	}
+	// Read the per-session load timer once here, on the goroutine start ordering, so
+	// no per-frame lock and no rebuild race with startSession's write. A nil timer is
+	// a valid disabled timer.
+	e.mu.Lock()
+	timer := e.timing
+	e.mu.Unlock()
 	var held pendingFrame
 	var haveHeld bool
 	// lastScroll tracks the scroll offset of the last consumed frame so a change
@@ -698,6 +709,7 @@ func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, fram
 			if !e.emitFrame(ctx, frames, ts, held, &lastComposed) {
 				return
 			}
+			timer.markFrame()
 		case <-slot.readyC():
 			pending, ok := slot.tryConsume(e.ackFrame)
 			if !ok {
@@ -721,6 +733,7 @@ func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, fram
 			if !e.emitFrame(ctx, frames, ts, pending, &lastComposed) {
 				return
 			}
+			timer.markFrame()
 		}
 	}
 }
