@@ -68,8 +68,12 @@ type walkResult struct {
 // Range.getClientRects() and buckets the node's code units by their snapped row,
 // so a soft-wrapped node yields one run per line with that line's own origin,
 // which removes the per-glyph advance drift a single origin plus whole-cell
-// stepping accumulates across a long run. It returns the current layout generation
-// alongside the runs. The whole walk is one expression evaluated per decode.
+// stepping accumulates across a long run. Before it pushes a line it culls the run
+// when an opaque element covers the line-box centre (an opaque-aware occlusion
+// hit-test), so text behind a cookie banner, sticky header, or modal no longer
+// leaks through the first-writer-wins overlay. It returns the current layout
+// generation alongside the runs. The whole walk is one expression evaluated per
+// decode.
 func buildTextWalkScript(cellW, cellH float64) string {
 	var b strings.Builder
 	b.WriteString("(function(){")
@@ -144,6 +148,18 @@ func buildTextWalkScript(cellW, cellH float64) string {
 	b.WriteString("if(ds&&ds.a>0){var w=ds.a*(1-cov);or+=ds.r*w;og+=ds.g*w;ob+=ds.b*w;cov+=w;}}")
 	b.WriteString("if(cov<=0)return{r:0,g:0,b:0,a:0};")
 	b.WriteString("return{r:Math.round(or/cov),g:Math.round(og/cov),b:Math.round(ob/cov),a:Math.round(Math.min(1,cov)*255)};}")
+	// occluded is the browsh-style occlusion cull: it hit-tests the line box centre
+	// with elementFromPoint and drops the run when a different, opaque element covers
+	// it, so behind-text under an opaque cookie banner, sticky header, or modal no
+	// longer leaks through the first-writer-wins overlay. A null hit-test (off-screen)
+	// is not occluded, so the run survives. The run's own element, or an ancestor or
+	// descendant on top, is not occluded either. A covering element counts as opaque
+	// only when bgOf resolves a fully opaque background (a==255), so a translucent
+	// scrim (a modal dim layer) does not cull the text behind it.
+	b.WriteString("function occluded(el,x,y){")
+	b.WriteString("var top=document.elementFromPoint(x,y);if(!top)return false;")
+	b.WriteString("if(top===el||el.contains(top)||top.contains(el))return false;")
+	b.WriteString("return bgOf(top).a>=255;}")
 	// The tree walker visits every text node. A node with no non-whitespace content
 	// or no parent element is skipped. rejectHidden drops a whole subtree whose parent
 	// element is hidden, so the walk never descends into a hidden container.
@@ -184,6 +200,8 @@ func buildTextWalkScript(cellW, cellH float64) string {
 	b.WriteString("var t=ln.chars.join('').replace(/\\s+/g,' ').replace(/^ | $/g,'');if(!t)continue;")
 	b.WriteString("var h=ln.bottom-ln.top;")
 	fmt.Fprintf(&b, "if(h<ch/4)continue;")
+	b.WriteString("var cx=(ln.left+ln.right)/2,cy=(ln.top+ln.bottom)/2;")
+	b.WriteString("if(occluded(el,cx,cy))continue;")
 	b.WriteString("runs.push({t:t,c:Math.round(ln.left/cw),r:Math.round(ln.top/ch),x:ln.left,y:ln.top,w:ln.right-ln.left,h:h,fg:fg,bg:bg});}")
 	b.WriteString("}")
 	b.WriteString("var gen=(window." + layoutGenProperty + "||0);")
