@@ -383,27 +383,37 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 	if !e.waitForFirstSnapshot(ctx, ts) {
 		return
 	}
-	// Reconcile font forcing to the active backend before the first calibration. On
-	// the block path this is the no-op the launch injection already covered; on a
+	// Reconcile font forcing to the active backend before the first publish. On the
+	// block path this is the no-op the launch injection already covered; on a
 	// graphics-to-block Tab it registers the script and injects the live style.
 	// waitForFirstSnapshot only returns for the block backend, so a graphics start
 	// never reaches here.
 	e.syncFontForcing(ctx)
-	// Calibrate before the first publish so the first overlay maps against the
-	// corrected font metrics. Program order on this single goroutine is the whole
-	// ordering contract: no channel, no sync.Once, no new goroutine.
+	// First snapshot on the painted latch: the navigation trigger, single-shot per
+	// session, and the new reader of the painted latch replacing firstSnapshotAfterPaint.
+	// Publish before calibrating so first paint shows text without waiting the
+	// calibration base (document.fonts.load plus probe and reinject evals). The seed
+	// advance is already ~cellW (advanceRatio measured from the shipped TTF), so seed
+	// placement is near-correct; the calibrated re-publish below trims the residual.
+	// markText fires here, the first-text milestone. Program order on this single
+	// goroutine is the whole ordering contract: no channel, no sync.Once, no new goroutine.
+	state = e.publishSnapshot(ctx, snapshot, ts, state)
+	timer.markText()
+	pokeReEmit(reEmit)
+	// Calibrate against the forced font metrics, then re-publish so the overlay maps
+	// against the corrected size. This trails the first publish, so production first
+	// paint shows near-calibrated text for one reflow cycle before this re-publish
+	// lands the final placement.
 	e.calibrateFonts(ctx)
 	e.mu.Lock()
 	lastCalCellW, lastCalCellH = e.snapshotCellPx()
 	e.mu.Unlock()
-	// First snapshot on the painted latch: the navigation trigger, single-shot per
-	// session, and the new reader of the painted latch replacing firstSnapshotAfterPaint.
 	state = e.publishSnapshot(ctx, snapshot, ts, state)
-	timer.markText()
 	pokeReEmit(reEmit)
 	// Signal the capture driver that the overlay runs have published, so it counts a
-	// usable frame only once the text has landed rather than racing the
-	// (calibration-delayed) first publish. Off the capture path textReady is nil, so
+	// usable frame only once the calibrated text has landed: this runs after the
+	// calibrated re-publish above, so a multi-frame capture never counts the
+	// uncalibrated first publish. Off the capture path textReady is nil, so
 	// markTextReady is a no-op and this arms no timer, keeping production at a nil
 	// check. For a single-frame capture (settleHold) hold the latch past the first
 	// publish until the initial layout settles: the first debounced-reflow re-snapshot
