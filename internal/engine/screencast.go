@@ -171,25 +171,36 @@ func (e *ChromiumEngine) handleScreencastFrame(slot *frameSlot, f *page.EventScr
 	slot.put(pending, e.ackFrame)
 }
 
-// startScreencast starts a lossless PNG screencast capped at the engine's active
-// capture size and registers a ListenTarget handler that decodes each EventScreencastFrame
-// and feeds it into the slot, acking displaced frames as they are replaced. The
-// stream couples to the consume rate because Chrome withholds frames until acked.
-// The capture paint latch is no longer fired here: the navigate waiter's matched
-// load signal closes it (markPainted from navigateAsync), so this listener handles
-// only screencast frames.
-func (e *ChromiumEngine) startScreencast(ctx context.Context, slot *frameSlot, capW, capH int) error {
-	if ctx == nil {
-		return fmt.Errorf("engine: start screencast: no browser context")
-	}
-	if slot == nil {
-		return fmt.Errorf("engine: start screencast: no frame slot")
+// registerScreencastListener registers the one ListenTarget handler that decodes
+// each EventScreencastFrame and feeds it into the slot, acking displaced frames as
+// they are replaced. It is called once per session, on the fresh session context,
+// so a stream restart (restartStream) does not add a second handler. chromedp
+// appends listeners and drops them only when the context is done, so re-registering
+// on every backend switch or resize would pile up handlers that each decode and ack
+// every frame, over-delivering into the slot. The capture paint latch is not fired
+// here: the navigate waiter's matched load signal closes it (markPainted from
+// navigateAsync), so this listener handles only screencast frames.
+func (e *ChromiumEngine) registerScreencastListener(ctx context.Context, slot *frameSlot) {
+	if ctx == nil || slot == nil {
+		return
 	}
 	chromedp.ListenTarget(ctx, func(ev any) {
 		if f, ok := ev.(*page.EventScreencastFrame); ok {
 			e.handleScreencastFrame(slot, f)
 		}
 	})
+}
+
+// startScreencast starts (or restarts) a lossless PNG screencast capped at the
+// engine's active capture size. The frame listener is registered once per session
+// by registerScreencastListener, so this issues only the CDP StartScreencast
+// command; restartStream re-issues it after a resize or backend switch without
+// leaking a second listener. The stream couples to the consume rate because Chrome
+// withholds frames until acked.
+func (e *ChromiumEngine) startScreencast(ctx context.Context, capW, capH int) error {
+	if ctx == nil {
+		return fmt.Errorf("engine: start screencast: no browser context")
+	}
 	if e.recorder != nil {
 		e.recorder.Record(captureEvent{Type: captureEventScreencastControl, Action: "start"})
 	}
@@ -1048,5 +1059,5 @@ func (e *ChromiumEngine) restartStream() error {
 	if err := applySizing(ctx, windowID, surfW, surfH, z); err != nil {
 		return fmt.Errorf("engine: resize viewport: %w", err)
 	}
-	return e.startScreencast(ctx, slot, capW, capH)
+	return e.startScreencast(ctx, capW, capH)
 }

@@ -77,7 +77,12 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	e.reEmit = reEmit
 	e.timing = timer
 	e.mu.Unlock()
-	if err = e.startScreencast(ctx, slot, capW, capH); err != nil {
+	// Register the frame listener once, on this fresh session context, before the
+	// first startScreencast. restartStream re-issues startScreencast on the same
+	// context, so registering here (not in startScreencast) keeps a backend switch
+	// or resize from leaking a second listener.
+	e.registerScreencastListener(ctx, slot)
+	if err = e.startScreencast(ctx, capW, capH); err != nil {
 		e.teardownSession()
 		return nil, fmt.Errorf("engine: start screencast: %w", err)
 	}
