@@ -51,10 +51,13 @@
 
           # Point the binary at the pinned Chromium so the engine resolves a
           # browser without a system install. --set-default lets CHROME_PATH in
-          # the environment still override it. Linux only.
+          # the environment still override it. Prepend /run/opengl-driver/lib so the
+          # NixOS Mesa driver is discoverable to the child Chromium for GPU-backed
+          # WebGL (docs/GPU-ACCEL-RESEARCH.md, [S10][S11]). Linux only.
           postFixup = pkgs.lib.optionalString onLinux ''
             wrapProgram $out/bin/nyala \
-              --set-default CHROME_PATH "${pkgs.chromium}/bin/chromium"
+              --set-default CHROME_PATH "${pkgs.chromium}/bin/chromium" \
+              --prefix LD_LIBRARY_PATH : "/run/opengl-driver/lib"
           '';
 
           meta = {
@@ -91,6 +94,15 @@
               # Stage 3 runtime browser; Linux-only (nixpkgs chromium is
               # platforms = lib.platforms.linux).
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.chromium ];
+
+            # Prepend the NixOS Mesa driver so `just run` launches Chromium with the
+            # GPU driver discoverable for GPU-backed WebGL
+            # (docs/GPU-ACCEL-RESEARCH.md, [S10]). Linux only.
+            shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+              if [ -d /run/opengl-driver/lib ]; then
+                export LD_LIBRARY_PATH="/run/opengl-driver/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              fi
+            '';
           };
         }
       );

@@ -158,12 +158,22 @@ func (e *ChromiumEngine) textOverlayBackend() bool {
 // Browser.SetContentsSize once the context and window id exist. When cfg has a
 // Server it adds --proxy-server; it adds --proxy-bypass-list only when both a
 // Server and a Bypass are set, so a stray NO_PROXY without a proxy adds no flag.
-func newAllocator(parent context.Context, execPath string, surfW, surfH int, z float64, cfg ProxyConfig) (context.Context, context.CancelFunc) {
+// When enableGPU is set it adds --enable-gpu: headless Chromium forces SwiftShader
+// (CPU) by default, and this flag turns that force off and reverts to normal driver
+// selection, so a GPU-backed Mesa driver can serve WebGL (docs/GPU-ACCEL-RESEARCH.md,
+// [S1][S2]). It rides the live path only. The capture path forces the block backend
+// and compares pixels for a byte-deterministic corpus/golden, so a hardware GPU would
+// shift antialiasing and break that determinism; the caller passes enableGPU false
+// under capture so it stays on software SwiftShader.
+func newAllocator(parent context.Context, execPath string, surfW, surfH int, z float64, cfg ProxyConfig, enableGPU bool) (context.Context, context.CancelFunc) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(execPath),
 		chromedp.WindowSize(surfW, surfH),
 		chromedp.Flag("force-device-scale-factor", strconv.FormatFloat(z, 'g', -1, 64)),
 	)
+	if enableGPU {
+		opts = append(opts, chromedp.Flag("enable-gpu", true))
+	}
 	for _, pair := range proxyFlags(cfg) {
 		opts = append(opts, chromedp.Flag(pair[0], pair[1]))
 	}
@@ -287,7 +297,11 @@ func (e *ChromiumEngine) launch(flag string) error {
 	forcing := e.backend == "block"
 	z := e.layoutScale()
 	e.mu.Unlock()
-	allocCtx, allocCancel := newAllocator(context.Background(), execPath, surfW, surfH, z, e.proxy)
+	// Enable the GPU on the live path only. captureOn is set once by EnableCapture
+	// before Navigate, so it is known here at allocator-build time; gating on it keeps
+	// the capture path on deterministic software SwiftShader (see newAllocator).
+	enableGPU := !e.captureOn
+	allocCtx, allocCancel := newAllocator(context.Background(), execPath, surfW, surfH, z, e.proxy, enableGPU)
 	ctx, ctxCancel := chromedp.NewContext(allocCtx)
 	cancel := func() {
 		ctxCancel()
