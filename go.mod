@@ -12,6 +12,7 @@ require (
 	github.com/chromedp/cdproto v0.0.0-20260427013145-5737772c319b
 	github.com/chromedp/chromedp v0.15.1
 	github.com/fogleman/gg v1.3.0
+	github.com/gen2brain/jpegn v0.4.4
 	github.com/lucasb-eyer/go-colorful v1.4.0
 	github.com/mattn/go-runewidth v0.0.24
 	github.com/mattn/go-sixel v0.0.11

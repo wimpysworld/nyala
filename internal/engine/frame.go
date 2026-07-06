@@ -9,6 +9,8 @@ import (
 	"image/draw"
 	_ "image/jpeg" // register the JPEG decoder for image.Decode
 	_ "image/png"  // register the PNG decoder for image.Decode
+
+	"github.com/gen2brain/jpegn"
 )
 
 // screencastQuality is a JPEG compression quality value. The live screencast is
@@ -127,6 +129,24 @@ func imageToRGBA(img image.Image) *image.RGBA {
 	return rgba
 }
 
+// decodeJPEGFast decodes one live-frame image, preferring the SIMD jpegn decoder
+// and falling back to the stdlib image.Decode on the same bytes. jpegn returns a
+// native *image.YCbCr about four times faster than stdlib on baseline 4:2:0, the
+// live block stream's exact class, so the fused YCbCr sub-cell downscale still
+// applies. jpegn returns jpegn.ErrUnsupported for inputs it declines (non-8-bit
+// precision, unusual subsampling, smoothing); any non-nil jpegn error, not only
+// ErrUnsupported, falls back to image.Decode so a declined frame decodes exactly
+// as it does today. image.Decode also covers the block PNG frame, which jpegn does
+// not handle. Each call gets its own reader, so the decode is safe under the
+// parallel decode pool.
+func decodeJPEGFast(raw []byte) (image.Image, error) {
+	if img, err := jpegn.Decode(bytes.NewReader(raw)); err == nil {
+		return img, nil
+	}
+	img, _, err := image.Decode(bytes.NewReader(raw))
+	return img, err
+}
+
 // decodeLiveFrame is the live decode-pool's decode: it decodes one base64 screencast
 // payload to an *image.RGBA, fusing the YCbCr-to-RGBA convert into the sub-cell
 // downscale on the live block JPEG path so that path never materialises a
@@ -150,7 +170,7 @@ func (e *ChromiumEngine) decodeLiveFrame(data string) (*image.RGBA, error) {
 	if err != nil {
 		return nil, fmt.Errorf("engine: base64-decode frame: %w", err)
 	}
-	img, _, err := image.Decode(bytes.NewReader(raw))
+	img, err := decodeJPEGFast(raw)
 	if err != nil {
 		return nil, fmt.Errorf("engine: decode frame image: %w", err)
 	}
