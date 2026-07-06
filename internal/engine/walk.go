@@ -64,11 +64,14 @@ type walkResult struct {
 // with no residue, matching the forced line pitch. For each text node it reads
 // the parent element's computed style once and folds in the visibility, opacity,
 // and clip-offscreen drops (the same drops the DOMSnapshot decode did on the
-// client), so a hidden node emits no run. It takes per-line boxes from
-// Range.getClientRects() and buckets the node's code units by their snapped row,
-// so a soft-wrapped node yields one run per line with that line's own origin,
-// which removes the per-glyph advance drift a single origin plus whole-cell
-// stepping accumulates across a long run. Before it pushes a line it culls the run
+// client), so a hidden node emits no run. It buckets the node's text into per-line
+// boxes by their snapped row, so a soft-wrapped node yields one run per line with
+// that line's own origin, which removes the per-glyph advance drift a single origin
+// plus whole-cell stepping accumulates across a long run. The forced line-height
+// puts every line box top at an integer multiple of the cell, so a word measured
+// with one Range.getClientRects() call whose rects share a row buckets as a unit;
+// only a word spanning more than one line box (a wrapped word, a spaceless CJK run,
+// or vertical/ruby text) falls back to a per-code-unit measurement of the node. Before it pushes a line it culls the run
 // when an opaque element covers the line-box centre (an opaque-aware occlusion
 // hit-test), so text behind a cookie banner, sticky header, or modal no longer
 // leaks through the first-writer-wins overlay. It returns the current layout
@@ -178,18 +181,42 @@ func buildTextWalkScript(cellW, cellH float64) string {
 	b.WriteString("if(!node.nodeValue||!node.nodeValue.trim())continue;")
 	b.WriteString("if(hiddenStyle(el))continue;")
 	b.WriteString("var fg=rgba(el);var bg=bgOf(el);")
-	// Bucket the node's code units by their rounded row, so a soft-wrapped node yields
-	// one run per line box with that line's own origin. For each code unit a one-unit
-	// range gives its client rect; the unit joins the line whose top rounds to the same
-	// row. The origin (left, top, and the box geometry) tracks only non-whitespace
-	// units, so a leading indent or a collapsed soft-wrap space never shifts the origin
-	// right of the first inked glyph. All units are kept in order so inter-word spaces
-	// survive; the joined line is then trimmed both ends, and because the origin already
-	// points at the first inked unit the trimmed text and the snapped origin agree, so
-	// the visible run lands glued to the paint. A unit whose rect is empty (a collapsed
-	// soft-wrap space) is dropped.
+	// Bucket the node's text into per-line-box runs, each carrying that line's own
+	// origin, so a soft-wrapped node yields one run per line. The forced line-height
+	// puts every line box top at an integer multiple of ch, so all glyphs on one visual
+	// line share rr.top and snap to one row. The fast path exploits this: it measures
+	// each whitespace-delimited word with a single getClientRects call instead of one
+	// per code unit. A word whose rects all round to one row lies on one line box and
+	// buckets as a unit; the union of its non-empty rects gives the same ink left, top,
+	// right, and bottom the per-unit min/max produced (the range excludes the
+	// surrounding whitespace, so a leading indent or a collapsed soft-wrap space never
+	// shifts the origin right of the first inked glyph), and joining a line's words with
+	// single spaces reproduces the whitespace-collapsed, trimmed text. This drops the
+	// getClientRects count from characters to words on dense spaced text. A word that
+	// spans more than one line box (a soft-wrapped long word, a spaceless CJK run, or
+	// vertical/ruby text) marks the node complex, and the per-code-unit fallback below
+	// decodes the whole node exactly as before.
 	b.WriteString("var text=node.nodeValue;var lines={};var order=[];")
 	b.WriteString("var rng=document.createRange();")
+	b.WriteString("var words=[];var complex=false;var wre=/\\S+/g;var wm;")
+	b.WriteString("while((wm=wre.exec(text))){")
+	b.WriteString("rng.setStart(node,wm.index);rng.setEnd(node,wm.index+wm[0].length);")
+	b.WriteString("var wc=rng.getClientRects();")
+	b.WriteString("var wl=Infinity,wt=Infinity,wrt=-Infinity,wb=-Infinity,wrow=null,wmulti=false;")
+	b.WriteString("for(var j=0;j<wc.length;j++){var rr=wc[j];if(rr.width<=0&&rr.height<=0)continue;")
+	b.WriteString("var rw=Math.round(rr.top/ch);")
+	b.WriteString("if(wrow===null)wrow=rw;else if(wrow!==rw){wmulti=true;break;}")
+	b.WriteString("if(rr.left<wl)wl=rr.left;if(rr.top<wt)wt=rr.top;")
+	b.WriteString("if(rr.left+rr.width>wrt)wrt=rr.left+rr.width;if(rr.top+rr.height>wb)wb=rr.top+rr.height;}")
+	b.WriteString("if(wmulti){complex=true;break;}")
+	b.WriteString("if(wrow===null)continue;")
+	b.WriteString("words.push({row:wrow,l:wl,t:wt,r:wrt,b:wb,x:wm[0]});}")
+	// The per-code-unit fallback runs only for a complex node. Each code unit gets its
+	// own client rect, buckets by its rounded row, and updates the line ink bounds over
+	// non-whitespace units only, with all units kept in order so inter-word spaces
+	// survive the later collapse. This is the original walk, so wrapped words, spaceless
+	// runs, and non-left-to-right order decode byte-for-byte as before.
+	b.WriteString("if(complex){")
 	b.WriteString("for(var i=0;i<text.length;i++){")
 	b.WriteString("rng.setStart(node,i);rng.setEnd(node,i+1);")
 	b.WriteString("var rc=rng.getClientRects();if(!rc.length)continue;")
@@ -204,6 +231,17 @@ func buildTextWalkScript(cellW, cellH float64) string {
 	b.WriteString("if(rr.left+rr.width>ln.right)ln.right=rr.left+rr.width;")
 	b.WriteString("if(rr.top+rr.height>ln.bottom)ln.bottom=rr.top+rr.height;}")
 	b.WriteString("ln.chars.push(text[i]);}")
+	b.WriteString("}else{")
+	// The node's words each lie on a single line box: bucket each into its row's line,
+	// union its rect into the ink bounds, and separate consecutive words on a line with
+	// one space so the joined, collapsed text matches the per-unit reconstruction.
+	b.WriteString("for(var wi=0;wi<words.length;wi++){var wd=words[wi];")
+	b.WriteString("var ln=lines[wd.row];")
+	b.WriteString("if(!ln){ln={row:wd.row,left:Infinity,top:Infinity,right:-Infinity,bottom:-Infinity,chars:[]};lines[wd.row]=ln;order.push(wd.row);}")
+	b.WriteString("if(wd.l<ln.left)ln.left=wd.l;if(wd.t<ln.top)ln.top=wd.t;")
+	b.WriteString("if(wd.r>ln.right)ln.right=wd.r;if(wd.b>ln.bottom)ln.bottom=wd.b;")
+	b.WriteString("if(ln.chars.length)ln.chars.push(' ');ln.chars.push(wd.x);}")
+	b.WriteString("}")
 	b.WriteString("for(var k=0;k<order.length;k++){var ln=lines[order[k]];")
 	b.WriteString("if(!isFinite(ln.left))continue;")
 	b.WriteString("var t=ln.chars.join('').replace(/\\s+/g,' ').replace(/^ | $/g,'');if(!t)continue;")
