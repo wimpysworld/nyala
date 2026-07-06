@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/wimpysworld/nyala/internal/render"
+	"github.com/wimpysworld/nyala/internal/rowband"
 )
 
 // bpSize is one grid geometry, cols x rows terminal cells. The block source
@@ -48,6 +49,41 @@ func BenchmarkBlockCompose(b *testing.B) {
 					b.ReportAllocs()
 					for b.Loop() {
 						br.ComposeInto(&dst, f)
+					}
+				})
+			}
+		})
+	}
+}
+
+// BenchmarkBlockComposeParallel measures the same compose worst case as
+// BenchmarkBlockCompose, but split across a rowband.Pool by grid-row bands, for both
+// schemes and both sizes. It reuses one pool and one ParallelCompose driver built
+// once outside the timed loop, so it times the per-frame fan-out, not the pool
+// build, and pairs with BenchmarkBlockCompose to report the parallel speedup.
+func BenchmarkBlockComposeParallel(b *testing.B) {
+	pool := rowband.New()
+	defer pool.Close()
+	pc := NewParallelCompose()
+	for _, scheme := range []struct {
+		name string
+		s    Scheme
+		rs   render.BlockScheme
+	}{
+		{"quadrant", SchemeQuadrant, render.BlockQuadrant},
+		{"sextant", SchemeSextant, render.BlockSextant},
+	} {
+		b.Run(scheme.name, func(b *testing.B) {
+			for _, sz := range bpSizes {
+				b.Run(sz.name, func(b *testing.B) {
+					br := Renderer{Cols: sz.cols, Rows: sz.rows, Scheme: scheme.s}
+					pxW, pxH := render.BlockCaptureSize(scheme.rs, sz.cols, sz.rows)
+					f := render.Frame{Img: benchImage(pxW, pxH)}
+					var dst Grid
+					pc.ComposeInto(&br, &dst, f, pool)
+					b.ReportAllocs()
+					for b.Loop() {
+						pc.ComposeInto(&br, &dst, f, pool)
 					}
 				})
 			}

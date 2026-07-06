@@ -111,7 +111,13 @@ type ChromiumEngine struct {
 
 	// Frame plumbing.
 	frames chan render.Frame // emitted frames, created once and closed only on Close
-	slot   *frameSlot        // latest-wins single-frame backpressure slot
+	slot   *frameSlot        // capture-path latest-wins single-frame backpressure slot
+	// rawQ is the live-path bounded, drop-oldest feed from the listener goroutine to
+	// the parallel decode pool. It replaces the single-frame slot on the live path so
+	// several workers decode concurrently; capture keeps the ordered slot and leaves
+	// this nil. Either being non-nil means the session is streaming (see streaming).
+	// Reset per session by teardownSession.
+	rawQ *rawFrameQueue
 	// acks carries screencast frame SessionID values from the listener goroutine
 	// to the ack-pump goroutine, which runs page.ScreencastFrameAck off the event
 	// goroutine. Running the ack inside the ListenTarget callback is the chromedp
@@ -465,11 +471,20 @@ func (e *ChromiumEngine) Resize(cols, rows int) {
 	e.mu.Lock()
 	e.cols, e.rows = cols, rows
 	e.captureW, e.captureH = e.captureSize(cols, rows)
-	streaming := e.slot != nil
+	streaming := e.streamingLocked()
 	e.mu.Unlock()
 	if streaming {
 		_ = e.restartStream()
 	}
+}
+
+// streamingLocked reports whether a session is streaming, read under the caller's
+// e.mu hold. It is true when either frame sink is set: the capture-path slot or the
+// live-path decode-pool queue. Resize, SetBackend, and restartStream gate on it, so a
+// live session (queue, no slot) restarts on a resize or backend switch as a capture
+// session (slot) does.
+func (e *ChromiumEngine) streamingLocked() bool {
+	return e.slot != nil || e.rawQ != nil
 }
 
 // Frames returns the emitted-frame channel. The channel is stable across Resize
@@ -493,7 +508,7 @@ func (e *ChromiumEngine) SetBackend(backend string) {
 	e.mu.Lock()
 	e.backend = backend
 	e.captureW, e.captureH = e.captureSize(e.cols, e.rows)
-	streaming := e.slot != nil
+	streaming := e.streamingLocked()
 	e.mu.Unlock()
 	if streaming {
 		_ = e.restartStream()

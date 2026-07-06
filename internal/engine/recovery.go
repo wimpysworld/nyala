@@ -46,7 +46,24 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	crashed = make(chan struct{})
 	e.watchCrash(crashed)
 	e.watchPaint()
-	slot := newFrameSlot()
+	// The frame sink differs by path. Capture keeps the ordered single-frame slot and
+	// its single decode worker (runFrameLoop), so the corpus stays complete and in
+	// order. The live path feeds a bounded, drop-oldest queue to a small pool of decode
+	// workers, so several frames decode in parallel and the block-backend frame rate is
+	// no longer capped by a single ~28 ms decode. A collector re-serialises the pool by
+	// arrival sequence, so the live screen stays monotonic.
+	live := !e.captureOn
+	var slot *frameSlot
+	var rawQ *rawFrameQueue
+	workers := decodeWorkerCount()
+	if live {
+		// Bound the queue to one buffered frame per worker plus one in flight, so the
+		// pool stays fed while memory stays bounded; a full queue drops the oldest
+		// undecoded frame.
+		rawQ = newRawFrameQueue(workers + 1)
+	} else {
+		slot = newFrameSlot()
+	}
 	// acks is the buffered ack channel the ack pump drains. It is created before
 	// startScreencast so the listener's first enqueue lands, and the pump runs off
 	// the event goroutine to avoid the chromedp #920 deadlock. The buffer is sized
@@ -81,6 +98,7 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	fmtSel := e.initialScreencastFormat()
 	e.mu.Lock()
 	e.slot = slot
+	e.rawQ = rawQ
 	e.acks = acks
 	e.text = ts
 	e.reSnap = reSnap
@@ -95,7 +113,7 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// first startScreencast. restartStream re-issues startScreencast on the same
 	// context, so registering here (not in startScreencast) keeps a backend switch
 	// or resize from leaking a second listener.
-	e.registerScreencastListener(ctx, slot)
+	e.registerScreencastListener(ctx, slot, rawQ)
 	// Reset the stuck-state watchdog for this session, so a rebuild does not read the
 	// previous session's receive timestamp or SessionID as a live stall.
 	e.recvNano.Store(0)
@@ -114,7 +132,21 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 		go e.runScreencastFormat(ctx, motion)
 	}
 	go e.runTextSync(ctx, ts, reSnap, reflow, scroll, reEmit)
-	go e.runFrameLoop(ctx, slot, frames, ts, scroll, reEmit)
+	if live {
+		// Live: a pool of decode workers feeds one collector that re-serialises them by
+		// arrival sequence and owns the compose, the held-frame re-emit, the scroll
+		// tracking, and the frame send. The decoded channel is buffered to the worker
+		// count so a finished worker never blocks handing off to the collector.
+		decoded := make(chan decodedFrame, workers)
+		for range workers {
+			go e.runDecodeWorker(ctx, rawQ, decoded)
+		}
+		go e.runDecodeCollector(ctx, decoded, frames, ts, scroll, reEmit)
+	} else {
+		// Capture: the single ordered decode worker, unchanged, so the corpus stays
+		// complete and in order.
+		go e.runFrameLoop(ctx, slot, frames, ts, scroll, reEmit)
+	}
 
 	// Navigate and the held-scroll restore run on one ordered path: navigateAsync
 	// drives the load waiter, then restores the held offset only after the load
@@ -389,16 +421,18 @@ func (e *ChromiumEngine) pokeReflow() {
 }
 
 // teardownSession tears down the live session without closing the frames
-// channel, so it is safe on both a crash rebuild and Close. It drains the slot
-// (releasing the frame loop parked on it; the held raw frame is already acked) then cancels
-// the context, which stops the screencast, force-kills the managed Chromium, and
-// releases the frame loop's send select. It clears the per-session fields so a
-// stale context is never reused.
+// channel, so it is safe on both a crash rebuild and Close. It drains the capture
+// slot (releasing the frame loop parked on it; the held raw frame is already acked)
+// then cancels the context, which stops the screencast, force-kills the managed
+// Chromium, and releases the frame loop's send select. The live decode pool takes no
+// drain: its workers and collector park on ctx.Done, so cancel alone releases them.
+// It clears the per-session fields so a stale context is never reused.
 func (e *ChromiumEngine) teardownSession() {
 	e.mu.Lock()
 	slot := e.slot
 	cancel := e.cancel
 	e.ctx, e.cancel, e.slot, e.acks, e.text = nil, nil, nil, nil, nil
+	e.rawQ = nil
 	e.reSnap, e.reflow, e.scroll, e.reEmit = nil, nil, nil, nil
 	e.motion = nil
 	e.windowID = 0

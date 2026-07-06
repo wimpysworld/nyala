@@ -32,6 +32,7 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/block"
 	"github.com/wimpysworld/nyala/internal/render/kitty"
 	"github.com/wimpysworld/nyala/internal/render/sixel"
+	"github.com/wimpysworld/nyala/internal/rowband"
 )
 
 // Backend identifies one render backend in the cycle order. The Tab hotkey
@@ -137,12 +138,21 @@ type frameScratch struct {
 	bw         *bufio.Writer // reused buffered tty writer
 	bwSize     int           // current tty buffer capacity in bytes
 
-	// pool parallelises the block downscale across a persistent worker set. It is
-	// built once, lazily on the first diff draw, and reused every frame, so the hot
-	// path spawns no goroutine. The live diff path is single-goroutine, so the one
-	// pool is driven from one caller and never overlaps calls. It stays nil off the
-	// diff path (capture and static image), which keep the serial downscale.
-	pool *metrics.DownscalePool
+	// pool fans both the block downscale and the compose binarise across one
+	// persistent worker set. It is built once, lazily on the first diff draw, and
+	// reused every frame, so the hot path spawns no goroutine. The live diff path is
+	// single-goroutine, so the one pool is driven from one caller and never overlaps
+	// calls. It stays nil off the diff path (capture and static image), which keep
+	// the serial downscale and compose.
+	pool *rowband.Pool
+
+	// downscale and compose are the pool-driving band drivers, each holding one band
+	// closure built once so a reused frame allocates nothing. They stay nil off the
+	// diff path. downscale splits the source area-average, compose splits the
+	// binarise; both fan over the shared pool and both are byte-identical to their
+	// serial twins.
+	downscale *metrics.ParallelDownscale
+	compose   *block.ParallelCompose
 }
 
 // downscaleDst returns a width x height *image.RGBA, reusing the held destination
@@ -424,10 +434,12 @@ func (s *State) renderBlock(src *image.RGBA, text []render.GlyphRun, w io.Writer
 	// their byte output stays identical.
 	if s.diff != nil {
 		if s.scratch.pool == nil {
-			s.scratch.pool = metrics.NewDownscalePool()
+			s.scratch.pool = rowband.New()
+			s.scratch.downscale = metrics.NewParallelDownscale()
+			s.scratch.compose = block.NewParallelCompose()
 		}
-		sub := s.scratch.pool.DownscaleLiveInto(s.scratch.downscaleDst(pxW, pxH), src)
-		grid := br.ComposeInto(&s.scratch.out, render.Frame{Img: sub, Text: text})
+		sub := s.scratch.downscale.DownscaleInto(s.scratch.downscaleDst(pxW, pxH), src, s.scratch.pool)
+		grid := s.scratch.compose.ComposeInto(&br, &s.scratch.out, render.Frame{Img: sub, Text: text}, s.scratch.pool)
 		if s.captureGrid != nil {
 			// Copy the cells, never alias: the live scratch grid is reused next frame,
 			// so the capture sink must own an independent backing array to serialise.

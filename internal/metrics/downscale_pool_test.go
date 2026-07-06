@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"image"
 	"testing"
+
+	"github.com/wimpysworld/nyala/internal/rowband"
 )
 
 // noiseRGBA returns a w x h RGBA filled from a deterministic 64-bit LCG seeded by
@@ -19,16 +21,17 @@ func noiseRGBA(seed uint64, w, h int) *image.RGBA {
 	return img
 }
 
-// TestDownscalePoolByteIdentical proves the parallel pool downscale is
+// TestParallelDownscaleByteIdentical proves the pool-split downscale is
 // byte-for-byte identical to the serial DownscaleLiveInto across random sources and
 // several grid and cell sizes, including destination heights that do not divide
 // evenly into bands and a single-row destination. Byte identity is the correctness
 // contract: the pool must never shift a single output byte from the serial path.
-func TestDownscalePoolByteIdentical(t *testing.T) {
+func TestParallelDownscaleByteIdentical(t *testing.T) {
 	// Force eight workers so any destination tall enough splits into several bands,
 	// exercising the parallel path even on a low-core test runner.
-	pool := newDownscalePool(8)
+	pool := rowband.NewSized(8)
 	defer pool.Close()
+	pd := NewParallelDownscale()
 
 	cases := []struct{ srcW, srcH, dstW, dstH int }{
 		{1920, 1320, 240, 160}, // 120x40 quadrant, even split into 8
@@ -47,7 +50,7 @@ func TestDownscalePoolByteIdentical(t *testing.T) {
 		DownscaleLiveInto(want, src)
 
 		got := image.NewRGBA(image.Rect(0, 0, c.dstW, c.dstH))
-		pool.DownscaleLiveInto(got, src)
+		pd.DownscaleInto(got, src, pool)
 
 		if !bytes.Equal(want.Pix, got.Pix) {
 			t.Errorf("src %dx%d -> dst %dx%d: parallel output differs from serial",
@@ -56,21 +59,36 @@ func TestDownscalePoolByteIdentical(t *testing.T) {
 	}
 }
 
-// TestDownscalePoolReuse proves one pool stays byte-identical across repeated
-// calls, since the live path reuses a single pool every frame. A stale WaitGroup or
+// TestParallelDownscaleReuse proves one driver and pool stay byte-identical across
+// repeated calls, since the live path reuses both every frame. A stale WaitGroup or
 // a leaked band would surface as drift on a later call.
-func TestDownscalePoolReuse(t *testing.T) {
-	pool := newDownscalePool(8)
+func TestParallelDownscaleReuse(t *testing.T) {
+	pool := rowband.NewSized(8)
 	defer pool.Close()
+	pd := NewParallelDownscale()
 
 	for i := range 20 {
 		src := noiseRGBA(uint64(i)+100, 1920, 1320)
 		want := image.NewRGBA(image.Rect(0, 0, 240, 160))
 		DownscaleLiveInto(want, src)
 		got := image.NewRGBA(image.Rect(0, 0, 240, 160))
-		pool.DownscaleLiveInto(got, src)
+		pd.DownscaleInto(got, src, pool)
 		if !bytes.Equal(want.Pix, got.Pix) {
 			t.Fatalf("call %d: parallel output differs from serial", i)
 		}
+	}
+}
+
+// TestParallelDownscaleNilPool proves a nil pool runs the serial kernel, the
+// capture and static-image fallback the live path drops to when it holds no pool.
+func TestParallelDownscaleNilPool(t *testing.T) {
+	pd := NewParallelDownscale()
+	src := noiseRGBA(7, 1920, 1320)
+	want := image.NewRGBA(image.Rect(0, 0, 240, 160))
+	DownscaleLiveInto(want, src)
+	got := image.NewRGBA(image.Rect(0, 0, 240, 160))
+	pd.DownscaleInto(got, src, nil)
+	if !bytes.Equal(want.Pix, got.Pix) {
+		t.Fatal("nil-pool output differs from serial")
 	}
 }

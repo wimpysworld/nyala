@@ -164,7 +164,15 @@ func (br *Renderer) composeSextant(f render.Frame) Grid {
 // already sized to Cols x Rows. It is the shared body of composeSextant (fresh
 // grid) and ComposeInto (reused grid), so both fill cells the same way.
 func (br *Renderer) composeSextantInto(g *Grid, f render.Frame) {
-	for row := range g.Rows {
+	br.composeSextantRows(g, f, 0, g.Rows)
+}
+
+// composeSextantRows binarises grid rows [row0, row1) of g from the frame image.
+// It is the per-band body of composeSextantInto: each cell samples its own 2x3
+// source block and writes only its own cell, so a call over a disjoint row range
+// writes byte-for-byte the same cells the whole-grid pass writes for those rows.
+func (br *Renderer) composeSextantRows(g *Grid, f render.Frame, row0, row1 int) {
+	for row := row0; row < row1; row++ {
 		for col := range g.Cols {
 			topLeft, topRight, midLeft, midRight, botLeft, botRight := sampleSextant(f.Img, col, row)
 			glyph, fg, bg := binarizeSextant(topLeft, topRight, midLeft, midRight, botLeft, botRight)
