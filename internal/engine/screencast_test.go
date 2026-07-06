@@ -2,8 +2,8 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"image"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -83,8 +83,7 @@ func TestRunFrameLoopReEmitsHeldFrameWithText(t *testing.T) {
 	t.Parallel()
 	bitmap := image.NewRGBA(image.Rect(0, 0, 2, 2))
 	slot := newFrameSlot()
-	var rec ackRecorder
-	e := &ChromiumEngine{backend: "block"}
+	e := &ChromiumEngine{backend: "block", decode: staticDecode(bitmap)}
 	ts := &textSync{}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -98,9 +97,9 @@ func TestRunFrameLoopReEmitsHeldFrameWithText(t *testing.T) {
 		close(done)
 	}()
 
-	// One screencast frame arrives before any text is published. The loop holds it
-	// and emits it with a nil text layer.
-	slot.put(pendingFrame{img: bitmap, ack: 1}, rec.ack)
+	// One raw screencast frame arrives before any text is published. The worker
+	// decodes it, holds it, and emits it with a nil text layer.
+	slot.put(rawFrame{data: "f1"})
 	first := recvFrame(t, frames)
 	if first.Img != bitmap {
 		t.Fatalf("first frame bitmap = %p, want the put bitmap %p", first.Img, bitmap)
@@ -431,8 +430,7 @@ func TestRunFrameLoopPokesScrollOnOffsetChange(t *testing.T) {
 	t.Parallel()
 	bitmap := image.NewRGBA(image.Rect(0, 0, 2, 2))
 	slot := newFrameSlot()
-	var rec ackRecorder
-	e := &ChromiumEngine{backend: "block"}
+	e := &ChromiumEngine{backend: "block", decode: staticDecode(bitmap)}
 	ts := &textSync{}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -446,12 +444,12 @@ func TestRunFrameLoopPokesScrollOnOffsetChange(t *testing.T) {
 		close(done)
 	}()
 
-	meta := func(y float64) *page.ScreencastFrameMetadata {
-		return &page.ScreencastFrameMetadata{ScrollOffsetY: y}
+	raw := func(y float64) rawFrame {
+		return rawFrame{data: "f", meta: &page.ScreencastFrameMetadata{ScrollOffsetY: y}}
 	}
 
 	// First frame establishes the baseline offset; it must not poke (no prior offset).
-	slot.put(pendingFrame{img: bitmap, meta: meta(0), ack: 1}, rec.ack)
+	slot.put(raw(0))
 	recvFrame(t, frames)
 	select {
 	case <-scroll:
@@ -460,7 +458,7 @@ func TestRunFrameLoopPokesScrollOnOffsetChange(t *testing.T) {
 	}
 
 	// A frame at a new offset pokes scroll.
-	slot.put(pendingFrame{img: bitmap, meta: meta(120), ack: 2}, rec.ack)
+	slot.put(raw(120))
 	recvFrame(t, frames)
 	select {
 	case <-scroll:
@@ -469,7 +467,7 @@ func TestRunFrameLoopPokesScrollOnOffsetChange(t *testing.T) {
 	}
 
 	// A frame at the same offset does not poke again.
-	slot.put(pendingFrame{img: bitmap, meta: meta(120), ack: 3}, rec.ack)
+	slot.put(raw(120))
 	recvFrame(t, frames)
 	select {
 	case <-scroll:
@@ -499,39 +497,10 @@ func waitForCount(t *testing.T, n *int64, want int64) {
 	t.Fatalf("counter reached %d, want %d before deadline", atomic.LoadInt64(n), want)
 }
 
-// ackRecorder is the fake ackFunc the slot tests drive instead of a chromedp
-// ack. It records every acked id under a mutex, so a put on one goroutine and a
-// consume on another can both ack without a race. No browser is involved.
-type ackRecorder struct {
-	mu  sync.Mutex
-	ids []int64
-}
-
-func (r *ackRecorder) ack(id int64) {
-	r.mu.Lock()
-	r.ids = append(r.ids, id)
-	r.mu.Unlock()
-}
-
-// counts returns how many times each id was acked, so a test can assert exactly
-// once per id.
-func (r *ackRecorder) counts() map[int64]int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make(map[int64]int, len(r.ids))
-	for _, id := range r.ids {
-		out[id]++
-	}
-	return out
-}
-
-// sortedIDs returns the acked ids in ascending order for set comparison.
-func (r *ackRecorder) sortedIDs() []int64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := append([]int64(nil), r.ids...)
-	slices.Sort(out)
-	return out
+// staticDecode returns a decode hook that always yields img, so a frame-loop test
+// drives the raw slot and the worker decode path without encoding a real PNG.
+func staticDecode(img *image.RGBA) func(string) (*image.RGBA, error) {
+	return func(string) (*image.RGBA, error) { return img, nil }
 }
 
 // TestAckFrameEnqueuesInsteadOfRunningInline proves the production ack path never
@@ -605,170 +574,80 @@ func TestAckFrameFullChannelDrops(t *testing.T) {
 }
 
 // blockingConsume drives the slot's real take path, the one runFrameLoop uses: it
-// parks on readyC, takes the held frame with tryConsume, and treats an empty wake
-// as a drain (ok=false) or a spurious re-park. It blocks until a frame is taken,
-// ctx is cancelled, or the slot drains, so the slot tests exercise the production
-// path rather than a bespoke take. ack accounting stays exactly once, since
-// tryConsume acks the frame it takes.
-func blockingConsume(ctx context.Context, slot *frameSlot, ack ackFunc) (pendingFrame, bool) {
+// parks on readyC, takes the held raw frame with tryConsume, and treats an empty
+// wake as a drain (ok=false) or a spurious re-park. It blocks until a frame is
+// taken, ctx is cancelled, or the slot drains, so the slot tests exercise the
+// production take rather than a bespoke one. The slot no longer acks: the ack
+// happens on receive, before a frame reaches the slot.
+func blockingConsume(ctx context.Context, slot *frameSlot) (rawFrame, bool) {
 	for {
-		if frame, ok := slot.tryConsume(ack); ok {
+		if frame, ok := slot.tryConsume(); ok {
 			return frame, true
 		}
 		if slot.drained() {
-			return pendingFrame{}, false
+			return rawFrame{}, false
 		}
 		select {
 		case <-slot.readyC():
 		case <-ctx.Done():
-			return pendingFrame{}, false
+			return rawFrame{}, false
 		}
 	}
 }
 
-// TestFrameSlotPutOnEmptyDefersAck checks the first put stores the frame and
-// does not ack it: an unconsumed frame stays unacked until consume or replace.
-// A regression that acked on every put would fail here.
-func TestFrameSlotPutOnEmptyDefersAck(t *testing.T) {
+// TestFrameSlotPutStoresLatest checks a single put stores the raw frame and consume
+// returns it. The slot performs no ack; ack accounting lives on the receive path.
+func TestFrameSlotPutStoresLatest(t *testing.T) {
 	t.Parallel()
 	slot := newFrameSlot()
-	var rec ackRecorder
 
-	slot.put(pendingFrame{ack: 1}, rec.ack)
-
-	if got := len(rec.sortedIDs()); got != 0 {
-		t.Fatalf("put on empty slot acked %d frames, want 0", got)
+	slot.put(rawFrame{data: "a"})
+	frame, ok := blockingConsume(context.Background(), slot)
+	if !ok || frame.data != "a" {
+		t.Fatalf("consume = (%q, %v), want (\"a\", true)", frame.data, ok)
 	}
 }
 
-// TestFrameSlotPutReplaceAcksDisplaced checks a put onto a full slot acks the
-// displaced frame and stores the newcomer. This is the latest-wins drop path: a
-// regression that dropped a frame without acking it would stall the live stream,
-// and is caught here.
-func TestFrameSlotPutReplaceAcksDisplaced(t *testing.T) {
+// TestFrameSlotPutReplaceCoalesces checks a put onto a full slot replaces the
+// unconsumed raw frame (latest-wins coalescing), so the worker only ever decodes
+// the newest and the older undecoded frame is dropped. A regression that queued
+// rather than coalesced would return the stale frame here.
+func TestFrameSlotPutReplaceCoalesces(t *testing.T) {
 	t.Parallel()
 	slot := newFrameSlot()
-	var rec ackRecorder
 
-	slot.put(pendingFrame{ack: 1}, rec.ack)
-	slot.put(pendingFrame{ack: 2}, rec.ack)
+	slot.put(rawFrame{data: "old"})
+	slot.put(rawFrame{data: "new"})
 
-	got := rec.sortedIDs()
-	if len(got) != 1 || got[0] != 1 {
-		t.Fatalf("after replace, acked = %v, want [1] (displaced frame only)", got)
+	frame, ok := blockingConsume(context.Background(), slot)
+	if !ok || frame.data != "new" {
+		t.Fatalf("consume after replace = (%q, %v), want (\"new\", true) (latest wins)", frame.data, ok)
 	}
 
-	// The slot now holds only the latest frame (id 2).
-	frame, ok := blockingConsume(context.Background(), slot, rec.ack)
-	if !ok {
-		t.Fatal("consume returned ok=false, want the latest held frame")
-	}
-	if frame.ack != 2 {
-		t.Fatalf("slot held frame %d, want 2 (latest wins)", frame.ack)
+	// Nothing else is held: the coalesced older frame left no residue.
+	if _, ok := slot.tryConsume(); ok {
+		t.Fatal("slot held a second frame after coalescing, want only the latest")
 	}
 }
 
-// TestFrameSlotConsumeAcksTaken checks consume acks the frame it returns. The
-// consume rate couples Chrome's production rate through this ack, so a missing
-// consume ack stalls the stream.
-func TestFrameSlotConsumeAcksTaken(t *testing.T) {
+// TestFrameSlotDrainStopsStore checks drain marks the slot dropped: consume returns
+// ok=false and a late put stores nothing, so no goroutine parks on a slot no one
+// reads. drain performs no ack; the held raw frame was already acked on receive.
+func TestFrameSlotDrainStopsStore(t *testing.T) {
 	t.Parallel()
 	slot := newFrameSlot()
-	var rec ackRecorder
 
-	slot.put(pendingFrame{ack: 7}, rec.ack)
-	frame, ok := blockingConsume(context.Background(), slot, rec.ack)
-	if !ok || frame.ack != 7 {
-		t.Fatalf("consume = (%d, %v), want (7, true)", frame.ack, ok)
-	}
+	slot.put(rawFrame{data: "x"})
+	slot.drain()
 
-	if c := rec.counts()[7]; c != 1 {
-		t.Fatalf("frame 7 acked %d times, want exactly 1", c)
-	}
-}
-
-// TestFrameSlotInterleavedAckedExactlyOnce is the acceptance-criterion-5 core:
-// feed N puts interleaved with consumes through one slot and assert every
-// received frame id is acked exactly once, never twice, never zero, whether it
-// left via consume or via replace. A double-ack or a dropped ack fails here.
-func TestFrameSlotInterleavedAckedExactlyOnce(t *testing.T) {
-	t.Parallel()
-
-	// A deterministic interleave: each "put" stores a fresh id, each "consume"
-	// takes whatever is held. Some puts land on a full slot (replace), some
-	// consumes find the slot empty (no-op via the empty branch below). Every id
-	// that enters the slot must be acked once across the run.
-	const n = 50
-	slot := newFrameSlot()
-	var rec ackRecorder
-	put := 0
-
-	// script mixes puts and consumes so both the replace path and the
-	// consume path fire. A consume on an empty slot would block, so each
-	// consume below runs only when the slot is known to hold a frame.
-	doPut := func() {
-		put++
-		slot.put(pendingFrame{ack: int64(put)}, rec.ack)
-	}
-	doConsume := func() {
-		_, ok := blockingConsume(context.Background(), slot, rec.ack)
-		if !ok {
-			t.Fatal("consume returned ok=false on a non-empty slot")
-		}
-	}
-
-	for range n {
-		doPut() // store
-		doPut() // replace the one above (acks it)
-		doPut() // replace again (acks it)
-		doConsume()
-	}
-
-	// Drain the final held frame so its ack is accounted too.
-	slot.drain(rec.ack)
-
-	// All ids 1..3n entered the slot. Each must be acked exactly once.
-	counts := rec.counts()
-	total := 3 * n
-	if len(counts) != total {
-		t.Fatalf("acked %d distinct ids, want %d", len(counts), total)
-	}
-	for id := int64(1); id <= int64(total); id++ {
-		switch counts[id] {
-		case 1:
-			// correct: acked exactly once
-		case 0:
-			t.Errorf("frame %d was never acked", id)
-		default:
-			t.Errorf("frame %d acked %d times, want exactly 1", id, counts[id])
-		}
-	}
-}
-
-// TestFrameSlotDrainAcksHeld checks drain acks the frame still in the slot, so
-// Close leaves nothing unacked. After drain, consume returns ok=false and a
-// later put acks immediately rather than storing into a slot no one will read.
-func TestFrameSlotDrainAcksHeld(t *testing.T) {
-	t.Parallel()
-	slot := newFrameSlot()
-	var rec ackRecorder
-
-	slot.put(pendingFrame{ack: 9}, rec.ack)
-	slot.drain(rec.ack)
-
-	if c := rec.counts()[9]; c != 1 {
-		t.Fatalf("held frame 9 acked %d times on drain, want 1", c)
-	}
-
-	// consume on a drained slot returns ok=false with no block.
-	if _, ok := blockingConsume(context.Background(), slot, rec.ack); ok {
+	if _, ok := blockingConsume(context.Background(), slot); ok {
 		t.Fatal("consume on a drained slot returned ok=true, want false")
 	}
 
-	// A late put acks and stores nothing, so no goroutine parks forever.
-	slot.put(pendingFrame{ack: 10}, rec.ack)
-	if c := rec.counts()[10]; c != 1 {
-		t.Fatalf("late put of frame 10 acked %d times, want 1 (drained slot)", c)
+	// A late put stores nothing on a drained slot.
+	slot.put(rawFrame{data: "late"})
+	if _, ok := slot.tryConsume(); ok {
+		t.Fatal("late put stored a frame in a drained slot, want nothing stored")
 	}
 }
 
@@ -778,17 +657,16 @@ func TestFrameSlotDrainAcksHeld(t *testing.T) {
 func TestFrameSlotDrainUnblocksParkedConsume(t *testing.T) {
 	t.Parallel()
 	slot := newFrameSlot()
-	var rec ackRecorder
 
 	done := make(chan bool, 1)
 	go func() {
-		_, ok := blockingConsume(context.Background(), slot, rec.ack)
+		_, ok := blockingConsume(context.Background(), slot)
 		done <- ok
 	}()
 
 	// Give the goroutine time to park on the empty slot, then drain.
 	time.Sleep(20 * time.Millisecond)
-	slot.drain(rec.ack)
+	slot.drain()
 
 	select {
 	case ok := <-done:
@@ -805,12 +683,11 @@ func TestFrameSlotDrainUnblocksParkedConsume(t *testing.T) {
 func TestFrameSlotConsumeCancelUnblocks(t *testing.T) {
 	t.Parallel()
 	slot := newFrameSlot()
-	var rec ackRecorder
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan bool, 1)
 	go func() {
-		_, ok := blockingConsume(ctx, slot, rec.ack)
+		_, ok := blockingConsume(ctx, slot)
 		done <- ok
 	}()
 
@@ -825,33 +702,34 @@ func TestFrameSlotConsumeCancelUnblocks(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("parked consume did not unblock after context cancel")
 	}
-
-	if got := len(rec.sortedIDs()); got != 0 {
-		t.Fatalf("cancel acked %d frames, want 0 (no frame was held)", got)
-	}
 }
 
-// TestFrameSlotConcurrentPutsAckedExactlyOnce checks the accounting holds under
-// concurrent producers and a draining consumer: every id put from many
-// goroutines is acked exactly once across consume, replace, and drain. A race
-// in the full/held handover would surface as a missing or doubled ack.
-func TestFrameSlotConcurrentPutsAckedExactlyOnce(t *testing.T) {
+// TestFrameSlotConcurrentPutConsumeNoRace stresses the slot handoff under many
+// concurrent producers and a draining consumer: every frame the consumer takes
+// must be a distinct frame that was put (no duplicate delivery, no phantom), and
+// the run must be race-clean under -race. Coalescing means some puts are dropped,
+// which is correct; the invariant is that no frame is delivered twice.
+func TestFrameSlotConcurrentPutConsumeNoRace(t *testing.T) {
 	t.Parallel()
 	slot := newFrameSlot()
-	var rec ackRecorder
 
 	const producers = 8
 	const perProducer = 100
-	total := producers * perProducer
 
 	ctx, cancel := context.WithCancel(context.Background())
+	var mu sync.Mutex
+	seen := map[string]int{}
 	consumed := make(chan struct{})
 	go func() {
 		defer close(consumed)
 		for {
-			if _, ok := blockingConsume(ctx, slot, rec.ack); !ok {
+			frame, ok := blockingConsume(ctx, slot)
+			if !ok {
 				return
 			}
+			mu.Lock()
+			seen[frame.data]++
+			mu.Unlock()
 		}
 	}()
 
@@ -861,24 +739,189 @@ func TestFrameSlotConcurrentPutsAckedExactlyOnce(t *testing.T) {
 		go func(base int) {
 			defer wg.Done()
 			for i := range perProducer {
-				slot.put(pendingFrame{ack: int64(base + i + 1)}, rec.ack)
+				slot.put(rawFrame{data: fmt.Sprintf("f%d", base+i+1)})
 			}
 		}(p * perProducer)
 	}
 	wg.Wait()
 
-	// Drain after producers finish, then stop the consumer.
-	slot.drain(rec.ack)
+	slot.drain()
 	cancel()
 	<-consumed
 
-	counts := rec.counts()
-	if len(counts) != total {
-		t.Fatalf("acked %d distinct ids, want %d", len(counts), total)
-	}
-	for id := int64(1); id <= int64(total); id++ {
-		if counts[id] != 1 {
-			t.Errorf("frame %d acked %d times, want exactly 1", id, counts[id])
+	mu.Lock()
+	defer mu.Unlock()
+	for data, n := range seen {
+		if n != 1 {
+			t.Errorf("frame %q delivered %d times, want at most once", data, n)
 		}
+	}
+}
+
+// TestHandleScreencastFrameAcksOnReceiveBeforeDecode is the headline of the
+// ack-on-receive fix: the listener callback acks the frame and stores it raw and
+// undecoded, doing no decode itself. It wires a decode hook that would record a
+// call, calls handleScreencastFrame, then asserts the ack landed on the pump
+// channel, the raw frame sits in the slot, and the decode hook was never invoked on
+// the listener goroutine. So Chrome's credit is released before any pixel work.
+func TestHandleScreencastFrameAcksOnReceiveBeforeDecode(t *testing.T) {
+	t.Parallel()
+	acks := make(chan int64, ackBufferDepth)
+	var decoded atomic.Int64
+	e := &ChromiumEngine{acks: acks, decode: func(string) (*image.RGBA, error) {
+		decoded.Add(1)
+		return image.NewRGBA(image.Rect(0, 0, 1, 1)), nil
+	}}
+	slot := newFrameSlot()
+
+	e.handleScreencastFrame(slot, &page.EventScreencastFrame{Data: "payload", SessionID: 5})
+
+	// Acked on receive.
+	select {
+	case got := <-acks:
+		if got != 5 {
+			t.Fatalf("acked SessionID %d, want 5", got)
+		}
+	default:
+		t.Fatal("handleScreencastFrame did not ack the frame on receive")
+	}
+	// Stored raw and undecoded: the listener ran no decode.
+	if n := decoded.Load(); n != 0 {
+		t.Fatalf("decode ran %d times on the listener goroutine, want 0 (decode is the worker's job)", n)
+	}
+	raw, ok := slot.tryConsume()
+	if !ok || raw.data != "payload" {
+		t.Fatalf("slot held (%q, %v), want the raw payload undecoded", raw.data, ok)
+	}
+}
+
+// TestHandleScreencastFrameAcksEveryDeliveredFrameIncludingDropped feeds several
+// frames through the listener with no consumer, so the slot coalesces all but the
+// last. Each delivered frame must still be acked exactly once, on receive, whether
+// or not it is later decoded. This is the ack-exactly-once invariant under the raw
+// coalescing slot.
+func TestHandleScreencastFrameAcksEveryDeliveredFrameIncludingDropped(t *testing.T) {
+	t.Parallel()
+	const n = 6
+	acks := make(chan int64, ackBufferDepth)
+	e := &ChromiumEngine{acks: acks}
+	slot := newFrameSlot()
+
+	for i := 1; i <= n; i++ {
+		e.handleScreencastFrame(slot, &page.EventScreencastFrame{Data: "d", SessionID: int64(i)})
+	}
+
+	// Every delivered frame acked once, even though the slot holds only the latest.
+	got := map[int64]int{}
+	for len(got) < n {
+		select {
+		case id := <-acks:
+			got[id]++
+		default:
+			t.Fatalf("acked %d distinct frames, want %d (a delivered frame went unacked)", len(got), n)
+		}
+	}
+	for id := int64(1); id <= n; id++ {
+		if got[id] != 1 {
+			t.Errorf("SessionID %d acked %d times, want exactly 1", id, got[id])
+		}
+	}
+	// The slot coalesced to the latest raw frame only.
+	if _, ok := slot.tryConsume(); !ok {
+		t.Fatal("slot held no frame after a burst, want the latest")
+	}
+	if _, ok := slot.tryConsume(); ok {
+		t.Fatal("slot held more than the latest frame after coalescing")
+	}
+}
+
+// TestWorkerDecodesOffReceiver ties the pieces together: a frame delivered through
+// handleScreencastFrame (which does not decode) is decoded by the runFrameLoop
+// worker and emitted. It asserts the emitted frame carries the worker-decoded
+// bitmap and the decode hook ran exactly once, on the worker, after receive.
+func TestWorkerDecodesOffReceiver(t *testing.T) {
+	t.Parallel()
+	bitmap := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	var decoded atomic.Int64
+	e := &ChromiumEngine{backend: "block", acks: make(chan int64, ackBufferDepth), decode: func(string) (*image.RGBA, error) {
+		decoded.Add(1)
+		return bitmap, nil
+	}}
+	slot := newFrameSlot()
+	ts := &textSync{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	frames := make(chan render.Frame, 1)
+	scroll := make(chan struct{}, 1)
+	reEmit := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		e.runFrameLoop(ctx, slot, frames, ts, scroll, reEmit)
+		close(done)
+	}()
+
+	e.handleScreencastFrame(slot, &page.EventScreencastFrame{Data: "p", SessionID: 1})
+
+	frame := recvFrame(t, frames)
+	if frame.Img != bitmap {
+		t.Fatalf("emitted frame bitmap = %p, want the worker-decoded bitmap %p", frame.Img, bitmap)
+	}
+	if n := decoded.Load(); n != 1 {
+		t.Fatalf("decode ran %d times, want exactly 1 (on the worker)", n)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runFrameLoop did not return after context cancel")
+	}
+}
+
+// TestWatchdogRecoverIfStalled proves the stuck-state watchdog re-couples a wedged
+// stream once per silent gap without disturbing a healthy or idle stream. It drives
+// watchdogRecoverIfStalled directly, with no ticker, over the four states: never
+// streamed, recently streamed (healthy), silent past the threshold (stall), and a
+// second check in the same gap (already poked).
+func TestWatchdogRecoverIfStalled(t *testing.T) {
+	t.Parallel()
+	acks := make(chan int64, ackBufferDepth)
+	e := &ChromiumEngine{acks: acks}
+	now := time.Now()
+
+	// Never streamed: no recovery.
+	if e.watchdogRecoverIfStalled(now) {
+		t.Fatal("re-acked before any frame streamed, want no recovery")
+	}
+
+	// A frame arrives, then a check inside the threshold: healthy, no recovery.
+	e.markFrameReceived(now, 42)
+	if e.watchdogRecoverIfStalled(now.Add(screencastStallThreshold - time.Millisecond)) {
+		t.Fatal("re-acked a healthy stream inside the stall threshold, want no recovery")
+	}
+
+	// Silent past the threshold: recover once, re-acking the last SessionID.
+	if !e.watchdogRecoverIfStalled(now.Add(screencastStallThreshold + time.Second)) {
+		t.Fatal("did not re-ack a stalled stream past the threshold")
+	}
+	select {
+	case got := <-acks:
+		if got != 42 {
+			t.Fatalf("watchdog re-acked SessionID %d, want the last frame's 42", got)
+		}
+	default:
+		t.Fatal("watchdog reported recovery but enqueued no ack")
+	}
+
+	// A second check in the same silent gap does not re-ack again.
+	if e.watchdogRecoverIfStalled(now.Add(screencastStallThreshold + 2*time.Second)) {
+		t.Fatal("re-acked twice in one silent gap, want at most once per gap")
+	}
+
+	// A fresh frame clears the gap, so a later stall re-couples again.
+	later := now.Add(time.Minute)
+	e.markFrameReceived(later, 43)
+	if !e.watchdogRecoverIfStalled(later.Add(screencastStallThreshold + time.Second)) {
+		t.Fatal("did not re-ack after a fresh frame re-armed the watchdog")
 	}
 }

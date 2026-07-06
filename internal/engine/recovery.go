@@ -82,12 +82,18 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// context, so registering here (not in startScreencast) keeps a backend switch
 	// or resize from leaking a second listener.
 	e.registerScreencastListener(ctx, slot)
+	// Reset the stuck-state watchdog for this session, so a rebuild does not read the
+	// previous session's receive timestamp or SessionID as a live stall.
+	e.recvNano.Store(0)
+	e.lastSession.Store(0)
+	e.stallPoked.Store(false)
 	if err = e.startScreencast(ctx, capW, capH); err != nil {
 		e.teardownSession()
 		return nil, fmt.Errorf("engine: start screencast: %w", err)
 	}
 	timer.mark(labelScreencastStarted)
 	go e.ackPump(ctx, acks)
+	go e.runScreencastWatchdog(ctx)
 	go e.runTextSync(ctx, ts, reSnap, reflow, scroll, reEmit)
 	go e.runFrameLoop(ctx, slot, frames, ts, scroll, reEmit)
 
@@ -365,7 +371,7 @@ func (e *ChromiumEngine) pokeReflow() {
 
 // teardownSession tears down the live session without closing the frames
 // channel, so it is safe on both a crash rebuild and Close. It drains the slot
-// (acking any held frame and releasing the frame loop parked on it) then cancels
+// (releasing the frame loop parked on it; the held raw frame is already acked) then cancels
 // the context, which stops the screencast, force-kills the managed Chromium, and
 // releases the frame loop's send select. It clears the per-session fields so a
 // stale context is never reused.
@@ -380,7 +386,7 @@ func (e *ChromiumEngine) teardownSession() {
 	e.layoutShiftID = ""
 	e.mu.Unlock()
 	if slot != nil {
-		slot.drain(e.ackFrame)
+		slot.drain()
 	}
 	if cancel != nil {
 		cancel()

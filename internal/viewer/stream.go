@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -133,6 +134,15 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks strin
 	// undone, so the summary line lands readable on the normal screen. The meter is
 	// nil unless NYALA_FPS_TIMING is set, so an off run pays only nil checks.
 	fps := newFPSMeter(os.Environ())
+	// Wire the engine's optional ingest reporter so the badge and summary can show
+	// the screencast ingest rate (In) beside the paint rate (Out). ChromiumEngine
+	// implements it; a fake engine that does not leaves ingest nil, shown Out-only.
+	// Only when the meter is armed, so an off run never type-asserts.
+	if fps != nil {
+		if r, ok := eng.(ingestReporter); ok {
+			fps.ingest = r
+		}
+	}
 	defer fps.printSummary(os.Stdout)
 	fd, st, restore, err := setupViewer(eng, tty, colourFlag, scheme, layoutWidth)
 	if err != nil {
@@ -355,12 +365,25 @@ type streamSession struct {
 // V3), so a backend switch or a resize never strands this cached handle.
 func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error {
 	frames := s.eng.Frames()
+	// Heartbeat the fps badge so an idle page decays it to a live 0 rather than
+	// freezing it at the last frame's rate. The block backend pushes no frames while
+	// static, so without this a scroll that settles leaves the badge wedged. A nil
+	// channel blocks forever in the select, so an off run (no meter) starts no ticker
+	// and the case never fires.
+	var heartbeat <-chan time.Time
+	if s.fps != nil {
+		t := time.NewTicker(fpsBadgeInterval)
+		defer t.Stop()
+		heartbeat = t.C
+	}
 	for {
 		select {
 		case <-winch:
 			if err := s.resize(); err != nil {
 				return err
 			}
+		case now := <-heartbeat:
+			s.paintFPS(s.fps.refresh(now))
 		case frame, ok := <-frames:
 			if !ok {
 				return nil
@@ -469,16 +492,16 @@ func (s *streamSession) draw(frame render.Frame) error {
 	if err := s.st.RenderStreamFrame(frame, s.tty); err != nil {
 		return err
 	}
-	if _, err := io.WriteString(s.tty, endSyncUpdate); err != nil {
-		return err
-	}
-	// Paint the fps badge after the grid, gated behind NYALA_FPS_TIMING. It is nil
-	// off the timing path, so production pays only this nil check. The meter counts
-	// every draw but rebuilds the badge string at most once per second; the cached
-	// escape-wrapped string is repainted each frame (cheap, no per-frame alloc) so
-	// the grid draw does not leave it overwritten. The badge is a cursor-saved
-	// overlay, so it never enters the block grid the differ tracks and leaves the
-	// golden-gated compose bytes untouched.
+	// Paint the fps badge after the grid but inside the sync bracket, gated behind
+	// NYALA_FPS_TIMING. It is nil off the timing path, so production pays only this
+	// nil check. The meter counts every draw but rebuilds the badge string at most
+	// once per second; the cached escape-wrapped string is repainted each frame
+	// (cheap, no per-frame alloc) so the grid draw does not leave it overwritten. The
+	// badge must sit inside the DEC 2026 update so each atomic present carries it;
+	// painted after endSyncUpdate it flickered out during a scroll, when back-to-back
+	// frames each present the grid alone before the un-synced badge lands. The badge
+	// is a cursor-saved overlay, so it never enters the block grid the differ tracks
+	// and leaves the golden-gated compose bytes untouched.
 	if s.fps != nil {
 		now := time.Now()
 		// A frame carrying text runs is the first-text-published milestone reaching
@@ -486,6 +509,9 @@ func (s *streamSession) draw(frame render.Frame) error {
 		// page-load stall stays out of the rate stats.
 		s.fps.tick(now, len(frame.Text) > 0)
 		s.paintFPS(s.fps.badge(now))
+	}
+	if _, err := io.WriteString(s.tty, endSyncUpdate); err != nil {
+		return err
 	}
 	return nil
 }
@@ -661,6 +687,21 @@ const fpsBadgeInterval = time.Second
 // not on this fallback.
 const fpsWarmupFallback = 5 * time.Second
 
+// fpsPeakHold is how long the badge holds the highest In/Out it has seen. The
+// instantaneous windowed rate decays in a second, so a discrete scroll (a
+// sub-second frame burst) would flash a number and fall back to 0 before it can be
+// read. The badge shows the peak over this trailing span instead, so a scroll burst
+// stays legible for a few seconds, then fades as the burst ages out.
+const fpsPeakHold = 3 * time.Second
+
+// fpsSample is one badge-rate observation: the In and Out rates measured at t. The
+// meter keeps a trailing fpsPeakHold window of these so the badge can show the peak.
+type fpsSample struct {
+	t   time.Time
+	in  float64
+	out float64
+}
+
 // fpsMeter tracks the live usable-frames-per-second figure for the NYALA_FPS_TIMING
 // instrument: a rolling window feeds the badge and running accumulators feed the
 // quit summary. The rate stats are gated to steady state: they accumulate only from
@@ -688,6 +729,25 @@ type fpsMeter struct {
 	badgeStr  string    // cached escape-wrapped badge, rebuilt at most once per interval
 	badgeAt   time.Time // instant badgeStr was last rebuilt
 	haveBadge bool      // set once badgeStr holds a real string
+
+	peaks []fpsSample // trailing fpsPeakHold window of In/Out samples, for the badge peak
+
+	// ingest is the optional engine ingest source. When set the badge and summary
+	// show the screencast ingest rate (In) beside the paint rate (Out); nil (a fake
+	// engine, or the switch off) shows Out only. It is read on the draw goroutine.
+	ingest ingestReporter
+}
+
+// ingestReporter is the optional engine capability the fps meter reads to show the
+// screencast ingest rate beside the paint rate. ChromiumEngine implements it; a
+// fake engine that does not is shown as Out-only. The viewer type-asserts the
+// Engine against it, so the Engine seam and all fakes stay unchanged.
+type ingestReporter interface {
+	// IngestFPS returns the rolling window ingest rate at now, for the live badge.
+	IngestFPS(now time.Time) float64
+	// IngestSummary returns the session ingest frame count and mean fps, for the
+	// quit summary line.
+	IngestSummary() (frames int, meanFPS float64)
 }
 
 // newFPSMeter returns a meter when NYALA_FPS_TIMING is set in env, or nil
@@ -719,6 +779,10 @@ func (m *fpsMeter) tick(now time.Time, hasText bool) {
 		drop++
 	}
 	m.times = m.times[drop:]
+
+	// Sample the live In/Out peak every draw, before the warm-up early-return, so a
+	// scroll burst is captured whether or not the gate has opened.
+	m.samplePeak(now)
 
 	if !m.gated {
 		if !hasText && now.Sub(m.start) < fpsWarmupFallback {
@@ -767,21 +831,103 @@ func (m *fpsMeter) windowRate() float64 {
 // per second while the badge stays painted over every frame.
 func (m *fpsMeter) badge(now time.Time) string {
 	if !m.haveBadge || now.Sub(m.badgeAt) >= fpsBadgeInterval {
-		m.badgeStr = fmt.Sprintf("\x1b7\x1b[1;1H\x1b[7m %.1f fps \x1b[0m\x1b8", m.windowRate())
-		m.badgeAt = now
-		m.haveBadge = true
+		return m.formatBadge(now)
 	}
 	return m.badgeStr
 }
 
+// formatBadge rebuilds and caches the badge string at now: a cursor save, a home,
+// the reverse-video rate, an SGR reset, and a cursor restore. With an ingest
+// reporter it shows "In: X.X / Out: Y.Y fps"; both are windowed, so both decay live
+// when idle. Without one it shows "Out: Y.Y fps" alone. It is the sole per-call
+// allocation and the single place the badge escape is built. The SGR opens with a
+// reset then reverse ("\x1b[0;7m"): the reset clears the grid's ambient colour so
+// reverse inverts the terminal default, not whatever page colour the differ left
+// active, which otherwise tinted the badge from a scrolled-away cell.
+func (m *fpsMeter) formatBadge(now time.Time) string {
+	in, out := m.peakRates()
+	if m.ingest != nil {
+		m.badgeStr = fmt.Sprintf("\x1b7\x1b[1;1H\x1b[0;7m In: %s / Out: %s fps \x1b[0m\x1b8", fpsField(in), fpsField(out))
+	} else {
+		m.badgeStr = fmt.Sprintf("\x1b7\x1b[1;1H\x1b[0;7m Out: %s fps \x1b[0m\x1b8", fpsField(out))
+	}
+	m.badgeAt = now
+	m.haveBadge = true
+	return m.badgeStr
+}
+
+// fpsField renders one badge rate: the value to one decimal, or "--" when it is
+// zero (no frames in the peak-hold window). A dash reads as idle, which is clearer
+// feedback than a misleading "0.0" when nothing is rendering.
+func fpsField(v float64) string {
+	if v <= 0 {
+		return "--"
+	}
+	return strconv.FormatFloat(v, 'f', 1, 64)
+}
+
+// samplePeak records the current In and Out rates at now and ages the peak window
+// out to fpsPeakHold. tick calls it on every draw and refresh calls it on the idle
+// heartbeat, so the window sees both frame bursts and idle gaps. Out is the paint
+// window rate; In is the engine ingest rate, or 0 with no reporter.
+func (m *fpsMeter) samplePeak(now time.Time) {
+	in := 0.0
+	if m.ingest != nil {
+		in = m.ingest.IngestFPS(now)
+	}
+	m.peaks = append(m.peaks, fpsSample{t: now, in: in, out: m.windowRate()})
+	cutoff := now.Add(-fpsPeakHold)
+	drop := 0
+	for drop < len(m.peaks) && m.peaks[drop].t.Before(cutoff) {
+		drop++
+	}
+	m.peaks = m.peaks[drop:]
+}
+
+// peakRates returns the highest In and Out rates in the trailing peak window, so the
+// badge holds a scroll burst's rate for fpsPeakHold before it fades. An empty window
+// (no samples yet) reports 0.
+func (m *fpsMeter) peakRates() (in, out float64) {
+	for _, s := range m.peaks {
+		if s.in > in {
+			in = s.in
+		}
+		if s.out > out {
+			out = s.out
+		}
+	}
+	return in, out
+}
+
+// refresh ages the trailing window out to now without recording a frame, then
+// rebuilds the badge. The draw loop calls it on a heartbeat between frames, so an
+// idle page (the block backend pushes no frames while static) decays the live rate
+// to 0 instead of freezing the badge at its last value. It records no frame and
+// touches no summary stat, so a heartbeat never inflates the counted-frame total.
+func (m *fpsMeter) refresh(now time.Time) string {
+	cutoff := now.Add(-m.window)
+	drop := 0
+	for drop < len(m.times) && m.times[drop].Before(cutoff) {
+		drop++
+	}
+	m.times = m.times[drop:]
+	// Sample the (now decayed) rate so the peak window ages out on idle too: once a
+	// burst is older than fpsPeakHold the badge falls back to 0.
+	m.samplePeak(now)
+	return m.formatBadge(now)
+}
+
 // printSummary writes one compact fps summary line to w after the session ends. It
 // reports warmup_ms (time to the first counted frame, so the "loads slowly" signal
-// stays visible), then the steady-state rate stats measured from that gate frame
-// onward: frames drawn, wall seconds, mean and median fps, the min and max
-// instantaneous fps (the slowest and fastest single frames), and the worst
-// inter-frame gap in ms, which exposes a post-load stall a mean hides. A nil meter
-// or a session whose gate never opened prints nothing, so an off run and an empty
-// run are both silent.
+// stays visible), then the two rate streams. The In stream (screencast ingest) gets
+// in_frames and in_mean over the ingest span; its timestamps are burst-clustered, so
+// a gap-based median or min/max would be noisy, and frames plus mean read true. The
+// Out stream (paint) gets the full steady-state stats measured from the gate frame
+// onward: out_frames, wall seconds, out_mean and out_median fps, the out_min and
+// out_max instantaneous fps (the slowest and fastest single frames), and
+// out_worst_gap_ms, which exposes a post-load stall a mean hides. When no ingest
+// reporter is wired the In fields read zero. A nil meter or a session whose gate
+// never opened prints nothing, so an off run and an empty run are both silent.
 func (m *fpsMeter) printSummary(w io.Writer) {
 	if m == nil || m.frames == 0 {
 		return
@@ -802,8 +948,12 @@ func (m *fpsMeter) printSummary(w io.Writer) {
 		}
 	}
 	worstGapMS := float64(m.maxGap) / float64(time.Millisecond)
-	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f frames=%d wall=%.2fs mean=%.1f median=%.1f min=%.1f max=%.1f worst_gap_ms=%.1f\n",
-		warmupMS, m.frames, wall, mean, medianFPS(m.gaps), minInst, maxInst, worstGapMS)
+	inFrames, inMean := 0, 0.0
+	if m.ingest != nil {
+		inFrames, inMean = m.ingest.IngestSummary()
+	}
+	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f in_frames=%d in_mean=%.1f out_frames=%d wall=%.2fs out_mean=%.1f out_median=%.1f out_min=%.1f out_max=%.1f out_worst_gap_ms=%.1f\n",
+		warmupMS, inFrames, inMean, m.frames, wall, mean, medianFPS(m.gaps), minInst, maxInst, worstGapMS)
 }
 
 // medianFPS returns the median instantaneous fps from the collected inter-frame

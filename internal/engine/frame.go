@@ -25,10 +25,10 @@ const screencastQuality = 90
 // slot already bounds upstream backpressure, so a couple of slots is enough.
 const frameChannelBuffer = 2
 
-// ackBufferDepth is the buffer size of the ack channel the ack pump drains. The
-// latest-wins slot holds at most one unconsumed frame, so at most one consume
-// ack plus a small burst of displaced-frame acks are in flight at once; a few
-// slots of headroom keep the listener's select-with-default enqueue from ever
+// ackBufferDepth is the buffer size of the ack channel the ack pump drains. Every
+// delivered frame is acked once on receive, and Chrome self-throttles the screencast
+// to at most a few frames in flight, so only a few acks are ever pending at once; a
+// few slots of headroom keep the listener's select-with-default enqueue from ever
 // dropping a real ack under normal cadence.
 const ackBufferDepth = 8
 

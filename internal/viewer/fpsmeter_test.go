@@ -82,13 +82,49 @@ func TestFPSMeterWarmupGate(t *testing.T) {
 	if m.maxGap != 100*time.Millisecond {
 		t.Fatalf("worst gap: got %v, want 100ms (load stall excluded)", m.maxGap)
 	}
+	m.ingest = fakeIngest{frames: 40, mean: 23.6}
 	var b strings.Builder
 	m.printSummary(&b)
 	out := b.String()
-	for _, want := range []string{"warmup_ms=1800", "frames=4", "wall=0.30s", "worst_gap_ms=100.0", "median=10.0"} {
+	for _, want := range []string{
+		"warmup_ms=1800", "in_frames=40", "in_mean=23.6",
+		"out_frames=4", "wall=0.30s", "out_worst_gap_ms=100.0", "out_median=10.0",
+	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("summary %q missing %q", out, want)
 		}
+	}
+}
+
+// fakeIngest is a stub ingestReporter for the meter tests: it returns fixed In
+// values so the badge and summary shape can be asserted without a real engine.
+type fakeIngest struct {
+	fps    float64
+	frames int
+	mean   float64
+}
+
+func (f fakeIngest) IngestFPS(time.Time) float64   { return f.fps }
+func (f fakeIngest) IngestSummary() (int, float64) { return f.frames, f.mean }
+
+// TestFPSMeterBadgeInOut checks the badge shows both streams when an ingest reporter
+// is wired, and Out only when it is not.
+func TestFPSMeterBadgeInOut(t *testing.T) {
+	base := time.Unix(0, 0)
+
+	withIn := &fpsMeter{window: time.Second, ingest: fakeIngest{fps: 24}}
+	withIn.tick(base, true)
+	withIn.tick(base.Add(100*time.Millisecond), true)
+	b := withIn.badge(base.Add(100 * time.Millisecond))
+	if !strings.Contains(b, "In: 24.0") || !strings.Contains(b, "Out:") {
+		t.Fatalf("badge %q missing In/Out with a reporter", b)
+	}
+
+	outOnly := &fpsMeter{window: time.Second}
+	outOnly.tick(base, true)
+	b = outOnly.badge(base)
+	if strings.Contains(b, "In:") || !strings.Contains(b, "Out:") {
+		t.Fatalf("badge %q should be Out-only with no reporter", b)
 	}
 }
 
@@ -134,6 +170,51 @@ func TestFPSMeterMedian(t *testing.T) {
 	}
 	if got := medianFPS(nil); got != 0 {
 		t.Fatalf("median of no gaps: got %.3f, want 0", got)
+	}
+}
+
+// TestFPSMeterRefreshDecaysIdle checks the heartbeat refresh ages the badge out to a
+// live 0 once a burst is older than the peak-hold window, instead of freezing it,
+// and counts no frame.
+func TestFPSMeterRefreshDecaysIdle(t *testing.T) {
+	m := &fpsMeter{window: time.Second}
+	base := time.Unix(0, 0)
+	// A scroll burst: five draws at 100ms spacing reads 10 fps.
+	for i := range 5 {
+		m.tick(base.Add(time.Duration(i)*100*time.Millisecond), true)
+	}
+	if got := m.badge(base.Add(400 * time.Millisecond)); !strings.Contains(got, "10.0 fps") {
+		t.Fatalf("badge after burst: got %q, want 10.0 fps", got)
+	}
+	framesAfterBurst := m.frames
+	// Frames stop. A heartbeat past the fpsPeakHold window (last burst sample at
+	// 400ms, hold 3s) ages every sample out, so the peak decays to idle ("--") rather
+	// than freezing at 10 fps.
+	if got := m.refresh(base.Add(3600 * time.Millisecond)); !strings.Contains(got, "Out: -- fps") {
+		t.Fatalf("badge after idle refresh: got %q, want idle Out: -- fps", got)
+	}
+	if m.frames != framesAfterBurst {
+		t.Fatalf("refresh counted a phantom frame: got %d, want %d", m.frames, framesAfterBurst)
+	}
+}
+
+// TestFPSMeterPeakHold checks the badge holds a burst's rate across the hold window,
+// so a sub-second scroll burst stays readable, then fades once it ages out.
+func TestFPSMeterPeakHold(t *testing.T) {
+	m := &fpsMeter{window: time.Second}
+	base := time.Unix(0, 0)
+	// A short burst reads 10 fps, then frames stop.
+	for i := range 5 {
+		m.tick(base.Add(time.Duration(i)*100*time.Millisecond), true)
+	}
+	// One second on, well inside the 3s hold, the badge still shows the burst peak
+	// even though the instantaneous window has decayed.
+	if got := m.refresh(base.Add(1400 * time.Millisecond)); !strings.Contains(got, "10.0 fps") {
+		t.Fatalf("badge inside hold: got %q, want the held 10.0 fps", got)
+	}
+	// Past the hold window the peak fades to idle ("--").
+	if got := m.refresh(base.Add(3600 * time.Millisecond)); !strings.Contains(got, "Out: -- fps") {
+		t.Fatalf("badge past hold: got %q, want idle Out: -- fps", got)
 	}
 }
 

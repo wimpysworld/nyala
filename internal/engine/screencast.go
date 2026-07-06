@@ -21,36 +21,39 @@ func msSince(start time.Time) float64 {
 	return float64(time.Since(start).Microseconds()) / 1000
 }
 
-// pendingFrame is one decoded screencast frame waiting in the latest-wins slot,
-// paired with the ack id Chrome expects so the frame can be acked on consume or
-// on replace.
+// pendingFrame is one decoded screencast frame the worker produces off the
+// listener goroutine and hands to compose. It carries no ack id: the frame was
+// already acked on receive (handleScreencastFrame), before decode.
 type pendingFrame struct {
 	img      *image.RGBA                   // decoded bitmap in RGBA channel order
 	meta     *page.ScreencastFrameMetadata // scroll offset and page scale for the sync
-	ack      int64                         // SessionID to pass to page.ScreencastFrameAck
 	bytes    int                           // screencast payload byte size, for capture stats
 	decodeMS float64                       // wall-clock decode time in ms, set under capture only
 }
 
-// ackFunc acks one received screencast frame by its SessionID. The live loop
-// passes a chromedp-backed ack; the unit test passes a fake that records the id,
-// so the slot accounting is exercised without a browser.
-type ackFunc func(ack int64)
+// rawFrame is one undecoded screencast frame waiting in the coalescing slot: the
+// base64 payload and the screencast metadata. The frame is acked on receive,
+// before it enters the slot, so it carries no ack id. The slot exists only to hand
+// the latest raw frame to the decode worker, dropping older undecoded frames.
+type rawFrame struct {
+	data string                        // base64 screencast payload, decoded by the worker
+	meta *page.ScreencastFrameMetadata // scroll offset and page scale for the sync
+}
 
-// frameSlot is the latest-wins single-frame backpressure slot. It holds at most
-// one unconsumed frame. A newly arrived frame replaces any unconsumed one, and
-// the displaced frame is acked as it is dropped; the consumer acks the frame it
-// takes. So every frame put into the slot is acked exactly once, on consume or
-// on replace, and Chrome's production rate couples to the consume rate. The slot
-// is the pure, browser-free core of the screencast loop: feed it frames with put
-// and take them with tryConsume, both taking an ackFunc, and the ack count is
+// frameSlot is the latest-wins coalescing slot for undecoded screencast frames. It
+// holds at most one raw frame; a newly arrived frame replaces any unconsumed one,
+// so the decode worker always takes the newest and older undecoded frames are
+// dropped without decode. It carries no ack: every delivered frame is acked once on
+// receive (handleScreencastFrame), before it reaches the slot, so a dropped raw
+// frame is already acked. The slot is the pure, browser-free coalescing core: feed
+// it raw frames with put and take the latest with tryConsume, both browser-free and
 // assertable in a unit test (see screencast_test.go).
 type frameSlot struct {
 	mu      sync.Mutex
-	held    pendingFrame
+	held    rawFrame
 	full    bool
 	ready   chan struct{} // signals consume that a frame is waiting; buffered size 1
-	dropped bool          // set by drain so a late put acks instead of storing
+	dropped bool          // set by drain so a late put stores nothing
 }
 
 // newFrameSlot returns an empty slot ready to accept frames.
@@ -58,28 +61,19 @@ func newFrameSlot() *frameSlot {
 	return &frameSlot{ready: make(chan struct{}, 1)}
 }
 
-// put places frame in the slot. If the slot already holds an unconsumed frame,
-// that displaced frame is acked via ack before the new one takes its place; the
-// new frame stays unacked until it is consumed or itself displaced. After drain,
-// put acks the frame immediately and stores nothing, so no goroutine blocks on a
-// slot that will never be consumed.
-func (s *frameSlot) put(frame pendingFrame, ack ackFunc) {
+// put places the raw frame in the slot, replacing any unconsumed one (latest-wins
+// coalescing). After drain it stores nothing, so no goroutine feeds a slot that
+// will never be consumed. It never acks: the frame is acked on receive before it
+// reaches here, so a replaced frame is already acked.
+func (s *frameSlot) put(frame rawFrame) {
 	s.mu.Lock()
 	if s.dropped {
 		s.mu.Unlock()
-		ack(frame.ack)
 		return
 	}
-	if s.full {
-		displaced := s.held
-		s.held = frame
-		s.mu.Unlock()
-		ack(displaced.ack)
-	} else {
-		s.held = frame
-		s.full = true
-		s.mu.Unlock()
-	}
+	s.held = frame
+	s.full = true
+	s.mu.Unlock()
 	select {
 	case s.ready <- struct{}{}:
 	default:
@@ -95,22 +89,21 @@ func (s *frameSlot) readyC() <-chan struct{} {
 	return s.ready
 }
 
-// tryConsume takes the held frame without blocking, acking it via ack, and returns
-// ok=true when one was present. It returns ok=false on an empty or drained slot, so
-// a caller woken by readyC that finds nothing waiting (a spurious or drained wake)
-// loops back to its select rather than parking. It mirrors consume's take-and-ack
-// under the lock, so the ack accounting stays exactly once per frame.
-func (s *frameSlot) tryConsume(ack ackFunc) (pendingFrame, bool) {
+// tryConsume takes the held raw frame without blocking, returning ok=true when one
+// was present. It returns ok=false on an empty or drained slot, so a caller woken by
+// readyC that finds nothing waiting (a spurious or drained wake) loops back to its
+// select rather than parking. The caller decodes the taken frame off the listener
+// goroutine.
+func (s *frameSlot) tryConsume() (rawFrame, bool) {
 	s.mu.Lock()
 	if !s.full {
 		s.mu.Unlock()
-		return pendingFrame{}, false
+		return rawFrame{}, false
 	}
 	frame := s.held
-	s.held = pendingFrame{}
+	s.held = rawFrame{}
 	s.full = false
 	s.mu.Unlock()
-	ack(frame.ack)
 	return frame, true
 }
 
@@ -122,29 +115,39 @@ func (s *frameSlot) drained() bool {
 	return s.dropped
 }
 
-// drain marks the slot dropped and acks any frame still held, so Close leaves no
-// frame unacked and unblocks a consumer parked on ready. After drain, put acks
-// and discards, and consume returns ok=false.
-func (s *frameSlot) drain(ack ackFunc) {
+// drain marks the slot dropped and unblocks a consumer parked on ready, so Close
+// releases the frame loop. After drain, put stores nothing and tryConsume returns
+// ok=false. It needs no ack: the held raw frame was already acked on receive.
+func (s *frameSlot) drain() {
 	s.mu.Lock()
 	s.dropped = true
-	held, full := s.held, s.full
-	s.held, s.full = pendingFrame{}, false
+	s.held, s.full = rawFrame{}, false
 	s.mu.Unlock()
-	if full {
-		ack(held.ack)
-	}
 	select {
 	case s.ready <- struct{}{}:
 	default:
 	}
 }
 
-// handleScreencastFrame decodes one screencast frame and feeds it into the slot,
-// acking and dropping a corrupt frame so the stream does not stall. It is the
-// screencast-frame arm of the listener type switch. The recorder carries metadata
-// only, never the frame image bytes, so the event stream holds no payload.
+// handleScreencastFrame acks one delivered screencast frame immediately, then
+// hands the raw, undecoded frame to the coalescing slot for the worker to decode
+// off this goroutine. It is the screencast-frame arm of the listener type switch,
+// running on the chromedp ListenTarget event goroutine, so it must do no PNG decode
+// and no chromedp.Run here: it counts ingest, records the metadata event, acks via
+// the pump channel (the #920-safe off-goroutine ack), stamps the watchdog, and puts
+// the raw frame. Acking on receive, before decode, releases Chrome's in-flight
+// credit at once and decouples the ack from decode and any downstream stall. The
+// recorder carries metadata only, never the frame image bytes, so the event stream
+// holds no payload.
 func (e *ChromiumEngine) handleScreencastFrame(slot *frameSlot, f *page.EventScreencastFrame) {
+	now := time.Now()
+	// Count true ingest for every delivered frame, before the slot coalesces any.
+	// Gated behind the armed check so an off run pays one bool check and no clock read.
+	if e.ingest.armed() {
+		e.ingest.record(now)
+	}
+	// Stamp the receive for the stuck-state watchdog (always on, lock-free).
+	e.markFrameReceived(now, f.SessionID)
 	if e.recorder != nil {
 		e.recorder.Record(captureEvent{
 			Type:      captureEventScreencastFrame,
@@ -152,23 +155,13 @@ func (e *ChromiumEngine) handleScreencastFrame(slot *frameSlot, f *page.EventScr
 			SessionID: f.SessionID,
 		})
 	}
-	// Time the decode only under capture; off the capture path the wall-clock read
-	// is skipped and decodeMS stays zero.
-	start := time.Now()
-	img, err := decodeScreencastImage(f.Data)
-	if err != nil {
-		// A corrupt frame is acked and dropped so the stream does not stall. The
-		// ack enqueues onto the pump rather than running here, because this is the
-		// ListenTarget event goroutine and a chromedp.Run on it is the #920 deadlock.
-		e.ackFrame(f.SessionID)
-		return
-	}
-	pending := pendingFrame{img: img, meta: f.Metadata, ack: f.SessionID}
-	if e.captureOn {
-		pending.bytes = len(f.Data)
-		pending.decodeMS = msSince(start)
-	}
-	slot.put(pending, e.ackFrame)
+	// Ack on receive, before any decode. The enqueue is #920-safe: ackPump runs the
+	// chromedp.Run off this event goroutine. Whether this frame is later decoded or
+	// dropped from the slot, it is acked exactly once, here.
+	e.ackFrame(f.SessionID)
+	// Hand the raw frame to the coalescing slot; the worker decodes it. An older
+	// undecoded frame is dropped without decode, and it is already acked.
+	slot.put(rawFrame{data: f.Data, meta: f.Metadata})
 }
 
 // registerScreencastListener registers the one ListenTarget handler that decodes
@@ -212,15 +205,15 @@ func (e *ChromiumEngine) startScreencast(ctx context.Context, capW, capH int) er
 	)
 }
 
-// ackFrame is the production ackFunc the slot calls on consume and on replace,
-// and the listener calls for a corrupt frame. It enqueues the SessionID onto the
-// pump channel instead of running page.ScreencastFrameAck inline: the slot's
-// displaced-frame ack and the corrupt-frame ack both run on the ListenTarget
-// event goroutine, and a chromedp.Run there is the chromedp #920 self-deadlock.
-// The enqueue is select-with-default so a full channel or a torn-down session (a
-// nil acks channel) drops the ack rather than parking the caller. A dropped ack
-// only delays one frame's credit; the next consumed frame's ack re-couples the
-// stream.
+// ackFrame enqueues one frame's SessionID onto the pump channel for ackPump to run
+// as page.ScreencastFrameAck off the ListenTarget event goroutine. handleScreencastFrame
+// calls it once per delivered frame, on receive; the watchdog calls it to re-couple
+// a stalled stream. It never runs the ack inline, because handleScreencastFrame is
+// on the event goroutine and a chromedp.Run there is the chromedp #920 self-deadlock.
+// The enqueue is select-with-default so a full channel or a torn-down session (a nil
+// acks channel) drops the ack rather than parking the caller. Chrome self-throttles
+// the screencast to at most a few frames in flight, so the buffered pump keeps pace
+// and the drop branch stays unreached under normal cadence.
 func (e *ChromiumEngine) ackFrame(ack int64) {
 	e.mu.Lock()
 	acks := e.acks
@@ -254,6 +247,74 @@ func (e *ChromiumEngine) ackPump(ctx context.Context, acks <-chan int64) {
 			return
 		}
 	}
+}
+
+// screencastWatchdogInterval is how often the stuck-state watchdog checks the
+// stream. It matches casty's 5s cadence: long enough to leave a healthy idle page
+// alone (at most one re-couple per silent gap), short enough to recover a wedge
+// quickly.
+const screencastWatchdogInterval = 5 * time.Second
+
+// screencastStallThreshold is how long the stream must be silent (no frame
+// received) before the watchdog treats the silence as a possible wedge and
+// re-couples once. It equals the check interval, so a genuine stall is recovered
+// within about two intervals.
+const screencastStallThreshold = 5 * time.Second
+
+// markFrameReceived stamps the wall time and SessionID of a delivered screencast
+// frame for the stuck-state watchdog, and clears the per-gap poke guard so a fresh
+// frame re-arms recovery. handleScreencastFrame calls it on the listener goroutine
+// for every delivered frame, before any decode. It is lock-free (atomics), so it
+// adds only three atomic stores to the hot receive path and is always on,
+// independent of the NYALA_FPS_TIMING ingest counter.
+func (e *ChromiumEngine) markFrameReceived(now time.Time, session int64) {
+	e.recvNano.Store(now.UnixNano())
+	e.lastSession.Store(session)
+	e.stallPoked.Store(false)
+}
+
+// runScreencastWatchdog recovers a wedged screencast without disturbing a healthy
+// idle page. It ticks every screencastWatchdogInterval and, when the stream has
+// received at least one frame but none within screencastStallThreshold, re-acks the
+// last frame's SessionID once per silent gap. The re-ack restores Chrome's in-flight
+// credit if an ack was ever lost (the wedge) and is a no-op on a genuinely idle
+// page, which has no pending compositor frame to send regardless of credit. Silence
+// alone cannot tell idle from wedge, so the watchdog uses only this conservative
+// re-couple, never a stream reset. It runs per session and exits when ctx is
+// cancelled.
+func (e *ChromiumEngine) runScreencastWatchdog(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	t := time.NewTicker(screencastWatchdogInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			e.watchdogRecoverIfStalled(now)
+		}
+	}
+}
+
+// watchdogRecoverIfStalled re-acks once when the stream looks stalled: it received a
+// frame before (recvNano set) but none within screencastStallThreshold, and it has
+// not already re-acked for this silent gap (stallPoked). It is factored out so the
+// decision is unit-tested without a ticker, and returns true when it re-acked.
+func (e *ChromiumEngine) watchdogRecoverIfStalled(now time.Time) bool {
+	recv := e.recvNano.Load()
+	if recv == 0 {
+		return false // never streamed: nothing to recover
+	}
+	if now.Sub(time.Unix(0, recv)) < screencastStallThreshold {
+		return false // a frame arrived recently: healthy
+	}
+	if e.stallPoked.Swap(true) {
+		return false // already re-acked for this silent gap
+	}
+	e.ackFrame(e.lastSession.Load())
+	return true
 }
 
 // overlayState is the text-sync state the snapshot goroutine threads across its
@@ -674,9 +735,13 @@ func sleepCtx(ctx context.Context, d time.Duration) (cancelled bool) {
 	}
 }
 
-// runFrameLoop consumes frames from the slot until the context is cancelled or
-// the slot is drained, builds a synced render.Frame for each, and pushes it on
-// the frames channel. It runs in its own goroutine started per session; a crash
+// runFrameLoop takes the latest raw frame from the slot, decodes it off the
+// listener goroutine, builds a synced render.Frame, and pushes it on the frames
+// channel, until the context is cancelled or the slot is drained. The decode runs
+// here, not in handleScreencastFrame, so the chromedp receiver goroutine never
+// stalls on a PNG decode and acks are never queued behind one. A corrupt frame
+// fails to decode and is dropped; it is already acked on receive, so no ack is
+// needed here. It runs in its own goroutine started per session; a crash
 // or Close drains the slot and cancels the context to stop it. The DOM snapshot
 // runs on a separate goroutine (runTextSync) clocked by the page, not by frame
 // delivery, so this loop reads the latest published overlay runs as sticky state
@@ -684,8 +749,8 @@ func sleepCtx(ctx context.Context, d time.Duration) (cancelled bool) {
 // a snapshot read. It also parks on the re-emit poke the snapshot goroutine sends
 // after each publish: on a poke it re-pushes its last consumed bitmap recomposed
 // with the freshly published text, so a static page that delivers no new screencast
-// frame still repaints with text. The re-emit reuses the held bitmap and never
-// re-feeds the slot, so the slot's exactly-once ack accounting is untouched. On
+// frame still repaints with text. The re-emit reuses the held decoded bitmap and
+// never re-feeds the slot. On
 // each consumed frame it compares the frame's scroll offset against the last seen
 // one and pokes the scroll channel on any change, so the snapshot goroutine
 // re-snapshots the text at the new scroll once a scroll settles. The latest-wins
@@ -704,7 +769,11 @@ func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, fram
 	// a valid disabled timer.
 	e.mu.Lock()
 	timer := e.timing
+	decode := e.decode
 	e.mu.Unlock()
+	if decode == nil {
+		decode = decodeScreencastImage
+	}
 	var held pendingFrame
 	var haveHeld bool
 	// lastScroll tracks the scroll offset of the last consumed frame so a change
@@ -732,7 +801,7 @@ func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, fram
 			}
 			timer.markFrame()
 		case <-slot.readyC():
-			pending, ok := slot.tryConsume(e.ackFrame)
+			raw, ok := slot.tryConsume()
 			if !ok {
 				// A drained slot wakes readyC with no frame; exit on drain, otherwise the
 				// wake was spurious and the select re-parks.
@@ -740,6 +809,18 @@ func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, fram
 					return
 				}
 				continue
+			}
+			// Decode off the listener goroutine. Time it only under capture. A corrupt
+			// frame fails here and is dropped; it was already acked on receive.
+			start := time.Now()
+			img, derr := decode(raw.data)
+			if derr != nil {
+				continue
+			}
+			pending := pendingFrame{img: img, meta: raw.meta}
+			if e.captureOn {
+				pending.bytes = len(raw.data)
+				pending.decodeMS = msSince(start)
 			}
 			held, haveHeld = pending, true
 			off, offOK := frameScrollOffset(pending)
