@@ -194,7 +194,8 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks strin
 // one-slot work channel; submit sends non-blocking, so a fresh item supersedes
 // an unprocessed older one and the producer never blocks (latest-wins-drop). The
 // goroutine selects on the work channel and a done channel and exits when done
-// closes. Both the control restart queue and the key sender route through it.
+// closes. The control restart queue routes through it; the scroll key sender
+// accumulates instead of dropping, so it does not.
 type coalescingWorker[T any] struct {
 	work chan T
 	done <-chan struct{}
@@ -512,28 +513,75 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 	return false
 }
 
-// keySender serialises forwarded browser keys away from the input loop. The
-// one-slot buffer keeps quit keys responsive if a browser scroll call stalls. It
-// owns its done channel and closes it once on close, stopping the worker.
+// keySender serialises forwarded scroll keys away from the input loop, so a
+// browser scroll call that stalls never freezes quit or draw. Unlike the frame
+// path (latest-wins-drop), scrolling is cumulative: a rapid burst of scroll keys
+// must all reach the engine, or the page barely moves. So it accumulates every
+// submitted code and the worker forwards them all in order, letting the engine's
+// wheel transport sum the burst (dispatchWheel adds each delta into its held
+// offset) rather than dropping to the last key. send never blocks the input loop.
+// It owns its done channel and closes it once on close, stopping the worker.
 type keySender struct {
-	worker *coalescingWorker[string]
-	done   chan struct{}
-	once   sync.Once
+	fn      func(string)
+	wake    chan struct{}
+	done    chan struct{}
+	mu      sync.Mutex
+	pending []string
+	once    sync.Once
 }
 
 func newKeySender(eng Engine) *keySender {
-	done := make(chan struct{})
-	return &keySender{
-		worker: startCoalescingWorker(done, eng.SendKey),
-		done:   done,
+	s := &keySender{
+		fn:   eng.SendKey,
+		wake: make(chan struct{}, 1),
+		done: make(chan struct{}),
 	}
+	go s.run()
+	return s
 }
 
+// send queues one scroll-key code for the worker with a non-blocking append, so
+// the input loop never blocks on a stalled browser. The empty code is ignored.
+// The queued code is never dropped: a burst accumulates and the worker forwards
+// every code, so the engine sums the scroll instead of taking a single step.
 func (s *keySender) send(code string) {
 	if code == "" {
 		return
 	}
-	s.worker.submit(code)
+	s.mu.Lock()
+	s.pending = append(s.pending, code)
+	s.mu.Unlock()
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+// drain removes and returns all queued codes in submission order, resetting the
+// buffer. The worker forwards the whole batch, so codes queued while a dispatch
+// was in flight are summed by the engine, not lost.
+func (s *keySender) drain() []string {
+	s.mu.Lock()
+	codes := s.pending
+	s.pending = nil
+	s.mu.Unlock()
+	return codes
+}
+
+// run forwards queued codes serially off the input loop until done closes. A
+// single wake may cover several appends because drain takes the whole batch, so
+// no scroll key is dropped between the append and the drain.
+func (s *keySender) run() {
+	for {
+		select {
+		case <-s.wake:
+			for _, code := range s.drain() {
+				s.fn(code)
+			}
+		case <-s.done:
+			return
+		}
+	}
 }
 
 func (s *keySender) close() {
