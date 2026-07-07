@@ -167,6 +167,10 @@ debug-run url="https://wimpys.world" *flags:
     else
         printf 'debug-run: capture produced no bundle; tail of output:\n' >&2
         tail -c 2000 "$log" >&2
+        # No bundle means no load_timings, the recipe's whole output. Fail so a CI or
+        # agent caller does not read success from a run that produced nothing, even if
+        # the capture itself exited 0.
+        if [ "$rc" -eq 0 ]; then rc=1; fi
     fi
     rm -f "$log"
     exit "$rc"
