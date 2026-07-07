@@ -160,7 +160,7 @@ func (e *ChromiumEngine) textOverlayBackend() bool {
 // Server and a Bypass are set, so a stray NO_PROXY without a proxy adds no flag.
 // When enableGPU is set it adds --enable-gpu: headless Chromium forces SwiftShader
 // (CPU) by default, and this flag turns that force off and reverts to normal driver
-// selection, so a GPU-backed Mesa driver can serve WebGL (docs/GPU-ACCEL-RESEARCH.md,
+// selection, so a GPU-backed Mesa driver can serve WebGL (docs/PERFORMANCE.md,
 // [S1][S2]). It rides the live path only. The capture path forces the block backend
 // and compares pixels for a byte-deterministic corpus/golden, so a hardware GPU would
 // shift antialiasing and break that determinism; the caller passes enableGPU false
