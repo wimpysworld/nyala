@@ -1,13 +1,13 @@
 package kitty
 
 import (
-	"compress/zlib"
 	"fmt"
 	"image"
 	"io"
 	"strings"
 
 	emmb64 "github.com/emmansun/base64"
+	"github.com/klauspost/compress/zlib"
 
 	"github.com/charmbracelet/x/ansi/kitty"
 )
@@ -19,7 +19,11 @@ import (
 // *image.RGBA pixel buffer in bulk rather than pixel by pixel through the
 // image.Image interface, it packs 24-bit RGB (f=24) and drops the opaque alpha so
 // zlib compresses a quarter fewer bytes and the base64 body is smaller, and it
-// compresses at zlib BestSpeed. The emitted bytes stay a valid Kitty
+// compresses at zlib BestSpeed. It uses klauspost/compress zlib rather than the
+// stdlib: its deflate is faster on large frames (roughly a quarter off encode
+// time for a few percent more bytes), which cuts the per-frame paint wall on the
+// live draw path. The output is a standard zlib stream that the terminal decodes
+// unchanged. The emitted bytes stay a valid Kitty
 // transmit-and-place command that renders the same opaque image; the source frame
 // is treated as fully opaque, so dropping alpha changes no visible pixel. A
 // LiveEncoder is not safe for concurrent use; the viewer drives it from one
