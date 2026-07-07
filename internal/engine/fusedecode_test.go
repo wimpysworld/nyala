@@ -118,6 +118,39 @@ func TestAverageYCbCrToRGBATolerance(t *testing.T) {
 	}
 }
 
+// TestAverageYCbCrToRGBANonZeroBounds guards the plane indexing for a source whose
+// Bounds().Min is non-zero (a subimage). Go's YCbCr planes index relative to the
+// bounds origin, so an absolute index reads the wrong chroma or runs past the plane
+// and panics. The reference converts through draw.Draw, which indexes correctly, so
+// matching it within tolerance proves the fused path honours the origin.
+func TestAverageYCbCrToRGBANonZeroBounds(t *testing.T) {
+	full := pageLikeJPEG(t, 1280, 800, movingScreencastQuality)
+	// Crop to a non-zero, even origin so the 4:2:0 chroma planes still align.
+	sub, ok := full.SubImage(image.Rect(64, 48, 64+512, 48+384)).(*image.YCbCr)
+	if !ok || sub.Bounds().Min == (image.Point{}) {
+		t.Fatalf("want a non-zero-origin *image.YCbCr subimage, got min %v", sub.Bounds().Min)
+	}
+	const dw, dh = 128, 96
+	ref := referenceSubCell(sub, dw, dh)
+	got := image.NewRGBA(image.Rect(0, 0, dw, dh))
+	averageYCbCrToRGBA(got, sub)
+
+	const tol = 8
+	var maxR, maxG, maxB int
+	for i := 0; i < len(ref.Pix); i += 4 {
+		maxR = maxInt(maxR, absI(int(ref.Pix[i])-int(got.Pix[i])))
+		maxG = maxInt(maxG, absI(int(ref.Pix[i+1])-int(got.Pix[i+1])))
+		maxB = maxInt(maxB, absI(int(ref.Pix[i+2])-int(got.Pix[i+2])))
+		if got.Pix[i+3] != 0xff {
+			t.Fatalf("alpha at pixel %d = %d, want 255 (opaque)", i/4, got.Pix[i+3])
+		}
+	}
+	t.Logf("non-zero bounds min=%v -> %dx%d: max delta R=%d G=%d B=%d (tol %d)", sub.Bounds().Min, dw, dh, maxR, maxG, maxB, tol)
+	if maxR > tol || maxG > tol || maxB > tol {
+		t.Errorf("non-zero bounds: max delta R=%d G=%d B=%d exceeds tol %d", maxR, maxG, maxB, tol)
+	}
+}
+
 // TestAverageYCbCrToRGBAOpaqueAndSized checks the kernel writes an opaque,
 // fully-sized result and never panics on a degenerate 1x1 target.
 func TestAverageYCbCrToRGBAOpaqueAndSized(t *testing.T) {
