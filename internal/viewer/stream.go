@@ -341,9 +341,12 @@ func setupViewer(eng Engine, tty *os.File, colourFlag string, scheme block.Schem
 // tty fd it reads the resized geometry from. firstDrawn gates the resize clear
 // so no clear lands before the loading cue is replaced by a real frame.
 type streamSession struct {
-	eng          Engine
-	st           *State
-	tty          *os.File
+	eng Engine
+	st  *State
+	// tty is the terminal sink. It is an io.Writer (satisfied by the *os.File the
+	// production path passes) so the writer goroutine and a test can drive it; the
+	// resized geometry is read from fd, not tty.
+	tty          io.Writer
 	fd           uintptr
 	keySender    *keySender
 	ctl          *control
@@ -351,16 +354,24 @@ type streamSession struct {
 	firstDrawn   bool
 	nilImageOnce sync.Once // guards the one-shot nil-image diagnostic
 	resizeOnce   sync.Once // guards the one-shot dropped-resize diagnostic
-	// frameBuf holds one frame's rendered bytes between the encode (RenderStreamFrame)
-	// and the single tty write. It is reused (Reset) each draw, so after warmup it
-	// allocates nothing. Buffering then one write keeps the same bytes in the same
-	// order, cuts the frame to one write syscall, and lets the fps meter time the
-	// encode apart from the terminal flush.
-	frameBuf bytes.Buffer
+	// writer owns the terminal writes on its own goroutine, so the producer's next
+	// frame encode overlaps the current frame's write. It is nil until loop starts
+	// the pipeline and nil again after loop stops it, so the startup and teardown
+	// paths write the tty directly (no writer to race). Only the producer goroutine
+	// reads or sets it.
+	writer *streamWriter
+	// assembled holds one encoded-but-unsent frame buffer between the producer's
+	// assemble and the handoff to the writer, so a control write or teardown can
+	// flush it first and keep frame order. It is one of the two ping-pong buffers;
+	// nil when nothing waits. assembledEncodeMS is that frame's RenderStreamFrame
+	// time, carried to the writer so recordPaint keeps the encode/write split. Both
+	// are producer-goroutine only.
+	assembled         *bytes.Buffer
+	assembledEncodeMS float64
 	// fps is the live fps counter, non-nil only when NYALA_FPS_TIMING is set. When
-	// set, draw stamps each frame and repaints a rolling usable-fps badge after the
-	// grid (at most once per second); when nil the draw path pays only a nil check,
-	// so production is unchanged.
+	// set, assemble stamps each frame and folds a rolling usable-fps badge into the
+	// frame buffer (rebuilt at most once per second); when nil the draw path pays
+	// only a nil check, so production is unchanged.
 	fps *fpsMeter
 }
 
@@ -383,31 +394,96 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 		defer t.Stop()
 		heartbeat = t.C
 	}
+
+	// Start the producer/writer pipeline. The producer (this goroutine) assembles
+	// each frame into an owned buffer; the writer goroutine does the single tty
+	// write, so encode N+1 overlaps write N. Stopping the writer here, before loop
+	// returns, guarantees no goroutine writes the terminal while Stream runs its
+	// teardown escapes (exitFullScreen, restore). flushAssembled presents the last
+	// assembled frame first, so the final image lands before teardown.
+	w := newStreamWriter(s.tty)
+	s.writer = w
+	defer func() {
+		s.flushAssembled()
+		w.stop()
+		s.writer = nil
+	}()
+
+	// The two ping-pong buffers live here on the producer. avail holds the buffers
+	// free to encode into; the writer returns each drained buffer over w.free, which
+	// the producer folds back into avail. pending holds the newest un-encoded frame,
+	// so a slow writer (no free buffer) keeps coalescing and drops stale frames
+	// (latest-wins) rather than blocking ingest.
+	avail := []*bytes.Buffer{{}, {}}
+	var (
+		pending     render.Frame
+		havePending bool
+	)
+
 	for {
+		// Encode the newest pending frame into a spare buffer when one is free and
+		// nothing already waits to hand off. Holding only one assembled frame at a
+		// time bounds the in-flight buffers to two.
+		if s.assembled == nil && havePending && len(avail) > 0 {
+			buf := avail[len(avail)-1]
+			avail = avail[:len(avail)-1]
+			encodeMS, err := s.assemble(buf, pending)
+			if err != nil {
+				return err
+			}
+			s.assembled = buf
+			s.assembledEncodeMS = encodeMS
+			havePending = false
+		}
+
+		// Enable the handoff case only when a buffer waits. A nil channel send never
+		// fires, so the select ignores it while nothing is assembled.
+		var readyC chan<- writeItem
+		var item writeItem
+		if s.assembled != nil {
+			readyC = w.ready
+			item = writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.fps != nil}
+		}
+
 		select {
+		case readyC <- item:
+			s.assembled = nil
 		case <-winch:
 			if err := s.resize(); err != nil {
 				return err
 			}
 		case now := <-heartbeat:
-			s.paintFPS(s.fps.refresh(now))
+			// Route the idle badge refresh through the writer so it never races the
+			// in-flight frame write.
+			_ = s.emitControl([]byte(s.fps.refresh(now)))
 		case frame, ok := <-frames:
 			if !ok {
 				return nil
 			}
-			// Coalesce a queued burst to one paint: drain any frames already waiting
-			// and keep only the newest, so a scroll burst draws once with the latest
-			// frame instead of painting every stale frame. Channel close mid-drain
-			// stops the loop, matching the main receive. The differ stays correct
-			// because it compares the drawn frame against the previous drawn grid, so
-			// skipped frames do not corrupt its state.
+			// Coalesce a queued burst to the newest frame, so a scroll burst presents
+			// once with the latest frame instead of every stale one. Channel close
+			// mid-drain stops the loop, matching the main receive. The differ stays
+			// correct because it compares the assembled frame against the previous
+			// assembled grid, so skipped frames do not corrupt its state.
 			frame, ok = drainFrames(frames, frame)
 			if !ok {
 				return nil
 			}
-			if err := s.draw(frame); err != nil {
-				return err
+			if frame.Img == nil {
+				s.nilImageOnce.Do(func() {
+					fmt.Fprintln(os.Stderr, "nyala: dropped a frame with no image")
+				})
+				continue
 			}
+			pending = frame
+			havePending = true
+		case fi := <-w.free:
+			// A drained buffer came back: record its paint split on this goroutine
+			// (the meter is single-goroutine) and return the buffer to the free set.
+			if s.fps != nil {
+				s.fps.recordPaint(fi.encodeMS, fi.writeMS)
+			}
+			avail = append(avail, fi.buf)
 		case ev, ok := <-keys:
 			if !ok {
 				return nil
@@ -415,6 +491,10 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			if s.handleKey(ev) {
 				return nil
 			}
+		case err := <-w.errc:
+			// The writer hit a terminal write error; surface it as an I/O failure the
+			// same way the serial path did.
+			return err
 		}
 	}
 }
@@ -468,98 +548,86 @@ func startupQuit(ev keyEvent) bool {
 	return ev.scroll == ScrollNone && (ev.b == 'q' || ev.b == 'Q' || ev.b == keyQuitCtrlC)
 }
 
-// draw renders one pushed frame. It updates the image size from the frame, then
-// draws with the crisp DOM-text overlay folded on. The first draw emits the full
-// clearScreen to wipe the loading cue; steady draws emit cursorHome only and
-// overwrite every cell in place, because auto-wrap is off and each cell is
-// rewritten, so nothing stale remains. Resize re-emits the full clear. A nil-image
-// frame is skipped with a one-shot diagnostic so the dropped frame is observable.
+// assemble builds one frame's whole terminal byte sequence into buf, ready for the
+// writer to present with a single io.Write: the DEC 2026 open, the cursor prefix,
+// the rendered frame with its crisp DOM-text overlay, the fps badge, and the DEC
+// 2026 close. Assembling the whole unit into one owned buffer keeps the atomic
+// present (the terminal never shows a torn partial frame) while the producer
+// encodes the next frame in parallel with the current frame's write. The bytes and
+// their order match the old serial draw exactly, so the block golden track and the
+// capture stream are unchanged; only the goroutine that writes them differs.
 //
-// The whole frame, prefix and render bytes both, is bracketed in a DEC 2026
-// synchronised update so the terminal presents it atomically and never shows a
-// torn partial frame during a full refresh or a scroll. It wraps the block and the
-// graphics paths alike, since both flow through RenderStreamFrame here.
-func (s *streamSession) draw(frame render.Frame) error {
-	if frame.Img == nil {
-		s.nilImageOnce.Do(func() {
-			fmt.Fprintln(os.Stderr, "nyala: dropped a frame with no image")
-		})
-		return nil
-	}
+// The first frame emits the full clearScreen (via framePrefix) to wipe the loading
+// cue; steady frames emit cursorHome only. It returns the encode time, the
+// RenderStreamFrame span alone (matching the out_encode split), when the fps meter
+// is armed, or zero when off (no clock read). buf is one of the two ping-pong
+// buffers; the producer owns it until the writer returns it on free.
+func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeMS float64, err error) {
+	buf.Reset()
 	b := frame.Img.Bounds()
 	s.st.ImgW, s.st.ImgH = b.Dx(), b.Dy()
 	prefix := framePrefix(s.firstDrawn, s.diff)
-	if _, err := io.WriteString(s.tty, beginSyncUpdate); err != nil {
-		return err
-	}
-	// Once the sync bracket opens, always close it, even if a render or write below
-	// errors mid-frame. Without this a draw error leaves the terminal in DEC 2026
-	// synchronised-update mode, so later output stays buffered until a reset. The
-	// defer emits the close last, after the badge, keeping the atomic-present order.
-	defer func() { _, _ = io.WriteString(s.tty, endSyncUpdate) }()
-	if _, err := io.WriteString(s.tty, prefix); err != nil {
-		return err
-	}
+	buf.WriteString(beginSyncUpdate)
+	buf.WriteString(prefix)
 	s.firstDrawn = true
-	// Encode phase, then write phase. RenderStreamFrame renders into the reused
-	// buffer, then one write flushes it to the tty. The bytes and their order are
-	// identical to writing straight to the tty, so the block golden track and the
-	// capture stream are unchanged; the split just lets the fps meter attribute the
-	// per-frame time to our encode versus the terminal flush. The two clock reads are
-	// gated on the armed meter, so an off run pays only the buffer indirection (no
-	// clock reads), which allocates nothing after warmup.
-	s.frameBuf.Reset()
+
 	timed := s.fps != nil
 	var encodeStart time.Time
 	if timed {
 		encodeStart = time.Now()
 	}
-	if err := s.st.RenderStreamFrame(frame, &s.frameBuf); err != nil {
-		return err
+	if rerr := s.st.RenderStreamFrame(frame, buf); rerr != nil {
+		return 0, rerr
 	}
-	var encodeMS, writeMS float64
-	var writeStart time.Time
 	if timed {
 		encodeMS = msSince(encodeStart)
-		writeStart = time.Now()
 	}
-	if _, err := s.tty.Write(s.frameBuf.Bytes()); err != nil {
-		return err
-	}
-	if timed {
-		writeMS = msSince(writeStart)
-	}
-	// Paint the fps badge after the grid but inside the sync bracket, gated behind
-	// NYALA_FPS_TIMING. It is nil off the timing path, so production pays only this
-	// nil check. The meter counts every draw but rebuilds the badge string at most
-	// once per second; the cached escape-wrapped string is repainted each frame
-	// (cheap, no per-frame alloc) so the grid draw does not leave it overwritten. The
-	// badge must sit inside the DEC 2026 update so each atomic present carries it;
-	// painted after endSyncUpdate it flickered out during a scroll, when back-to-back
-	// frames each present the grid alone before the un-synced badge lands. The badge
-	// is a cursor-saved overlay, so it never enters the block grid the differ tracks
-	// and leaves the golden-gated compose bytes untouched.
+
+	// Fold the fps badge into the same buffer so each atomic present carries it,
+	// gated behind NYALA_FPS_TIMING. It sits inside the DEC 2026 bracket: painted
+	// after the close it flickered out during a scroll, when back-to-back frames each
+	// present the grid alone before the un-synced badge lands. The badge is a
+	// cursor-saved overlay, so it never enters the block grid the differ tracks and
+	// leaves the golden-gated compose bytes untouched. recordPaint is deferred to
+	// when the writer returns the buffer, because the write time is known only then.
 	if s.fps != nil {
 		now := time.Now()
 		// A frame carrying text runs is the first-text-published milestone reaching
 		// the viewer directly, no engine plumbing: it opens the warm-up gate so the
 		// page-load stall stays out of the rate stats.
 		s.fps.tick(now, len(frame.Text) > 0)
-		// Record the paint split after tick, so recordPaint sees the gate state this
-		// frame set and drops the load-period paints, mirroring the Out rate stats.
-		s.fps.recordPaint(encodeMS, writeMS)
-		s.paintFPS(s.fps.badge(now))
+		buf.WriteString(s.fps.badge(now))
 	}
-	return nil
+	buf.WriteString(endSyncUpdate)
+	return encodeMS, nil
 }
 
-// paintFPS writes the cached badge string (cursor save, home, reverse-video rate,
-// cursor restore) to the terminal. The save/restore brackets keep the badge off
-// the grid cells the differ diffs, so the block differ's next CUP lands where it
-// expects. The write is best-effort like the teardown escapes: a failure surfaces
-// on the next draw.
-func (s *streamSession) paintFPS(badge string) {
-	_, _ = io.WriteString(s.tty, badge)
+// flushAssembled hands any assembled-but-unsent frame to the writer with a
+// blocking send, so a following control write or teardown keeps frame order. It
+// runs only on the producer goroutine, which owns assembled and the writer handle.
+func (s *streamSession) flushAssembled() {
+	if s.writer == nil || s.assembled == nil {
+		return
+	}
+	s.writer.send(writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.fps != nil})
+	s.assembled = nil
+}
+
+// emitControl routes a one-off terminal write (a resize clear, a kitty reset, or an
+// fps badge) so it stays ordered against the frame writes. In the draw loop it
+// flushes any assembled frame, then queues the bytes on the single writer, so the
+// control write never interleaves with an in-flight frame's bytes. Before the
+// writer exists (a startup resize) or after it stops, it writes the tty directly.
+// It copies the bytes because the writer emits them later, off this goroutine. It
+// runs only on the producer goroutine.
+func (s *streamSession) emitControl(b []byte) error {
+	if s.writer == nil {
+		_, err := s.tty.Write(b)
+		return err
+	}
+	s.flushAssembled()
+	s.writer.send(writeItem{ctrl: append([]byte(nil), b...), timed: s.fps != nil})
+	return nil
 }
 
 // resize re-fits to the new terminal size and restarts the stream at the
@@ -584,10 +652,10 @@ func (s *streamSession) resize() error {
 		return nil
 	}
 	// The resize clears the screen, so the differ full-repaints the next frame
-	// even when the grid dimensions are unchanged.
+	// even when the grid dimensions are unchanged. The clear routes through the
+	// writer so it never races an in-flight frame write.
 	s.diff.Reset()
-	_, err = io.WriteString(s.tty, clearScreen)
-	return err
+	return s.emitControl([]byte(clearScreen))
 }
 
 // handleKey forwards one key to the engine or the state machine and reports
@@ -612,9 +680,15 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 	if act.Redraw && ev.b == keyTab {
 		if wasKitty && s.st.Backend != BackendKitty {
 			// Free both double-buffer images when leaving kitty, so the terminal keeps
-			// no stale image and a later return rebuilds from id 1. Best-effort like the
-			// teardown escapes: a write failure surfaces on the next draw.
-			_ = s.st.resetKitty(s.tty)
+			// no stale image and a later return rebuilds from id 1. Capture the reset
+			// bytes and route them through the writer so they stay ordered against the
+			// frames and never race an in-flight write. Best-effort: a write failure
+			// surfaces on the next frame via the writer's error channel.
+			var kb bytes.Buffer
+			_ = s.st.resetKitty(&kb)
+			if kb.Len() > 0 {
+				_ = s.emitControl(kb.Bytes())
+			}
 		}
 		// Cycle the backend off the consumer loop: the engine restart runs on the
 		// control goroutine so a slow restartStream cannot freeze draw or quit.
