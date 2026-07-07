@@ -342,8 +342,8 @@ func averageYCbCrToRGBA(dst *image.RGBA, src *image.YCbCr) {
 // subsampleShift returns the horizontal and vertical chroma downsample divisors for
 // a YCbCr subsample ratio: the amount a luma coordinate divides by to index the
 // chroma planes. 4:2:0 is (2, 2), 4:2:2 is (2, 1), 4:4:0 is (1, 2), 4:1:1 is (4, 1),
-// and 4:4:4 is (1, 1). The live block JPEG stream is 4:2:0; the others keep the
-// kernel correct for any ratio a frame might carry.
+// 4:1:0 is (4, 2), and 4:4:4 is (1, 1). The live block JPEG stream is 4:2:0; the
+// others keep the kernel correct for any ratio a frame might carry.
 func subsampleShift(r image.YCbCrSubsampleRatio) (h, v int) {
 	switch r {
 	case image.YCbCrSubsampleRatio420:
@@ -354,6 +354,8 @@ func subsampleShift(r image.YCbCrSubsampleRatio) (h, v int) {
 		return 1, 2
 	case image.YCbCrSubsampleRatio411:
 		return 4, 1
+	case image.YCbCrSubsampleRatio410:
+		return 4, 2
 	default: // YCbCrSubsampleRatio444
 		return 1, 1
 	}

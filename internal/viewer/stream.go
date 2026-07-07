@@ -492,6 +492,11 @@ func (s *streamSession) draw(frame render.Frame) error {
 	if _, err := io.WriteString(s.tty, beginSyncUpdate); err != nil {
 		return err
 	}
+	// Once the sync bracket opens, always close it, even if a render or write below
+	// errors mid-frame. Without this a draw error leaves the terminal in DEC 2026
+	// synchronised-update mode, so later output stays buffered until a reset. The
+	// defer emits the close last, after the badge, keeping the atomic-present order.
+	defer func() { _, _ = io.WriteString(s.tty, endSyncUpdate) }()
 	if _, err := io.WriteString(s.tty, prefix); err != nil {
 		return err
 	}
@@ -544,9 +549,6 @@ func (s *streamSession) draw(frame render.Frame) error {
 		// frame set and drops the load-period paints, mirroring the Out rate stats.
 		s.fps.recordPaint(encodeMS, writeMS)
 		s.paintFPS(s.fps.badge(now))
-	}
-	if _, err := io.WriteString(s.tty, endSyncUpdate); err != nil {
-		return err
 	}
 	return nil
 }
