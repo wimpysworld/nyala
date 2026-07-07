@@ -269,10 +269,16 @@ func averageYCbCrToRGBA(dst *image.RGBA, src *image.YCbCr) {
 	}
 	ratH, ratV := subsampleShift(src.SubsampleRatio)
 	// Per-source-column chroma index, the same for every source row: it removes the
-	// per-pixel divide from the inner loop and folds the subsample ratio in once.
+	// per-pixel divide from the inner loop and folds the subsample ratio in once. The
+	// index is relative to the source bounds origin (x/ratH - Min.X/ratH), matching
+	// image.YCbCr.COffset, so a non-zero-origin source (a subimage) reads the right
+	// chroma sample and never runs past the plane. Min zero, the live decode case,
+	// leaves it px/ratH as before.
+	minXc := sb.Min.X / ratH
+	minYc := sb.Min.Y / ratV
 	cxIdx := make([]int, sw)
 	for px := range sw {
-		cxIdx[px] = (sb.Min.X + px) / ratH
+		cxIdx[px] = (sb.Min.X+px)/ratH - minXc
 	}
 	// Per-destination-column source x-range, the same for every destination row.
 	sx0s := make([]int, dw)
@@ -296,8 +302,10 @@ func averageYCbCrToRGBA(dst *image.RGBA, src *image.YCbCr) {
 			sy1 = sy0 + 1
 		}
 		for py := sy0; py < sy1; py++ {
-			yRow := src.Y[(sb.Min.Y+py)*src.YStride:]
-			cBase := ((sb.Min.Y + py) / ratV) * src.CStride
+			// Y and chroma both index relative to the source bounds origin, matching
+			// image.YCbCr.YOffset/COffset, so a non-zero-origin source stays correct.
+			yRow := src.Y[py*src.YStride:]
+			cBase := ((sb.Min.Y+py)/ratV - minYc) * src.CStride
 			cb := src.Cb[cBase:]
 			cr := src.Cr[cBase:]
 			for dx := range dw {
@@ -308,7 +316,7 @@ func averageYCbCrToRGBA(dst *image.RGBA, src *image.YCbCr) {
 				var ay, acb, acr, an uint64
 				for px := sx0; px < sx1; px++ {
 					ci := cxIdx[px]
-					ay += uint64(yRow[sb.Min.X+px])
+					ay += uint64(yRow[px])
 					acb += uint64(cb[ci])
 					acr += uint64(cr[ci])
 					an++
