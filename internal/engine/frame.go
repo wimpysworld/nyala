@@ -7,14 +7,34 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
-	_ "image/jpeg" // register the JPEG decoder for image.Decode
-	_ "image/png"  // register the PNG decoder for image.Decode
+	_ "image/jpeg" // register the JPEG decoder for the image.Decode JPEG fallback
 	"sync"
 	"unsafe"
 
 	emmb64 "github.com/emmansun/base64"
 	"github.com/gen2brain/jpegn"
+	woozypng "github.com/woozymasta/png"
 )
+
+// pngSignature is the 8-byte PNG file magic. decodeFrameImage sniffs it to route
+// PNG frames explicitly through the woozymasta decoder instead of the image.Decode
+// registry, so a second registered "png" format cannot make dispatch init-order
+// dependent (internal/capture also imports stdlib image/png for encoding).
+var pngSignature = []byte("\x89PNG\r\n\x1a\n")
+
+// decodeFrameImage decodes one raw image payload, routing by file signature. A PNG
+// (matched by its 8-byte magic) decodes through woozymasta/png, a byte-identical and
+// faster drop-in for image/png; everything else (JPEG) decodes through the stdlib
+// image.Decode registry. The explicit PNG route avoids registering a second "png"
+// format alongside internal/capture's stdlib image/png import, which would make
+// image.Decode dispatch init-order dependent.
+func decodeFrameImage(raw []byte) (image.Image, error) {
+	if bytes.HasPrefix(raw, pngSignature) {
+		return woozypng.Decode(bytes.NewReader(raw))
+	}
+	img, _, err := image.Decode(bytes.NewReader(raw))
+	return img, err
+}
 
 // base64DecodeBufPool pools the decoded-bytes output buffer for decodeBase64Pooled,
 // so the ~188 KB output allocation each screencast frame makes is reused across frames
@@ -156,12 +176,14 @@ func decodeScreencastImage(data string) (*image.RGBA, error) {
 // decodeImageBytes decodes raw image bytes to an *image.RGBA in RGBA channel order.
 // It is the shared decode both the base64 screencast payload and the CDP verification
 // screenshot feed: page.captureScreenshot's Do already base64-decodes to raw bytes, so
-// the verification path skips the base64 step and hands the bytes straight here. A
-// non-RGBA decode is converted to RGBA with a bulk draw.Draw in draw.Src mode, which
-// runs the same colour conversion the render path expects far faster than a per-pixel
-// copy, so the render and anchor paths read one pixel layout.
+// the verification path skips the base64 step and hands the bytes straight here. The
+// decode routes through decodeFrameImage, so a PNG frame decodes via woozymasta and a
+// JPEG via the stdlib registry. A non-RGBA decode is converted to RGBA with a bulk
+// draw.Draw in draw.Src mode, which runs the same colour conversion the render path
+// expects far faster than a per-pixel copy, so the render and anchor paths read one
+// pixel layout.
 func decodeImageBytes(raw []byte) (*image.RGBA, error) {
-	img, _, err := image.Decode(bytes.NewReader(raw))
+	img, err := decodeFrameImage(raw)
 	if err != nil {
 		return nil, fmt.Errorf("engine: decode frame image: %w", err)
 	}
@@ -183,21 +205,20 @@ func imageToRGBA(img image.Image) *image.RGBA {
 }
 
 // decodeJPEGFast decodes one live-frame image, preferring the SIMD jpegn decoder
-// and falling back to the stdlib image.Decode on the same bytes. jpegn returns a
+// and falling back to decodeFrameImage on the same bytes. jpegn returns a
 // native *image.YCbCr about four times faster than stdlib on baseline 4:2:0, the
 // live block stream's exact class, so the fused YCbCr sub-cell downscale still
 // applies. jpegn returns jpegn.ErrUnsupported for inputs it declines (non-8-bit
 // precision, unusual subsampling, smoothing); any non-nil jpegn error, not only
-// ErrUnsupported, falls back to image.Decode so a declined frame decodes exactly
-// as it does today. image.Decode also covers the block PNG frame, which jpegn does
-// not handle. Each call gets its own reader, so the decode is safe under the
-// parallel decode pool.
+// ErrUnsupported, falls back to decodeFrameImage so a declined frame decodes exactly
+// as it does today. decodeFrameImage also covers the block PNG frame (routed through
+// woozymasta), which jpegn does not handle. Each call gets its own reader, so the
+// decode is safe under the parallel decode pool.
 func decodeJPEGFast(raw []byte) (image.Image, error) {
 	if img, err := jpegn.Decode(bytes.NewReader(raw)); err == nil {
 		return img, nil
 	}
-	img, _, err := image.Decode(bytes.NewReader(raw))
-	return img, err
+	return decodeFrameImage(raw)
 }
 
 // decodeLiveFrame is the live decode-pool's decode: it decodes one base64 screencast
