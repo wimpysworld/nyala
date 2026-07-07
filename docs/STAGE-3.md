@@ -731,6 +731,45 @@ Nyala makes it deliberately. The bitmap underneath still shows the true visual p
 the overlay's job is crisp, correctly placed text, and correct placement needs the
 monospace grid.
 
+## Post-Stage-3 correctness fixes
+
+Three overlay and DOM-walk faults were fixed after Stage 3 shipped. The block
+text-placement fix (some block-backend text landed in the wrong cell) is recorded
+above under "Monospace block render (post-Stage-3 fix)". The two below are DOM-walk
+and overlay fixes.
+
+### Screen-reader-only text leaked as visible runs
+
+Screen-reader-only text (GitHub Primer `.sr-only`, e.g. `#visual-code-0-desc`)
+rendered as visible overlay runs down a narrow left column. The text was real DOM
+text, not an `alt` attribute, so the walk was right to see it. The bug was a gap in
+the `hiddenStyle` filter (`internal/engine/walk.go`): it matched `clip-path` only
+against the literal `inset(50%)`, so Chrome's normalised `inset(0px 100% 100% 0px)`
+(from `clip-path: rect(0 0 0 0)`) slipped through, and `clip` was `auto` so the legacy
+rect check never fired. Fix: `hiddenStyle` now drops a collapsed `clip-path: inset(...)`
+in general (a new `clipPathHidden` helper) and drops a 1px-square, overflow-hidden,
+absolute or fixed box. A `//go:build live` test (`walk_live_test.go`) guards it against
+a crafted page, and a CI test asserts the new predicates are in the generated walk
+script.
+
+### Overlay text leaked through opaque overlays
+
+An opaque overlay (a cookie banner, a sticky header, a modal) showed the page text
+behind it leaking through, mixed with the overlay's own text. Seen on bbc.co.uk: the
+cookie banner buttons collided with sport-card text behind them. Root cause: the crisp
+text overlay ignored stacking order. The text walk (`internal/engine/walk.go`) emitted
+runs for text nodes that were visible in the DOM but visually covered by a higher-z
+element, and the overlay is first-writer-wins by DOM order, not z-index, so behind-text
+leaked through. Fix: an opaque-aware occlusion cull in the walk (the browsh model), in
+a new `occluded(el, x, y)` helper. It hit-tests each run's line-box centre with
+`document.elementFromPoint`; it drops the run when a different element covers the point
+and that element resolves a fully opaque background (`bgOf(top).a>=255`). A null
+hit-test, the run's own element chain, or a translucent cover all keep the run. One
+hit-test per run, on the snapshot goroutine, not per frame. A `//go:build live` test
+(`walk_live_test.go`) guards a banner-over-text page plus a translucent-scrim case; a
+CI test asserts the predicates in the walk script. This one mechanism also covers
+sticky headers, modals, and dropdowns.
+
 ## References
 
 These sources sit behind the engine fixes recorded above.
