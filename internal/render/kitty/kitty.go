@@ -11,10 +11,11 @@ package kitty
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"strings"
+
+	emmb64 "github.com/emmansun/base64"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/kitty"
@@ -98,8 +99,8 @@ func (*Renderer) render(f render.Frame, id int, w io.Writer) error {
 			return fmt.Errorf("kitty: encode image: %w", err)
 		}
 
-		payload = make([]byte, base64.StdEncoding.EncodedLen(raw.Len()))
-		base64.StdEncoding.Encode(payload, raw.Bytes())
+		payload = make([]byte, emmb64.StdEncoding.EncodedLen(raw.Len()))
+		emmb64.StdEncoding.Encode(payload, raw.Bytes())
 	}
 
 	if len(payload) <= kitty.MaxChunkSize {
