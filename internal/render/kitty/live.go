@@ -2,11 +2,12 @@ package kitty
 
 import (
 	"compress/zlib"
-	"encoding/base64"
 	"fmt"
 	"image"
 	"io"
 	"strings"
+
+	emmb64 "github.com/emmansun/base64"
 
 	"github.com/charmbracelet/x/ansi/kitty"
 )
@@ -79,12 +80,12 @@ func (e *LiveEncoder) EncodeID(img *image.RGBA, id int, w io.Writer) error {
 		return fmt.Errorf("kitty: flush zlib writer: %w", err)
 	}
 
-	need := base64.StdEncoding.EncodedLen(len(e.zbuf.buf))
+	need := emmb64.StdEncoding.EncodedLen(len(e.zbuf.buf))
 	if cap(e.b64) < need {
 		e.b64 = make([]byte, need)
 	}
 	e.b64 = e.b64[:need]
-	base64.StdEncoding.Encode(e.b64, e.zbuf.buf)
+	emmb64.StdEncoding.Encode(e.b64, e.zbuf.buf)
 
 	opts := kitty.Options{
 		Format:       kitty.RGB,
