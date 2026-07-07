@@ -377,7 +377,27 @@ Also landed on the load-time theme, beyond the ranked list:
    1920x1080 frame: **67.7 ms -> 12.2 ms (82% cut, 5.5x)**, allocs 4,147,504 -> 13,
    payload 11% smaller. The stateless capture `Renderer` is untouched, so corpus stays
    byte-identical. Owner verifies the visual on kitty hardware (the f=24 switch assumes
-   the bitmap is fully opaque). REMAINING: Kitty-through-multiplexer (virtual placement
+   the bitmap is fully opaque). [DONE - perf] The live encoder's zlib swapped stdlib
+   `compress/zlib` for `github.com/klauspost/compress/zlib` at BestSpeed (level
+   unchanged, already a dependency via woozymasta, now direct). Live-path only: the
+   capture `Renderer` (`kitty.go`) stays on stdlib zlib because the corpus and golden
+   checks need byte-exact output, and klauspost emits different (valid, non-byte-
+   identical) compressed bytes. The output is a valid zlib stream, round-trip through
+   stdlib confirmed, so terminals decode it unchanged. Motivation, real hardware: the
+   Aquarium WebGL benchmark on Kitty at 2568x2880 measured the paint path as the wall,
+   `out_encode_mean_ms 164.6` plus `out_write_mean_ms 58.2` at ~4.5 out fps, the encode
+   dominated by zlib of a ~22 MB f=24 RGB frame. Benchmark on a representative ~22 MB
+   photographic frame: klauspost BestSpeed is ~27% faster to encode for ~4.7% more
+   bytes. Modelled on the target hardware above, that is ~18% off encode-plus-write
+   (222.8 ms -> ~182 ms per frame); the larger payload adds only ~2-3 ms of write, which
+   never cancels the encode saving. Rejected: klauspost HuffmanOnly was ~38% off
+   encode-plus-write on this incompressible frame, but it disables LZ matching, so it
+   inflates flat/text pages and shifts cost to the write; wrong default for a
+   general-purpose browser, so BestSpeed. Caveat: the ~18% is modelled (the benchmark
+   box encodes ~1.9x faster than the target); confirm the real total on Kitty hardware
+   with the FPS instrument. This cuts the paint wall but does not remove it; the larger
+   remaining levers (rec 10 damage/dirty-rect, and the deferred downscale) are
+   unchanged. REMAINING: Kitty-through-multiplexer (virtual placement
    `U=1` plus passthrough, gated off today). Impact 8, effort medium.
 6. **Sixel cached palette + dirty-band diffing.** Vendor and extend the charmbracelet
    encoder: hold the quantised palette, `memcmp` 6-px bands (or reuse scroll/CDP
@@ -488,9 +508,10 @@ reached the GPU. Verified on hardware (AMD Radeon 8060S, radeonsi): WebGL Report
 the AMD unmasked renderer with no performance caveat, and aquarium browser fps went
 26 -> 60. The `NYALA_FPS_TIMING` badge read `In: 60.3 / Out: 24.6`, so the pipeline now
 ingests the full 60 fps. The browser render, not our pipeline, had been the ingest
-ceiling. Paint (Out ~24) is now the wall: the Kitty encode on the large live surface,
-so the next lever is downscale-in-motion (fewer pixels cut encode, decode, and write
-together).
+ceiling. Paint (Out ~24) is now the wall: the Kitty encode on the large live surface.
+The klauspost zlib BestSpeed swap (recommendation 5) cuts that encode, modelled ~18%
+off encode-plus-write, but does not remove the wall, so the next lever is
+downscale-in-motion (fewer pixels cut encode, decode, and write together).
 
 ### Idea 2 - PNG/JPEG hybrid screencast
 
@@ -546,8 +567,9 @@ So paint is the binding constraint on screen, not ingest. The paint split is dec
 `out_encode_mean_ms ~191` (our Kitty escape build) against `out_write_mean_ms ~8` (the
 terminal). Our encode is the wall, not the terminal or tmux. `in_decode_mean_ms ~34`
 is the ingest ceiling, over the 16.6 ms 60fps budget. So the two levers are, in order:
-cut the Kitty encode (recommendation 5, bulk `f=24` and buffer reuse), then
-JPEG-in-motion for ingest (recommendation 15).
+cut the Kitty encode (recommendation 5, bulk `f=24` and buffer reuse, plus the
+klauspost zlib BestSpeed swap on the live path, modelled ~18% off encode-plus-write on
+a ~22 MB frame), then JPEG-in-motion for ingest (recommendation 15).
 
 ### Screencast ack decouple + off-goroutine decode [DONE - 7a246f4]
 
@@ -988,9 +1010,14 @@ like `decodeJPEGFast`) into the two `frame.go` sites, and fold in the `NewDecode
 at the same time. Owner verifies the `in_decode` drop on hardware (`just fps
 backend=block`).
 
-Note for the deferred Kitty graphics work: base64 ENCODES the Kitty payload
-(`internal/render/kitty/live.go`). `emmansun/base64` accelerates encode too, and
-`gen2brain/base64` is encode-fast, so reconsider a base64 encode swap there, not here.
+Kitty payload base64 encode: base64 ENCODES the Kitty payload, in both the live
+encoder (`internal/render/kitty/live.go`) and the stateless capture `Renderer`
+(`internal/render/kitty/kitty.go`). [DONE - perf] Both now encode through
+`emmansun/base64` in place of stdlib `encoding/base64`, mirroring the decode swap
+above: byte-identical (RFC 4648), zero allocations, cgo-free, both arches, already a
+direct dependency. Benchmarked ~53x faster on the payload (130.7 us -> 2.47 us on a
+300 KB buffer). Small absolute win: base64 is a small share of the Kitty encode, since
+it runs on the already-zlib-compressed payload.
 
 ### Option 2 - PNG decode: adopt `github.com/woozymasta/png` (SIMD unfilter, off the hot path) [DONE - committed, perf]
 
