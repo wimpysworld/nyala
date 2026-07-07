@@ -269,6 +269,31 @@ is reversible.
   drives a single page/target; the seam keeps the page behind an interface so tabs add later
   with no allocator change. Evidence: chromedp `ExecAllocator`/`RemoteAllocator` and CDP
   Target domain; chromedp issues #1457 and #1007.
+- **Audio: unmute on the live path, play to the host sound server.** Chromium plays page
+  audio straight to the host sound server. There is no CDP audio capture and no Nyala-side
+  mixing. chromedp's `Headless` option forces `--mute-audio=true`,
+  so the live path overrides it with the bool flag `chromedp.Flag("mute-audio", false)` in
+  `newAllocator` (`internal/engine/launch.go`). The value must be the bool `false`, not the
+  string `"false"`: a string keeps Chromium muted. The same live-path gate sets
+  `--autoplay-policy=no-user-gesture-required`, because Chromium otherwise blocks audible
+  autoplay until a user gesture and Nyala has no input yet, so audible media would never
+  start (muted autoplay is already allowed). The route needs no plumbing: Chromium reaches
+  the host sound server through the inherited env, which chromedp passes from parent to
+  child. Audio auto-enables on the live path only, gated by
+  `enableAudio := !e.captureOn && audioAvailable()`; capture stays silent and deterministic.
+  `audioAvailable()` is platform-split (build-tagged files beside `audio.go`): a set
+  `PULSE_SERVER` marks a sink on any OS; otherwise Linux probes the host sockets
+  (`$XDG_RUNTIME_DIR/pulse/native` or `$XDG_RUNTIME_DIR/pipewire-0`, connecting via
+  Chromium's bundled libpulse), macOS assumes CoreAudio, the always-present system output,
+  and any other platform reports no sink. No `flake.nix` change is needed: on Linux libpulse
+  ships inside the nixpkgs Chromium closure (its RPATH), unlike the Mesa GPU driver at the
+  impure host path `/run/opengl-driver/lib`; on macOS Chrome links CoreAudio directly. Two
+  constraints hold, both verified by hardware test not code: Chromium must be built with pulse
+  support (the nixpkgs default has it) and reach an output device, and new headless (bare
+  `--headless` on Chrome 132+, which chromedp passes) emits audio where old headless dropped
+  it. A/V sync is deferred: the
+  terminal video path runs slower than real-time audio, so audio leads choppy video; it does
+  not change frame rate, so it stays off the frame-rate critical path.
 
 ## TUI Library Research
 

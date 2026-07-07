@@ -455,9 +455,9 @@ Also landed on the load-time theme, beyond the ranked list:
 
 ---
 
-## Media browsing (GPU accel, audio, hybrid screencast)
+## Media browsing (GPU accel, hybrid screencast)
 
-Owner side-quest, July 2026. Three ideas, one thread: make Nyala a media browser and
+Owner side-quest, July 2026. Two ideas, one thread: make Nyala a media browser and
 find the true screencast frame ceiling. Do the GPU work first. It is the measurement
 gate: with the page rendering in software, the screencast ceiling stays hidden.
 
@@ -492,7 +492,7 @@ ceiling. Paint (Out ~24) is now the wall: the Kitty encode on the large live sur
 so the next lever is downscale-in-motion (fewer pixels cut encode, decode, and write
 together).
 
-### Idea 3 - PNG/JPEG hybrid screencast
+### Idea 2 - PNG/JPEG hybrid screencast
 
 The backend is PNG-only today (67936b1, recommendation 4b). The hybrid holds water, but
 only as a motion-triggered switch. This is recommendation 15. Its payoff lands on the
@@ -501,40 +501,13 @@ fast content that idea 1 unlocks.
 Data point: the aquarium PNG decode cost 14-23 ms per frame (Theme 7), over the 16.6 ms
 budget for 60 fps. So the ingest side needs JPEG-while-moving to approach 60 fps, not
 only lossless PNG. On static and text pages, PNG stays best (compresses well, exact
-future cell diff for recommendation 10). Sequence idea 3 after idea 1, so the
+future cell diff for recommendation 10). Sequence idea 2 after idea 1, so the
 measurement proves PNG encode and transport is the next wall before building the switch.
 
-### Idea 2 - audio [DONE - live-path unmute, host sound server]
+### Audio (moved)
 
-A parallel feature, not an fps lever. Chromium now plays page audio straight to the
-host sound server. No CDP audio capture, no Nyala-side mixing.
-
-- Unmute: chromedp's `Headless` option forces `--mute-audio=true`; the live path
-  overrides it with the bool flag `chromedp.Flag("mute-audio", false)` in
-  `newAllocator` (`internal/engine/launch.go`), mirroring the `--enable-gpu` pattern.
-  It must be the bool `false`, not the string `"false"`: a string keeps Chromium muted.
-- Autoplay: the live path also sets `--autoplay-policy=no-user-gesture-required` on the
-  same gate. Chromium otherwise blocks audible autoplay until a user gesture, and Nyala
-  has no input yet, so audible media would never start. Muted autoplay is already
-  allowed, so this pairs with the unmute.
-- Route: Chromium's bundled libpulse connects to the host PulseAudio / PipeWire-pulse
-  socket, reached through inherited env (`XDG_RUNTIME_DIR`, `PULSE_SERVER`). chromedp
-  passes the parent env to the child, so no plumbing.
-- Auto-enable gate: `enableAudio := !e.captureOn && audioAvailable()`. `audioAvailable()`
-  returns true when `PULSE_SERVER` is set, or `$XDG_RUNTIME_DIR/pulse/native` exists, or
-  `$XDG_RUNTIME_DIR/pipewire-0` exists. Live path only; capture stays silent and
-  deterministic.
-- No `flake.nix` change: libpulse ships inside the nixpkgs Chromium closure (its RPATH),
-  unlike the Mesa GPU driver at the impure host path `/run/opengl-driver/lib` the GPU
-  work had to add.
-
-Two caveats, verified by hardware test not code: Chromium must be built with pulse
-support (the nixpkgs default has it), and new headless (bare `--headless` on Chrome
-132+, which chromedp passes) emits audio where old headless dropped it.
-
-Deferred: A/V sync. The terminal video path is slower than real-time audio, so audio
-runs ahead of choppy video. Follow-up if wanted. It does not change frame rate, so it
-stays off the 60 fps critical path.
+Audio is a built feature, not an fps lever. It lives in `docs/OVERVIEW.md`
+(Architecture Decisions), as a live-path Chromium launch-flag behaviour.
 
 ### Companion: sustained-fps measure [DONE - 9002348 and the FPS instrument below]
 
@@ -600,11 +573,9 @@ the real ceiling and see which wall is next.
 1. [DONE] Idea 1 (GPU accel: `--enable-gpu` plus the flake driver path). Owner verified
    hardware WebGL and aquarium 26 -> 60 fps.
 2. [DONE] JPEG-in-motion (recommendation 15) landed before idea 1, so ingest already
-   tracked 60 fps once the browser rendered it. Idea 3 is that switch.
+   tracked 60 fps once the browser rendered it. Idea 2 is that switch.
 3. NEXT: paint is the wall (Out ~24 against In 60). Downscale the graphics bitmap in
    motion to cut encode, decode, and write together toward 60 fps on screen.
-4. [DONE] Idea 2 (audio: live-path unmute, host sound server). Chromium plays page
-   audio to PulseAudio / PipeWire-pulse; capture stays silent.
 
 ---
 
