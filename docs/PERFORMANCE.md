@@ -386,18 +386,44 @@ Also landed on the load-time theme, beyond the ranked list:
    stdlib confirmed, so terminals decode it unchanged. Motivation, real hardware: the
    Aquarium WebGL benchmark on Kitty at 2568x2880 measured the paint path as the wall,
    `out_encode_mean_ms 164.6` plus `out_write_mean_ms 58.2` at ~4.5 out fps, the encode
-   dominated by zlib of a ~22 MB f=24 RGB frame. Benchmark on a representative ~22 MB
-   photographic frame: klauspost BestSpeed is ~27% faster to encode for ~4.7% more
-   bytes. Modelled on the target hardware above, that is ~18% off encode-plus-write
-   (222.8 ms -> ~182 ms per frame); the larger payload adds only ~2-3 ms of write, which
-   never cancels the encode saving. Rejected: klauspost HuffmanOnly was ~38% off
-   encode-plus-write on this incompressible frame, but it disables LZ matching, so it
+   dominated by zlib of a ~22 MB f=24 RGB frame. Measured on that same fixture, before
+   and after the swap on Kitty hardware: encode `164.6 -> 115.3 ms` (a 30% cut), write
+   `58.2 -> 57.5 ms` (flat; the ~4.7% larger payload cost nothing measurable), paint
+   `4.5 -> 5.8` out fps (+29%). Encode-plus-write fell `222.8 -> 172.8 ms` per frame, a
+   22% cut, beating the earlier modelled ~18%. Rejected: klauspost HuffmanOnly was ~38%
+   off encode-plus-write on this incompressible frame, but it disables LZ matching, so it
    inflates flat/text pages and shifts cost to the write; wrong default for a
-   general-purpose browser, so BestSpeed. Caveat: the ~18% is modelled (the benchmark
-   box encodes ~1.9x faster than the target); confirm the real total on Kitty hardware
-   with the FPS instrument. This cuts the paint wall but does not remove it; the larger
-   remaining levers (rec 10 damage/dirty-rect, and the deferred downscale) are
-   unchanged. REMAINING: Kitty-through-multiplexer (virtual placement
+   general-purpose browser, so BestSpeed. This cuts the paint wall but does not remove
+   it: the encode stays the wall at 115 ms of the 172 ms budget, the write now about a
+   third (57 ms); the larger remaining levers (rec 10 damage/dirty-rect, and the
+   deferred downscale) are unchanged. [DONE - measured] The draw loop now pipelines the
+   escape encode with the tty write. A producer goroutine (the draw loop) assembles the
+   whole mode-2026 frame (sync-open, prefix, render, fps badge, sync-close) into one of
+   two ping-pong buffers, and a single writer goroutine does the `tty` write, so the write
+   of frame N overlaps the encode of frame N+1. Strict frame order holds (single writer,
+   cap-1 handoff), and the latest-wins frame-drop policy survives the handoff, so a slow
+   writer drops stale frames rather than queueing; teardown is clean with no goroutine
+   leak, verified `-race` clean. It is backend-agnostic: block rides it too with
+   byte-identical output (the handoff moves bytes, not their content, and the golden track
+   validates the bytes), while the `Capture` driver stays on the serial path so capture
+   bundles stay deterministic. The paint wall drops from `encode + write` to
+   `max(encode, write)`. MEASURED on the Aquarium fixture above (Kitty, 2568x2880): out
+   fps `5.8 -> 8.5` (+47%). The overlap is confirmed: `out_encode_mean_ms 114.8` and
+   `out_write_mean_ms 116.1`, and 8.5 fps is 117.6 ms/frame, which is `max(encode, write)`
+   not the sum; serial would be 231 ms, 4.3 fps. Nuance on the write figure: `out_write`
+   rose ~57 -> ~116 ms, and this is backpressure, not a regression. Serial, the ~57 ms
+   only measured filling the kernel buffer and the terminal drained the bytes later behind
+   the next encode; with the writer pushing continuously its `Write` now blocks until the
+   terminal accepts the frame, so `out_write` now measures the terminal's true ingest rate
+   (~116 ms to decode and paint the large Kitty graphic). The pipeline exposed a
+   terminal-side limit that was always present. Two co-equal walls now bound paint: our
+   encode CPU ~115 ms (zlib of the 22 MB frame) and the terminal ingest ~116 ms. They are
+   balanced, so more speed on this full-motion fixture needs fewer pixels or fewer bytes,
+   which cuts both walls; the downscale-in-motion lever (deferred) does that, while rec 10
+   damage/dirty-rect gives little on full motion (the whole frame changes each tick).
+   Cumulative aquarium arc this session, all lossless and no downscale: 4.5 (stdlib zlib)
+   -> 5.8 (klauspost) -> 8.5 fps (pipeline).
+   REMAINING: Kitty-through-multiplexer (virtual placement
    `U=1` plus passthrough, gated off today). Impact 8, effort medium.
 6. **Sixel cached palette + dirty-band diffing.** Vendor and extend the charmbracelet
    encoder: hold the quantised palette, `memcmp` 6-px bands (or reuse scroll/CDP
@@ -509,9 +535,12 @@ the AMD unmasked renderer with no performance caveat, and aquarium browser fps w
 26 -> 60. The `NYALA_FPS_TIMING` badge read `In: 60.3 / Out: 24.6`, so the pipeline now
 ingests the full 60 fps. The browser render, not our pipeline, had been the ingest
 ceiling. Paint (Out ~24) is now the wall: the Kitty encode on the large live surface.
-The klauspost zlib BestSpeed swap (recommendation 5) cuts that encode, modelled ~18%
-off encode-plus-write, but does not remove the wall, so the next lever is
-downscale-in-motion (fewer pixels cut encode, decode, and write together).
+The klauspost zlib BestSpeed swap (recommendation 5) cuts that encode, measured 22%
+off encode-plus-write, and the encode/write pipeline (recommendation 5) hides the write
+behind the encode, measured `5.8 -> 8.5` out fps. Neither removes the wall: two co-equal
+~115 ms limits now bound paint, our encode CPU (zlib of the 22 MB frame) and the terminal
+ingest (the bytes Kitty must decode and paint). Both fall only on fewer pixels or fewer
+bytes, so the next lever is downscale-in-motion (cuts encode, decode, and write together).
 
 ### Idea 2 - PNG/JPEG hybrid screencast
 
@@ -568,7 +597,7 @@ So paint is the binding constraint on screen, not ingest. The paint split is dec
 terminal). Our encode is the wall, not the terminal or tmux. `in_decode_mean_ms ~34`
 is the ingest ceiling, over the 16.6 ms 60fps budget. So the two levers are, in order:
 cut the Kitty encode (recommendation 5, bulk `f=24` and buffer reuse, plus the
-klauspost zlib BestSpeed swap on the live path, modelled ~18% off encode-plus-write on
+klauspost zlib BestSpeed swap on the live path, measured 22% off encode-plus-write on
 a ~22 MB frame), then JPEG-in-motion for ingest (recommendation 15).
 
 ### Screencast ack decouple + off-goroutine decode [DONE - 7a246f4]
