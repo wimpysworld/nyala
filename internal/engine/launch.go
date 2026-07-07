@@ -165,7 +165,13 @@ func (e *ChromiumEngine) textOverlayBackend() bool {
 // and compares pixels for a byte-deterministic corpus/golden, so a hardware GPU would
 // shift antialiasing and break that determinism; the caller passes enableGPU false
 // under capture so it stays on software SwiftShader.
-func newAllocator(parent context.Context, execPath string, surfW, surfH int, z float64, cfg ProxyConfig, enableGPU bool) (context.Context, context.CancelFunc) {
+// When enableAudio is set it appends the bool false for mute-audio, overriding the
+// mute-audio=true that Headless sets: chromedp flags are last-write-wins by map key,
+// and this append lands after DefaultExecAllocatorOptions. The bool false emits no
+// flag at all (audio on); a string "false" would emit --mute-audio=false and keep
+// Chromium muted. Like the GPU flag it rides the live path only, stays off under
+// capture, and the caller gates it on a detected host audio sink.
+func newAllocator(parent context.Context, execPath string, surfW, surfH int, z float64, cfg ProxyConfig, enableGPU, enableAudio bool) (context.Context, context.CancelFunc) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(execPath),
 		chromedp.WindowSize(surfW, surfH),
@@ -173,6 +179,9 @@ func newAllocator(parent context.Context, execPath string, surfW, surfH int, z f
 	)
 	if enableGPU {
 		opts = append(opts, chromedp.Flag("enable-gpu", true))
+	}
+	if enableAudio {
+		opts = append(opts, chromedp.Flag("mute-audio", false))
 	}
 	for _, pair := range proxyFlags(cfg) {
 		opts = append(opts, chromedp.Flag(pair[0], pair[1]))
@@ -301,7 +310,10 @@ func (e *ChromiumEngine) launch(flag string) error {
 	// before Navigate, so it is known here at allocator-build time; gating on it keeps
 	// the capture path on deterministic software SwiftShader (see newAllocator).
 	enableGPU := !e.captureOn
-	allocCtx, allocCancel := newAllocator(context.Background(), execPath, surfW, surfH, z, e.proxy, enableGPU)
+	// Audio rides the live path only; capture stays silent and deterministic. The
+	// sink gate keeps a no-audio host from unmuting pointlessly.
+	enableAudio := !e.captureOn && audioAvailable()
+	allocCtx, allocCancel := newAllocator(context.Background(), execPath, surfW, surfH, z, e.proxy, enableGPU, enableAudio)
 	ctx, ctxCancel := chromedp.NewContext(allocCtx)
 	cancel := func() {
 		ctxCancel()

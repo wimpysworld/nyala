@@ -504,12 +504,33 @@ only lossless PNG. On static and text pages, PNG stays best (compresses well, ex
 future cell diff for recommendation 10). Sequence idea 3 after idea 1, so the
 measurement proves PNG encode and transport is the next wall before building the switch.
 
-### Idea 2 - audio
+### Idea 2 - audio [DONE - live-path unmute, host sound server]
 
-A parallel feature, not an fps lever. Chromium can output audio; headless needs the
-audio service kept on and a route to the host PipeWire or Pulse (libpulse on the path,
-`PULSE_SERVER` or the pipewire-pulse socket). Do it for the "watch a video with sound"
-demo whenever. It does not change frame rate, so keep it off the 60 fps critical path.
+A parallel feature, not an fps lever. Chromium now plays page audio straight to the
+host sound server. No CDP audio capture, no Nyala-side mixing.
+
+- Unmute: chromedp's `Headless` option forces `--mute-audio=true`; the live path
+  overrides it with the bool flag `chromedp.Flag("mute-audio", false)` in
+  `newAllocator` (`internal/engine/launch.go`), mirroring the `--enable-gpu` pattern.
+  It must be the bool `false`, not the string `"false"`: a string keeps Chromium muted.
+- Route: Chromium's bundled libpulse connects to the host PulseAudio / PipeWire-pulse
+  socket, reached through inherited env (`XDG_RUNTIME_DIR`, `PULSE_SERVER`). chromedp
+  passes the parent env to the child, so no plumbing.
+- Auto-enable gate: `enableAudio := !e.captureOn && audioAvailable()`. `audioAvailable()`
+  returns true when `PULSE_SERVER` is set, or `$XDG_RUNTIME_DIR/pulse/native` exists, or
+  `$XDG_RUNTIME_DIR/pipewire-0` exists. Live path only; capture stays silent and
+  deterministic.
+- No `flake.nix` change: libpulse ships inside the nixpkgs Chromium closure (its RPATH),
+  unlike the Mesa GPU driver at the impure host path `/run/opengl-driver/lib` the GPU
+  work had to add.
+
+Two caveats, verified by hardware test not code: Chromium must be built with pulse
+support (the nixpkgs default has it), and new headless (bare `--headless` on Chrome
+132+, which chromedp passes) emits audio where old headless dropped it.
+
+Deferred: A/V sync. The terminal video path is slower than real-time audio, so audio
+runs ahead of choppy video. Follow-up if wanted. It does not change frame rate, so it
+stays off the 60 fps critical path.
 
 ### Companion: sustained-fps measure [DONE - 9002348 and the FPS instrument below]
 
@@ -578,7 +599,8 @@ the real ceiling and see which wall is next.
    tracked 60 fps once the browser rendered it. Idea 3 is that switch.
 3. NEXT: paint is the wall (Out ~24 against In 60). Downscale the graphics bitmap in
    motion to cut encode, decode, and write together toward 60 fps on screen.
-4. Idea 2 (audio) in parallel, whenever the media demo is wanted.
+4. [DONE] Idea 2 (audio: live-path unmute, host sound server). Chromium plays page
+   audio to PulseAudio / PipeWire-pulse; capture stays silent.
 
 ---
 

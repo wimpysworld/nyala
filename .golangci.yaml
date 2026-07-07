@@ -65,6 +65,13 @@ linters:
         text: "G703"
         linters:
           - gosec
+      # audioAvailable stats fixed well-known sound-server socket names
+      # (pulse/native, pipewire-0) under the user's own XDG_RUNTIME_DIR. The joined
+      # leaf names are constants, not attacker-controlled path traversal.
+      - path: internal/engine/audio\.go
+        text: "G703"
+        linters:
+          - gosec
     paths:
       - third_party$
       - builtin$
