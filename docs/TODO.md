@@ -25,11 +25,11 @@ that a remaining limit is Chromium's, not our code.
   palette plus dirty-band diffing removes it from steady-state frames, with the interim
   wins (persist the encoder, buffer the writer, swap the quantiser). See
   PERFORMANCE.md.
-- PNG decode (Option 2, NOT started): the klauspost `compress/zlib` swap buys ~7-21%,
-  but PNG decode only lands on the graphics idle frame and the capture corpus, off the
-  hot JPEG motion path. Deferred until it profiles hot; see PERFORMANCE.md "Decode
-  Optimization" Option 2 for the two routes (woozymasta/png drop-in, or a one-import
-  fork of image/png).
+- PNG decode (Option 2, DONE): adopted `github.com/woozymasta/png`, a byte-identical
+  drop-in for `image/png`, wired by PNG-signature dispatch in `frame.go`. Measured ~54%
+  faster amd64 decode from the SIMD unfilter (not the zlib swap, which measured ~0.3%).
+  Off the hot JPEG motion path, so no FPS-wall move; it speeds static and block-reading
+  decode. See PERFORMANCE.md "Decode Optimization" Option 2.
 - BACK-POCKET (measure first, do not build yet): the block-live JPEG quality knob.
   Lower q trims the Huffman decode only; the IDCT is quality-independent in the
   decoder, so the win is bounded and near-free on block (washes out in the sub-cell

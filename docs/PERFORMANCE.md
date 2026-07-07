@@ -992,31 +992,60 @@ Note for the deferred Kitty graphics work: base64 ENCODES the Kitty payload
 (`internal/render/kitty/live.go`). `emmansun/base64` accelerates encode too, and
 `gen2brain/base64` is encode-fast, so reconsider a base64 encode swap there, not here.
 
-### Option 2 - PNG decode: klauspost zlib swap (small, off the hot path)
+### Option 2 - PNG decode: adopt `github.com/woozymasta/png` (SIMD unfilter, off the hot path) [DONE - committed, perf]
 
-No pure-Go SIMD PNG decoder exists (gen2brain has no PNG member; the SIMD leaders
-Wuffs and Rust zune-png are cgo/non-Go). PNG decode is dominated by DEFLATE inflate,
-which is inherently serial (one zlib stream, no restart markers), so it cannot be
-block-parallel-decoded like JPEG. The one cgo-free lever is a faster inflate: swap
-stdlib `compress/zlib` for `github.com/klauspost/compress/zlib` (pure Go plus Plan9
-asm, cgo-free, arm64-clean, API-identical). That buys ~7-21% total decode on amd64,
-less on arm64 (inflate share only, no SIMD unfilter). Stdlib `image/png` hardwires
-`zlib.NewReader` with no injection seam, so the win needs a fork. Two routes:
-- Route A: adopt `github.com/woozymasta/png` (v1.1.0, BSD-3, drop-in `image/png`). Adds
-  the klauspost zlib swap plus amd64 SIMD unfilter (SSE2 Up filter, SSSE3 RGB<->RGBA)
-  with a pure-Go arm64 fallback. Claimed decode -7 to -21%. Risk: bus-factor 1, 3 stars.
-- Route B: vendor a one-import fork of stdlib `image/png` into an internal package
-  (copy `reader.go`+`paeth.go`, change `import "compress/zlib"` to `import zlib
-  "github.com/klauspost/compress/zlib"`). Surgical, auditable, byte-identical, minimal
-  surface, the inflate win only.
+LANDED and committed on the perf branch (2026-07-07). Nyala now decodes PNG frames
+through `github.com/woozymasta/png`, a lossless, byte-identical drop-in for stdlib
+`image/png`, promoted to a direct dependency. It is wired in `internal/engine/frame.go`
+by explicit PNG-signature dispatch: `decodeFrameImage` decodes via woozymasta when the
+bytes start with the PNG magic, else falls through to stdlib `image.Decode` for JPEG,
+which keeps the `jpegn` SIMD fast path and the stdlib registry. It deliberately does NOT
+use woozymasta's `image.RegisterFormat` self-registration, because `internal/capture`
+imports stdlib `image/png` for encoding and two `"png"` registrations would make
+`image.Decode` dispatch init-order-dependent and ambiguous.
 
-Why this is Option 2, not 1: Nyala's hot motion path is JPEG q80. PNG now decodes only
-on the graphics-backend SETTLED (idle) frame (decoded once at rest, not per motion
-frame) and the offline capture corpus. So even a 2x PNG decode saves single-digit ms,
-once, off the frame-critical route. Do it only if idle-frame PNG decode ever shows up
-in a real graphics-backend profile; then Route B is the low-risk first move. The cgo
-ceiling (libspng/Wuffs 1.2-2.75x over libpng) does not justify reopening the cgo
-decision for an off-hot-path win.
+Correctness gate: 1011 of 1011 real PNGs byte-identical, every `testdata` PNG plus all
+12 captured corpus fixtures, decoded through both stdlib and woozymasta. Lossless, no
+golden change.
+
+Performance: PNG decode is ~54% faster on amd64 (mean ~1.7 ms to ~0.8 ms on block
+frames). This corrects the pre-landing estimate below of ~7-21% from a
+`klauspost/compress` zlib swap. The measured win is almost entirely woozymasta's amd64
+SSE2 SIMD unfilter, NOT the zlib inflate. A zlib-only swap (the surgical Route B fork)
+measured ~0.3% on these small, highly compressible flat block frames, so Route B was not
+pursued; Route A (full woozymasta) was taken.
+
+arm64: cross-compiles clean, but native arm64 could not be run in the dev environment. A
+portable (non-build-tagged) equivalence test `TestWoozymastaPNGByteIdenticalToStdlib` in
+`internal/engine` runs in arm64 CI and gates byte-identity. The arm64 speed win is
+unquantified and likely small (the SIMD unfilter is amd64-only; the zlib swap gives ~0
+on this content), but no regression is expected because decode is integer-exact and
+byte-identical.
+
+Scope and placement: this is off the hot JPEG motion path. PNG decodes only static,
+idle, and flat block frames, so it does not move the graphics-backend FPS walls (encode
+and Sixel quantise); it speeds static-page and block-reading decode. It is not a
+motion-fps lever.
+
+The pre-landing research, for the record. No pure-Go SIMD PNG decoder exists (gen2brain
+has no PNG member; the SIMD leaders Wuffs and Rust zune-png are cgo/non-Go). PNG decode
+is dominated by DEFLATE inflate, which is inherently serial (one zlib stream, no restart
+markers), so it cannot be block-parallel-decoded like JPEG. The one cgo-free inflate
+lever is `github.com/klauspost/compress/zlib` (pure Go plus Plan9 asm, cgo-free,
+arm64-clean, API-identical), estimated at ~7-21% total decode on amd64. Stdlib
+`image/png` hardwires `zlib.NewReader` with no injection seam, so the win needed a fork.
+Two routes were scoped:
+- Route A (taken): adopt `github.com/woozymasta/png` (v1.1.0, BSD-3, drop-in
+  `image/png`). Adds the klauspost zlib swap plus amd64 SIMD unfilter (SSE2 Up filter,
+  SSSE3 RGB<->RGBA) with a pure-Go arm64 fallback.
+- Route B (rejected): vendor a one-import fork of stdlib `image/png` into an internal
+  package (copy `reader.go`+`paeth.go`, change `import "compress/zlib"` to `import zlib
+  "github.com/klauspost/compress/zlib"`). Surgical and minimal, but it wins only the
+  inflate share, which measured ~0.3% on these frames.
+
+Follow-up, unbuilt: the codec study found that on flat/text block frames PNG beats JPEG
+on bytes, quality, and decode, which argues for a future content-aware PNG/JPEG switch,
+not motion-only. That is a separate, unbuilt item.
 
 ### Sources (decode research)
 
@@ -1028,7 +1057,7 @@ decision for an off-hot-path win.
 - CDP screencastFrame is base64 in JSON, no binary transport: https://chromedevtools.github.io/devtools-protocol/tot/Page/#event-screencastFrame
 - cdproto screencast field is a plain string (no double-decode); captureScreenshot vs startScreencast round-trip cost: https://github.com/vercel-labs/agent-browser/pull/1200
 - klauspost/compress inflate speedup (~10-15% inflate, ~50% headline), cgo-free arm64: https://github.com/klauspost/compress and PR https://github.com/klauspost/compress/pull/483
-- woozymasta/png (drop-in, klauspost zlib + amd64 SIMD unfilter, -7 to -21% decode): https://pkg.go.dev/github.com/woozymasta/png
+- woozymasta/png (drop-in, klauspost zlib + amd64 SIMD unfilter; adopted, measured ~54% amd64 decode): https://pkg.go.dev/github.com/woozymasta/png
 - stdlib image/png hardwires zlib.NewReader (no injection seam): https://go.dev/src/image/png/reader.go
 - Wuffs PNG decoder (SIMD ceiling, transpiled C, not cgo-free Go): https://nigeltao.github.io/blog/2021/fastest-safest-png-decoder.html
 
