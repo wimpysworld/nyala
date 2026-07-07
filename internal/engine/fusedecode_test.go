@@ -13,7 +13,7 @@ import (
 // carry real high-frequency detail and chroma variation rather than a trivially
 // compressible flat fill. Returned as an *image.YCbCr, the layout the JPEG decoder
 // produces and the fused kernel consumes.
-func pageLikeJPEG(tb testing.TB, w, h, q int) *image.YCbCr {
+func pageLikeJPEG(tb testing.TB, w, h int) *image.YCbCr {
 	tb.Helper()
 	src := image.NewRGBA(image.Rect(0, 0, w, h))
 	for y := range h {
@@ -30,7 +30,7 @@ func pageLikeJPEG(tb testing.TB, w, h, q int) *image.YCbCr {
 		}
 	}
 	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, src, &jpeg.Options{Quality: q}); err != nil {
+	if err := jpeg.Encode(&buf, src, &jpeg.Options{Quality: movingScreencastQuality}); err != nil {
 		tb.Fatalf("encode JPEG: %v", err)
 	}
 	img, err := jpeg.Decode(&buf)
@@ -97,7 +97,7 @@ func TestAverageYCbCrToRGBATolerance(t *testing.T) {
 	// masking a real regression (a swapped channel or wrong scale would blow past it).
 	const tol = 8
 	for _, c := range cases {
-		yc := pageLikeJPEG(t, c.w, c.h, movingScreencastQuality)
+		yc := pageLikeJPEG(t, c.w, c.h)
 		ref := referenceSubCell(yc, c.dw, c.dh)
 		got := image.NewRGBA(image.Rect(0, 0, c.dw, c.dh))
 		averageYCbCrToRGBA(got, yc)
@@ -124,7 +124,7 @@ func TestAverageYCbCrToRGBATolerance(t *testing.T) {
 // and panics. The reference converts through draw.Draw, which indexes correctly, so
 // matching it within tolerance proves the fused path honours the origin.
 func TestAverageYCbCrToRGBANonZeroBounds(t *testing.T) {
-	full := pageLikeJPEG(t, 1280, 800, movingScreencastQuality)
+	full := pageLikeJPEG(t, 1280, 800)
 	// Crop to a non-zero, even origin so the 4:2:0 chroma planes still align.
 	sub, ok := full.SubImage(image.Rect(64, 48, 64+512, 48+384)).(*image.YCbCr)
 	if !ok || sub.Bounds().Min == (image.Point{}) {
@@ -154,7 +154,7 @@ func TestAverageYCbCrToRGBANonZeroBounds(t *testing.T) {
 // TestAverageYCbCrToRGBAOpaqueAndSized checks the kernel writes an opaque,
 // fully-sized result and never panics on a degenerate 1x1 target.
 func TestAverageYCbCrToRGBAOpaqueAndSized(t *testing.T) {
-	yc := pageLikeJPEG(t, 256, 256, movingScreencastQuality)
+	yc := pageLikeJPEG(t, 256, 256)
 	for _, dh := range []int{1, 3, 17} {
 		dw := dh
 		dst := image.NewRGBA(image.Rect(0, 0, dw, dh))
@@ -175,7 +175,7 @@ func TestAverageYCbCrToRGBAOpaqueAndSized(t *testing.T) {
 // comparison is the whole pipeline the fuse folds into the worker.
 func BenchmarkDecodeFullVsFused(b *testing.B) {
 	const w, h, dw, dh = 2528, 2838, 316, 258
-	yc := pageLikeJPEG(b, w, h, movingScreencastQuality)
+	yc := pageLikeJPEG(b, w, h)
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, yc, &jpeg.Options{Quality: movingScreencastQuality}); err != nil {
 		b.Fatalf("re-encode: %v", err)
