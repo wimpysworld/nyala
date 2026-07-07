@@ -169,6 +169,35 @@ func TestDecodePoolMonotonicUnderRace(t *testing.T) {
 	}
 }
 
+// TestAdaptiveDecodeWorkers proves the core-adaptive default is max(2, procs/2): the
+// floor of 2 holds on a low-core box, and the value is half the cores above that, staying
+// proportional on a many-core box with no fixed ceiling. It takes the core count as an
+// argument, so it does not depend on the test box's cores.
+func TestAdaptiveDecodeWorkers(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		procs, want int
+	}{
+		{0, minDecodeWorkers}, // degenerate: floors to 2
+		{1, minDecodeWorkers}, // one core: floors to 2
+		{2, minDecodeWorkers}, // two cores: half is 1, floors to 2
+		{3, minDecodeWorkers}, // three cores: half is 1, floors to 2 (low-core heuristic)
+		{4, 2},                // half the cores
+		{8, 4},                // half the cores
+		{16, 8},               // half the cores
+		{32, 16},              // half the cores, above the env override's fixed 16 cap
+		{64, 32},              // stays proportional, no ceiling
+	}
+	for _, c := range cases {
+		if got := adaptiveDecodeWorkers(c.procs); got != c.want {
+			t.Errorf("adaptiveDecodeWorkers(%d) = %d, want %d", c.procs, got, c.want)
+		}
+		if got := adaptiveDecodeWorkers(c.procs); got < minDecodeWorkers {
+			t.Errorf("adaptiveDecodeWorkers(%d) = %d, below the floor %d", c.procs, got, minDecodeWorkers)
+		}
+	}
+}
+
 // itoa renders a small non-negative int as decimal ASCII, the seqDecode payload.
 func itoa(n int) string {
 	if n == 0 {

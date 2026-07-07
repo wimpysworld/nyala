@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"os"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -17,22 +18,40 @@ import (
 // or unparseable falls back to defaultDecodeWorkers.
 const decodeWorkersEnv = "NYALA_DECODE_WORKERS"
 
-// defaultDecodeWorkers is the live decode-pool size when the env override is unset.
-// The jpegn SIMD decoder roughly halves a screencast decode (measured ~29 ms on a
-// large block frame), so two workers clear the 60 fps arrival (a ~17 ms gap) with
-// headroom while leaving cores for the render, encode, the engine goroutines, and
-// Chromium itself. Two is the floor default: it locks Out at 60 on a strong CPU and
-// oversubscribes nothing. A core-adaptive default is a follow-up (see docs/TODO.md),
-// so a weaker CPU (no AVX2, jpegn on its slower path) can be given more workers.
-const defaultDecodeWorkers = 2
-
-// maxDecodeWorkers caps the env override so a stray large value cannot spawn an
-// unbounded pool and starve the render, encode, and browser of cores.
+// maxDecodeWorkers is the hard cap on the manual env override, so a stray large value
+// cannot spawn an unbounded pool and starve the render, encode, and browser of cores. The
+// core-adaptive default is core-proportional and does not use it.
 const maxDecodeWorkers = 16
 
-// decodeWorkerCount reads the live decode-pool size from NYALA_DECODE_WORKERS,
-// clamped to [1, maxDecodeWorkers], defaulting to defaultDecodeWorkers when unset or
-// unparseable. It is read once per session on the live path only; capture keeps its
+// minDecodeWorkers is the floor default: two workers lock output at 60 on a strong CPU
+// (the jpegn SIMD decode roughly halves a screencast decode, ~29 ms on a large block
+// frame, so two clear the ~17 ms 60 fps gap with headroom) and oversubscribe nothing.
+const minDecodeWorkers = 2
+
+// defaultDecodeWorkers is the live decode-pool size when the env override is unset. It
+// reads the visible cores once (GOMAXPROCS is cgroup-aware from Go 1.26, so it reflects a
+// container's real quota) and derives the pool from adaptiveDecodeWorkers.
+func defaultDecodeWorkers() int {
+	return adaptiveDecodeWorkers(runtime.GOMAXPROCS(0))
+}
+
+// adaptiveDecodeWorkers derives the pool as max(minDecodeWorkers, procs/2). The decode
+// workers take about half the cores, so half stays free for the render, the terminal
+// encode, the engine goroutines, and Chromium, which all run alongside the pool. procs/2
+// sits below the core count, so no separate ceiling is needed. The floor of 2 is the
+// low-core heuristic: a 2-core or 3-core box still gets 2 workers even though that exceeds
+// half, so a weak CPU (no AVX2, jpegn on its slower path) is not left with one. So a 4-core
+// box gets 2, an 8-core box 4, a 16-core box 8, and a 32-core box 16.
+func adaptiveDecodeWorkers(procs int) int {
+	if n := procs / 2; n > minDecodeWorkers {
+		return n
+	}
+	return minDecodeWorkers
+}
+
+// decodeWorkerCount reads the live decode-pool size from NYALA_DECODE_WORKERS, clamped to
+// [1, maxDecodeWorkers], falling back to the core-adaptive defaultDecodeWorkers when unset
+// or unparseable. It is read once per session on the live path only; capture keeps its
 // single ordered worker.
 func decodeWorkerCount() int {
 	if v := os.Getenv(decodeWorkersEnv); v != "" {
@@ -43,7 +62,7 @@ func decodeWorkerCount() int {
 			return n
 		}
 	}
-	return defaultDecodeWorkers
+	return defaultDecodeWorkers()
 }
 
 // seqRawFrame is one undecoded screencast frame tagged with its arrival sequence
