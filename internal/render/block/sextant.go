@@ -103,7 +103,7 @@ func binarizeSextant(tl, tr, ml, mr, bl, br color.RGBA) (glyph rune, fg, bg colo
 
 	lo := min(min(min(lTL, lTR), min(lML, lMR)), min(lBL, lBR))
 	hi := max(max(max(lTL, lTR), max(lML, lMR)), max(lBL, lBR))
-	mid := lo + (hi-lo)/2.0
+	mid := lo + (hi-lo)/2
 
 	mask := boolBit(lTL > mid) | boolBit(lTR > mid)<<1 | boolBit(lML > mid)<<2 |
 		boolBit(lMR > mid)<<3 | boolBit(lBL > mid)<<4 | boolBit(lBR > mid)<<5

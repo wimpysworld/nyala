@@ -406,7 +406,7 @@ func binarizeQuadrant(x, y, z, w color.RGBA) (glyph rune, fg, bg color.RGBA) {
 
 	lo := min(min(a, b), min(c, d))
 	hi := max(max(a, b), max(c, d))
-	mid := lo + (hi-lo)/2.0
+	mid := lo + (hi-lo)/2
 
 	mask := boolBit(a > mid)<<3 | boolBit(b > mid)<<2 | boolBit(c > mid)<<1 | boolBit(d > mid)
 
@@ -479,10 +479,25 @@ func avgChannels(rs, gs, bs, n int) color.RGBA {
 	}
 }
 
-// luma converts an RGBA colour to Rec.601 luma. The weights are the Carbonyl
-// constants 0.299 R, 0.587 G, 0.114 B; channel order is RGBA.
-func luma(c color.RGBA) float64 {
-	return 0.299*float64(c.R) + 0.587*float64(c.G) + 0.114*float64(c.B)
+// lumaWeightR, lumaWeightG, and lumaWeightB are the fixed-point 8-bit Rec.601
+// luma weights: the Carbonyl float constants 0.299, 0.587, 0.114 scaled to 256
+// and rounded (77, 150, 29), summing to 256. Integer weights let luma stay in
+// integer arithmetic, which benches faster than the float multiply-add and than
+// a pre-scaled lookup table. The luma is an ordering key only: the binarise
+// splits sub-cells at the luma midpoint, so the absolute scale does not matter,
+// only the relative order. The integer luma tracks the float luma's ordering
+// closely enough that the two-colour split differs on only a handful of near-tie
+// cells (recorded in the golden archives).
+const (
+	lumaWeightR = 77
+	lumaWeightG = 150
+	lumaWeightB = 29
+)
+
+// luma converts an RGBA colour to an integer Rec.601 luma ordering key.
+// Channel order is RGBA.
+func luma(c color.RGBA) int {
+	return lumaWeightR*int(c.R) + lumaWeightG*int(c.G) + lumaWeightB*int(c.B)
 }
 
 // boolBit maps a flag to 0 or 1 for mask assembly.
