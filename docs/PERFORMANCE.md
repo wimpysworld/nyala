@@ -513,6 +513,10 @@ host sound server. No CDP audio capture, no Nyala-side mixing.
   overrides it with the bool flag `chromedp.Flag("mute-audio", false)` in
   `newAllocator` (`internal/engine/launch.go`), mirroring the `--enable-gpu` pattern.
   It must be the bool `false`, not the string `"false"`: a string keeps Chromium muted.
+- Autoplay: the live path also sets `--autoplay-policy=no-user-gesture-required` on the
+  same gate. Chromium otherwise blocks audible autoplay until a user gesture, and Nyala
+  has no input yet, so audible media would never start. Muted autoplay is already
+  allowed, so this pairs with the unmute.
 - Route: Chromium's bundled libpulse connects to the host PulseAudio / PipeWire-pulse
   socket, reached through inherited env (`XDG_RUNTIME_DIR`, `PULSE_SERVER`). chromedp
   passes the parent env to the child, so no plumbing.

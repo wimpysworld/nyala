@@ -169,8 +169,11 @@ func (e *ChromiumEngine) textOverlayBackend() bool {
 // mute-audio=true that Headless sets: chromedp flags are last-write-wins by map key,
 // and this append lands after DefaultExecAllocatorOptions. The bool false emits no
 // flag at all (audio on); a string "false" would emit --mute-audio=false and keep
-// Chromium muted. Like the GPU flag it rides the live path only, stays off under
-// capture, and the caller gates it on a detected host audio sink.
+// Chromium muted. It also sets autoplay-policy=no-user-gesture-required so audible
+// media plays on load: Chromium otherwise blocks audible autoplay until a user
+// gesture, and Nyala has no input yet. Like the GPU flag both ride the live path
+// only, stay off under capture, and the caller gates them on a detected host audio
+// sink.
 func newAllocator(parent context.Context, execPath string, surfW, surfH int, z float64, cfg ProxyConfig, enableGPU, enableAudio bool) (context.Context, context.CancelFunc) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(execPath),
@@ -182,6 +185,11 @@ func newAllocator(parent context.Context, execPath string, surfW, surfH int, z f
 	}
 	if enableAudio {
 		opts = append(opts, chromedp.Flag("mute-audio", false))
+		// Chromium blocks audible autoplay until a user gesture. Nyala has no input
+		// yet, so audible media on a page would never start. Allow gesture-free
+		// autoplay so it plays on load. Muted autoplay is already allowed, so this
+		// pairs with the unmute above and rides the same live-path gate.
+		opts = append(opts, chromedp.Flag("autoplay-policy", "no-user-gesture-required"))
 	}
 	for _, pair := range proxyFlags(cfg) {
 		opts = append(opts, chromedp.Flag(pair[0], pair[1]))
