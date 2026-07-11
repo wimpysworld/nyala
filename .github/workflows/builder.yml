@@ -159,6 +159,7 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v22
       - name: Enable FlakeHub Cache
         uses: DeterminateSystems/flakehub-cache-action@v3
+        continue-on-error: true
       - name: Check flake
         run: nix flake check
 
@@ -330,6 +331,7 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v22
       - name: Enable FlakeHub Cache
         uses: DeterminateSystems/flakehub-cache-action@v3
+        continue-on-error: true
       - name: Install GoReleaser
         run: go install "github.com/goreleaser/goreleaser/v2@${GORELEASER_VERSION}"
       - name: Run GoReleaser snapshot
@@ -372,6 +374,7 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v22
       - name: Enable FlakeHub Cache
         uses: DeterminateSystems/flakehub-cache-action@v3
+        continue-on-error: true
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.2
       - name: Install GoReleaser
