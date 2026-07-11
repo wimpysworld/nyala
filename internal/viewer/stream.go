@@ -620,6 +620,13 @@ func (s *streamSession) flushAssembled() {
 // writer exists (a startup resize) or after it stops, it writes the tty directly.
 // It copies the bytes because the writer emits them later, off this goroutine. It
 // runs only on the producer goroutine.
+//
+// It does two blocking sends on the cap-1 ready channel (flushAssembled then the
+// control bytes), so while inside it the producer is not draining eng.Frames() for
+// up to about two write spans. This is transient: the engine collector parks on its
+// cap-2 buffer and resumes the moment emitControl returns. In production it fires
+// only on a rare resize or Tab, because the per-second heartbeat runs only when the
+// fps meter is armed.
 func (s *streamSession) emitControl(b []byte) error {
 	if s.writer == nil {
 		_, err := s.tty.Write(b)
