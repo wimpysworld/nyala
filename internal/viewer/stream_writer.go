@@ -63,9 +63,10 @@ func newStreamWriter(tty io.Writer) *streamWriter {
 
 // run emits each queued item to the terminal in order until ready closes. It times
 // only the io.Write (the terminal flush) when the item is timed, so the fps meter
-// attributes write time apart from the producer's encode. On the first write error
-// it records the error once on errc, then discards later writes while still
-// returning pooled buffers on free, so a blocked producer handoff never deadlocks.
+// attributes write time apart from the producer's encode. On the first write error,
+// or a short write (n < len with a nil error, which tears the frame tail), it records
+// the error once on errc, then discards later writes while still returning pooled
+// buffers on free, so a blocked producer handoff never deadlocks.
 func (w *streamWriter) run() {
 	defer close(w.done)
 	failed := false
@@ -80,7 +81,13 @@ func (w *streamWriter) run() {
 			if item.timed {
 				start = time.Now()
 			}
-			if _, err := w.tty.Write(data); err != nil {
+			n, err := w.tty.Write(data)
+			if err == nil && n < len(data) {
+				// A short write with a nil error drops the frame tail silently. Treat it
+				// as a failure so the io.Writer seam cannot tear frames unnoticed.
+				err = io.ErrShortWrite
+			}
+			if err != nil {
 				failed = true
 				select {
 				case w.errc <- err:

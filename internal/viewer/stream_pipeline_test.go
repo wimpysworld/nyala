@@ -2,6 +2,7 @@ package viewer
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -286,4 +287,242 @@ func TestStreamLoopTeardownAfterTabAndWinch(t *testing.T) {
 // tags its identity, for the drop-policy burst.
 func solidImageFrame(id uint8) render.Frame {
 	return render.Frame{Img: solidImageSize(8, 8, color.RGBA{R: id, G: id, B: id, A: 0xff})}
+}
+
+// errWriter is a tty stand-in whose Write returns err on and after the failAt call,
+// so a test drives a real write error through the writer goroutine and asserts loop
+// surfaces it. Its counter is guarded, so the writer goroutine may touch it under
+// -race.
+type errWriter struct {
+	mu     sync.Mutex
+	writes int
+	failAt int
+	err    error
+}
+
+func (w *errWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.writes++
+	if w.writes >= w.failAt {
+		return 0, w.err
+	}
+	return len(p), nil
+}
+
+// shortWriter is a tty stand-in whose Write returns one byte short with a nil error,
+// the io.Writer contract the production *os.File never trips. It exercises the
+// short-write fix: the writer must treat n < len(p) as a failure.
+type shortWriter struct{}
+
+func (w *shortWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	return len(p) - 1, nil
+}
+
+// feedFrames pushes identical frames into ch until stop closes, so a loop test keeps
+// the producer assembling while it waits for a write error to surface.
+func feedFrames(ch chan<- render.Frame, stop <-chan struct{}) {
+	for {
+		select {
+		case ch <- solidImageFrame(1):
+		case <-stop:
+			return
+		}
+	}
+}
+
+// TestStreamLoopReturnsWriteError drives the real loop against a tty that errors on
+// its third write and asserts loop returns that exact error. The writer goroutine
+// exits with it: loop's teardown defer calls w.stop, which joins the goroutine, so a
+// returned loop proves no writer leak.
+func TestStreamLoopReturnsWriteError(t *testing.T) {
+	wantErr := errors.New("tty write failed")
+	tty := &errWriter{failAt: 3, err: wantErr}
+	frames := make(chan render.Frame)
+	eng := &pipeEngine{frames: frames}
+
+	st := NewState(4, 2, 8, 8)
+	st.Backend = BackendBlock
+	diff := &block.GridDiff{}
+	st.SetDiff(diff)
+	s := &streamSession{eng: eng, st: &st, tty: tty, diff: diff}
+
+	keys := make(chan keyEvent)
+	loopDone := make(chan error, 1)
+	go func() { loopDone <- s.loop(nil, keys) }()
+
+	stop := make(chan struct{})
+	go feedFrames(frames, stop)
+	defer close(stop)
+
+	select {
+	case err := <-loopDone:
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("loop returned %v, want %v", err, wantErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("loop did not surface the write error")
+	}
+}
+
+// TestStreamLoopDropsStaleFramesWithFPSArmed repeats the drop-policy burst with the
+// fps meter armed, so assemble stamps the meter and the free-case recordPaint runs on
+// the producer goroutine concurrently with the writer's buffer frees. Under -race it
+// pins that the meter stays single-goroutine and no pooled buffer aliases.
+func TestStreamLoopDropsStaleFramesWithFPSArmed(t *testing.T) {
+	tty := &slowWriter{delay: 3 * time.Millisecond}
+	frames := make(chan render.Frame)
+	eng := &pipeEngine{frames: frames}
+
+	st := NewState(4, 2, 8, 8)
+	st.Backend = BackendBlock
+	diff := &block.GridDiff{}
+	st.SetDiff(diff)
+	s := &streamSession{eng: eng, st: &st, tty: tty, diff: diff, fps: newFPSMeter([]string{"NYALA_FPS_TIMING=1"})}
+	if s.fps == nil {
+		t.Fatal("fps meter did not arm")
+	}
+
+	keys := make(chan keyEvent, 1)
+	loopDone := make(chan struct{})
+	go func() {
+		defer close(loopDone)
+		_ = s.loop(nil, keys)
+	}()
+
+	const pushed = 40
+	for i := range pushed {
+		frames <- solidImageFrame(uint8(i))
+	}
+	keys <- keyEvent{b: 'q'}
+
+	select {
+	case <-loopDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("loop did not quit with the fps meter armed")
+	}
+	if tty.count() == 0 {
+		t.Fatal("writer presented no frames at all")
+	}
+}
+
+// TestStreamLoopControlFrameInterleaveUnderSlowTTY drives the real loop through a
+// kitty frame burst, a Tab away from kitty (which routes the kitty reset through the
+// writer amid the burst), more frames, and a quit, all against a slow tty. It asserts
+// the loop quits promptly (the two blocking control sends never wedge under
+// backpressure) and the reset lands after the kitty graphics escape, so a control
+// write stays frame-before-control ordered and never splits a frame. Run under -race.
+func TestStreamLoopControlFrameInterleaveUnderSlowTTY(t *testing.T) {
+	out := &slowWriter{delay: 500 * time.Microsecond}
+	eng := &tabCycleEngine{frames: make(chan render.Frame, 8)}
+
+	st := NewState(8, 4, 16, 16)
+	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
+	diff := &block.GridDiff{}
+	st.SetDiff(diff)
+
+	done := make(chan struct{})
+	ctl := newControl(eng, done)
+	s := &streamSession{eng: eng, st: &st, tty: out, ctl: ctl, diff: diff}
+
+	winch := make(chan os.Signal, 1)
+	keys := make(chan keyEvent, 3)
+	loopDone := make(chan error, 1)
+	go func() { loopDone <- s.loop(winch, keys) }()
+
+	// Burst of kitty frames, then wait for a kitty graphics escape to reach the tty.
+	for range 6 {
+		eng.frames <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}
+	}
+	if !waitFor(3*time.Second, func() bool { return strings.Contains(out.String(), "\x1b_G") }) {
+		t.Fatalf("no kitty graphics escape before Tab; output = %q", out.String())
+	}
+
+	// Tab away from kitty: the reset (a=d delete-image) routes through the writer amid
+	// the burst and must land after the already-sent frames.
+	keys <- keyEvent{b: keyTab}
+	if !waitFor(3*time.Second, func() bool { return strings.Contains(out.String(), "a=d") }) {
+		t.Fatalf("kitty reset (a=d) did not reach the terminal after Tab; output = %q", out.String())
+	}
+
+	// A few more frames after the control write, then quit.
+	for range 4 {
+		eng.frames <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}
+	}
+	keys <- keyEvent{b: 'q'}
+
+	select {
+	case err := <-loopDone:
+		if err != nil {
+			t.Fatalf("loop returned error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("loop did not quit under a slow tty with an interleaved control write")
+	}
+	close(done)
+
+	got := out.String()
+	if g, r := strings.Index(got, "\x1b_G"), strings.Index(got, "a=d"); g < 0 || r < 0 || g > r {
+		t.Fatalf("control write out of order: graphics escape at %d, reset at %d (want escape first)", g, r)
+	}
+}
+
+// TestStreamWriterShortWriteFails pins the short-write fix at the writer seam: a tty
+// returning n < len(p) with a nil error must surface io.ErrShortWrite on errc and
+// still free the pooled buffer, so a torn frame never passes silently.
+func TestStreamWriterShortWriteFails(t *testing.T) {
+	w := newStreamWriter(&shortWriter{})
+	b := &bytes.Buffer{}
+	b.WriteString("FRAME")
+	w.send(writeItem{buf: b})
+
+	select {
+	case err := <-w.errc:
+		if !errors.Is(err, io.ErrShortWrite) {
+			t.Fatalf("errc = %v, want io.ErrShortWrite", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("short write not reported on errc")
+	}
+	select {
+	case <-w.free:
+	case <-time.After(time.Second):
+		t.Fatal("writer did not free the buffer after a short write")
+	}
+	w.stop()
+}
+
+// TestStreamLoopReturnsShortWriteError drives the real loop against a tty that always
+// short-writes and asserts loop returns io.ErrShortWrite. Without the fix the short
+// write passes as success and this test hangs until timeout, so it pins the fix end
+// to end.
+func TestStreamLoopReturnsShortWriteError(t *testing.T) {
+	frames := make(chan render.Frame)
+	eng := &pipeEngine{frames: frames}
+
+	st := NewState(4, 2, 8, 8)
+	st.Backend = BackendBlock
+	diff := &block.GridDiff{}
+	st.SetDiff(diff)
+	s := &streamSession{eng: eng, st: &st, tty: &shortWriter{}, diff: diff}
+
+	keys := make(chan keyEvent)
+	loopDone := make(chan error, 1)
+	go func() { loopDone <- s.loop(nil, keys) }()
+
+	stop := make(chan struct{})
+	go feedFrames(frames, stop)
+	defer close(stop)
+
+	select {
+	case err := <-loopDone:
+		if !errors.Is(err, io.ErrShortWrite) {
+			t.Fatalf("loop returned %v, want io.ErrShortWrite", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("loop did not surface the short-write error")
+	}
 }
