@@ -196,7 +196,7 @@ browsh render blocks with cell diffing**; only brow6el (Sixel + Kitty) and casty
   coalescing half.
 - **Lossless where pixels must stay exact.** Carbonyl requests PNG so JPEG ringing
   does not create phantom cell changes that defeat a frame diff. Nyala now uses PNG
-  for Kitty, settled Sixel, and every capture. Block uses JPEG quality 90 because its
+  for Kitty, settled Sixel, and every capture. Block uses JPEG quality 80 because its
   quantised output does not preserve source pixels for a lossless diff.
 - **Kitty specifics from brow6el:** double-buffered alternating image IDs for
   flicker-free swap, `f=24` RGB to drop alpha (~25% fewer bytes), 16 KB chunks,
@@ -228,7 +228,7 @@ graphics wins:
 
 ### Theme 7 - Screencast image format
 
-The wire format now follows the backend. Live Block requests JPEG quality 90. The
+The wire format now follows the backend. Live Block requests JPEG quality 80. The
 block path needs pixels, and its sub-cell downsample plus colour quantisation hide
 JPEG artefacts. Live Kitty always requests PNG and passes Chromium's owned base64
 payload straight to Kitty `f=100,t=d,a=T` framing. Live Sixel keeps the existing
@@ -336,7 +336,8 @@ landed, unmarked items are open.
    medium (enables the rest), effort low.
 4b. **[DONE - 67936b1]** **Add the lossless PNG screencast path.** PNG remains the
    capture format, the settled Sixel format, and the direct Kitty format. The later
-   backend policy keeps JPEG quality 90 for Block and moving Sixel frames. See Theme 7.
+   backend policy keeps JPEG quality 80 for Block and quality 90 for moving Sixel
+   frames. See Theme 7.
 
 Also landed on the load-time theme, beyond the ranked list:
 - **[DONE - 8d288d5]** Publish the overlay at first paint with near-calibrated text,
@@ -442,7 +443,7 @@ Also landed on the load-time theme, beyond the ranked list:
     content, where the damage-diff gives nothing; PNG stays best for typical and idle
     pages. MEASURED again (bbc, kitty, live): `in_decode_mean_ms ~34`, over the 16.6 ms
     60fps budget, so PNG decode was the ingest ceiling once the paint wall (5) cleared.
-    The final policy is consumer-specific. Block uses JPEG quality 90 without a state
+    The final policy is consumer-specific. Block uses JPEG quality 80 without a state
     machine. Sixel runs the SETTLED(PNG)/MOVING(JPEG-quality-90) machine, so static
     pages stay crisp and motion avoids the full PNG cost. Kitty is excluded from the
     state machine and always requests PNG for zero-decode direct framing. Capture
@@ -534,7 +535,7 @@ bytes, so the next lever is downscale-in-motion (cuts encode, decode, and write 
 
 ### Idea 2 - PNG/JPEG hybrid screencast
 
-Built for the pixel consumers. Block uses JPEG quality 90. Sixel switches to JPEG
+Built for the pixel consumers. Block uses JPEG quality 80. Sixel switches to JPEG
 quality 90 in motion and back to PNG after settle. Kitty always stays PNG because it
 passes the CDP payload to the terminal without a Nyala decode. The remaining question
 is end-to-end: measure whether terminal PNG decode and draw stays inside 16.67 ms, and
@@ -610,7 +611,7 @@ the real ceiling and see which wall is next.
 1. [DONE] Idea 1 (GPU accel: `--enable-gpu` plus the flake driver path). Owner verified
    hardware WebGL and aquarium 26 -> 60 fps.
 2. [DONE] JPEG-in-motion (recommendation 15) is active for Sixel. Block stays JPEG
-   quality 90. Kitty stays direct PNG.
+   quality 80. Kitty stays direct PNG.
 3. NEXT: measure sustained terminal FPS and split Kitty terminal PNG decode/draw from
    Nyala framing. Then address Sixel quantisation and dirty bands. Downscale graphics
    in motion only after those measurements.
@@ -1108,7 +1109,7 @@ not motion-only. That is a separate, unbuilt item.
 
 ## Open questions
 
-- RESOLVED: screencast format is backend-specific. Block uses JPEG quality 90, Kitty
+- RESOLVED: screencast format is backend-specific. Block uses JPEG quality 80, Kitty
   always uses direct PNG, Sixel adapts between PNG and JPEG quality 90, and capture
   always uses PNG. Theme 7 records the policy and measurements.
 - RESOLVED: Nyala runs inside multiplexers (tmux, herd, Zellij is supported). So

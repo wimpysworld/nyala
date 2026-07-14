@@ -24,7 +24,7 @@ Three rendering backends sit behind one `Renderer` seam. Swapping backend change
 
 | Backend | Protocol | Fidelity | Notes |
 |---|---|---|---|
-| **Block** | None; plain Unicode glyphs | Universal floor | The mandatory floor. Runs on any TTY, including a bare Linux console under KMSCON with no graphics protocol. Three schemes: quadrant (2x2, the default fallback), sextant (2x3, sharper vertical resolution on terminals that self-draw it), and half-block (1x2). Live frames use JPEG quality 90 because block sampling and quantisation hide its artefacts. Truecolour where the terminal supports it, with a closed-form xterm-256 fallback. |
+| **Block** | None; plain Unicode glyphs | Universal floor | The mandatory floor. Runs on any TTY, including a bare Linux console under KMSCON with no graphics protocol. Three schemes: quadrant (2x2, the default fallback), sextant (2x3, sharper vertical resolution on terminals that self-draw it), and half-block (1x2). Live frames use JPEG quality 80 because block sampling and quantisation hide its artefacts. Truecolour where the terminal supports it, with a closed-form xterm-256 fallback. |
 | **Sixel** | Sixel graphics | Higher | Higher-fidelity bitmap than blocks, for terminals that speak Sixel. It keeps the decoded adaptive PNG/JPEG stream. |
 | **Kitty** | Kitty graphics | Highest | Lossless CDP PNG, passed straight to Kitty framing without an image decode or re-encode. |
 

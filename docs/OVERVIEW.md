@@ -86,7 +86,7 @@ decode, PNG decode, pixel packing, zlib, or base64 encode. A frame queued across
 backend switch decodes that retained PNG at the new pixel consumer, so switching and
 resize remain safe.
 
-The live format policy follows the consumer. Block requests JPEG quality 90 because
+The live format policy follows the consumer. Block requests JPEG quality 80 because
 it needs pixels and its sub-cell sampling plus colour quantisation hide JPEG artefacts.
 Kitty always requests PNG for the direct path. Sixel keeps its decoded adaptive stream:
 PNG while settled, JPEG quality 90 while moving, then PNG again after settle. Diagnostic
