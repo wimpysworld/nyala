@@ -154,12 +154,18 @@ func BenchmarkDirectPNGKitty(b *testing.B) {
 	})
 	b.Run("direct", func(b *testing.B) {
 		enc := &renderkitty.LiveEncoder{}
+		if !e.directKittyPNG(data) {
+			b.Fatal("valid PNG rejected by direct Kitty selector")
+		}
 		if err := enc.EncodePNGID(data, 1, io.Discard); err != nil {
 			b.Fatal(err)
 		}
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
+			if !e.directKittyPNG(data) {
+				b.Fatal("valid PNG rejected by direct Kitty selector")
+			}
 			if err := enc.EncodePNGID(data, 1, io.Discard); err != nil {
 				b.Fatal(err)
 			}

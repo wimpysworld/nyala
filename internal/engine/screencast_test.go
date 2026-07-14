@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/png"
+	"io"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -127,6 +130,58 @@ func TestRunFrameLoopReEmitsHeldFrameWithText(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("runFrameLoop did not return after context cancel")
+	}
+}
+
+// TestRunFrameLoopCaptureUsesNativeDecoder drives the routine capture worker with
+// a real PNG and no decode hook. It guards capture against entering the live Kitty
+// pass-through path and proves the decoder-native image remains usable by capture.
+func TestRunFrameLoopCaptureUsesNativeDecoder(t *testing.T) {
+	t.Parallel()
+	payload := encodeBase64PNG(t)
+	wantNative, err := decodeScreencastNative(payload)
+	if err != nil {
+		t.Fatalf("decode reference PNG: %v", err)
+	}
+	slot := newFrameSlot()
+	e := &ChromiumEngine{backend: "kitty", captureOn: true}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	frames := make(chan render.Frame, 2)
+	done := make(chan struct{})
+	go func() {
+		e.runFrameLoop(ctx, slot, frames, &textSync{}, make(chan struct{}, 1), make(chan struct{}, 1))
+		close(done)
+	}()
+
+	for i, scrollY := range []float64{10, 20} {
+		slot.put(rawFrame{
+			data: payload,
+			meta: &page.ScreencastFrameMetadata{ScrollOffsetY: scrollY},
+		})
+		got := recvFrame(t, frames)
+		if got.Img == nil || got.EncodedPNG != "" {
+			t.Fatalf("capture frame image = %T, encoded PNG length = %d, want decoded pixels only", got.Img, len(got.EncodedPNG))
+		}
+		if reflect.TypeOf(got.Img) != reflect.TypeOf(wantNative) {
+			t.Fatalf("capture frame type = %T, want decoder-native %T", got.Img, wantNative)
+		}
+		if got.Stats == nil || got.Stats.ScreencastPayloadBytes != int64(len(payload)) || got.Stats.ScreencastDecodeMS < 0 {
+			t.Fatalf("capture frame stats = %+v, want payload bytes %d and a non-negative decode time", got.Stats, len(payload))
+		}
+		if got.Meta == nil || got.Meta.ScrollOffsetY != scrollY {
+			t.Fatalf("capture frame metadata = %+v, want ordered scroll %.0f for frame %d", got.Meta, scrollY, i+1)
+		}
+		if err := png.Encode(io.Discard, got.Img); err != nil {
+			t.Fatalf("capture consumer rejected native image: %v", err)
+		}
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runFrameLoop did not return after capture cancellation")
 	}
 }
 

@@ -5,12 +5,12 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/page"
 
 	"github.com/wimpysworld/nyala/internal/render"
+	renderkitty "github.com/wimpysworld/nyala/internal/render/kitty"
 )
 
 // decodeWorkersEnv overrides the live decode-worker count. It follows the NYALA_*
@@ -84,11 +84,6 @@ type decodedFrame struct {
 	pending pendingFrame
 }
 
-// base64PNGPrefix is the standard base64 encoding of the PNG signature. CDP
-// supplies an unwrapped standard-base64 string, so checking this prefix identifies
-// a PNG without decoding any of its bytes.
-const base64PNGPrefix = "iVBORw0KGgo"
-
 // directKittyPNG reports whether data can bypass the pixel decode and travel to a
 // live Kitty consumer unchanged. It reads the backend at worker time, while the
 // payload signature guards a format-switch race. A later backend switch is safe:
@@ -97,7 +92,7 @@ func (e *ChromiumEngine) directKittyPNG(data string) bool {
 	e.mu.Lock()
 	kitty := e.backend == "kitty" && !e.captureOn
 	e.mu.Unlock()
-	return kitty && strings.HasPrefix(data, base64PNGPrefix) && len(data)%4 == 0
+	return kitty && renderkitty.ValidDirectPNGData(data)
 }
 
 // rawFrameQueue is the bounded, drop-oldest feed from the listener goroutine to the

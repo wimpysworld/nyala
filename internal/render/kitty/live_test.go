@@ -184,15 +184,50 @@ func TestLiveEncoderPNGPassThrough(t *testing.T) {
 }
 
 func TestLiveEncoderPNGRejectsBeforeWrite(t *testing.T) {
-	var e LiveEncoder
+	valid := encodedTestPNG(t)
+	raw, err := base64.StdEncoding.DecodeString(valid)
+	if err != nil {
+		t.Fatalf("decode test PNG: %v", err)
+	}
+	cases := map[string]string{
+		"invalid prefix":   "not-a-png",
+		"invalid length":   valid + "A",
+		"invalid alphabet": valid[:len(valid)/2] + "!" + valid[len(valid)/2+1:],
+		"invalid padding":  valid[:16] + "=" + valid[17:],
+		"truncated PNG":    base64.StdEncoding.EncodeToString(raw[:len(raw)-12]),
+		"invalid structure": base64.StdEncoding.EncodeToString(func() []byte {
+			corrupt := bytes.Clone(raw)
+			corrupt[11] = 12 // IHDR must carry exactly 13 data bytes.
+			return corrupt
+		}()),
+		"invalid CRC": base64.StdEncoding.EncodeToString(func() []byte {
+			corrupt := bytes.Clone(raw)
+			corrupt[29] ^= 1 // First chunk CRC follows signature, header, and IHDR data.
+			return corrupt
+		}()),
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			var e LiveEncoder
+			var out bytes.Buffer
+			err := e.EncodePNGID(data, 1, &out)
+			if !errors.Is(err, ErrInvalidPNGData) {
+				t.Fatalf("EncodePNGID() error = %v, want ErrInvalidPNGData", err)
+			}
+			if out.Len() != 0 {
+				t.Fatalf("rejected PNG wrote %d bytes, want 0", out.Len())
+			}
+		})
+	}
+}
+
+func encodedTestPNG(t *testing.T) string {
+	t.Helper()
 	var out bytes.Buffer
-	err := e.EncodePNGID("not-a-png", 1, &out)
-	if !errors.Is(err, ErrInvalidPNGData) {
-		t.Fatalf("EncodePNGID() error = %v, want ErrInvalidPNGData", err)
+	if err := png.Encode(&out, knownFrame(t).Img); err != nil {
+		t.Fatalf("encode test PNG: %v", err)
 	}
-	if out.Len() != 0 {
-		t.Fatalf("rejected PNG wrote %d bytes, want 0", out.Len())
-	}
+	return base64.StdEncoding.EncodeToString(out.Bytes())
 }
 
 type apcFrame struct {

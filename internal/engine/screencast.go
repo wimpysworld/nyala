@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 
@@ -225,8 +226,7 @@ func (e *ChromiumEngine) registerScreencastListener(ctx context.Context, slot *f
 
 // screencastFmt is the current screencast wire format and its JPEG quality. quality
 // applies only to the JPEG format; the PNG format is lossless and ignores it. The
-// engine holds it under e.mu and startScreencast reads it, so a start after a format
-// switch, resize, or backend switch uses the current format.
+// engine holds it under e.mu and updates it only after StartScreencast succeeds.
 type screencastFmt struct {
 	format  page.ScreencastFormat // page.ScreencastFormatPng or ...Jpeg
 	quality int                   // JPEG quality (0-100); ignored for PNG
@@ -258,19 +258,16 @@ const motionOnsetWindow = 600 * time.Millisecond
 var screencastSettleIdle = 400 * time.Millisecond
 
 // startScreencast starts (or restarts) the screencast at the engine's active capture
-// size, in the current screencast format (screencastFmt). The frame listener is
+// size in fmtSel. The frame listener is
 // registered once per session by registerScreencastListener, so this issues only the
 // CDP StartScreencast command; restartStream and switchScreencastFormat re-issue it
 // without leaking a second listener. It sets the JPEG quality only for the JPEG
 // format. The stream couples to the consume rate because Chrome withholds frames
 // until acked.
-func (e *ChromiumEngine) startScreencast(ctx context.Context, capW, capH int) error {
+func (e *ChromiumEngine) startScreencast(ctx context.Context, capW, capH int, fmtSel screencastFmt) error {
 	if ctx == nil {
 		return fmt.Errorf("engine: start screencast: no browser context")
 	}
-	e.mu.Lock()
-	fmtSel := e.screencastFmt
-	e.mu.Unlock()
 	if fmtSel.format == "" {
 		fmtSel.format = page.ScreencastFormatPng
 	}
@@ -287,6 +284,150 @@ func (e *ChromiumEngine) startScreencast(ctx context.Context, capW, capH int) er
 	return chromedp.Run(ctx, action)
 }
 
+// stopScreencast, runStartScreencast, and runApplySizing expose the three stream
+// control operations to deterministic unit tests. Production uses their CDP paths.
+func (e *ChromiumEngine) stopScreencast(ctx context.Context) error {
+	if e.stopScreencastOp != nil {
+		return e.stopScreencastOp(ctx)
+	}
+	return chromedp.Run(ctx, page.StopScreencast())
+}
+
+func (e *ChromiumEngine) runStartScreencast(ctx context.Context, capW, capH int, fmtSel screencastFmt) error {
+	if e.startScreencastOp != nil {
+		return e.startScreencastOp(ctx, capW, capH, fmtSel)
+	}
+	return e.startScreencast(ctx, capW, capH, fmtSel)
+}
+
+func (e *ChromiumEngine) runApplySizing(ctx context.Context, windowID browser.WindowID, surfW, surfH int, z float64) error {
+	if e.applySizingOp != nil {
+		return e.applySizingOp(ctx, windowID, surfW, surfH, z)
+	}
+	return applySizing(ctx, windowID, surfW, surfH, z)
+}
+
+// screencastTransition describes one lock-owned stream change. expectedBackend is
+// set for adaptive Sixel changes, where a decision made before screencastCtl must be
+// checked again after acquiring it. pickFormat selects the current backend policy.
+type screencastTransition struct {
+	expectedBackend string
+	format          screencastFmt
+	pickFormat      bool
+	stop            bool
+	resize          bool
+}
+
+// sameScreencastSession compares the cancellation channel that identifies one
+// browser session. Context wrappers for the same session share it; rebuilt sessions
+// do not.
+func sameScreencastSession(active, expected context.Context) bool {
+	if active == nil || expected == nil || active.Done() == nil {
+		return false
+	}
+	return active.Done() == expected.Done()
+}
+
+// transitionScreencastLocked performs one initial start, restart, or adaptive format
+// change while the caller holds screencastCtl. It validates the expected session and
+// backend before any I/O. A stop transition also requires a successfully started
+// stream. It records the selected format and started state only after StartScreencast
+// succeeds, and clears both after a confirmed stop.
+func (e *ChromiumEngine) transitionScreencastLocked(ctx context.Context, change screencastTransition) error {
+	e.mu.Lock()
+	if !sameScreencastSession(e.ctx, ctx) || !e.streamingLocked() {
+		e.mu.Unlock()
+		return nil
+	}
+	if change.stop && !e.screencastStarted {
+		e.mu.Unlock()
+		return nil
+	}
+	if change.expectedBackend != "" && (e.backend != change.expectedBackend || e.captureOn) {
+		e.mu.Unlock()
+		return nil
+	}
+	fmtSel := change.format
+	if change.pickFormat {
+		fmtSel = e.initialScreencastFormatLocked()
+	}
+	if change.expectedBackend != "" {
+		moving := e.screencastFmt.format == page.ScreencastFormatJpeg
+		if (fmtSel.format == page.ScreencastFormatJpeg && moving) ||
+			(fmtSel.format == page.ScreencastFormatPng && !moving) {
+			e.mu.Unlock()
+			return nil
+		}
+	}
+	windowID := e.windowID
+	surfW, surfH := e.surfaceSize(e.cols, e.rows)
+	capW, capH := e.screencastCap(e.cols, e.rows)
+	z := e.layoutScale()
+	e.mu.Unlock()
+
+	if change.stop {
+		if err := e.stopScreencast(ctx); err != nil {
+			return fmt.Errorf("engine: stop screencast: %w", err)
+		}
+		e.mu.Lock()
+		if sameScreencastSession(e.ctx, ctx) {
+			e.screencastFmt = screencastFmt{}
+			e.screencastStarted = false
+		}
+		e.mu.Unlock()
+	}
+	if change.resize {
+		if err := e.runApplySizing(ctx, windowID, surfW, surfH, z); err != nil {
+			return fmt.Errorf("engine: resize viewport: %w", err)
+		}
+	}
+	if err := e.runStartScreencast(ctx, capW, capH, fmtSel); err != nil {
+		return fmt.Errorf("engine: start screencast: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !sameScreencastSession(e.ctx, ctx) {
+		return context.Canceled
+	}
+	e.screencastFmt = fmtSel
+	e.screencastStarted = true
+	return nil
+}
+
+// recoverScreencastTransition cancels the failed active session. The supervisor
+// observes the cancellation and rebuilds it from the engine's held backend, size,
+// URL, and scroll state.
+func (e *ChromiumEngine) recoverScreencastTransition(ctx context.Context, err error) {
+	if err == nil {
+		return
+	}
+	e.mu.Lock()
+	var cancel context.CancelFunc
+	if sameScreencastSession(e.ctx, ctx) {
+		cancel = e.cancel
+	}
+	e.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// startInitialScreencast serialises the first StartScreencast with resize, backend,
+// and adaptive transitions. A pre-start resize or backend change can win the lock,
+// update held state, and return without a stop; this transition then picks that state
+// and issues the session's single initial StartScreencast.
+func (e *ChromiumEngine) startInitialScreencast(ctx context.Context) error {
+	if e.beforeInitialLock != nil {
+		e.beforeInitialLock()
+	}
+	e.screencastCtl.Lock()
+	defer e.screencastCtl.Unlock()
+	return e.transitionScreencastLocked(ctx, screencastTransition{pickFormat: true, resize: true})
+}
+
 // initialScreencastFormat picks the screencast format for a stream (re)start from the
 // active backend and the capture flag, read under e.mu. Capture forces PNG for a
 // byte-exact corpus. Live block runs JPEG for its whole stream, since the block
@@ -298,11 +439,15 @@ func (e *ChromiumEngine) startScreencast(ctx context.Context, capW, capH int) er
 func (e *ChromiumEngine) initialScreencastFormat() screencastFmt {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.initialScreencastFormatLocked()
+}
+
+func (e *ChromiumEngine) initialScreencastFormatLocked() screencastFmt {
 	if e.captureOn {
 		return screencastFmt{format: page.ScreencastFormatPng}
 	}
 	if e.backend == "block" {
-		return screencastFmt{format: page.ScreencastFormatJpeg, quality: movingScreencastQuality}
+		return screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality}
 	}
 	return screencastFmt{format: page.ScreencastFormatPng}
 }
@@ -333,19 +478,19 @@ func (e *ChromiumEngine) currentScreencastPNG() bool {
 // restartStream, and it does not touch the per-session frame listener, which stays
 // registered once: only the stream stops and starts, so the slot, ack-on-receive,
 // off-goroutine decode, and watchdog all keep working across the switch. It sets
-// e.screencastFmt so startScreencast uses the new format.
+// e.screencastFmt only after the new stream starts.
 func (e *ChromiumEngine) switchScreencastFormat(ctx context.Context, format page.ScreencastFormat, quality int) {
 	if ctx == nil {
 		return
 	}
 	e.screencastCtl.Lock()
 	defer e.screencastCtl.Unlock()
-	e.mu.Lock()
-	e.screencastFmt = screencastFmt{format: format, quality: quality}
-	capW, capH := e.screencastCap(e.cols, e.rows)
-	e.mu.Unlock()
-	_ = chromedp.Run(ctx, page.StopScreencast())
-	_ = e.startScreencast(ctx, capW, capH)
+	err := e.transitionScreencastLocked(ctx, screencastTransition{
+		expectedBackend: "sixel",
+		format:          screencastFmt{format: format, quality: quality},
+		stop:            true,
+	})
+	e.recoverScreencastTransition(ctx, err)
 }
 
 // pokeMotion sends one frame-arrival instant to the adaptive-format controller. The
@@ -1363,37 +1508,15 @@ func screencastMeta(meta *page.ScreencastFrameMetadata) *render.ScreencastMeta {
 	}
 }
 
-// restartStream stops the current screencast and starts a fresh one at the
-// engine's recomputed surface size. The viewer calls it after a resize or a
-// backend switch, so frames arrive at the new grid rather than the old one. It
-// moves the three sizing values together: the captured surface and the layout
-// viewport via applySizing, and the screencast cap (the painted device surface
-// from screencastCap) via startScreencast. Moving them as one triple keeps a
-// backend switch from leaving the surface pinned at the launch size with a moved
-// cap. A stop error is ignored because the next start re-establishes the stream. It
-// re-picks the screencast format for the (possibly new) backend, so a Tab from block
-// to a graphics backend lands on the right format on the restart, and holds
-// screencastCtl across the stop/start so it never races an adaptive format switch.
-func (e *ChromiumEngine) restartStream() error {
-	e.screencastCtl.Lock()
-	defer e.screencastCtl.Unlock()
-	return e.restartStreamLocked()
-}
-
-// restartStreamLocked performs restartStream while the caller holds screencastCtl.
-// SetBackend uses it so a backend change and its format reset are atomic against the
-// adaptive Sixel controller.
+// restartStreamLocked stops the current screencast and starts a fresh one at the
+// recomputed surface size while the caller holds screencastCtl. Resize and SetBackend
+// use it so their state change and restart stay atomic against adaptive transitions.
 func (e *ChromiumEngine) restartStreamLocked() error {
 	e.mu.Lock()
 	ctx := e.ctx
-	streaming := e.streamingLocked()
-	windowID := e.windowID
 	reSnap := e.reSnap
-	surfW, surfH := e.surfaceSize(e.cols, e.rows)
-	capW, capH := e.screencastCap(e.cols, e.rows)
-	z := e.layoutScale()
 	e.mu.Unlock()
-	if ctx == nil || !streaming {
+	if ctx == nil {
 		return nil
 	}
 	if e.recorder != nil {
@@ -1409,15 +1532,11 @@ func (e *ChromiumEngine) restartStreamLocked() error {
 		default:
 		}
 	}
-	// Re-pick the format for the current backend, so a Tab between block (live JPEG),
-	// Kitty (live PNG), and Sixel (PNG settled) restarts in the right format.
-	fmtSel := e.initialScreencastFormat()
-	e.mu.Lock()
-	e.screencastFmt = fmtSel
-	e.mu.Unlock()
-	_ = chromedp.Run(ctx, page.StopScreencast())
-	if err := applySizing(ctx, windowID, surfW, surfH, z); err != nil {
-		return fmt.Errorf("engine: resize viewport: %w", err)
-	}
-	return e.startScreencast(ctx, capW, capH)
+	err := e.transitionScreencastLocked(ctx, screencastTransition{
+		pickFormat: true,
+		stop:       true,
+		resize:     true,
+	})
+	e.recoverScreencastTransition(ctx, err)
+	return err
 }

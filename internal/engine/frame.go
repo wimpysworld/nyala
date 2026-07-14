@@ -56,7 +56,7 @@ var base64DecodeBufPool = sync.Pool{New: func() any { b := make([]byte, 0); retu
 // emmansun's own DecodeString does internally.
 //
 // The returned raw slice aliases the pooled buffer, so it must not escape past release:
-// decodeScreencastImage and decodeLiveFrame consume it synchronously into an independent
+// decodeScreencastNative and decodeLiveFrame consume it synchronously into an independent
 // image and defer release before returning, so the buffer never reaches the decode
 // collector or the emitted frame.
 func decodeBase64Pooled(data string) (raw []byte, release func(), err error) {
@@ -94,10 +94,14 @@ func decodeBase64Pooled(data string) (raw []byte, release func(), err error) {
 // tolerance cannot cleanly catch a real change; PNG gives an exact per-cell diff.
 const screencastQuality = 90
 
+// blockScreencastQuality is the JPEG quality the block backend uses for its live
+// stream. Quality 80 keeps the full-surface decode inside one 60 FPS frame budget
+// before compose. Capture stays PNG, so this value does not affect corpus output.
+const blockScreencastQuality = 80
+
 // movingScreencastQuality is the JPEG quality the adaptive live Sixel screencast uses
-// when the page is moving, and the block backend uses for its whole live stream.
-// Kitty stays PNG so it can pass each CDP payload straight to the terminal. The
-// capture path never uses this value: capture forces PNG for a byte-exact corpus.
+// when the page is moving. Kitty stays PNG so it can pass each CDP payload straight
+// to the terminal. Capture stays PNG for a byte-exact corpus.
 const movingScreencastQuality = 90
 
 // frameChannelBuffer is the buffer size of the emitted-frame channel. A small
@@ -155,18 +159,6 @@ func (e *ChromiumEngine) snapshotCellPx() (cellW, cellH float64) {
 		return float64(surfW) / z / float64(e.cols), float64(surfH) / z / float64(e.rows)
 	}
 	return float64(e.cellW), float64(e.cellH)
-}
-
-// decodeScreencastImage decodes one base64 screencast payload to an *image.RGBA
-// in RGBA channel order. EventScreencastFrame.Data is base64, so it is decoded to
-// bytes before the image decoder. A non-RGBA decode is converted with the same
-// copy idiom the viewer's LoadPNG uses, so the render path reads one pixel layout.
-func decodeScreencastImage(data string) (*image.RGBA, error) {
-	img, err := decodeScreencastNative(data)
-	if err != nil {
-		return nil, err
-	}
-	return imageToRGBA(img), nil
 }
 
 // decodeScreencastNative decodes one base64 screencast payload without forcing
@@ -251,7 +243,7 @@ func decodeJPEGFast(raw []byte) (image.Image, error) {
 // YCbCr until its consumer, while a PNG keeps the PNG decoder's native layout. A
 // block PNG or an unset/degenerate block target is downscaled by the viewer.
 // The capture path never calls this: capture forces PNG and keeps runFrameLoop with
-// decodeScreencastImage, so the byte-exact corpus is untouched.
+// decodeScreencastNative, so the byte-exact corpus is untouched.
 func (e *ChromiumEngine) decodeLiveFrame(data string) (image.Image, error) {
 	raw, release, err := decodeBase64Pooled(data)
 	if err != nil {
