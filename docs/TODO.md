@@ -33,7 +33,7 @@ only with evidence that a remaining limit is Chromium's, not our code.
   faster amd64 decode from the SIMD unfilter (not the zlib swap, which measured ~0.3%).
   Off the hot JPEG motion path, so no FPS-wall move; it speeds static and block-reading
   decode. See PERFORMANCE.md "Decode Optimization" Option 2.
-- BACK-POCKET (measure first, do not build yet): lower Block's JPEG quality below 90.
+- BACK-POCKET (measure first, do not build yet): lower Block's JPEG quality below 80.
   Lower quality trims the Huffman decode only; the IDCT is quality-independent in the
   decoder, so the win is bounded and the sub-cell average hides most artefacts. Size
   it with a hardware `in_decode` split before changing the default.

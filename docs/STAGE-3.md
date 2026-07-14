@@ -103,7 +103,7 @@ between the viewer goroutine and the supervisor goroutine.
 
 `screencast.go` implements the listen, decode, ack loop that `chromedp` ships no
 helper for. `startScreencast` caps the stream at the active capture size and picks
-its format from the consumer. Live Block uses JPEG quality 90. Live Kitty always
+its format from the consumer. Live Block uses JPEG quality 80. Live Kitty always
 uses PNG. Live Sixel keeps the adaptive settled-PNG, moving-JPEG-quality-90 policy.
 Capture always uses PNG. On each `EventScreencastFrame` the handler puts the payload
 in the bounded receive path and a worker performs any required pixel decode. The
@@ -395,7 +395,7 @@ reviews it.
   so the listener releases each frame's credit before decode. The live queue drops
   stale undecoded work and the collector rejects stale completed sequences. Capture
   keeps an ordered slot for deterministic bundles.
-- **Backend-specific screencast formats.** Block uses JPEG quality 90 because it
+- **Backend-specific screencast formats.** Block uses JPEG quality 80 because it
   needs pixels and its sub-cell downsample plus colour quantisation hide JPEG
   artefacts. Kitty always requests PNG and passes Chromium's owned base64 payload
   straight to Kitty framing, with no image decode or re-encode. Sixel keeps its
