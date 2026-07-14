@@ -26,7 +26,7 @@ import (
 func spikeBlob(tb testing.TB) string {
 	tb.Helper()
 	src := loadSourceRGBA(tb)
-	jbytes := encodeBaseline420(tb, tileTo(src, 1920, 1080), movingScreencastQuality)
+	jbytes := encodeBaseline420(tb, tileTo(src, 1920, 1080))
 	return stdb64.StdEncoding.EncodeToString(jbytes)
 }
 

@@ -47,7 +47,7 @@ func TestDecodeKittyRoundTripMSEZero(t *testing.T) {
 		t.Fatalf("DecodeKitty: %v", err)
 	}
 
-	in := f.Img
+	in := f.Img.(*image.RGBA)
 	if got.Bounds() != in.Bounds() {
 		t.Fatalf("decoded bounds = %v, want %v", got.Bounds(), in.Bounds())
 	}
@@ -101,7 +101,7 @@ func TestDecodeSixelReproducesPalette(t *testing.T) {
 		t.Fatalf("DecodeSixel: %v", err)
 	}
 
-	want := paletteOf(f.Img)
+	want := paletteOf(f.Img.(*image.RGBA))
 	have := paletteOf(got)
 	if len(have) == 0 {
 		t.Fatal("decoded sixel image has no colours")

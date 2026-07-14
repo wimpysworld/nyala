@@ -100,7 +100,7 @@ loop:
 	for {
 		select {
 		case f := <-frames:
-			seq := seqOf(f.Img)
+			seq := seqOf(f.Img.(*image.RGBA))
 			if seq <= last {
 				t.Fatalf("published sequence %d after %d, want strictly increasing (a stale frame replaced a newer one)", seq, last)
 			}
@@ -149,7 +149,7 @@ func TestDecodePoolMonotonicUnderRace(t *testing.T) {
 	for {
 		select {
 		case f := <-frames:
-			seq := seqOf(f.Img)
+			seq := seqOf(f.Img.(*image.RGBA))
 			if seq <= last {
 				t.Fatalf("published sequence %d after %d, want strictly increasing", seq, last)
 			}
@@ -229,11 +229,71 @@ func TestDecodePoolByteIdenticalToSerial(t *testing.T) {
 
 	rawQ.put(seqRawFrame{seq: 1, data: payload})
 	got := recvFrame(t, frames)
-	if !bytes.Equal(got.Img.Pix, want.Pix) {
-		t.Fatal("pool-decoded pixels differ from the serial decode; the decode must be byte-identical")
+	if !got.Img.Bounds().Eq(want.Bounds()) {
+		t.Fatalf("pool-decoded bounds = %v, want %v", got.Img.Bounds(), want.Bounds())
 	}
-	if got.Img.Stride != want.Stride || got.Img.Rect != want.Rect {
-		t.Fatalf("pool-decoded geometry = %v stride %d, want %v stride %d", got.Img.Rect, got.Img.Stride, want.Rect, want.Stride)
+	for y := want.Bounds().Min.Y; y < want.Bounds().Max.Y; y++ {
+		for x := want.Bounds().Min.X; x < want.Bounds().Max.X; x++ {
+			if got.Img.At(x, y) != want.At(x, y) {
+				t.Fatalf("pool-decoded pixel (%d,%d) differs from serial decode", x, y)
+			}
+		}
+	}
+}
+
+// TestDecodePoolKittyPassThroughAndFallback pins the Kitty worker selection. PNG
+// remains the exact CDP string even if a stale adaptive format says JPEG, while a
+// non-PNG payload uses decoded pixels and never enters the direct path.
+func TestDecodePoolKittyPassThroughAndFallback(t *testing.T) {
+	t.Run("PNG identity", func(t *testing.T) {
+		payload := pngPayload(t)
+		e := &ChromiumEngine{
+			backend:       "kitty",
+			screencastFmt: screencastFmt{format: page.ScreencastFormatJpeg, quality: movingScreencastQuality},
+		}
+		rawQ, frames, stop := drivePool(t, e, 1)
+		defer stop()
+		rawQ.put(seqRawFrame{seq: 1, data: payload})
+
+		got := recvFrame(t, frames)
+		if got.Img != nil {
+			t.Fatalf("direct Kitty PNG decoded to %T, want no pixel image", got.Img)
+		}
+		if got.EncodedPNG != payload {
+			t.Fatal("direct Kitty PNG payload differs from the CDP string")
+		}
+	})
+
+	t.Run("non-PNG fallback", func(t *testing.T) {
+		payload := encodeBase64JPEG(t)
+		e := &ChromiumEngine{backend: "kitty"}
+		rawQ, frames, stop := drivePool(t, e, 1)
+		defer stop()
+		rawQ.put(seqRawFrame{seq: 1, data: payload})
+
+		got := recvFrame(t, frames)
+		if got.Img == nil {
+			t.Fatal("Kitty non-PNG fallback has no decoded pixels")
+		}
+		if got.EncodedPNG != "" {
+			t.Fatal("Kitty non-PNG fallback retained a direct PNG payload")
+		}
+	})
+}
+
+func TestDirectKittyPNGRejectsInvalidRawData(t *testing.T) {
+	e := &ChromiumEngine{backend: "kitty"}
+	if e.directKittyPNG(base64PNGPrefix + "xx") {
+		t.Fatal("invalid base64 length entered the direct Kitty path")
+	}
+	e.backend = "sixel"
+	if e.directKittyPNG(pngPayload(t)) {
+		t.Fatal("pixel backend entered the direct Kitty path")
+	}
+	e.backend = "kitty"
+	e.captureOn = true
+	if e.directKittyPNG(pngPayload(t)) {
+		t.Fatal("capture entered the direct Kitty path")
 	}
 }
 

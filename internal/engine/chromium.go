@@ -15,9 +15,9 @@ import (
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
-// ChromiumEngine drives one headless-Chromium page over CDP and emits decoded
-// frames with their crisp DOM text synced on. It holds the URL and scroll
-// offset in its own state, not inside chromedp, so it can rebuild and
+// ChromiumEngine drives one headless-Chromium page over CDP and emits native
+// pixels or direct PNG frames with their crisp DOM text synced on. It holds the
+// URL and scroll offset in its own state, not inside chromedp, so it can rebuild and
 // re-navigate after a crash. Keep this struct thin: the screencast loop,
 // snapshot decode, frame sync, and launch logic live in their own files.
 type ChromiumEngine struct {
@@ -97,16 +97,17 @@ type ChromiumEngine struct {
 	screencastCtl sync.Mutex
 	// screencastFmt is the current screencast format and JPEG quality, guarded by
 	// e.mu. startScreencast reads it so every start (initial, resize, backend switch,
-	// format switch) uses the current format. The block backend runs live JPEG, the
-	// graphics backends run adaptive PNG-settled/JPEG-moving, and the capture path
-	// forces PNG; initialScreencastFormat picks it from the backend and capture flag.
+	// format switch) uses the current format. Block runs live JPEG, Kitty runs live
+	// PNG, Sixel keeps its adaptive PNG-settled/JPEG-moving policy, and capture forces
+	// PNG; initialScreencastFormat picks it from the backend and capture flag.
 	screencastFmt screencastFmt
 	// motion carries per-frame arrival instants from the listener goroutine to the
-	// adaptive-format controller, which reads the frame-arrival rate as the page's
-	// motion signal. It is created and the controller started only on the live
-	// graphics-capable path; under capture it stays nil so pokeMotion is a no-op and
-	// the format never switches. Buffered and latest-wins-drop, so the listener never
-	// blocks. Reset per session by teardownSession.
+	// adaptive Sixel format controller, which reads the frame-arrival rate as the
+	// page's motion signal. It is created and the controller started only on the live
+	// path, since a backend cycle can enter Sixel later. Under capture it stays nil so
+	// pokeMotion is a no-op and the format never switches. Buffered and
+	// latest-wins-drop, so the listener never blocks. Reset per session by
+	// teardownSession.
 	motion chan time.Time
 
 	// Frame plumbing.
@@ -155,13 +156,12 @@ type ChromiumEngine struct {
 	// the layout generation read in the same sequence, and the updated hold state.
 	snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, int64, overlayState)
 
-	// decode turns a raw base64 screencast payload into an RGBA bitmap. It defaults
-	// to decodeScreencastImage; the frame-loop unit test swaps in a fake so it drives
-	// the raw slot without a real PNG. It is nil in production, where runFrameLoop
-	// falls back to decodeScreencastImage, and read once at the top of runFrameLoop.
+	// decode is the decoded-RGBA test override. Frame-loop and decode-pool tests swap
+	// in a fake so they can drive raw slots without image payloads. It is nil in
+	// production, where consumers keep decoder-native pixels or direct Kitty PNG.
 	decode func(string) (*image.RGBA, error)
 
-	// switchFmt performs one adaptive screencast format switch. It defaults to
+	// switchFmt performs one adaptive Sixel screencast format switch. It defaults to
 	// switchScreencastFormat (stop then start with the new format); the format-controller
 	// unit test swaps in a fake that records the switch and updates e.screencastFmt, so
 	// the state machine is exercised without a browser. It is nil in production, where
@@ -505,13 +505,19 @@ func (e *ChromiumEngine) Frames() <-chan render.Frame {
 // It is not part of the Engine interface; the viewer push consumer (Phase 7)
 // calls it on a Tab cycle.
 func (e *ChromiumEngine) SetBackend(backend string) {
+	// Serialise the backend change with adaptive Sixel stop/start. This keeps the old
+	// backend active until an in-flight switch finishes, then changes the backend and
+	// restarts it under the same control hold. Kitty therefore cannot inherit a late
+	// Sixel JPEG restart between these two steps.
+	e.screencastCtl.Lock()
+	defer e.screencastCtl.Unlock()
 	e.mu.Lock()
 	e.backend = backend
 	e.captureW, e.captureH = e.captureSize(e.cols, e.rows)
 	streaming := e.streamingLocked()
 	e.mu.Unlock()
 	if streaming {
-		_ = e.restartStream()
+		_ = e.restartStreamLocked()
 	}
 }
 

@@ -65,13 +65,13 @@ func tileTo(src *image.RGBA, w, h int) *image.RGBA {
 	return dst
 }
 
-// encodeBaseline420 encodes img to a baseline (sequential) JPEG at the given
+// encodeBaseline420 encodes img to a baseline (sequential) JPEG at the live q90
 // quality. The stdlib encoder emits baseline 4:2:0 for a colour image, the exact
 // class Chromium's screencast produces.
-func encodeBaseline420(tb testing.TB, img image.Image, quality int) []byte {
+func encodeBaseline420(tb testing.TB, img image.Image) []byte {
 	tb.Helper()
 	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: movingScreencastQuality}); err != nil {
 		tb.Fatalf("encode jpeg: %v", err)
 	}
 	return buf.Bytes()
@@ -79,7 +79,7 @@ func encodeBaseline420(tb testing.TB, img image.Image, quality int) []byte {
 
 // corpusJPEG builds and encodes the corpus JPEG for one size.
 func corpusJPEG(tb testing.TB, src *image.RGBA, s jpegnSize) []byte {
-	return encodeBaseline420(tb, tileTo(src, s.w, s.h), movingScreencastQuality)
+	return encodeBaseline420(tb, tileTo(src, s.w, s.h))
 }
 
 // maxRGBADelta converts both images to RGBA and returns the max absolute

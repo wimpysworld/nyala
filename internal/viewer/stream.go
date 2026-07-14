@@ -23,8 +23,8 @@ import (
 // it calls so it never imports the engine package, keeping the dependency one
 // way (app wires the concrete engine to this interface). The viewer hands the
 // engine the detected backend and cell px before Navigate, because the engine
-// sizes its screencast capture from them. Frames carries decoded bitmaps with
-// their crisp text already synced on. The viewer owns no scroll state; it
+// sizes its screencast capture from them. Frames carries native pixels or a
+// direct Kitty PNG with crisp text already synced on. The viewer owns no scroll state; it
 // forwards scroll keys by their code and wheel deltas in CSS pixels, and the
 // engine owns the offset.
 type Engine interface {
@@ -63,7 +63,7 @@ type Engine interface {
 	Resize(cols, rows int)
 	// Navigate loads url and starts emitting frames.
 	Navigate(url string) error
-	// Frames returns the channel of decoded frames, each with Text synced on.
+	// Frames returns the channel of pixel or direct-PNG frames, each with Text synced on.
 	Frames() <-chan render.Frame
 	// SendKey forwards a key by its code (for example ArrowDown) to the page.
 	// Scroll keys route to the engine's wheel transport; the engine owns the
@@ -469,7 +469,7 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			if !ok {
 				return nil
 			}
-			if frame.Img == nil {
+			if !frame.HasImage() {
 				s.nilImageOnce.Do(func() {
 					fmt.Fprintln(os.Stderr, "nyala: dropped a frame with no image")
 				})
@@ -564,8 +564,15 @@ func startupQuit(ev keyEvent) bool {
 // buffers; the producer owns it until the writer returns it on free.
 func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeMS float64, err error) {
 	buf.Reset()
-	b := frame.Img.Bounds()
-	s.st.ImgW, s.st.ImgH = b.Dx(), b.Dy()
+	if frame.Img != nil {
+		b := frame.Img.Bounds()
+		s.st.ImgW, s.st.ImgH = b.Dx(), b.Dy()
+	} else {
+		// Direct CDP PNG needs no dimensions in the Kitty command. Keep the state
+		// geometry aligned with the engine-sized graphics surface for resize and
+		// backend-cycle bookkeeping.
+		s.st.ImgW, s.st.ImgH = s.st.Cols*s.st.W, s.st.Rows*s.st.H
+	}
 	prefix := framePrefix(s.firstDrawn, s.diff)
 	buf.WriteString(beginSyncUpdate)
 	buf.WriteString(prefix)

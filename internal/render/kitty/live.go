@@ -1,6 +1,7 @@
 package kitty
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"io"
@@ -11,6 +12,12 @@ import (
 
 	"github.com/charmbracelet/x/ansi/kitty"
 )
+
+// ErrInvalidPNGData reports that a direct-PNG payload is not the standard
+// base64 PNG form CDP emits. Callers can fall back to their decoded pixel path.
+var ErrInvalidPNGData = errors.New("kitty: invalid base64 PNG payload")
+
+const base64PNGPrefix = "iVBORw0KGgo"
 
 // LiveEncoder encodes a stream of frames into Kitty graphics APC payloads while
 // reusing its scratch buffers across frames, for the live viewer draw path where
@@ -128,6 +135,40 @@ func (e *LiveEncoder) EncodeID(img *image.RGBA, id int, w io.Writer) error {
 	return nil
 }
 
+// EncodePNGID frames an owned CDP base64 PNG payload directly as Kitty f=100
+// data. It does not base64-decode, PNG-decode, repack, compress, or base64-encode
+// the payload. The command uses direct transmission and transmit-and-put, tags
+// the image with id when positive, and chunks at the Kitty protocol limit. A
+// non-PNG-looking or non-standard-base64-length payload returns ErrInvalidPNGData
+// before writing, so the viewer can use its decoded fallback without a partial
+// terminal command.
+func (e *LiveEncoder) EncodePNGID(data string, id int, w io.Writer) error {
+	if !strings.HasPrefix(data, base64PNGPrefix) || len(data)%4 != 0 {
+		return ErrInvalidPNGData
+	}
+	control := "f=100,t=d,a=T,q=2"
+	if id > 0 {
+		control += fmt.Sprintf(",i=%d", id)
+	}
+
+	e.frame = e.frame[:0]
+	if len(data) <= kitty.MaxChunkSize {
+		e.frame = appendStringFrame(e.frame, control, data)
+	} else {
+		first := control + "," + chunkMore
+		for len(data) > kitty.MaxChunkSize {
+			e.frame = appendStringFrame(e.frame, first, data[:kitty.MaxChunkSize])
+			data = data[kitty.MaxChunkSize:]
+			first = chunkMore
+		}
+		e.frame = appendStringFrame(e.frame, chunkLast, data)
+	}
+	if _, err := w.Write(e.frame); err != nil {
+		return fmt.Errorf("kitty: write APC payload: %w", err)
+	}
+	return nil
+}
+
 // packRGB copies img's R, G, B bytes (skipping the alpha byte) into the reused
 // rgb scratch, growing it only when the frame grows. It reads img.Pix in row
 // order via the stride, so a sub-image or padded row stays correct, and preserves
@@ -160,6 +201,18 @@ func (e *LiveEncoder) packRGB(img *image.RGBA) {
 // extended slice. It builds into the reused buffer with no per-chunk string
 // allocation, unlike the stateless writeFrame.
 func appendFrame(dst []byte, control string, chunk []byte) []byte {
+	dst = append(dst, apcIntro...)
+	dst = append(dst, control...)
+	dst = append(dst, ';')
+	dst = append(dst, chunk...)
+	dst = append(dst, st...)
+	return dst
+}
+
+// appendStringFrame is appendFrame for an already-base64 string. Appending the
+// string copies its bytes straight into the reusable APC buffer without an
+// intermediate []byte allocation.
+func appendStringFrame(dst []byte, control, chunk string) []byte {
 	dst = append(dst, apcIntro...)
 	dst = append(dst, control...)
 	dst = append(dst, ';')

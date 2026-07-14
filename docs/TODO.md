@@ -7,19 +7,22 @@ opaque-overlay fixes in `STAGE-3.md`.
 
 ## 1. Make kitty and sixel usable
 
-Not done. The graphics backends need a fit fix and a graphics performance fix, both
-eyeballed on a real graphics terminal, not gated behind the capture harness. The path
-sits on a black screen for a long time, scrolls slowly, and tears with big full-frame
-refreshes. Scope and measure each win first, then work the engine-independent levers:
-encoder, downscale, snapshot cadence, frame coalescing. Reopen CEF only with evidence
-that a remaining limit is Chromium's, not our code.
+Not done. Direct Kitty PNG removes Nyala's per-frame decode and re-encode, but the
+terminal still has to decode and draw each PNG. Sixel still decodes and encodes pixels.
+Validate both on real graphics terminals, not through the capture harness. Reopen CEF
+only with evidence that a remaining limit is Chromium's, not our code.
 
 ### Open graphics work
 
-- Fit fix: kitty and sixel draw into a small area of the terminal and letterbox
+- Fit fix: Kitty and Sixel draw into a small area of the terminal and letterbox
   heavily. Size and fit the bitmap to use the available width and height. The remaining
   Kitty follow-up is the multiplexer path, virtual placement `U=1` plus passthrough,
-  gated off today; the bulk f=24 encode is done. See PERFORMANCE.md rec 5.
+  gated off today. See PERFORMANCE.md rec 5.
+- Kitty terminal validation: measure sustained FPS on Kitty and WezTerm, then split
+  terminal-side PNG decode and draw latency from Nyala's 0.014-0.027 ms framing cost.
+  Gate against 16.67 ms per frame. The focused 2560x2880 payload was 1.68 MB as PNG,
+  against about 3.25 MB through the JPEG-quality-90 decoded Kitty path. Keep JPEG
+  Kitty only as a measured fallback if it wins end to end.
 - Sixel encoder (recommendations 6 and 8, untouched): the per-frame quantise dominates
   the frame budget (~593ms measured in Stage 3, our code not Chromium). A cached
   palette plus dirty-band diffing removes it from steady-state frames, with the interim
@@ -30,10 +33,10 @@ that a remaining limit is Chromium's, not our code.
   faster amd64 decode from the SIMD unfilter (not the zlib swap, which measured ~0.3%).
   Off the hot JPEG motion path, so no FPS-wall move; it speeds static and block-reading
   decode. See PERFORMANCE.md "Decode Optimization" Option 2.
-- BACK-POCKET (measure first, do not build yet): the block-live JPEG quality knob.
-  Lower q trims the Huffman decode only; the IDCT is quality-independent in the
-  decoder, so the win is bounded and near-free on block (washes out in the sub-cell
-  average). Size it with a hardware `in_decode` split before committing.
+- BACK-POCKET (measure first, do not build yet): lower Block's JPEG quality below 90.
+  Lower quality trims the Huffman decode only; the IDCT is quality-independent in the
+  decoder, so the win is bounded and the sub-cell average hides most artefacts. Size
+  it with a hardware `in_decode` split before changing the default.
 - DEFERRED TO LAST (owner's call): downscale the graphics bitmap in motion. It is the
   paint lever for media 60fps (Out ~24 against In 60, Kitty encode on the large live
   surface), but the owner wants every other perf option exhausted first.

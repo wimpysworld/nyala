@@ -187,13 +187,23 @@ type ScreencastMeta struct {
 	Timestamp float64
 }
 
-// Frame is one viewport image plus its text overlay. The engine fills Text from
-// the DOM text snapshot; it is empty when the page carries no text runs.
+// Frame is one viewport image plus its text overlay. Img keeps the decoder's
+// native image layout, so a JPEG can cross the engine/render seam as YCbCr and a
+// PNG can keep the layout its decoder produced. EncodedPNG holds an owned CDP
+// base64 PNG payload on the live Kitty path; that path leaves Img nil and
+// sends the payload to Kitty unchanged. Other paths leave EncodedPNG empty.
 type Frame struct {
-	Img   *image.RGBA     // the viewport bitmap, already at or above cell resolution
-	Text  []GlyphRun      // text overlay runs, empty when the page has none
-	Stats *FrameStats     // engine-phase timings, nil off the capture path
-	Meta  *ScreencastMeta // screencast frame metadata, nil off the capture path
+	Img        image.Image     // decoder-native viewport pixels, nil for direct Kitty PNG
+	EncodedPNG string          // owned base64 PNG payload for direct live Kitty transmission
+	Text       []GlyphRun      // text overlay runs, empty when the page has none
+	Stats      *FrameStats     // engine-phase timings, nil off the capture path
+	Meta       *ScreencastMeta // screencast frame metadata, nil off the capture path
+}
+
+// HasImage reports whether the frame carries decoded pixels or a direct encoded
+// PNG payload. The latter is a usable live Kitty frame even though Img is nil.
+func (f Frame) HasImage() bool {
+	return f.Img != nil || f.EncodedPNG != ""
 }
 
 // Renderer emits a Frame to a writer. Each backend renders the same Frame in a

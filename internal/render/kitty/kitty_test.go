@@ -99,6 +99,7 @@ func TestRenderPayloadRoundTrips(t *testing.T) {
 	}
 
 	b := f.Img.Bounds()
+	src := f.Img.(*image.RGBA)
 	dec := kitty.Decoder{Decompress: true, Format: kitty.RGBA, Width: b.Dx(), Height: b.Dy()}
 	img, err := dec.Decode(bytes.NewReader(raw))
 	if err != nil {
@@ -114,8 +115,8 @@ func TestRenderPayloadRoundTrips(t *testing.T) {
 	}
 	for y := range b.Dy() {
 		for x := range b.Dx() {
-			if got.RGBAAt(x, y) != f.Img.RGBAAt(x, y) {
-				t.Fatalf("pixel (%d,%d) = %v, want %v", x, y, got.RGBAAt(x, y), f.Img.RGBAAt(x, y))
+			if got.RGBAAt(x, y) != src.RGBAAt(x, y) {
+				t.Fatalf("pixel (%d,%d) = %v, want %v", x, y, got.RGBAAt(x, y), src.RGBAAt(x, y))
 			}
 		}
 	}
@@ -198,7 +199,7 @@ func TestRenderRoundTripsThroughDecode(t *testing.T) {
 			if got.Bounds() != b {
 				t.Fatalf("decoded bounds = %v, want %v", got.Bounds(), b)
 			}
-			src := tc.f.Img
+			src := tc.f.Img.(*image.RGBA)
 			for y := range b.Dy() {
 				for x := range b.Dx() {
 					if got.RGBAAt(x, y) != src.RGBAAt(x, y) {

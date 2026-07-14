@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"io"
 	"os"
 	"sync"
@@ -772,7 +773,7 @@ const frameBlankStride = 8
 // unpainted; a painted text page has overlay runs (the text latch holds the first
 // counted frame until the runs are folded on), so the runs keep it from being
 // skipped. It is capture-only.
-func firstFrameUnpainted(img *image.RGBA, runs []render.GlyphRun) bool {
+func firstFrameUnpainted(img image.Image, runs []render.GlyphRun) bool {
 	return frameBlank(img) && len(runs) == 0
 }
 
@@ -780,7 +781,7 @@ func firstFrameUnpainted(img *image.RGBA, runs []render.GlyphRun) bool {
 // frameInkFraction is below frameBlankThreshold. A flat background of any colour
 // reads as blank and a page with real content, however sparse, does not. A
 // degenerate (zero-extent) image reads as blank.
-func frameBlank(img *image.RGBA) bool {
+func frameBlank(img image.Image) bool {
 	return frameInkFraction(img) < frameBlankThreshold
 }
 
@@ -790,17 +791,17 @@ func frameBlank(img *image.RGBA) bool {
 // every frameBlankStride pixel on both axes. A degenerate (zero-extent) image
 // returns 0, so frameBlank reads it as blank. It is capture-only, so its cost
 // never touches the live path.
-func frameInkFraction(img *image.RGBA) float64 {
+func frameInkFraction(img image.Image) float64 {
 	b := img.Bounds()
 	if b.Empty() {
 		return 0
 	}
-	bg := img.RGBAAt(b.Min.X, b.Min.Y)
+	bg := color.RGBAModel.Convert(img.At(b.Min.X, b.Min.Y)).(color.RGBA)
 	sampled, foreground := 0, 0
 	for y := b.Min.Y; y < b.Max.Y; y += frameBlankStride {
 		for x := b.Min.X; x < b.Max.X; x += frameBlankStride {
 			sampled++
-			p := img.RGBAAt(x, y)
+			p := color.RGBAModel.Convert(img.At(x, y)).(color.RGBA)
 			if absDelta(p.R, bg.R) > frameBlankTolerance ||
 				absDelta(p.G, bg.G) > frameBlankTolerance ||
 				absDelta(p.B, bg.B) > frameBlankTolerance {

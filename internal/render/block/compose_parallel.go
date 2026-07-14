@@ -60,6 +60,7 @@ func NewParallelCompose() *ParallelCompose {
 // cells, and the overlay fold is unchanged. A nil pool or a grid too small to split
 // binarises serially on the calling goroutine.
 func (pc *ParallelCompose) ComposeInto(br *Renderer, dst *Grid, f render.Frame, pool *rowband.Pool) *Grid {
+	f = rgbaFrame(f)
 	reuseGrid(dst, br.Cols, br.Rows)
 	pc.br = *br
 	pc.g = dst

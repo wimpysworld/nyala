@@ -5,6 +5,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/page"
@@ -83,6 +84,22 @@ type decodedFrame struct {
 	pending pendingFrame
 }
 
+// base64PNGPrefix is the standard base64 encoding of the PNG signature. CDP
+// supplies an unwrapped standard-base64 string, so checking this prefix identifies
+// a PNG without decoding any of its bytes.
+const base64PNGPrefix = "iVBORw0KGgo"
+
+// directKittyPNG reports whether data can bypass the pixel decode and travel to a
+// live Kitty consumer unchanged. It reads the backend at worker time, while the
+// payload signature guards a format-switch race. A later backend switch is safe:
+// the viewer decodes the retained payload when the active consumer is not Kitty.
+func (e *ChromiumEngine) directKittyPNG(data string) bool {
+	e.mu.Lock()
+	kitty := e.backend == "kitty" && !e.captureOn
+	e.mu.Unlock()
+	return kitty && strings.HasPrefix(data, base64PNGPrefix) && len(data)%4 == 0
+}
+
 // rawFrameQueue is the bounded, drop-oldest feed from the listener goroutine to the
 // live decode pool. It is the multi-consumer counterpart of frameSlot: several
 // decode workers pull from it in parallel, so it holds a small backlog rather than a
@@ -138,12 +155,8 @@ func (e *ChromiumEngine) runDecodeWorker(ctx context.Context, q *rawFrameQueue, 
 	e.mu.Lock()
 	decode := e.decode
 	e.mu.Unlock()
-	if decode == nil {
-		// The live pool's default fuses the YCbCr-to-RGBA convert into the sub-cell
-		// downscale on the block JPEG path (decodeLiveFrame); every other case falls
-		// back to the full-surface convert. A test-swapped e.decode overrides it.
-		decode = e.decodeLiveFrame
-	}
+	// A test-swapped e.decode keeps the old decoded-pixel hook. The production nil
+	// case selects direct Kitty PNG or decodeLiveFrame per payload below.
 	// Time the decode only when the ingest counter is armed. On the live path
 	// captureOn is false, so the per-frame decodeMS the bundle records is never needed
 	// here; the only clock read is the NYALA_FPS_TIMING decode budget.
@@ -157,15 +170,30 @@ func (e *ChromiumEngine) runDecodeWorker(ctx context.Context, q *rawFrameQueue, 
 			if ingestArmed {
 				start = time.Now()
 			}
-			img, derr := decode(raw.data)
-			if derr != nil {
-				continue
+			pending := pendingFrame{meta: raw.meta}
+			switch {
+			case decode != nil:
+				img, derr := decode(raw.data)
+				if derr != nil {
+					continue
+				}
+				pending.img = img
+			case e.directKittyPNG(raw.data):
+				// Strings are immutable and the event owns this value, so retaining it in
+				// the held frame gives re-emits and queued draws stable bytes.
+				pending.png = raw.data
+			default:
+				img, derr := e.decodeLiveFrame(raw.data)
+				if derr != nil {
+					continue
+				}
+				pending.img = img
 			}
 			if ingestArmed {
 				e.ingest.recordDecode(msSince(start))
 			}
 			select {
-			case out <- decodedFrame{seq: raw.seq, pending: pendingFrame{img: img, meta: raw.meta}}:
+			case out <- decodedFrame{seq: raw.seq, pending: pending}:
 			case <-ctx.Done():
 				return
 			}

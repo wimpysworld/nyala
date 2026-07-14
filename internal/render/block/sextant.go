@@ -172,9 +172,10 @@ func (br *Renderer) composeSextantInto(g *Grid, f render.Frame) {
 // source block and writes only its own cell, so a call over a disjoint row range
 // writes byte-for-byte the same cells the whole-grid pass writes for those rows.
 func (br *Renderer) composeSextantRows(g *Grid, f render.Frame, row0, row1 int) {
+	img, _ := f.Img.(*image.RGBA)
 	for row := row0; row < row1; row++ {
 		for col := range g.Cols {
-			topLeft, topRight, midLeft, midRight, botLeft, botRight := sampleSextant(f.Img, col, row)
+			topLeft, topRight, midLeft, midRight, botLeft, botRight := sampleSextant(img, col, row)
 			glyph, fg, bg := binarizeSextant(topLeft, topRight, midLeft, midRight, botLeft, botRight)
 			*g.At(col, row) = Cell{Glyph: glyph, FG: fg, BG: bg}
 		}
