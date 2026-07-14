@@ -116,7 +116,9 @@ quality gates do not change.
    terminals Sixel encodes decoded pixels, while Kitty frames the direct PNG.
 3. Composite the text layer over the bitmap so glyphs render as real Unicode where
    text exists, bitmap elsewhere. This is the primary quality differentiator.
-4. Diff against the previous frame; emit only changed cells.
+4. Diff Block cells against the previous frame. Sixel and Kitty emit a full image for
+   each drawn frame; partial graphics emission stays measurement-gated in
+   [`TODO.md`](./TODO.md).
 
 The block backend ships three schemes (quadrant, half-block, sextant), selected by the
 `--blocks` flag and, on the interactive path, a terminal-identity allow-list. See
@@ -125,12 +127,11 @@ character set, and the sampling model.
 
 ### Known constraints / risks
 
-- **Frame rate**: `startScreencast` streams JPEG/PNG over the CDP socket. Benchmarks
-  cite low FPS, but those are full-resolution; at terminal resolution the bitmap is
-  tiny, so cost should be far lower. Measure early against KMSCON before optimising.
-  This is the explicit CDP-vs-CEF gate: if the Stage 3 spike shows CDP holds sustained
-  full-viewport FPS at LoDPI on the target terminals, ship CDP; if it fails, open a CEF
-  engine spike behind the existing `Engine` seam.
+- **Frame rate**: `startScreencast` streams JPEG/PNG over the CDP socket. Nyala's
+  decoder and renderer measurements do not include the terminal's image decode and
+  draw. Validate sustained full-viewport FPS on KMSCON and the target graphics
+  terminals. This is the CDP-vs-CEF gate: open a CEF engine spike only if that matrix
+  shows CDP itself is the remaining limit.
 - **Frame budget**: a focused 2560x2880 benchmark cut direct Kitty PNG work from
   51.950 ms to 0.014 ms. A real CDP payload measured 45.985 ms to 0.027 ms. Keeping
   shared JPEG decoder-native cut 25.446 ms to 10.209 ms, about 15.2 ms saved. The
@@ -213,7 +214,7 @@ chromedp.ListenTarget(ctx, func(ev interface{}) {
 | Engine driver | `chromedp` | De-facto CDP client, pure Go, no external deps |
 | TUI runtime + chrome | Bubble Tea v2 + Bubbles v2 + Lipgloss v2 (`charm.land/*`) | Event loop, address bar, status line, layout; GA 2026-02-24. Do NOT route the bitmap viewport through its cell renderer |
 | Animation (optional) | Harmonica | Smooth chrome scroll/load polish; defer until chrome exists |
-| Frame decode | `image/jpeg`, `image/png` (stdlib) | screencast frames |
+| Frame decode | `gen2brain/jpegn`, `woozymasta/png`, decoder-native `image.Image` | Pixel consumers only. Live Kitty carries the CDP base64 PNG directly and does not decode it |
 | Resize/composite | `golang.org/x/image/draw` | In-place scale into a reused RGBA buffer |
 | Half-block fallback | Custom compositor (port Carbonyl quad maths; reference `charmbracelet/x/mosaic`) | The permanent floor for KMSCON. Combined cell grid (bitmap + optional grapheme); quadrant (2x2) default, half-block (`U+2584`) floor; text overwrites cells. `rivo/uniseg` + `mattn/go-runewidth` for glyph width |
 | Sixel encode | `charmbracelet/x/ansi/sixel` | Fastest Go encoder; same stack as Bubble Tea v2 |
@@ -343,9 +344,9 @@ exist as the floor.
 - Sources: `github.com/charmbracelet/bubbletea/releases/tag/v2.0.0`, `UPGRADE_GUIDE_V2.md`, `pkg.go.dev/charm.land/bubbletea/v2`, `github.com/charmbracelet/bubbletea/issues/163`, `github.com/charmbracelet/ultraviolet` (`cell.go`).
 
 Verdict: adopt for the event loop and chrome UI, but do NOT route the per-frame
-bitmap through its managed renderer. Drive graphics via `WithoutRenderer` and
-compose by hand, or reserve a renderer-blanked region and write graphics into it via
-the program output writer.
+bitmap through its managed renderer. Reserve a renderer-blanked region and write
+graphics into it via the program output writer. The later Stage 4 decision rejects
+`WithoutRenderer` because Nyala still needs the managed chrome diff.
 
 ### Lipgloss v2 (styling/layout) + Bubbles v2 (components)
 
@@ -424,10 +425,10 @@ through the Lipgloss/Bubble Tea View string. Gate behind capability detection.
 - Sources: `pkg.go.dev/github.com/charmbracelet/x/ansi`, `x/main/ansi/kitty/graphics.go`, `/options.go`, `/encoder.go`, `pkg.go.dev/.../mosaic`, `BourgeoisBear/rasterm`, `sw.kovidgoyal.net/kitty/graphics-protocol`.
 - Precedent: `awrit` (Chromium into a Kitty-graphics terminal, ~1.3k stars) proves per-frame browser blitting over this protocol.
 
-Verdict: use `charmbracelet/x/ansi/kitty`, paired with `x/mosaic` for the half-block
-fallback. Build a thin Nyala layer that owns capability detection, a fixed image ID
-with transmit-and-display replacement, explicit delete-by-ID, shared-memory transmit
-when local, and the unicode-placeholder path so images sit in tracked cells.
+Verdict: use the Kitty protocol through Nyala's thin framing layer. Live CDP PNG is
+rechunked directly as `f=100,t=d,a=T`, with alternating image IDs and explicit
+delete-by-ID. Classic cursor-anchored placement is the normal path. Unicode
+placeholders and passthrough remain limited to future multiplexer support.
 
 ### tcell and TUI foundation alternatives
 
@@ -539,16 +540,27 @@ enhancements gated behind capability detection.
 - Best local transmission medium: raw pixels, PNG, or shared memory? Resolved for live CDP frames: request PNG and reuse Chromium's base64 payload as direct Kitty `f=100,t=d,a=T` data. Rechunking the owned payload costs 0.014 ms in the focused 2560x2880 benchmark and avoids Nyala's decode and re-encode. Shared memory would require decoded pixels and an extra transport object, so it is no longer the default. Measure terminal-side PNG decode and draw before adding another Kitty transport.
 - Confirm which Kitty placement modes render on current wezterm and ghostty; unicode placeholders are unsupported in several terminals. Resolved: use classic cursor-anchored placement (`a=T`/`a=p`); it renders on current kitty, ghostty, and the wezterm GUI. Unicode placeholders (`U=1`, `U+10EEEE`) render only on kitty (and Terminal.app) as of mid-2026; ghostty 1.3.1 and iTerm2 do not render them, and wezterm has them only in an unmerged fork (issue #986). Reserve placeholders for kitty-only tmux passthrough. Stage 3 spike: re-test placeholder render status on the exact ghostty and wezterm builds shipped.
 - Cell pixel geometry: query CSI 16t for cell width/height to map the CDP pixel viewport to cells without distortion. Define the fallback when terminals omit it (per-terminal defaults). (Resolved in Stage 1 (see `docs/STAGE-1.md`): resolve via `TIOCGWINSZ`, then `CSI 16t`, then `14t`/`18t`, else default to 8x16 px (aspect 1:2), with a winsize sanity bound rejecting derived cell px outside ~4..32 wide or 8..64 tall.)
-- Will Nyala drive the screencast viewport to terminal resolution (Carbonyl LoDPI) so downsampling is cheap, or downsample full-resolution frames every frame? Resolved: drive the viewport small (LoDPI). Size the emulated viewport and `maxWidth`/`maxHeight` so one captured pixel maps to one sub-cell (2 px per cell half-block, 2x2 quadrant); an 80x24 quadrant grid needs a 160x48 px capture. The engine rasterises at terminal resolution once, avoiding a full-frame downscale in Go on every frame. Evidence: Carbonyl reports LoDPI is about 49x faster than native-resolution renderers. Caveat: tiny viewports change page layout, so treat viewport size as a layout knob and expose a zoom override for sites that break.
-- For a constantly-changing viewport, is per-frame full-screen Sixel/Kitty bandwidth acceptable, or does Nyala need damage-rectangle partial updates? Resolved: default to full-frame redraw per changed frame; add cell-diff damage and partial emission only when measured. At LoDPI the frame is small, so full redraw is the simple, correct baseline, and the per-cell diff already gates whether anything changed. Escalate to damage rects when the diagnostics harness shows pty write throughput or frame latency breaching threshold on a busy viewport (scrolling, video). Evidence: Carbonyl runs 60 FPS full-frame at LoDPI without rect updates; bandwidth pressure appears only in full-resolution bitmap mode, which is not the default. Stage 3 sets the escalation threshold from harness numbers.
-- Does a fixed/stable palette (skipping per-frame median-cut) give acceptable quality for arbitrary web pages, or will photo banding force per-frame quantisation? Resolved: stable/cached palette default; per-frame median-cut only when photo banding forces it. A fixed palette skips per-frame quantisation, which protects the moving-viewport frame budget, and Sixel terminals broadly handle a stable shared palette. Stage 3 spike: benchmark cached vs per-frame palette on a photo-heavy fixture for banding and FPS before enabling per-frame quantisation.
+- Will Nyala drive the Block screencast at the exact sampled sub-cell resolution? On
+  hold. The current full terminal-device surface preserves the benchmark that exposes
+  renderer and terminal differences. Revisit only on an owner decision; see
+  [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
+- For a constantly-changing viewport, is per-frame full-screen Sixel/Kitty bandwidth
+  acceptable? Full-frame redraw is the current baseline. Add partial terminal emission
+  only when real-terminal decode, draw, write, or byte measurements exceed the frame
+  budget. Direct Kitty PNG has no normal decoded bitmap, and the tested Kitty `a=f`
+  edit path was not portable, so the old decoded-damage design is retired. See
+  [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
+- Does a fixed or cached Sixel palette give acceptable quality for arbitrary web
+  pages? Still open. Benchmark cached against per-frame quantisation on a photo-heavy
+  fixture before changing the encoder; see
+  [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
 - Sixel lacks a Kitty-style ID and scrolls with text; it needs its own placement/erase discipline and tearing test. Resolved: anchor every frame with `ESC 7` (DECSC), `CSI <row>;<col> H` (CUP to a fixed origin), sixel `ESC P q ... ESC \`, `ESC 8` (DECRC), all wrapped in DEC mode 2026 and written once to stop tearing; prefer `ESC 7`/`ESC 8` over `CSI s`/`CSI u`. Leave DECSDM (mode 80, `CSI ?80h/l`) alone: its set/reset sense is inverted across terminals, and the save/CUP/restore wrap anchors the frame regardless. Erase: a same-size full-viewport overwrite needs no clear; clear the region first (background fill or `CSI 2 J`) only on viewport shrink or geometry change, because sixel leaves opaque pixels with no alpha. Sixel reaches xterm, foot, wezterm, mlterm, contour, Windows Terminal, Konsole, and tmux (`--enable-sixel`), but not ghostty, kitty, or Alacritty, so it stays the broad-compatibility fallback below Kitty. Stage 3 spike: measure full-viewport FPS, per-frame encoded bytes, and whether mode 2026 removes visible tearing on foot/wezterm/xterm/mlterm at target resolution.
 - Truecolour over SSH/Docker is unreliable via `COLORTERM`. Will Nyala implement Carbonyl's DCS background-colour round-trip handshake, and does it interact cleanly with Bubble Tea v2 setup? (Resolved in Stage 1 (see `docs/STAGE-1.md`): no. The DCS round-trip is dropped and not planned. Nyala detects colour from env plus terminfo via `colorprofile.Detect`, and treats a present `COLORTERM` as a trusted positive.)
 - tmux/SSH: Kitty and Sixel need DCS passthrough inside tmux and AcceptEnv over SSH. Target these or document as unsupported? Resolved: tmux is block-only for v1. Nyala detects tmux (`$TMUX` set) and falls back to the block backend, which renders everywhere. Graphics through tmux need DCS passthrough (`allow-passthrough on`, app-side sequence wrapping, pane-offset maths, unicode-placeholder redraw), and the result is fragile and about to be obsoleted: tmux merged native Kitty image support into mainline in March 2026 (behind `--enable-kitty-images`), unreleased and post-3.5. Revisit graphics-in-tmux once a tagged release ships it. Over SSH, graphics ride the same stdout stream as text and work with no server-side env plumbing; do not gate graphics on `AcceptEnv`/`SendEnv` or `COLORTERM` (env-only forwarding). Detect capability at runtime by querying the terminal (Kitty `a=q`, Sixel via DA1), the only reliable method over SSH and inside tmux; treat `COLORTERM=truecolor` as an advisory colour hint.
 - Is ultraviolet (0.x, ~357 stars) stable enough to depend on transitively for a long-lived project? Is Charm's promised first-class Bubble Tea image support on a timeline Nyala could wait for? Resolved: accept ultraviolet transitively; it is unavoidable under Bubble Tea v2, which sits on it. Ultraviolet ships only `v0.0.0-...` pseudo-versions and warns its API may change, but the risk is bounded: Nyala depends on the stable Bubble Tea v2 surface (v2.0.0, Feb 2026), which pins the ultraviolet version it needs, and the bus factor is Charm (an active company), not a lone maintainer. Do not wait for Charm first-class image support: Charm states it has no plans, citing low terminal adoption, so Nyala owns its graphics pipeline (block, Sixel, Kitty) and will continue to.
 - Bus-factor risk: is depending on vaxis (single maintainer, sr.ht, 0.x) acceptable, and is vendoring or a maintained fork an acceptable mitigation? Resolved: vaxis stays a documented escape hatch, not a dependency. It is single-maintainer on sr.ht (GitHub mirror, Apache-2.0/MIT, v0.16.0, actively maintained as of mid-2026). The single-maintainer bus factor rules it out as a live dependency, but if Charm graphics coexistence proves intractable, vendoring or a maintained fork is a sound mitigation given the permissive licence and mirror.
 - Will the team accept owning ~20-40 lines of raw terminal control (release/restore, region blanking, sixel/kitty encode) as the price of Bubble Tea, or split the stack? Resolved: accept the owned layer; keep Bubble Tea v2 for chrome, do not split the stack. The surface is bounded and TUIOS-proven: per-frame `DECSC`, `CUP`, APC/DCS payload, `DECRC`, wrapped once per batch in `CSI ?2026h/l` on emulators or cursor hide/show on KMSCON, plus re-blit-after-repaint and the reserved-rectangle invariant (no chrome and viewport on a shared row). The real cost is holding that invariant, not the line count. vaxis stays the documented fallback only if the invariants prove unholdable.
-- Under mode 2026, must chrome and viewport compose into one synchronized frame per tick, or can they bracket independently? Resolved: bracket independently. Chrome and viewport never share cells (chrome leaves the rectangle blank, the out-of-band blit fills it), so there is no seam to tear. Bubble Tea emits and brackets its own text frame; Nyala wraps the graphics batch in its own `CSI ?2026h ... CSI ?2026l`, sequenced inside `View()` to land right after the text frame so graphics never precede the cells that reserve them. Order matters, cross-frame atomicity does not. On KMSCON mode 2026 is a no-op, so this degrades to one-syscall-per-frame plus cursor hide/show. Single-frame chrome plus graphics atomicity is a later refinement, not a requirement; TUIOS ships without it.
+- Under mode 2026, must chrome and viewport compose into one synchronized frame per tick, or can they bracket independently? Resolved: bracket independently. Chrome and viewport never share cells (chrome leaves the rectangle blank, the out-of-band blit fills it), so there is no seam to tear. Bubble Tea emits and brackets its own text frame; Nyala wraps the graphics batch in its own `CSI ?2026h ... CSI ?2026l`, sequenced inside `View()` to land right after the text frame so graphics never precede the cells that reserve them. Order matters, cross-frame atomicity does not. On KMSCON mode 2026 is a no-op, so this degrades to one-syscall-per-frame plus cursor hide/show. Single-frame chrome plus graphics atomicity is research-only and outside the current roadmap; TUIOS ships without it.
 
 ## Half-Block Rendering Research
 
@@ -586,7 +598,7 @@ Techniques:
   char-width at a time to place glyphs. This is the documented source of its fuzzy,
   misaligned text. Nyala should use CDP-reported text geometry instead.
 - **Hatched placeholder**: alternating grey `▄` cells mark un-loaded regions during a
-  streaming frame. Cheap first-paint cue worth copying.
+  streaming frame. It is a research comparison outside the current roadmap.
 - **Monochrome mode**: force fg=white, bg=black, replace `▄` with a space for a
   text-only readout on low-colour terminals.
 
@@ -779,23 +791,15 @@ Techniques:
   `github.com/ObscuritySRL/bun-win32` (`packages/terminal/glyphs.ts`),
   `github.com/hpjansson/chafa`, `github.com/queelius/dapple`.
 
-Verdict: quadrant (2x2) default, half-block (1x2) floor, adaptive promotion to octants
-only where the terminal and font prove Unicode 16 support; sextant is an opt-in tier,
-braille an explicit line-art/accessibility mode.
+Verdict: quadrant (2x2) default, half-block (1x2) floor, and sextant as an opt-in
+tier. Octant promotion and Braille mode remain research comparisons outside the
+current roadmap.
 
-Sextant (2x3) research spike (unscheduled): add sextant as a font-gated tier above
-quadrant and measure it before committing. It raises vertical resolution by 50%, the
-scarce axis, since cells are about 1:2. The catch: six sub-cells still share one
-foreground and one background, so colour quantisation error per cell rises as shape
-detail rises. Unicode 13 (2020) font support is narrower than quadrant, so it can never
-replace the floor; GNU Unifont covers the range, so the existing Unifont fallback tier
-may reach it. The generalisation is mechanical: a `SchemeSextant`, a `sampleSextant`
-and `binarizeSextant` (direct extensions of the quadrant pair), a coverage check like
-`QuadrantSupport`, and a 60-entry pattern-to-rune table. The value band is narrow,
-terminals with sextant glyphs but no Sixel or Kitty, so gate the spike on the
-diagnostics harness: score quality, cost, and legibility against quadrant on the
-committed fixtures, and keep it only if the gain clears the added complexity. Octant
-(2x4) is the next rung behind the same tiering, newer and less supported.
+The sextant (2x3) spike is complete. `SchemeSextant`, sampling, binarisation, the
+60-pattern rune table, capture flags, and a conservative terminal allow-list ship.
+Quadrant remains the unknown-terminal fallback. Real-terminal allow-list expansion
+and version gating remain in [`TODO.md`](./TODO.md#4-close-block-correctness-gaps).
+See [`BLOCK-MODES.md`](./BLOCK-MODES.md) for the measurements and support model.
 
 ### Go half-block / cell-art modules
 
@@ -974,16 +978,17 @@ uniseg + runewidth for widths; reserve Lipgloss layers for chrome, never the vie
 
 ### Recommended Half-Block Pipeline
 
-This pipeline is the initial render objective for any terminal without Sixel or Kitty.
+This section records the original half-block pipeline and its current corrections.
 The target is the Carbonyl gold standard: quadrant blocks for the bitmap, real Unicode
 text composited on top, and truecolour where the terminal supports it. Nyala matches it
 without forking a browser by taking text geometry from CDP instead of Chromium internals.
 
 End-to-end, in order. Each step names the pick and its score.
 
-1. **Resize**: `golang.org/x/image/draw` (9/10). In-place scale the RGBA frame into a
-   reused buffer; size the CDP viewport so one cell maps to 2x4 (quadrant) or 1x2
-   (half-block) source pixels, which removes Carbonyl's Chromium-fork LoDPI hack.
+1. **Resize**: `golang.org/x/image/draw` (9/10). The current Block path downsamples the
+   full terminal-device surface into the scheme's sample grid. Exact sub-cell capture
+   is on hold by owner decision; see
+   [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
 2. **Glyph choice**: custom compositor (8-9/10). Quadrant (2x2) default for detail,
    half-block (`U+2584`, 1x2) floor for safety, octant (2x4) only where the terminal
    and font prove Unicode 16. Default scheme: quadrant, falling back to half-block.
@@ -997,10 +1002,11 @@ End-to-end, in order. Each step names the pick and its score.
    `rivo/uniseg` + `mattn/go-runewidth` (9/10) measure grapheme width and index.
 5. **Diff**: custom viewport writer (built on Carbonyl's painter, references tcell v3
    7/10 and ultraviolet 7/10). Previous-frame grid, per-cell skip, SGR coalescing,
-   absolute-CUP-on-move, REP for flat runs.
+   and absolute-CUP-on-move. REP remains measurement-gated in [`TODO.md`](./TODO.md).
 6. **Output**: one reused byte buffer, one write per frame, wrapped in DEC mode 2026
-   where supported, cursor hide/show on KMSCON. Drive it under Bubble Tea v2
-   `WithoutRenderer` for the viewport region so it never fights the chrome renderer.
+   where supported, cursor hide/show on KMSCON. Stage 4 keeps Bubble Tea's renderer for
+   chrome, reserves a blank viewport, and sends viewport bytes out of band. It does not
+   use `WithoutRenderer`.
 
 How this relates to the Tech Stack rows. It reuses the existing choices and sharpens
 two. `x/image/draw`, `colorprofile` plus the closed-form RGB to xterm-256 formula, and
@@ -1021,24 +1027,19 @@ tests.
   for one luma split, double the resolution of half-block; Carbonyl ships this at 60 FPS,
   so the cost is proven for a moving viewport. The only added cost is a ten-codepoint font
   dependency (`U+2596..U+259F`), covered by DejaVu and Unifont.
-- Does KMSCON render the quadrant glyphs `U+2596..U+259F` (and any sextant/octant tier)
-  correctly in its scalable font without inter-row background bleed? Resolved: quadrant
-  default, gated by a runtime render test, with the half-block `U+2584` floor (Unifont
-  quadrant fallback first). KMSCON's default freetype engine resolves a Fontconfig
-  monospace font, so cell-fill coverage of `U+2596..U+259F` is environment-dependent and
-  must be probed. Font-renderer block glyphs can leave inter-row background bleed (see
-  microsoft/terminal #19841, kovidgoyal/kitty #9849); the probe prints a known quadrant
-  glyph, captures the cell, and checks glyph presence and no bleed against a contrasting
-  background. No sextant or octant tier: not in default fonts and the worst bleed
-  offenders. Stage 2 spike: implement the render test and the Unifont-then-half-block
-  fallback chain.
+- Does KMSCON render the quadrant glyphs `U+2596..U+259F` cleanly? Resolved by owner
+  verification with `just kmscon-testcard`, not by a runtime glyph capture. Quadrant is
+  the automatic fallback on KMSCON and unknown terminals; half-block remains an
+  explicit scheme and portable floor. Sextant selection uses terminal identity and a
+  conservative allow-list, with no Unifont-to-half runtime chain. See
+  [`BLOCK-MODES.md`](./BLOCK-MODES.md).
 - KMSCON truecolour landed in libtsm on 2025-11-28. What is the real install base of
   truecolour-capable KMSCON in mid-2026, and does KMSCON answer the OSC 11 / DCS colour
   query fast enough to rely on, or must Nyala trust `COLORTERM=kmscon`? Needs a bare-TTY
   test. (Resolved in Stage 1 (see `docs/STAGE-1.md`): trust `COLORTERM=kmscon`. The DCS
   round-trip is a no-op on KMSCON's libtsm, so Nyala detects from env plus terminfo and
-  treats a present `COLORTERM` as a trusted positive; no live colour query is sent. The
-  install-base question stays open.)
+  treats a present `COLORTERM` as a trusted positive; no live colour query is sent.
+  The install-base count does not affect runtime behaviour, so it is not a task.)
 - Carbonyl's single-threshold grey-vs-cube branch versus tmux's nearest-of-two: is the
   accuracy gap visible at half-block resolution on real pages, and is the extra distance
   computation per pixel affordable at target FPS? Resolved: Carbonyl closed-form
@@ -1155,7 +1156,7 @@ static image first; add the live Chromium screencast later. Each stage kills one
 | 1 | Capability probe picks the default backend; manual override stays | Detection is correct on the real target terminals | Built; see [`STAGE-1.md`](./STAGE-1.md) |
 | 2 | Composite hardcoded glyph runs over the bitmap | The crisp-text overlay, the gold-standard differentiator | Built; see [`STAGE-2.md`](./STAGE-2.md) |
 | 3 | Replace the PNG with a chromedp screencast loop; the binary becomes web-first (`nyala <url>`), dropping the static-PNG viewer | The frame ack-pump loop and real FPS | Built; see [`STAGE-3.md`](./STAGE-3.md) |
-| 4 | Run under Bubble Tea v2 with a URL bar and a viewport region | Coexistence: the chrome renderer does not clobber graphics | Remaining |
+| 4 | Run under Bubble Tea v2 with a URL bar and a viewport region | Coexistence: the chrome renderer does not clobber graphics | Remaining; indexed in [`TODO.md`](./TODO.md#3-build-stage-4-ui) |
 
 Pass/fail for the PoC: on a no-graphics terminal (KMSCON), the quadrant plus text-overlay
 path renders a real webpage with images as blocks and text as crisp glyphs; on foot and

@@ -12,6 +12,10 @@ The KMSCON quadrant fallback was verified by the owner on a real KMSCON TTY via 
 
 What remains for later stages: the diff writer, REP, and the text-only monochrome readout are deferred; the Sixel and Kitty overlay is deferred to Stage 3+; the chromedp screencast replaces the PNG in Stage 3; and Bubble Tea chrome wraps the viewer in Stage 4.
 
+This paragraph records the Stage 2 boundary. Stage 3 later delivered the Chromium
+screencast and Block grid diff writer; current open work is indexed in
+[`TODO.md`](./TODO.md).
+
 ## Objective and scope
 
 The objective: prove the grapheme-wins-the-cell compositor on the block path, the permanent KMSCON floor, and grade it through the harness. The overlay renders each glyph as a full crisp terminal cell, always legible whatever the page text size, so it clears the bitmap's `minLegiblePx` floor (Stage 0 measured 10 px, with 8 px illegible). The Stage 2 headline is placement correctness plus the differentiator: the overlay reads text where the bitmap floor failed.
