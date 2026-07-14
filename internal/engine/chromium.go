@@ -89,18 +89,20 @@ type ChromiumEngine struct {
 	// capture event so a wedged browser is observable without spamming.
 	inputFailures int
 
-	// screencastCtl serialises screencast stop/start so a resize or backend switch
-	// (restartStream) and an adaptive format switch (switchScreencastFormat) never run
-	// StopScreencast/StartScreencast concurrently. It is a dedicated lock held only
-	// across those CDP control calls, never nested with e.mu across a chromedp.Run, so
-	// it cannot deadlock with the supervisor.
+	// screencastCtl owns every screencast start and transition. After taking it, the
+	// caller validates the session and backend before issuing CDP control calls. It is
+	// never held together with e.mu across a CDP call, so the supervisor can cancel a
+	// failing transition without deadlocking.
 	screencastCtl sync.Mutex
-	// screencastFmt is the current screencast format and JPEG quality, guarded by
-	// e.mu. startScreencast reads it so every start (initial, resize, backend switch,
-	// format switch) uses the current format. Block runs live JPEG, Kitty runs live
+	// screencastFmt is the last successfully started screencast format and JPEG
+	// quality, guarded by e.mu. Block runs live JPEG, Kitty runs live
 	// PNG, Sixel keeps its adaptive PNG-settled/JPEG-moving policy, and capture forces
 	// PNG; initialScreencastFormat picks it from the backend and capture flag.
 	screencastFmt screencastFmt
+	// screencastStarted distinguishes a published frame sink from a successful
+	// StartScreencast, guarded by e.mu. A resize or backend change in that publication
+	// window updates the held state but leaves the single initial start to apply it.
+	screencastStarted bool
 	// motion carries per-frame arrival instants from the listener goroutine to the
 	// adaptive Sixel format controller, which reads the frame-arrival rate as the
 	// page's motion signal. It is created and the controller started only on the live
@@ -167,6 +169,12 @@ type ChromiumEngine struct {
 	// the state machine is exercised without a browser. It is nil in production, where
 	// runScreencastFormat falls back to switchScreencastFormat.
 	switchFmt func(context.Context, page.ScreencastFormat, int)
+	// The screencast operation hooks are nil in production. Stream-control tests replace
+	// them with deterministic barriers and failures without launching Chromium.
+	stopScreencastOp  func(context.Context) error
+	startScreencastOp func(context.Context, int, int, screencastFmt) error
+	applySizingOp     func(context.Context, browser.WindowID, int, int, float64) error
+	beforeInitialLock func()
 
 	// recvNano is the wall-clock nanoseconds of the last screencast frame received on
 	// the listener goroutine, or zero before the first. lastSession is that frame's
@@ -468,23 +476,29 @@ func (e *ChromiumEngine) Navigate(url string) error {
 // it restarts the stream at the new capture size, so frames arrive at the new
 // grid rather than the old one.
 func (e *ChromiumEngine) Resize(cols, rows int) {
+	e.screencastCtl.Lock()
+	defer e.screencastCtl.Unlock()
 	e.mu.Lock()
 	e.cols, e.rows = cols, rows
 	e.captureW, e.captureH = e.captureSize(cols, rows)
-	streaming := e.streamingLocked()
+	streaming := e.screencastStartedLocked()
 	e.mu.Unlock()
 	if streaming {
-		_ = e.restartStream()
+		_ = e.restartStreamLocked()
 	}
 }
 
-// streamingLocked reports whether a session is streaming, read under the caller's
-// e.mu hold. It is true when either frame sink is set: the capture-path slot or the
-// live-path decode-pool queue. Resize, SetBackend, and restartStream gate on it, so a
-// live session (queue, no slot) restarts on a resize or backend switch as a capture
-// session (slot) does.
+// streamingLocked reports whether a session has published a frame sink, read under
+// the caller's e.mu hold. The initial transition uses it before StartScreencast.
 func (e *ChromiumEngine) streamingLocked() bool {
 	return e.slot != nil || e.rawQ != nil
+}
+
+// screencastStartedLocked reports whether the published session has completed its
+// first StartScreencast, read under the caller's e.mu hold. Resize and SetBackend use
+// it so a pre-start change updates held state without issuing StopScreencast.
+func (e *ChromiumEngine) screencastStartedLocked() bool {
+	return e.streamingLocked() && e.screencastStarted
 }
 
 // Frames returns the emitted-frame channel. The channel is stable across Resize
@@ -505,16 +519,12 @@ func (e *ChromiumEngine) Frames() <-chan render.Frame {
 // It is not part of the Engine interface; the viewer push consumer (Phase 7)
 // calls it on a Tab cycle.
 func (e *ChromiumEngine) SetBackend(backend string) {
-	// Serialise the backend change with adaptive Sixel stop/start. This keeps the old
-	// backend active until an in-flight switch finishes, then changes the backend and
-	// restarts it under the same control hold. Kitty therefore cannot inherit a late
-	// Sixel JPEG restart between these two steps.
 	e.screencastCtl.Lock()
 	defer e.screencastCtl.Unlock()
 	e.mu.Lock()
 	e.backend = backend
 	e.captureW, e.captureH = e.captureSize(e.cols, e.rows)
-	streaming := e.streamingLocked()
+	streaming := e.screencastStartedLocked()
 	e.mu.Unlock()
 	if streaming {
 		_ = e.restartStreamLocked()

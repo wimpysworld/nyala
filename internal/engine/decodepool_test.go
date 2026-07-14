@@ -212,18 +212,18 @@ func itoa(n int) string {
 }
 
 // TestDecodePoolByteIdenticalToSerial proves a raw payload decoded through the pool is
-// byte-identical to the same payload decoded by the serial path (decodeScreencastImage).
+// byte-identical to the same payload decoded by the serial native path.
 // Each worker owns its own decode call and destination bitmap, so parallelism cannot
 // alter the pixels. It feeds a real base64 PNG (production decode, not a hook).
 func TestDecodePoolByteIdenticalToSerial(t *testing.T) {
 	t.Parallel()
 	payload := pngPayload(t)
-	want, err := decodeScreencastImage(payload)
+	want, err := decodeScreencastNative(payload)
 	if err != nil {
 		t.Fatalf("serial decode failed: %v", err)
 	}
 
-	e := &ChromiumEngine{backend: "block"} // nil decode: workers use decodeScreencastImage
+	e := &ChromiumEngine{backend: "block"} // nil decode: workers use the native decoder
 	rawQ, frames, stop := drivePool(t, e, 3)
 	defer stop()
 
@@ -282,17 +282,43 @@ func TestDecodePoolKittyPassThroughAndFallback(t *testing.T) {
 }
 
 func TestDirectKittyPNGRejectsInvalidRawData(t *testing.T) {
+	valid := pngPayload(t)
+	raw, err := base64.StdEncoding.DecodeString(valid)
+	if err != nil {
+		t.Fatalf("decode test PNG: %v", err)
+	}
+	cases := map[string]string{
+		"invalid prefix":   "not-a-png",
+		"invalid length":   valid + "A",
+		"invalid alphabet": valid[:len(valid)/2] + "!" + valid[len(valid)/2+1:],
+		"invalid padding":  valid[:16] + "=" + valid[17:],
+		"truncated PNG":    base64.StdEncoding.EncodeToString(raw[:len(raw)-12]),
+		"invalid structure": base64.StdEncoding.EncodeToString(func() []byte {
+			corrupt := bytes.Clone(raw)
+			corrupt[11] = 12 // IHDR must carry exactly 13 data bytes.
+			return corrupt
+		}()),
+		"invalid CRC": base64.StdEncoding.EncodeToString(func() []byte {
+			corrupt := bytes.Clone(raw)
+			corrupt[29] ^= 1 // First chunk CRC follows signature, header, and IHDR data.
+			return corrupt
+		}()),
+	}
 	e := &ChromiumEngine{backend: "kitty"}
-	if e.directKittyPNG(base64PNGPrefix + "xx") {
-		t.Fatal("invalid base64 length entered the direct Kitty path")
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			if e.directKittyPNG(data) {
+				t.Fatal("invalid payload entered the direct Kitty path")
+			}
+		})
 	}
 	e.backend = "sixel"
-	if e.directKittyPNG(pngPayload(t)) {
+	if e.directKittyPNG(valid) {
 		t.Fatal("pixel backend entered the direct Kitty path")
 	}
 	e.backend = "kitty"
 	e.captureOn = true
-	if e.directKittyPNG(pngPayload(t)) {
+	if e.directKittyPNG(valid) {
 		t.Fatal("capture entered the direct Kitty path")
 	}
 }

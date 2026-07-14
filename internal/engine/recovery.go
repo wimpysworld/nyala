@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sync"
 	"time"
 
@@ -37,10 +36,6 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	scrollX, scrollY := e.scrollX, e.scrollY
 	cx := float64(e.cols*e.cellW) / 2
 	cy := float64(e.rows*e.cellH) / 2
-	// The screencast cap is the painted device surface (screencastCap), so Chromium
-	// emits the frame it paints without downscaling to a cap set one row short; the
-	// engine downscales the block frame to the sub-cell captureSize client-side.
-	capW, capH := e.screencastCap(e.cols, e.rows)
 	e.mu.Unlock()
 
 	crashed = make(chan struct{})
@@ -93,10 +88,6 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	if !e.captureOn {
 		motion = make(chan time.Time, 8)
 	}
-	// Pick the initial screencast format from the backend and capture flag before the
-	// first start: capture PNG, live block JPEG, live Kitty PNG, and live Sixel PNG
-	// (settled).
-	fmtSel := e.initialScreencastFormat()
 	e.mu.Lock()
 	e.slot = slot
 	e.rawQ = rawQ
@@ -107,8 +98,9 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	e.scroll = scroll
 	e.reEmit = reEmit
 	e.motion = motion
-	e.screencastFmt = fmtSel
 	e.timing = timer
+	e.screencastFmt = screencastFmt{}
+	e.screencastStarted = false
 	e.mu.Unlock()
 	// Register the frame listener once, on this fresh session context, before the
 	// first startScreencast. restartStream re-issues startScreencast on the same
@@ -120,9 +112,9 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	e.recvNano.Store(0)
 	e.lastSession.Store(0)
 	e.stallPoked.Store(false)
-	if err = e.startScreencast(ctx, capW, capH); err != nil {
+	if err = e.startInitialScreencast(ctx); err != nil {
 		e.teardownSession()
-		return nil, fmt.Errorf("engine: start screencast: %w", err)
+		return nil, err
 	}
 	timer.mark(labelScreencastStarted)
 	go e.ackPump(ctx, acks)
@@ -436,6 +428,8 @@ func (e *ChromiumEngine) teardownSession() {
 	e.rawQ = nil
 	e.reSnap, e.reflow, e.scroll, e.reEmit = nil, nil, nil, nil
 	e.motion = nil
+	e.screencastFmt = screencastFmt{}
+	e.screencastStarted = false
 	e.windowID = 0
 	e.fontForcingID = ""
 	e.layoutShiftID = ""

@@ -78,8 +78,8 @@ func encodeBase64PNG(t *testing.T) string {
 }
 
 // encodeBase64JPEG builds a solid red 8x8 image, encodes it as JPEG, and
-// base64-encodes it. JPEG decodes to YCbCr, so this exercises the non-RGBA to
-// RGBA conversion path in decodeScreencastImage. A solid fill avoids JPEG chroma
+// base64-encodes it. JPEG decodes to YCbCr, so this exercises an explicit test-only
+// RGBA conversion after the native production decode. A solid fill avoids JPEG chroma
 // subsampling bleed (which a lone red pixel on a tiny image suffers), so the
 // decoded colour stays close to the source. JPEG is lossy, so it is only
 // approximately the source.
@@ -99,30 +99,31 @@ func encodeBase64JPEG(t *testing.T) string {
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
-// TestDecodeScreencastImagePNGChannelOrder checks the PNG fast path returns RGBA
+// TestDecodeScreencastNativePNGChannelOrder checks the PNG fast path returns RGBA
 // channel order, not BGRA. A channel swap (the render-pipeline gotcha) would put
 // the red value in B, which the per-channel asserts catch.
-func TestDecodeScreencastImagePNGChannelOrder(t *testing.T) {
-	rgba, err := decodeScreencastImage(encodeBase64PNG(t))
+func TestDecodeScreencastNativePNGChannelOrder(t *testing.T) {
+	img, err := decodeScreencastNative(encodeBase64PNG(t))
 	if err != nil {
 		t.Fatalf("decode PNG: %v", err)
 	}
-	got := rgba.RGBAAt(0, 0)
+	got := color.RGBAModel.Convert(img.At(0, 0)).(color.RGBA)
 	if got.R != 200 || got.G != 10 || got.B != 20 || got.A != 0xff {
 		t.Fatalf("pixel (0,0) = %+v, want R=200 G=10 B=20 A=255 (RGBA order, not BGRA)", got)
 	}
 }
 
-// TestDecodeScreencastImageJPEGConversion checks the non-RGBA conversion path:
+// TestDecodeScreencastNativeJPEGConversion checks the non-RGBA conversion path:
 // JPEG decodes to YCbCr, so the image is not already *image.RGBA. The decoded
 // pixel must be approximately the source red in RGBA order. JPEG is lossy, so
 // each channel is compared with a tolerance, but R must stay clearly the high
 // channel, proving the order is RGBA not BGRA.
-func TestDecodeScreencastImageJPEGConversion(t *testing.T) {
-	rgba, err := decodeScreencastImage(encodeBase64JPEG(t))
+func TestDecodeScreencastNativeJPEGConversion(t *testing.T) {
+	img, err := decodeScreencastNative(encodeBase64JPEG(t))
 	if err != nil {
 		t.Fatalf("decode JPEG: %v", err)
 	}
+	rgba := imageToRGBA(img)
 	got := rgba.RGBAAt(0, 0)
 	const tol = 40
 	if absDiff(got.R, 200) > tol || absDiff(got.G, 10) > tol || absDiff(got.B, 20) > tol {
@@ -170,9 +171,9 @@ func TestDecodeImageBytesJPEGChannelOrder(t *testing.T) {
 	}
 }
 
-// TestDecodeScreencastImageErrors checks bad input returns an error rather than
+// TestDecodeScreencastNativeErrors checks bad input returns an error rather than
 // panicking: malformed base64, and valid base64 that is not a decodable image.
-func TestDecodeScreencastImageErrors(t *testing.T) {
+func TestDecodeScreencastNativeErrors(t *testing.T) {
 	cases := []struct {
 		name string
 		data string
@@ -182,8 +183,8 @@ func TestDecodeScreencastImageErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := decodeScreencastImage(tc.data); err == nil {
-				t.Fatalf("decodeScreencastImage(%q) returned nil error, want an error", tc.name)
+			if _, err := decodeScreencastNative(tc.data); err == nil {
+				t.Fatalf("decodeScreencastNative(%q) returned nil error, want an error", tc.name)
 			}
 		})
 	}

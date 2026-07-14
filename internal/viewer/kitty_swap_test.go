@@ -236,16 +236,42 @@ func TestRetainedPNGBlockFallbackMatchesDecodedPath(t *testing.T) {
 }
 
 func TestInvalidDirectPNGFallsBackToDecodedPixels(t *testing.T) {
-	s := NewState(8, 4, 16, 16)
-	s.Backend = BackendKitty
 	img := solidImageSize(8, 8, color.RGBA{R: 0xff, A: 0xff})
-	var out bytes.Buffer
-	if err := s.RenderStreamFrame(render.Frame{Img: img, EncodedPNG: "not-a-png"}, &out); err != nil {
-		t.Fatalf("render fallback pixels: %v", err)
+	valid := encodedPNG(t, img)
+	raw, err := base64.StdEncoding.DecodeString(valid)
+	if err != nil {
+		t.Fatalf("decode test PNG: %v", err)
 	}
-	cmds := kittyCommands(out.String())
-	if len(cmds) != 1 || !hasOpt(cmds[0], "f=24") {
-		t.Fatalf("fallback command = %v, want decoded f=24 transmit", cmds)
+	cases := map[string]string{
+		"invalid prefix":   "not-a-png",
+		"invalid length":   valid + "A",
+		"invalid alphabet": valid[:len(valid)/2] + "!" + valid[len(valid)/2+1:],
+		"invalid padding":  valid[:16] + "=" + valid[17:],
+		"truncated PNG":    base64.StdEncoding.EncodeToString(raw[:len(raw)-12]),
+		"invalid structure": base64.StdEncoding.EncodeToString(func() []byte {
+			corrupt := bytes.Clone(raw)
+			corrupt[11] = 12 // IHDR must carry exactly 13 data bytes.
+			return corrupt
+		}()),
+		"invalid CRC": base64.StdEncoding.EncodeToString(func() []byte {
+			corrupt := bytes.Clone(raw)
+			corrupt[29] ^= 1 // First chunk CRC follows signature, header, and IHDR data.
+			return corrupt
+		}()),
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := NewState(8, 4, 16, 16)
+			s.Backend = BackendKitty
+			var out bytes.Buffer
+			if err := s.RenderStreamFrame(render.Frame{Img: img, EncodedPNG: data}, &out); err != nil {
+				t.Fatalf("render fallback pixels: %v", err)
+			}
+			cmds := kittyCommands(out.String())
+			if len(cmds) != 1 || !hasOpt(cmds[0], "f=24") {
+				t.Fatalf("fallback command = %v, want decoded f=24 transmit", cmds)
+			}
+		})
 	}
 }
 
