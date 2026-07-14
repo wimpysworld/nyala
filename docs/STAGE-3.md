@@ -33,7 +33,7 @@ What remains is post-build validation, not new code. The measured spikes feed
 future tuning, not a gate: sustained FPS on KMSCON and the target emulators,
 terminal-side PNG decode and draw latency, the `scrollMatchTolerancePx` frame-sync
 tolerance, and the advisory DOM box drift. The CEF fallback stays documented and
-gated on the FPS spike.
+gated on the FPS spike. [`TODO.md`](./TODO.md) is the canonical index.
 
 ## Objective and scope
 
@@ -74,6 +74,11 @@ Out of scope, deferred, each with the bar to promote it:
   geometry needs its own cadence.
 - **The Sixel and Kitty overlay, full Bubble Tea chrome, history, and address
   entry.** Stage 4.
+
+Later status: live Kitty now passes the CDP PNG directly, so the historical decoded
+damage design does not describe its normal path. Current partial-emission work is
+conditional on terminal measurements and a supported protocol route; see
+[`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
 
 ## Work as built
 
@@ -485,8 +490,8 @@ reviews it.
 - **JPEG chroma noise read as spurious cell damage.** Resolved. The block path now
   diffs the previous grid and emits only changed cells with SGR/CUP coalescing; a
   cell whose only change is sub-visible chroma noise still re-emits, but the bounded
-  byte cost is acceptable. Graphics-backend damage-rectangle (sub-image) emission
-  stays deferred.
+  byte cost is acceptable. Graphics partial emission stays measurement-gated, with
+  the direct Kitty PNG constraint recorded above.
 - **Frame-sync tolerance and overlay staleness unmeasured.** Resolved structurally,
   carried forward to tune. `holdStalenessLimit` (250 milliseconds) bounds the error
   hold and `scrollMatchTolerancePx` (set to 1) stays the pure compare helper; the live
@@ -501,9 +506,9 @@ reviews it.
   target. Sixel still needs cached-palette and dirty-band work. Kitty needs no JPEG
   live path today; retain the decoded JPEG encoder only as a measured fallback if a
   future adaptive Kitty mode beats direct PNG end to end.
-- **Damage-rect escalation threshold and advisory DOM box drift.** Carried forward as
-  accepted measurements that feed future tuning: the damage-rect gate on per-frame
-  terminal latency and the sub-cell box jitter past the clip rule.
+- **Partial-emission threshold and advisory DOM box drift.** Carried forward as
+  accepted measurements that feed future tuning: the graphics terminal-latency gate
+  and the sub-cell box jitter past the clip rule.
 
 ## Monospace block render (post-Stage-3 fix)
 
@@ -512,8 +517,8 @@ cell. The page laid out with proportional fonts, so a run of N graphemes did not
 occupy `N*cellW` pixels, and the box-to-cell mapping binned the text off its true
 column. This fix forces the page onto the cell grid before capture, repairs the
 mapping, and gates the corpus against placement error. It is a correction to the
-Stage 3 overlay, not the Stage 4 UI, and it is the first item on the post-Stage-3
-`docs/TODO.md`.
+Stage 3 overlay, not the Stage 4 UI. Current alignment follow-up is tracked under
+[Close Block correctness gaps](./TODO.md#4-close-block-correctness-gaps).
 
 ### Document-creation font forcing
 

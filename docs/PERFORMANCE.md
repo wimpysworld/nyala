@@ -28,19 +28,19 @@ Nyala's three reported problems each have a clear, code-level root cause.
    fencing, and, for Sixel, a per-frame palette rebuild that dominates the
    ~593 ms cost.
 
-The reference projects agree on one architecture the whole way down: **track
-damage, diff before you emit, coalesce frames, and reuse buffers**. Carbonyl (the
-fast one) gets damage rects for free from a patched compositor; Nyala throws that
-information away over CDP screencast and must recover it by diffing frames. The
-biggest durable wins are: fix the load-time gate, fix the letterbox, add
-synchronised output and buffering, and give both graphics backends a
-transmit-once + delta path (Kitty animation frames; Sixel cached palette +
-dirty bands).
+The reference projects agree on three durable ideas: coalesce frames, reuse buffers,
+and avoid redundant terminal bytes. Nyala now passes each live Kitty CDP PNG straight
+to terminal framing, so the old transmit-once animation-frame plan does not apply.
+Sixel still benefits from a cached palette, tighter output, and measured dirty bands.
+Partial Kitty transport remains conditional on terminal measurements and a supported
+protocol path; see
+[`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
 
 CAVEAT: the per-frame magnitudes are allocation-count and round-trip reasoning from
 source, not a profiler run. One measured capture (the WebGL aquarium, 100 frames,
 block backend, 120x40) is now folded into Themes 1, 2, and 7 and tagged MEASURED; a
-full `pprof` and `go test -bench` pass is still pending.
+full `pprof` and `go test -bench` pass is still pending and is indexed in
+[`TODO.md`](./TODO.md#1-validate-the-stage-3-browser).
 
 ---
 
@@ -134,12 +134,10 @@ the cycle) or the kitty-to-sixel step looking identical.
   and allocs for a 1200x800 bitmap. `f.Img` is `*image.RGBA`
   (`internal/render/render.go:130`); bulk-write `img.Pix` row-by-row into the zlib
   writer instead. Byte-identical, zero per-pixel allocs.
-- KEY (flash/tear). `encodeGraphics` writes `kittyDeleteAll` then re-transmits
-  the whole image every frame with a new image id
-  (`internal/viewer/viewer.go:404-413`, `:568`, `internal/render/kitty/kitty.go:67`).
-  Between delete and completed put the terminal shows nothing. The protocol's own
-  rule: re-transmitting under the same id deletes all placements. Fix is the
-  animation-frame path (Theme 5).
+- KEY (flash/tear). The old Kitty path deleted each image before transmitting its
+  replacement, which exposed a blank frame. The shipped direct-CDP-PNG path alternates
+  two image IDs: transmit and place the next image, then delete the previous image.
+  The tested animation-frame edit (`a=f`) was not portable and is rejected (Theme 5).
 - Graphics escapes are written unbuffered to the raw tty in many syscalls
   (`internal/viewer/viewer.go:404-413`, chunked at 4096 in `kitty.go:103-118`).
 - Per-frame allocations: `bytes.Buffer`, payload slice, a new `zlib.NewWriter` each
@@ -183,9 +181,10 @@ browsh render blocks with cell diffing**; only brow6el (Sixel + Kitty) and casty
   changed cells (`host_display_client.cc`, `renderer.rs draw_background`). brow6el
   maps CEF dirty rects to cell-and-band-aligned Sixel tiles and re-encodes only
   those (`sixel_renderer.cpp:31-54,128-167`). notcurses' TAM wipes single cells
-  rather than re-emitting the bitmap. Nyala's CDP screencast carries no damage rect,
-  so Nyala must **recover damage by diffing successive decoded bitmaps** - the
-  highest-value idea for the graphics backends.
+  rather than re-emitting the bitmap. Nyala's CDP screencast carries no damage rect.
+  Sixel can recover bands from decoded pixels. Direct Kitty PNG has no normal decoded
+  bitmap, so any partial Kitty path must preserve pass-through or prove that decoding
+  pays back end to end. This work is gated on real terminal bytes and latency.
 - **Cell double-buffer diff + SGR/cursor elision.** Carbonyl and carboxyl keep
   `(prev, cur)` grids, skip unchanged cells, move the cursor only on a
   discontinuity, and cache the last-emitted fg/bg SGR (`painter.rs`). Nyala has the
@@ -264,15 +263,12 @@ Nyala framing number does not prove a higher terminal frame rate.
 
 ## Sixel/Kitty library verdict
 
-**Kitty.** Keep `charmbracelet/x/ansi/kitty` for the one-time transmit, placement,
-compression, and chunking - it covers `Format=RGB`, `Compression=Zlib`,
-`Transmission` (including `SharedMemory`), `VirtualPlacement`, `MaxChunkSize`, and
-`Quiet` cleanly. It does **not** model the animation-frame edit (`a=f`) or
-dirty-rectangle frames as a first-class API, though the action bytes exist. Write a
-small Nyala-side `a=f` encoder (a handful of `ESC_G` strings); the kitty repo's own
-Go `GraphicsCommand` is the reference model. The per-frame win: transmit once, then
-edit the root frame with `a=f,r=1,o=z`, so placements survive and there is no
-delete-then-transmit flash.
+**Kitty.** Live frames now bypass the decoded encoder. Nyala rechunks Chromium's
+owned base64 PNG as `f=100,t=d,a=T`, alternates image IDs, and deletes the previous
+ID after placement. The earlier `a=f,r=1,o=z` edit was tried and reverted because it
+rendered partially or black on target terminals. Keep the decoded RGB encoder for
+tests and a measured fallback, not as the normal optimisation path. Any future
+partial update must use a supported protocol path and beat direct PNG end to end.
 
 **Sixel.** CONFLICT across agents, resolved by the benchmark evidence:
 - Two agents that read the source say swap the live encoder to `mattn/go-sixel`
@@ -384,8 +380,9 @@ Also landed on the load-time theme, beyond the ranked list:
    inflates flat/text pages and shifts cost to the write; wrong default for a
    general-purpose browser, so BestSpeed. This cuts the paint wall but does not remove
    it: the encode stays the wall at 115 ms of the 172 ms budget, the write now about a
-   third (57 ms); the larger remaining levers (rec 10 damage/dirty-rect, and the
-   deferred downscale) are unchanged. [DONE - measured] The draw loop now pipelines the
+   third (57 ms). At that point damage/dirty-rect and motion downscaling were candidate
+   levers. Direct PNG later removed the decoded Kitty encode path, and graphics
+   downscaling is now outside the active roadmap. [DONE - measured] The draw loop now pipelines the
    escape encode with the tty write. A producer goroutine (the draw loop) assembles the
    whole mode-2026 frame (sync-open, prefix, render, fps badge, sync-close) into one of
    two ping-pong buffers, and a single writer goroutine does the `tty` write, so the write
@@ -408,8 +405,9 @@ Also landed on the load-time theme, beyond the ranked list:
    terminal-side limit that was always present. Two co-equal walls now bound paint: our
    encode CPU ~115 ms (zlib of the 22 MB frame) and the terminal ingest ~116 ms. They are
    balanced, so more speed on this full-motion fixture needs fewer pixels or fewer bytes,
-   which cuts both walls; the downscale-in-motion lever (deferred) does that, while rec 10
-   damage/dirty-rect gives little on full motion (the whole frame changes each tick).
+   which cuts both walls. This result predates direct PNG. Graphics downscaling is now
+   outside the active roadmap, while partial emission remains conditional and gives
+   little on full motion because the whole frame changes each tick.
    Cumulative aquarium arc this session, all lossless and no downscale: 4.5 (stdlib zlib)
    -> 5.8 (klauspost) -> 8.5 fps (pipeline).
    [DONE - current] Live Kitty now bypasses this decoded `f=24` path: every Kitty
@@ -453,22 +451,28 @@ Also landed on the load-time theme, beyond the ranked list:
 
 ### Tier 3 - larger and strategic
 
-10. **Recover damage by diffing decoded bitmaps** and thread it through both graphics
-    backends (dirty-band Sixel, dirty-rect Kitty `a=f,x,y,s,v`). Feeds 5 and 6.
-    Needs the PNG screencast from 4b first. Impact 8, effort large.
-11. **[PARTIAL - 1fd21a0]** **Compose hot-path cleanup.** Landed: scalar quadrant
+10. **Conditional partial graphics emission.** First measure terminal decode, draw,
+    write, and bytes per frame. If full-frame cost exceeds 16.67 ms, add dirty-band
+    Sixel from its decoded pixels. Direct Kitty PNG has no decoded bitmap, and the
+    tested `a=f` edit was not portable, so do not decode every PNG to recreate the old
+    plan. Design a Kitty path only from protocol support and an end-to-end benchmark.
+    See [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
+    Impact conditional, effort large.
+11. **[CLOSED - 1fd21a0]** **Compose hot-path cleanup.** Landed: scalar quadrant
     /sextant colour sums (~8-12% faster) and per-run display width cached at decode so
     the overlay stops re-segmenting graphemes each frame (~17% faster on overlay
     compose). Byte-identical (golden and overlay-golden tracks pass). Note: the
     per-cell `[]RGBA` "GC pressure" premise was wrong; Go 1.26 escape analysis already
-    stack-allocated those slices, so the win is CPU time, not allocations. DEFERRED:
+    stack-allocated those slices, so the win is CPU time, not allocations. REJECTED:
     memoise the grid on unchanged `(Img, runs)`. The engine allocates a fresh
     `image.RGBA` almost every frame, so an `Img`-pointer cache would rarely hit, and
     pointer identity is not a safe content proxy (a reused buffer behind a stable
     pointer would show a stale frame). Near-zero benefit, real correctness trap.
-    Impact 6, effort medium.
+    Closed; do not pursue.
 12. **Off-screen super-viewport buffer** (browsh's 6x) to cut CDP round-trips on
-    scroll. Impact 7, effort large.
+    scroll. Track the implementation gate in
+    [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
+    Impact 7, effort large.
 13. **CLOSED (2026-07-07): font pre-warm done, launch-Run batching skipped.** The rec had
     two halves. Half B (pre-warm the embedded font so `fonts.ready` does not serialise text
     publish) is DONE and code-verified: calibration awaits only its own forced face via
@@ -529,9 +533,10 @@ ceiling. Paint (Out ~24) is now the wall: the Kitty encode on the large live sur
 The klauspost zlib BestSpeed swap (recommendation 5) cuts that encode, measured 22%
 off encode-plus-write, and the encode/write pipeline (recommendation 5) hides the write
 behind the encode, measured `5.8 -> 8.5` out fps. Neither removes the wall: two co-equal
-~115 ms limits now bound paint, our encode CPU (zlib of the 22 MB frame) and the terminal
-ingest (the bytes Kitty must decode and paint). Both fall only on fewer pixels or fewer
-bytes, so the next lever is downscale-in-motion (cuts encode, decode, and write together).
+~115 ms limits then bounded paint, our encode CPU (zlib of the 22 MB frame) and the
+terminal ingest. Direct PNG later removed Nyala's decoded Kitty encode. The next task
+is to measure the terminal's PNG decode and draw; graphics downscaling is outside the
+active roadmap.
 
 ### Idea 2 - PNG/JPEG hybrid screencast
 
@@ -613,8 +618,8 @@ the real ceiling and see which wall is next.
 2. [DONE] JPEG-in-motion (recommendation 15) is active for Sixel. Block stays JPEG
    quality 80. Kitty stays direct PNG.
 3. NEXT: measure sustained terminal FPS and split Kitty terminal PNG decode/draw from
-   Nyala framing. Then address Sixel quantisation and dirty bands. Downscale graphics
-   in motion only after those measurements.
+   Nyala framing. Then address Sixel quantisation and dirty bands. Graphics downscaling
+   is outside the active roadmap.
 
 ---
 
@@ -885,8 +890,10 @@ faults by construction: no shared mutable state, and it targets the dominant sta
    unchanged. Measured on a 32-core box at cell 16x33: **120x40 3.17 ms -> 0.56 ms
    (5.7x), 240x86 13.9 ms -> 1.40 ms (10x)**, 0 allocs. The downscale is no longer the
    dominant stage; the block stages are now roughly level. The fused downscale+binarise
-   variant and the residual Compose split were not needed for the win, so they are left
-   open. Effort medium, impact high (delivered).
+   variant and the residual Compose split were not needed for the win. Reopen either
+   only if a new profile puts those stages back on top; this gate is indexed in
+   [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
+   Effort medium, impact high (delivered).
 3. **[DONE - staged]** Integer luma (owner's faster two-colour quantise). Swapped float
    `luma` (`block.go`) for inline integer weights `77R + 150G + 29B`, feeding
    `binarizeQuadrant` and `binarizeSextant`. Benched three forms: inline integer multiply
@@ -905,7 +912,8 @@ faults by construction: no shared mutable state, and it targets the dominant sta
    into a dimension-keyed ring of 5 to 6 buffers owned by the frame loop
    (`internal/engine/frame.go:116`), invalidated on resize. Effort low-medium. Impact
    low (GC pressure only, ~73 percent of decode bytes, no CPU cut on the 6.8 ms
-   decode). Verdict: worth it for GC, low risk.
+   decode). Profile before building it; the gate is indexed in
+   [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
 5. **[DONE - staged]** Faster SGR build in the diff. Replaced `strconv.AppendInt` with a
    precomputed `decByte [256]string` decimal table in `appendTrueColor` (`colour.go`),
    appended per component. Byte-identical (golden green). Measured BenchmarkBlockDiff
@@ -1112,10 +1120,11 @@ not motion-only. That is a separate, unbuilt item.
 - RESOLVED: screencast format is backend-specific. Block uses JPEG quality 80, Kitty
   always uses direct PNG, Sixel adapts between PNG and JPEG quality 90, and capture
   always uses PNG. Theme 7 records the policy and measurements.
-- RESOLVED: Nyala runs inside multiplexers (tmux, herd, Zellij is supported). So
-  the Kitty path must use virtual placement (`U=1`) plus passthrough wrapping, not a
-  plain placement. This lands with the Tier 2 Kitty animation-frame work
-  (recommendation 5), not Tier 1.
+- RESOLVED for current code: a detected tmux, herdr, Zellij, or screen session uses
+  the Block backend. Direct Kitty PNG is the standalone-terminal path. Graphics
+  passthrough remains conditional work; do not prescribe `U=1` until placeholder
+  support is re-tested on the exact target releases. See
+  [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
 - RESOLVED: the load-time split (Chromium spawn, navigation-to-first-paint, Nyala's
   setup round-trips) is answered by the recommendation 4 timing (`screencast_started`
   ~191 ms, dominated by Chromium's own launch). Recommendation 13 is now closed on that
@@ -1528,13 +1537,13 @@ the flags reached Chromium and nothing shadowed the `--enable-features` list.
 
 ### Verdict
 
-Benchmark `gen2brain/jpegn` first, and adopt it if it holds up. It is the one
-decoder that fits every Nyala constraint at once: cgo-free (pure Go plus Plan9
-assembly the Go toolchain assembles), MIT-licensed, and it ships SIMD IDCT and
+`gen2brain/jpegn` was benchmarked and adopted. The amd64 speed result and corpus
+byte identity are established. It fits Nyala's constraints: cgo-free (pure Go plus
+Plan9 assembly the Go toolchain assembles), MIT-licensed, with SIMD IDCT and
 upsample paths for both release targets (amd64 AVX2, arm64 NEON). It returns a
-native `image.YCbCr`, so Nyala's fused YCbCr to RGBA downscale still applies. It
-measures about 1.85x to 2.45x faster than stdlib on baseline 4:2:0, the exact
-workload class of a Chromium screencast frame, with no change to the build model.
+native `image.YCbCr`, so Nyala's fused YCbCr to RGBA downscale still applies. The
+only active follow-up is real-arm64 performance validation, tracked in
+[`TODO.md`](./TODO.md#1-validate-the-stage-3-browser).
 The only genuinely faster option is a cgo binding to libjpeg-turbo (about 4.8x),
 but that flips Nyala from a clean `GOOS`/`GOARCH` cross-build to a per-target C
 toolchain, so its speed does not pay for its cost here. The WASM route
@@ -1596,9 +1605,13 @@ Anchored to stdlib at about 56 ms per 7 MP frame:
 - **jpegli float decoder (reference only)**: ~153 ms (from 47 MP/s), far worse;
   wrong tool for a decode-latency workload.
 
-### Recommended SPIKE
+### Adoption spike [DONE]
 
-Benchmark `gen2brain/jpegn` on a captured Nyala frame, before anything else.
+The amd64 spike completed and `gen2brain/jpegn` was adopted. The criteria below
+record the pre-adoption test. Only real-arm64 performance validation remains, in
+[`TODO.md`](./TODO.md#1-validate-the-stage-3-browser).
+
+Historical criteria:
 
 - **Input**: a real 7 MP Chromium screencast JPEG pulled from a capture bundle,
   decoded on both amd64 and arm64.
