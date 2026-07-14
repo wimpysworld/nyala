@@ -94,14 +94,11 @@ func decodeBase64Pooled(data string) (raw []byte, release func(), err error) {
 // tolerance cannot cleanly catch a real change; PNG gives an exact per-cell diff.
 const screencastQuality = 90
 
-// movingScreencastQuality is the JPEG quality the adaptive live screencast uses when
-// the page is moving (and the block backend uses for its whole live stream). JPEG at
-// this quality decodes far faster than lossless PNG, cutting the ingest decode cost
-// during animation and scroll; its MCU-scale artefacts are hidden by the motion on
-// the graphics backends and washed out by the block backend's own sub-cell
-// downsample. The capture path never uses it: capture forces PNG for a byte-exact
-// corpus.
-const movingScreencastQuality = 80
+// movingScreencastQuality is the JPEG quality the adaptive live Sixel screencast uses
+// when the page is moving, and the block backend uses for its whole live stream.
+// Kitty stays PNG so it can pass each CDP payload straight to the terminal. The
+// capture path never uses this value: capture forces PNG for a byte-exact corpus.
+const movingScreencastQuality = 90
 
 // frameChannelBuffer is the buffer size of the emitted-frame channel. A small
 // buffer stops a transient restartStream stall from parking the frame loop on the
@@ -165,12 +162,27 @@ func (e *ChromiumEngine) snapshotCellPx() (cellW, cellH float64) {
 // bytes before the image decoder. A non-RGBA decode is converted with the same
 // copy idiom the viewer's LoadPNG uses, so the render path reads one pixel layout.
 func decodeScreencastImage(data string) (*image.RGBA, error) {
+	img, err := decodeScreencastNative(data)
+	if err != nil {
+		return nil, err
+	}
+	return imageToRGBA(img), nil
+}
+
+// decodeScreencastNative decodes one base64 screencast payload without forcing
+// the decoder result into RGBA. Pixel consumers use this path so PNG retains its
+// decoder-native layout across the engine/render seam.
+func decodeScreencastNative(data string) (image.Image, error) {
 	raw, release, err := decodeBase64Pooled(data)
 	if err != nil {
 		return nil, fmt.Errorf("engine: base64-decode frame: %w", err)
 	}
 	defer release()
-	return decodeImageBytes(raw)
+	img, err := decodeFrameImage(raw)
+	if err != nil {
+		return nil, fmt.Errorf("engine: decode frame image: %w", err)
+	}
+	return img, nil
 }
 
 // decodeImageBytes decodes raw image bytes to an *image.RGBA in RGBA channel order.
@@ -221,8 +233,9 @@ func decodeJPEGFast(raw []byte) (image.Image, error) {
 	return decodeFrameImage(raw)
 }
 
-// decodeLiveFrame is the live decode-pool's decode: it decodes one base64 screencast
-// payload to an *image.RGBA, fusing the YCbCr-to-RGBA convert into the sub-cell
+// decodeLiveFrame is the live decode-pool's pixel decode: it decodes one base64
+// screencast payload to its decoder-native image, fusing the YCbCr-to-RGBA convert
+// into the sub-cell
 // downscale on the live block JPEG path so that path never materialises a
 // full-resolution RGBA surface only to average ~15/16 of it away.
 //
@@ -234,12 +247,12 @@ func decodeJPEGFast(raw []byte) (image.Image, error) {
 // converts only the small result, emitting a frame already at sub-cell resolution.
 // The viewer's renderBlock detects that resolution and skips its own downscale.
 //
-// Every other case falls back to the full-surface convert (imageToRGBA): a graphics
-// backend JPEG (which needs the full-resolution bitmap and takes no overlay), a block
-// PNG frame (already RGBA, no YCbCr to fuse), or an unset/degenerate sub-cell target.
+// Every other case keeps the decoder-native image: a graphics-backend JPEG stays
+// YCbCr until its consumer, while a PNG keeps the PNG decoder's native layout. A
+// block PNG or an unset/degenerate block target is downscaled by the viewer.
 // The capture path never calls this: capture forces PNG and keeps runFrameLoop with
 // decodeScreencastImage, so the byte-exact corpus is untouched.
-func (e *ChromiumEngine) decodeLiveFrame(data string) (*image.RGBA, error) {
+func (e *ChromiumEngine) decodeLiveFrame(data string) (image.Image, error) {
 	raw, release, err := decodeBase64Pooled(data)
 	if err != nil {
 		return nil, fmt.Errorf("engine: base64-decode frame: %w", err)
@@ -262,7 +275,7 @@ func (e *ChromiumEngine) decodeLiveFrame(data string) (*image.RGBA, error) {
 			return dst, nil
 		}
 	}
-	return imageToRGBA(img), nil
+	return img, nil
 }
 
 // averageYCbCrToRGBA box-averages the Y/Cb/Cr planes of src straight down to dst's

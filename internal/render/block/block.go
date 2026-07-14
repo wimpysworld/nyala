@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"image"
 	"image/color"
+	"image/draw"
 	"io"
 	"unicode/utf8"
 
@@ -169,6 +170,7 @@ func WriteCell(w io.Writer, c *Cell, fgSGR, bgSGR string) error {
 // on the renderer's Scheme, then folds any text overlay onto the grid. The
 // result is deterministic for a given Frame.
 func (br *Renderer) Compose(f render.Frame) Grid {
+	f = rgbaFrame(f)
 	var g Grid
 	switch br.Scheme {
 	case SchemeHalfBlock:
@@ -188,6 +190,7 @@ func (br *Renderer) Compose(f render.Frame) Grid {
 // overwrites every cell it visits, so a reused buffer carries no stale content.
 // It returns the same dst.
 func (br *Renderer) ComposeInto(dst *Grid, f render.Frame) *Grid {
+	f = rgbaFrame(f)
 	reuseGrid(dst, br.Cols, br.Rows)
 	switch br.Scheme {
 	case SchemeHalfBlock:
@@ -243,9 +246,10 @@ func (br *Renderer) composeQuadrantInto(g *Grid, f render.Frame) {
 // The row split is purely which rows a call fills, so the parallel band-join is
 // byte-identical to the serial pass.
 func (br *Renderer) composeQuadrantRows(g *Grid, f render.Frame, row0, row1 int) {
+	img, _ := f.Img.(*image.RGBA)
 	for row := row0; row < row1; row++ {
 		for col := range g.Cols {
-			x, y, z, wq := sampleQuadrant(f.Img, col, row)
+			x, y, z, wq := sampleQuadrant(img, col, row)
 			glyph, fg, bg := binarizeQuadrant(x, y, z, wq)
 			*g.At(col, row) = Cell{Glyph: glyph, FG: fg, BG: bg}
 		}
@@ -278,12 +282,30 @@ func (br *Renderer) composeHalfBlockInto(g *Grid, f render.Frame) {
 // source column and writes only its own cell, so a call over a disjoint row range
 // writes the same cells the whole-grid pass writes for those rows.
 func (br *Renderer) composeHalfBlockRows(g *Grid, f render.Frame, row0, row1 int) {
+	img, _ := f.Img.(*image.RGBA)
 	for row := row0; row < row1; row++ {
 		for col := range g.Cols {
-			top, bottom := sampleHalfBlock(f.Img, col, row)
+			top, bottom := sampleHalfBlock(img, col, row)
 			*g.At(col, row) = Cell{Glyph: lowerHalfBlock, FG: bottom, BG: top}
 		}
 	}
+}
+
+// rgbaFrame converts a decoder-native image at the block consumer boundary.
+// The live viewer already supplies its downscaled RGBA plane, so the hot path is
+// one type assertion and no copy.
+func rgbaFrame(f render.Frame) render.Frame {
+	if f.Img == nil {
+		return f
+	}
+	if _, ok := f.Img.(*image.RGBA); ok {
+		return f
+	}
+	b := f.Img.Bounds()
+	rgba := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	draw.Draw(rgba, rgba.Bounds(), f.Img, b.Min, draw.Src)
+	f.Img = rgba
+	return f
 }
 
 // sampleHalfBlock reads the two source pixels of cell (col, row) for the half-

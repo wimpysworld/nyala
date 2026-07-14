@@ -62,7 +62,7 @@ the codebase (rendering, input, TUI, config) is engine-agnostic and reusable.
 type Engine interface {
     Navigate(url string) error
     Resize(cols, rows int)            // logical terminal cell size
-    Frames() <-chan Frame             // RGBA bitmap + synced Text
+    Frames() <-chan Frame             // native pixels or direct PNG + synced Text
     SendKey(k Key)
     SendMouse(m MouseEvent)
     Close() error
@@ -75,6 +75,23 @@ bitmap and crisp text on one channel, never two cadences to reconcile. The text 
 sticky state carried across frames, so a static page still composites its overlay. A
 separate text channel may return in Stage 4 for link-hint geometry. See
 `docs/STAGE-3.md`.
+
+`render.Frame.Img` is an `image.Image`, not a forced full-frame RGBA plane. Live
+JPEG therefore crosses the engine/render seam as the decoder's `*image.YCbCr`, and
+pixel consumers convert only where their implementation needs RGBA. PNG keeps the
+PNG decoder's native layout on Block, Sixel, capture, and fallback paths. Every live
+Kitty stream instead requests PNG and carries the owned CDP base64 string in
+`Frame.EncodedPNG`; the Kitty consumer rechunks it as `f=100,t=d,a=T` without base64
+decode, PNG decode, pixel packing, zlib, or base64 encode. A frame queued across a
+backend switch decodes that retained PNG at the new pixel consumer, so switching and
+resize remain safe.
+
+The live format policy follows the consumer. Block requests JPEG quality 90 because
+it needs pixels and its sub-cell sampling plus colour quantisation hide JPEG artefacts.
+Kitty always requests PNG for the direct path. Sixel keeps its decoded adaptive stream:
+PNG while settled, JPEG quality 90 while moving, then PNG again after settle. Diagnostic
+capture still requests and decodes PNG for every backend, so its bundle contract and
+quality gates do not change.
 
 - **Engine #1: `ChromiumEngine` (chromedp).** Frames via `Page.startScreencast`;
   text layer via CDP DOM queries, placed by the snapshot's scroll and folded into
@@ -91,11 +108,12 @@ separate text channel may return in Stage 4 for link-hint geometry. See
 
 ### Rendering pipeline (engine-agnostic)
 
-1. Receive bitmap frames + a positioned text layer from the active `Engine`.
-2. Downsample bitmap to terminal resolution; render block cells, quadrant (2x2) by
-   default with half-block (`▄`) as the floor (the half-block cell sets background =
+1. Receive decoder-native pixels, or a direct Kitty PNG, plus a positioned text
+   layer from the active `Engine`.
+2. Downsample pixel frames to terminal resolution; render block cells, quadrant (2x2)
+   by default with half-block (`▄`) as the floor (the half-block cell sets background =
    top pixel, foreground = bottom pixel, two square pixels per cell). On graphics
-   terminals the Sixel or Kitty backend renders the same bitmap instead.
+   terminals Sixel encodes decoded pixels, while Kitty frames the direct PNG.
 3. Composite the text layer over the bitmap so glyphs render as real Unicode where
    text exists, bitmap elsewhere. This is the primary quality differentiator.
 4. Diff against the previous frame; emit only changed cells.
@@ -113,6 +131,11 @@ character set, and the sampling model.
   This is the explicit CDP-vs-CEF gate: if the Stage 3 spike shows CDP holds sustained
   full-viewport FPS at LoDPI on the target terminals, ship CDP; if it fails, open a CEF
   engine spike behind the existing `Engine` seam.
+- **Frame budget**: a focused 2560x2880 benchmark cut direct Kitty PNG work from
+  51.950 ms to 0.014 ms. A real CDP payload measured 45.985 ms to 0.027 ms. Keeping
+  shared JPEG decoder-native cut 25.446 ms to 10.209 ms, about 15.2 ms saved. The
+  16.67 ms target is one 60 FPS frame. These figures cover Nyala's frame work, not the
+  terminal's PNG decode and draw; sustained real-terminal FPS remains to validate.
 - **Crisp text is the make-or-break feature.** Prototype the text-layer compositing
   first; it separates "readable" from "browsh-grade fuzzy".
 - **Dependency**: a compatible Chromium/Chrome must be installed (via chromedp's
@@ -512,8 +535,8 @@ enhancements gated behind capability detection.
 - Ultraviolet throughput vs bypass? Resolved as an architecture decision: the bitmap never enters the diff. Route every per-frame bitmap byte out-of-band (`tea.Raw` or a direct writer), never through `tea.View`. Ultraviolet diffs only chrome cells (tens per tick), which is cheap; the bitmap goes out-of-band as one Sixel/Kitty payload, so the renderer's large-region speed does not gate the design. Default FPS is 60, hard cap 120 (`tea.WithFPS`). Stage 4 benchmark: confirm chrome-only diffs and the post-repaint re-blit stay within one frame budget on KMSCON.
 - Does KMSCON honour synchronized output (mode 2026) and mode 2027, and tolerate the renderer's cursor-positioning sequences without artefacts? Resolved: the colour half closed in Stage 1; the mode half closes here. KMSCON/libtsm ignores mode 2026 and mode 2027 harmlessly: an unknown DEC private mode hits the parser `default:` branch (debug-log and `continue`), consuming the whole sequence with no grid leak, verified in libtsm v4.4.2 (the version kmscon ships) and main. CUP/HVP, DECSC/DECRC, and SGR truecolour are all supported without artefacts. `DECRQM` (`CSI ?2026$p`) is a stub on KMSCON, so do not probe for 2026 at runtime; assume 2026/2027 absent. Fallback for tear reduction on KMSCON: bracket each frame with cursor hide/show (`CSI ?25l` ... `CSI ?25h`, DECTCEM mode 25), which KMSCON honours, and write each whole frame in one syscall with absolute CUP per row. Send `CSI ?2026h/l` anyway for Kitty/foot/Ghostty, since KMSCON drops it cleanly.
 - On graphics-capable emulators, after writing a Kitty/Sixel image, where does the cursor land, and can Nyala reposition so the next diff does not smear the image? Resolved for Kitty: place with `C=1` (do not move the cursor), then issue an explicit absolute `CSI <row>;<col> H` before the next frame; the default `C=0` position is undefined at screen edges and differs across terminals (kitty vs wezterm), which is what smears a following diff. Position via explicit CUP, not DECSC/DECRC, so it does not fight the Bubble Tea chrome cursor. For Sixel, wrap each frame `ESC 7` (DECSC), `CSI <row>;<col> H`, sixel, `ESC 8` (DECRC). Stage 3 spike: confirm `C=1` is honoured on the shipped wezterm/ghostty; if ignored, the explicit per-frame CUP already covers it.
-- Per-frame Kitty strategy: one fixed image ID with transmit-and-display, or ping-pong double-buffering with explicit deletes? Resolved: reuse one fixed image id `i=` and one placement id `p=`; re-transmit RGBA each frame with `a=t` then re-place with `a=p,C=1` (or fold into `a=T`), wrapped in DEC mode 2026 and written once per frame. A persistent re-place is not possible: the viewport changes every frame, so pixels must be re-sent; `a=p` only redisplays unchanged stored pixels. Same `(i=, p=)` re-placement is the flicker-free swap, and re-transmit to a live id auto-deletes the old image, so no per-frame `a=d` ping-pong is needed. Use `q=2` to suppress all replies in the loop; query with `q=0` only at startup. Stage 3 spike: confirm same-id replace does not blank-flash on ghostty/wezterm (else fall back to two-id place-then-delete), and whether a repeated `a=T` loop leaks images on wezterm (issue #986; if so inject periodic `a=d,d=I,i=`).
-- Best local transmission medium: direct base64 RGBA, zlib RGBA, PNG, or POSIX shared memory? Resolved: default `t=s` (POSIX shared memory, `f=32` raw RGBA), fallback `t=d,f=32,o=z` (direct base64, zlib RGBA, chunked at 4096 with `m=`). Shared memory minimises both CPU and wire bytes (memcpy raw RGBA, escape carries only the object name, no base64 inflation, no per-frame encode); PNG `f=100` has the worst encode CPU; plain base64 has the worst byte count. The `t=d,o=z` fallback is conservative: it needs no shared filesystem and is the only path that works over SSH. Optional middle tier `t=t` (temp file in `/dev/shm`, path containing `tty-graphics-protocol`). Probe order: `t=s` local, `t=t` local, `t=d,o=z` remote. Shared memory is supported on kitty, ghostty, and wezterm; assume `t=d` elsewhere. Stage 3 spike: measure sustained full-viewport FPS and per-frame `shm_open`/mmap cost vs a reused mapped object on each target terminal.
+- Per-frame Kitty strategy: fixed ID or ping-pong IDs? Resolved: alternate two image IDs, transmit-and-put the next image, then delete the previous image. This avoids a blank between frames on Kitty and WezTerm. Use `q=2` to suppress replies in the loop; query with `q=0` only at startup.
+- Best local transmission medium: raw pixels, PNG, or shared memory? Resolved for live CDP frames: request PNG and reuse Chromium's base64 payload as direct Kitty `f=100,t=d,a=T` data. Rechunking the owned payload costs 0.014 ms in the focused 2560x2880 benchmark and avoids Nyala's decode and re-encode. Shared memory would require decoded pixels and an extra transport object, so it is no longer the default. Measure terminal-side PNG decode and draw before adding another Kitty transport.
 - Confirm which Kitty placement modes render on current wezterm and ghostty; unicode placeholders are unsupported in several terminals. Resolved: use classic cursor-anchored placement (`a=T`/`a=p`); it renders on current kitty, ghostty, and the wezterm GUI. Unicode placeholders (`U=1`, `U+10EEEE`) render only on kitty (and Terminal.app) as of mid-2026; ghostty 1.3.1 and iTerm2 do not render them, and wezterm has them only in an unmerged fork (issue #986). Reserve placeholders for kitty-only tmux passthrough. Stage 3 spike: re-test placeholder render status on the exact ghostty and wezterm builds shipped.
 - Cell pixel geometry: query CSI 16t for cell width/height to map the CDP pixel viewport to cells without distortion. Define the fallback when terminals omit it (per-terminal defaults). (Resolved in Stage 1 (see `docs/STAGE-1.md`): resolve via `TIOCGWINSZ`, then `CSI 16t`, then `14t`/`18t`, else default to 8x16 px (aspect 1:2), with a winsize sanity bound rejecting derived cell px outside ~4..32 wide or 8..64 tall.)
 - Will Nyala drive the screencast viewport to terminal resolution (Carbonyl LoDPI) so downsampling is cheap, or downsample full-resolution frames every frame? Resolved: drive the viewport small (LoDPI). Size the emulated viewport and `maxWidth`/`maxHeight` so one captured pixel maps to one sub-cell (2 px per cell half-block, 2x2 quadrant); an 80x24 quadrant grid needs a 160x48 px capture. The engine rasterises at terminal resolution once, avoiding a full-frame downscale in Go on every frame. Evidence: Carbonyl reports LoDPI is about 49x faster than native-resolution renderers. Caveat: tiny viewports change page layout, so treat viewport size as a layout knob and expose a zoom override for sites that break.

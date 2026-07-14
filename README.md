@@ -24,11 +24,11 @@ Three rendering backends sit behind one `Renderer` seam. Swapping backend change
 
 | Backend | Protocol | Fidelity | Notes |
 |---|---|---|---|
-| **Block** | None; plain Unicode glyphs | Universal floor | The mandatory floor. Runs on any TTY, including a bare Linux console under KMSCON with no graphics protocol. Three schemes: quadrant (2x2, the default fallback), sextant (2x3, sharper vertical resolution on terminals that self-draw it), and half-block (1x2). Truecolour where the terminal supports it, with a closed-form xterm-256 fallback. |
-| **Sixel** | Sixel graphics | Higher | Higher-fidelity bitmap than blocks, for terminals that speak Sixel. |
-| **Kitty** | Kitty graphics | Highest | Lossless RGBA, the sharpest path, for terminals that speak the Kitty protocol. |
+| **Block** | None; plain Unicode glyphs | Universal floor | The mandatory floor. Runs on any TTY, including a bare Linux console under KMSCON with no graphics protocol. Three schemes: quadrant (2x2, the default fallback), sextant (2x3, sharper vertical resolution on terminals that self-draw it), and half-block (1x2). Live frames use JPEG quality 90 because block sampling and quantisation hide its artefacts. Truecolour where the terminal supports it, with a closed-form xterm-256 fallback. |
+| **Sixel** | Sixel graphics | Higher | Higher-fidelity bitmap than blocks, for terminals that speak Sixel. It keeps the decoded adaptive PNG/JPEG stream. |
+| **Kitty** | Kitty graphics | Highest | Lossless CDP PNG, passed straight to Kitty framing without an image decode or re-encode. |
 
-Kitty is the reason to run Nyala on a capable terminal: lossless RGBA, the sharpest path. Sixel is the next step down, a high-fidelity bitmap for terminals that speak it. Block is the guarantee Nyala works on any TTY, down to a bare Linux console under KMSCON with no graphics protocol. Its sharpest mode is sextant (2x3), which Nyala uses where the terminal self-draws sextant glyphs; an unknown terminal falls back to quadrant. See [`docs/BLOCK-MODES.md`](docs/BLOCK-MODES.md). Nyala detects what the terminal supports and picks the highest-fidelity backend automatically: Kitty, then Sixel, then Block. Press Tab to cycle the supported backends.
+Kitty is the reason to run Nyala on a capable terminal: every live Kitty stream requests PNG, then rechunks Chromium's base64 PNG for the terminal without decoding or re-encoding it. Sixel is the next step down, a high-fidelity bitmap for terminals that speak it. Block is the guarantee Nyala works on any TTY, down to a bare Linux console under KMSCON with no graphics protocol. Its sharpest mode is sextant (2x3), which Nyala uses where the terminal self-draws sextant glyphs; an unknown terminal falls back to quadrant. See [`docs/BLOCK-MODES.md`](docs/BLOCK-MODES.md). Nyala detects what the terminal supports and picks the highest-fidelity backend automatically: Kitty, then Sixel, then Block. Press Tab to cycle the supported backends. Diagnostic capture still requests and decodes PNG for every backend.
 
 A measurement harness scores each render for quality, cost, and legibility. Run it with `just diagnostics`.
 

@@ -29,6 +29,7 @@ import (
 // sub-cell residue the box paints into a neighbour the overlay never wrote.
 // Paint-order z-ordering (a later run overlaying an earlier one) stays deferred.
 func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
+	img, _ := f.Img.(*image.RGBA)
 	for _, run := range f.Text {
 		row := run.Row
 		if row < 0 || row >= g.Rows {
@@ -55,7 +56,7 @@ func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 					// A wide glyph in the last column would cross the right edge;
 					// write a background space instead of half-emitting it.
 					if !claimed(cell) {
-						bg := cellBGAverage(f.Img, col, row, scheme, run, off, cellCSSW)
+						bg := cellBGAverage(img, col, row, scheme, run, off, cellCSSW)
 						*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: " "}
 					}
 					col++
@@ -68,7 +69,7 @@ func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 					off += 2
 					continue
 				}
-				bg := cellBGAverage(f.Img, col, row, scheme, run, off, cellCSSW)
+				bg := cellBGAverage(img, col, row, scheme, run, off, cellCSSW)
 				*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: cluster}
 				*trailing = Cell{Glyph: trailing.Glyph, FG: run.FG, BG: bg, Wide: true}
 				col += 2
@@ -80,12 +81,12 @@ func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 				off++
 				continue
 			}
-			bg := cellBGAverage(f.Img, col, row, scheme, run, off, cellCSSW)
+			bg := cellBGAverage(img, col, row, scheme, run, off, cellCSSW)
 			*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: cluster}
 			col++
 			off++
 		}
-		recomposeBoundaryCells(g, f.Img, run, scheme, cellCSSW)
+		recomposeBoundaryCells(g, img, run, scheme, cellCSSW)
 	}
 }
 

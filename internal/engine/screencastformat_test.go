@@ -11,8 +11,8 @@ import (
 )
 
 // TestInitialScreencastFormatBackendMatrix pins the backend-format matrix: capture
-// forces PNG on every backend, live block runs JPEG, and live graphics start in PNG
-// (settled). It is a pure read of the backend and capture flag, no goroutine.
+// forces PNG on every backend, live block runs JPEG, Kitty always runs PNG, and live
+// Sixel starts in PNG (settled). It is a pure read of the backend and capture flag.
 func TestInitialScreencastFormatBackendMatrix(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -21,11 +21,12 @@ func TestInitialScreencastFormatBackendMatrix(t *testing.T) {
 		wantFormat page.ScreencastFormat
 		wantQual   int
 	}{
-		{"block", true, page.ScreencastFormatPng, 0},                         // block, capture: PNG
-		{"block", false, page.ScreencastFormatJpeg, movingScreencastQuality}, // block, live: JPEG
-		{"kitty", true, page.ScreencastFormatPng, 0},                         // graphics, capture: PNG
-		{"kitty", false, page.ScreencastFormatPng, 0},                        // graphics, live: PNG (settled start)
-		{"sixel", false, page.ScreencastFormatPng, 0},                        // graphics, live: PNG (settled start)
+		{"block", true, page.ScreencastFormatPng, 0},    // block, capture: PNG
+		{"block", false, page.ScreencastFormatJpeg, 90}, // block, live: JPEG q90
+		{"kitty", true, page.ScreencastFormatPng, 0},    // graphics, capture: PNG
+		{"kitty", false, page.ScreencastFormatPng, 0},   // Kitty, live: fixed PNG
+		{"sixel", true, page.ScreencastFormatPng, 0},    // graphics, capture: PNG
+		{"sixel", false, page.ScreencastFormatPng, 0},   // Sixel, live: PNG (settled start)
 	}
 	for _, c := range cases {
 		e := &ChromiumEngine{backend: c.backend, captureOn: c.capture}
@@ -36,6 +37,32 @@ func TestInitialScreencastFormatBackendMatrix(t *testing.T) {
 		if got.quality != c.wantQual {
 			t.Errorf("backend=%s capture=%v: quality = %d, want %d", c.backend, c.capture, got.quality, c.wantQual)
 		}
+	}
+}
+
+// TestBackendCycleFormatSelection pins the format restartStream re-picks after a
+// backend cycle. A stale adaptive JPEG state must not survive entry into Kitty, and
+// returning to block or Sixel must restore each backend's own policy.
+func TestBackendCycleFormatSelection(t *testing.T) {
+	e := &ChromiumEngine{backend: "sixel"}
+	e.screencastFmt = screencastFmt{format: page.ScreencastFormatJpeg, quality: movingScreencastQuality}
+
+	for _, tc := range []struct {
+		backend string
+		format  page.ScreencastFormat
+		quality int
+	}{
+		{"kitty", page.ScreencastFormatPng, 0},
+		{"block", page.ScreencastFormatJpeg, movingScreencastQuality},
+		{"kitty", page.ScreencastFormatPng, 0},
+		{"sixel", page.ScreencastFormatPng, 0},
+	} {
+		e.backend = tc.backend
+		got := e.initialScreencastFormat()
+		if got.format != tc.format || got.quality != tc.quality {
+			t.Fatalf("backend %s restart format = {%s %d}, want {%s %d}", tc.backend, got.format, got.quality, tc.format, tc.quality)
+		}
+		e.screencastFmt = got
 	}
 }
 
@@ -85,11 +112,11 @@ func waitForFormat(t *testing.T, rec *fmtRecorder, want page.ScreencastFormat) {
 	t.Fatalf("controller never switched to %q (saw %v)", want, rec.list())
 }
 
-// TestScreencastFormatControllerMotionToJPEG proves a graphics-backend live stream
+// TestScreencastFormatControllerMotionToJPEG proves a Sixel live stream
 // flips PNG->JPEG once sustained motion crosses the onset: motionOnsetCount short-gap
 // frames within the window. Timestamps are injected, so the onset needs no real wait.
 func TestScreencastFormatControllerMotionToJPEG(t *testing.T) {
-	e, rec := newFmtTestEngine("kitty", false)
+	e, rec := newFmtTestEngine("sixel", false)
 	ctx := t.Context()
 	motion := make(chan time.Time, 8)
 	go e.runScreencastFormat(ctx, motion)
@@ -101,9 +128,15 @@ func TestScreencastFormatControllerMotionToJPEG(t *testing.T) {
 	motion <- base.Add(100 * time.Millisecond)
 
 	waitForFormat(t, rec, page.ScreencastFormatJpeg)
+	e.mu.Lock()
+	quality := e.screencastFmt.quality
+	e.mu.Unlock()
+	if quality != 90 {
+		t.Fatalf("adaptive JPEG quality = %d, want 90", quality)
+	}
 }
 
-// TestScreencastFormatControllerSettlesToPNG proves that after motion flips the stream
+// TestScreencastFormatControllerSettlesToPNG proves that after motion flips Sixel
 // to JPEG, an idle gap flips it back to PNG (the settled, lossless resting frame). It
 // shrinks the settle idle so the trailing timer fires quickly.
 func TestScreencastFormatControllerSettlesToPNG(t *testing.T) {
@@ -111,7 +144,7 @@ func TestScreencastFormatControllerSettlesToPNG(t *testing.T) {
 	screencastSettleIdle = 20 * time.Millisecond
 	defer func() { screencastSettleIdle = old }()
 
-	e, rec := newFmtTestEngine("kitty", false)
+	e, rec := newFmtTestEngine("sixel", false)
 	ctx := t.Context()
 	motion := make(chan time.Time, 8)
 	go e.runScreencastFormat(ctx, motion)
@@ -124,6 +157,23 @@ func TestScreencastFormatControllerSettlesToPNG(t *testing.T) {
 
 	// No further frames: the settle timer fires and flips back to PNG.
 	waitForFormat(t, rec, page.ScreencastFormatPng)
+}
+
+// TestScreencastFormatControllerKittyMotionStaysPNG proves rapid motion never moves
+// Kitty off direct PNG pass-through.
+func TestScreencastFormatControllerKittyMotionStaysPNG(t *testing.T) {
+	e, rec := newFmtTestEngine("kitty", false)
+	ctx := t.Context()
+	motion := make(chan time.Time, 8)
+	go e.runScreencastFormat(ctx, motion)
+	base := time.Unix(300, 0)
+	for i := range 6 {
+		motion <- base.Add(time.Duration(i) * 30 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := rec.list(); len(got) != 0 {
+		t.Fatalf("Kitty live switched formats %v, want none (fixed PNG)", got)
+	}
 }
 
 // TestScreencastFormatControllerBlockLiveNoSwitch proves the block backend runs no
@@ -161,11 +211,11 @@ func TestScreencastFormatControllerCaptureNoSwitch(t *testing.T) {
 	}
 }
 
-// TestScreencastFormatControllerNoFlipOnSparseFrames proves a graphics-backend stream
+// TestScreencastFormatControllerNoFlipOnSparseFrames proves a Sixel stream
 // does not flip to JPEG on sparse frames (a one-off repaint): with gaps wider than
 // motionShortGap no short gap accrues, so it stays PNG (the hysteresis onset guard).
 func TestScreencastFormatControllerNoFlipOnSparseFrames(t *testing.T) {
-	e, rec := newFmtTestEngine("kitty", false)
+	e, rec := newFmtTestEngine("sixel", false)
 	ctx := t.Context()
 	motion := make(chan time.Time, 8)
 	go e.runScreencastFormat(ctx, motion)

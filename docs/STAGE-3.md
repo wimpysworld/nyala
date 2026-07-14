@@ -30,10 +30,10 @@ test and the binary launch a real Chromium, which CI does not run; both stay beh
 the `live` build tag and the `just live` recipe.
 
 What remains is post-build validation, not new code. The measured spikes feed
-future tuning, not a gate: sustained FPS on KMSCON and the target emulators, the
-`scrollMatchTolerancePx` frame-sync tolerance, the shared-memory transmit cost, and
-the advisory DOM box drift. The CEF fallback stays documented and gated on the FPS
-spike.
+future tuning, not a gate: sustained FPS on KMSCON and the target emulators,
+terminal-side PNG decode and draw latency, the `scrollMatchTolerancePx` frame-sync
+tolerance, and the advisory DOM box drift. The CEF fallback stays documented and
+gated on the FPS spike.
 
 ## Objective and scope
 
@@ -62,8 +62,8 @@ Out of scope, deferred, each with the bar to promote it:
 - **Graphics-backend damage-rectangle (sub-image) emission.** The block path diffs
   the grid and emits only changed cells; the Sixel and Kitty backends still redraw
   the full image per frame. Promote sub-image emission when sustained per-frame
-  terminal write latency exceeds the frame budget at the target FPS (33 ms at 30 FPS
-  as the provisional default), with `bytesPerFrame` as the secondary signal.
+  terminal decode, draw, or write latency exceeds the 16.67 ms target for 60 FPS,
+  with `bytesPerFrame` as the secondary signal.
 - **Remote attach (`NewRemoteAllocator`).** Launch is the only model, because the
   browser-side flags (DSF 1, window size) apply only to a process Nyala starts.
   Promote when a locked-down host needs to drive an already-running browser.
@@ -102,18 +102,17 @@ between the viewer goroutine and the supervisor goroutine.
 ### The screencast ack loop and the latest-wins slot
 
 `screencast.go` implements the listen, decode, ack loop that `chromedp` ships no
-helper for. `startScreencast` starts a JPEG stream capped at the active capture
-size and registers a `ListenTarget` handler. On each `EventScreencastFrame` the
-handler decodes the image and puts it in `frameSlot`, the latest-wins single-frame
-backpressure slot. Chrome withholds frames until acked, so the ack is the
-backpressure: `put` acks the displaced frame when it replaces an unconsumed one,
-and `consume` acks the frame it takes. Every frame is acked exactly once, on
-consume or on replace, and Chrome's production rate couples to the terminal draw
-rate. `frameSlot` is the pure, browser-free core: `put`, `consume`, and `drain`
-take an `ackFunc`, so the ack accounting is assertable without a browser. `drain`
-marks the slot dropped, acks any held frame, and unblocks a parked consumer, so
-`Close` leaves no frame unacked. A corrupt frame is acked and dropped so the
-stream never stalls.
+helper for. `startScreencast` caps the stream at the active capture size and picks
+its format from the consumer. Live Block uses JPEG quality 90. Live Kitty always
+uses PNG. Live Sixel keeps the adaptive settled-PNG, moving-JPEG-quality-90 policy.
+Capture always uses PNG. On each `EventScreencastFrame` the handler puts the payload
+in the bounded receive path and a worker performs any required pixel decode. The
+handler acks every frame on receipt, before decode, so a slow decoder cannot consume
+Chromium's in-flight credit. The live `rawFrameQueue` drops the oldest undecoded
+payload when full, and parallel workers publish only the newest completed sequence.
+Capture keeps the ordered `frameSlot`, because its bounded bundle must count each
+usable frame in order. A corrupt live frame is already acked and can be dropped
+without stalling the stream.
 
 The ack never runs inline on the `ListenTarget` event goroutine. A `chromedp.Run`
 there is the chromedp #920 self-deadlock: the ack command waits for a response that
@@ -330,11 +329,21 @@ is validated after terminal detection and before navigation, so it fails fast wh
 the terminal cannot run it. `NYALA_CAPTURE=n` enables capture: unset or `0` is off,
 `1` writes a first-frame bundle, and a positive `n` draws `n` usable frames, writes
 one `nyala-capture-*` bundle directory, prints the path, then exits. A usable frame
-is one `render.Frame` the engine delivers with a decoded bitmap, so frames the
+is one `render.Frame` the engine delivers with decoded pixels, so frames the
 latest-wins slot drops never count. A full capture exits 0; a partial run (the
 first-draw deadline, the per-frame idle timeout, a forced-backend rejection, or the
 frame channel closing early) writes what it has and exits non-zero. Tab cycling is
 off in capture mode.
+
+The later live frame contract keeps decoded images in their native layout. JPEG
+remains `*image.YCbCr` through the engine/render seam, while PNG keeps the PNG
+decoder's native image when pixels are needed. Block converts to its small RGBA
+sample surface during downscale. Sixel converts at its encoder boundary. Capture
+still forces and decodes PNG, then converts where its raster and bundle paths need
+RGBA, so its usable-frame and completeness gates are unchanged. Every live Kitty
+frame retains the owned CDP base64 PNG in `Frame.EncodedPNG` and sends it directly
+as Kitty `f=100` data. A queued frame decodes that retained PNG if a backend switch
+makes Block or Sixel the consumer before draw.
 
 Two deadlines bound the run, not one total window: a first-draw deadline of 5
 seconds after navigate succeeds, and a per-frame idle deadline of 5 seconds since
@@ -382,13 +391,27 @@ reviews it.
   `Frame.Text` after the sync, so each frame carries the bitmap and its keyed text.
   This drops the two-cadence reconcile from the consumer. A separate text channel
   returns in Stage 4 for link-hint geometry.
-- **Latest-wins slot, ack as backpressure.** Chrome withholds frames until acked, so
-  acking on consume or replace couples its production rate to the draw rate and keeps
-  one current frame, the single gotcha that makes the feature look broken in bug
-  reports.
-- **JPEG screencast at quality 90.** The bitmap downsamples into 2-colour cells, so
-  JPEG loss sits below cell visibility, and the smaller payload suits the moving
-  viewport. PNG stays a diagnostics-only A/B for the damage diff.
+- **Ack on receipt, bounded latest-wins work.** Chrome withholds frames until acked,
+  so the listener releases each frame's credit before decode. The live queue drops
+  stale undecoded work and the collector rejects stale completed sequences. Capture
+  keeps an ordered slot for deterministic bundles.
+- **Backend-specific screencast formats.** Block uses JPEG quality 90 because it
+  needs pixels and its sub-cell downsample plus colour quantisation hide JPEG
+  artefacts. Kitty always requests PNG and passes Chromium's owned base64 payload
+  straight to Kitty framing, with no image decode or re-encode. Sixel keeps its
+  decoded adaptive PNG/JPEG-quality-90 policy. Capture remains lossless PNG for all
+  backends.
+- **Decoder-native frame seam.** `render.Frame.Img` is `image.Image`. JPEG stays
+  `*image.YCbCr`, PNG keeps its decoder-native layout, and RGBA conversion happens
+  only at a consumer that requires it. `Frame.EncodedPNG` carries the direct Kitty
+  alternative.
+- **Direct-frame benchmark.** The focused benchmark uses one tiled 2560x2880 source,
+  ten iterations per sample, and the median of five samples. Direct Kitty PNG fell
+  from 51.950 ms to 0.014 ms. Shared JPEG fell from 25.446 ms to 10.209 ms, saving
+  about 15.2 ms. A separate real-CDP-payload benchmark measured Kitty PNG at
+  45.985 ms to 0.027 ms. The PNG terminal payload was 1.68 MB against about 3.25 MB
+  for JPEG quality 90 sent through the decoded Kitty encoder. The frame target is
+  16.67 ms. These measurements stop before the terminal decodes and draws the PNG.
 - **Snapshot off paint, not per frame or on a timer.** The first snapshot fires off
   the `firstContentfulPaint` latch, decoupled from screencast frames, then re-runs on
   navigation, resize, a scroll-offset change (a ~150 ms mid-scroll cadence plus a
@@ -470,14 +493,17 @@ reviews it.
   spike tunes both.
 - **Live-browser CI flakiness.** Resolved. The pure cores keep `just test` and CI
   browser-free; the live test sits behind `//go:build live` and `just live`, off CI.
-- **Sustained FPS and the CEF fallback.** Carried forward as accepted. FPS on KMSCON
-  and the emulators is post-build measurement; CEF stays the documented fallback gated
-  on that number.
-- **Damage-rect escalation threshold, shm transmit cost, advisory DOM box drift.**
-  Carried forward as accepted measurements that feed future tuning: the damage-rect
-  gate on per-frame write latency (33 ms at 30 FPS provisional), the per-frame
-  `shm_open`/mmap cost against a reused mapping, and the sub-cell box jitter past the
-  clip rule.
+- **Sustained FPS and the CEF fallback.** Carried forward as accepted. Measure real
+  sustained output FPS on KMSCON, Kitty, WezTerm, and Sixel terminals. CEF stays the
+  documented fallback gated on that number.
+- **Terminal PNG cost and graphics follow-ups.** Measure terminal-side PNG decode and
+  draw latency separately from Nyala's 0.014-0.027 ms framing cost. Keep the 16.67 ms
+  target. Sixel still needs cached-palette and dirty-band work. Kitty needs no JPEG
+  live path today; retain the decoded JPEG encoder only as a measured fallback if a
+  future adaptive Kitty mode beats direct PNG end to end.
+- **Damage-rect escalation threshold and advisory DOM box drift.** Carried forward as
+  accepted measurements that feed future tuning: the damage-rect gate on per-frame
+  terminal latency and the sub-cell box jitter past the clip rule.
 
 ## Monospace block render (post-Stage-3 fix)
 

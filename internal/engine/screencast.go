@@ -25,7 +25,8 @@ func msSince(start time.Time) float64 {
 // listener goroutine and hands to compose. It carries no ack id: the frame was
 // already acked on receive (handleScreencastFrame), before decode.
 type pendingFrame struct {
-	img      *image.RGBA                   // decoded bitmap in RGBA channel order
+	img      image.Image                   // decoded bitmap in its decoder-native layout
+	png      string                        // owned base64 PNG for direct live Kitty transmission
 	meta     *page.ScreencastFrameMetadata // scroll offset and page scale for the sync
 	bytes    int                           // screencast payload byte size, for capture stats
 	decodeMS float64                       // wall-clock decode time in ms, set under capture only
@@ -239,7 +240,7 @@ type screencastFmt struct {
 const motionShortGap = 200 * time.Millisecond
 
 // motionOnsetCount is how many short-gap frames within motionOnsetWindow flip a
-// graphics-backend stream from PNG (settled) to JPEG (moving). It is above one so a
+// Sixel stream from PNG (settled) to JPEG (moving). It is above one so a
 // single one-off repaint does not flip the format, but low so brief sustained motion
 // still gets the fast JPEG decode.
 const motionOnsetCount = 2
@@ -250,7 +251,7 @@ const motionOnsetCount = 2
 const motionOnsetWindow = 600 * time.Millisecond
 
 // screencastSettleIdle is how long the stream must be silent (no new frame) before a
-// graphics-backend stream flips back from JPEG (moving) to PNG (settled), so the
+// Sixel stream flips back from JPEG (moving) to PNG (settled), so the
 // resting frame is lossless. It is the trailing hysteresis: each moving frame re-arms
 // it, so the format flips back only once the motion truly stops. It is a var, not a
 // const, so a test shrinks it to fire quickly; production reads the 400 ms default.
@@ -290,9 +291,10 @@ func (e *ChromiumEngine) startScreencast(ctx context.Context, capW, capH int) er
 // active backend and the capture flag, read under e.mu. Capture forces PNG for a
 // byte-exact corpus. Live block runs JPEG for its whole stream, since the block
 // backend's sub-cell downsample washes out JPEG artefacts and a static page under
-// JPEG is deterministic. Live graphics start in PNG (settled); the adaptive
-// controller flips them to JPEG on motion. startSession and restartStream set
-// e.screencastFmt from this, so a Tab between backends re-picks the format.
+// JPEG is deterministic. Live Kitty always uses PNG so every frame can pass directly
+// to the terminal. Live Sixel starts in PNG (settled) and keeps its adaptive JPEG
+// motion policy. startSession and restartStream set e.screencastFmt from this, so a
+// Tab between backends re-picks the format.
 func (e *ChromiumEngine) initialScreencastFormat() screencastFmt {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -305,14 +307,13 @@ func (e *ChromiumEngine) initialScreencastFormat() screencastFmt {
 	return screencastFmt{format: page.ScreencastFormatPng}
 }
 
-// graphicsBackendLive reports whether the adaptive format controller should run its
-// state machine now: a live (non-capture) graphics backend. The block backend runs a
-// fixed live JPEG stream and takes no switching, and capture forces PNG, so both read
-// false. It takes e.mu because the backend changes on a Tab.
-func (e *ChromiumEngine) graphicsBackendLive() bool {
+// adaptiveSixelLive reports whether the adaptive format controller should run its
+// state machine now. Block stays JPEG, Kitty stays PNG, and capture stays PNG. It
+// takes e.mu because the backend changes on a Tab.
+func (e *ChromiumEngine) adaptiveSixelLive() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return !e.captureOn && e.backend != "block"
+	return !e.captureOn && e.backend == "sixel"
 }
 
 // currentScreencastPNG reports whether the active screencast format is PNG (settled),
@@ -364,15 +365,15 @@ func (e *ChromiumEngine) pokeMotion(now time.Time) {
 	}
 }
 
-// runScreencastFormat is the adaptive-format controller for the graphics backends: it
-// flips the live screencast between PNG (settled, crisp static) and JPEG (moving, fast
-// decode) from the frame-arrival rate. It runs per session on its own goroutine, off
+// runScreencastFormat is the adaptive-format controller for Sixel. It flips the live
+// Sixel screencast between PNG (settled) and JPEG (moving) from the frame-arrival
+// rate. It runs per session on its own goroutine, off
 // the ListenTarget receiver goroutine, so its stop/start chromedp.Run is #920-safe. It
 // derives the current state from the actual screencast format (currentScreencastPNG),
 // so a restartStream that re-picks the format keeps it in sync with no separate state
-// to reconcile. It acts only when graphicsBackendLive: on the block backend (fixed
-// live JPEG) and under capture (fixed PNG) it clears its motion tracking and switches
-// nothing, so a Tab to block and back is handled by restartStream's format pick alone.
+// to reconcile. It acts only when adaptiveSixelLive: block uses fixed live JPEG,
+// Kitty uses fixed live PNG, and capture uses fixed PNG. In those modes it clears its
+// motion tracking and switches nothing, so restartStream's format pick handles Tabs.
 // From SETTLED it flips to JPEG once motionOnsetCount short-gap frames land within
 // motionOnsetWindow (so a lone repaint does not flip it); from MOVING it flips back to
 // PNG once no frame has arrived for screencastSettleIdle (the trailing hysteresis, each
@@ -398,9 +399,9 @@ func (e *ChromiumEngine) runScreencastFormat(ctx context.Context, motion <-chan 
 		case <-ctx.Done():
 			return
 		case now := <-motion:
-			if !e.graphicsBackendLive() {
-				// Block (fixed JPEG) or capture (fixed PNG): no switching. Clear the motion
-				// tracking so a later graphics phase starts clean, and disarm the settle timer.
+			if !e.adaptiveSixelLive() {
+				// Fixed-format mode: no switching. Clear the motion
+				// tracking so a later Sixel phase starts clean, and disarm the settle timer.
 				shortGaps = shortGaps[:0]
 				lastArrival = time.Time{}
 				settleC = nil
@@ -433,7 +434,7 @@ func (e *ChromiumEngine) runScreencastFormat(ctx context.Context, motion <-chan 
 			}
 		case <-settleC:
 			settleC = nil
-			if e.graphicsBackendLive() && !e.currentScreencastPNG() {
+			if e.adaptiveSixelLive() && !e.currentScreencastPNG() {
 				// MOVING -> SETTLED: the motion stopped, so restore the lossless PNG.
 				shortGaps = shortGaps[:0]
 				lastArrival = time.Time{}
@@ -1009,9 +1010,6 @@ func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, fram
 	timer := e.timing
 	decode := e.decode
 	e.mu.Unlock()
-	if decode == nil {
-		decode = decodeScreencastImage
-	}
 	// timeDecode gates the worker decode-clock read. It is on under capture (for the
 	// per-frame decodeMS the bundle records) or when the ingest counter is armed (for
 	// the NYALA_FPS_TIMING decode budget). Off both, the decode is not timed, so an
@@ -1062,7 +1060,14 @@ func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, fram
 			if timeDecode {
 				start = time.Now()
 			}
-			img, derr := decode(raw.data)
+			var img image.Image
+			var derr error
+			switch {
+			case decode != nil:
+				img, derr = decode(raw.data)
+			default:
+				img, derr = decodeScreencastNative(raw.data)
+			}
 			if derr != nil {
 				continue
 			}
@@ -1232,7 +1237,7 @@ func (e *ChromiumEngine) composeFrame(pending pendingFrame, ts *textSync, lastCo
 	if lastComposed != nil {
 		*lastComposed = composed
 	}
-	frame := render.Frame{Img: pending.img, Text: composed}
+	frame := render.Frame{Img: pending.img, EncodedPNG: pending.png, Text: composed}
 	if e.captureOn {
 		frame.Stats = &render.FrameStats{
 			ScreencastPayloadBytes: int64(pending.bytes),
@@ -1370,6 +1375,15 @@ func screencastMeta(meta *page.ScreencastFrameMetadata) *render.ScreencastMeta {
 // to a graphics backend lands on the right format on the restart, and holds
 // screencastCtl across the stop/start so it never races an adaptive format switch.
 func (e *ChromiumEngine) restartStream() error {
+	e.screencastCtl.Lock()
+	defer e.screencastCtl.Unlock()
+	return e.restartStreamLocked()
+}
+
+// restartStreamLocked performs restartStream while the caller holds screencastCtl.
+// SetBackend uses it so a backend change and its format reset are atomic against the
+// adaptive Sixel controller.
+func (e *ChromiumEngine) restartStreamLocked() error {
 	e.mu.Lock()
 	ctx := e.ctx
 	streaming := e.streamingLocked()
@@ -1395,11 +1409,9 @@ func (e *ChromiumEngine) restartStream() error {
 		default:
 		}
 	}
-	// Re-pick the format for the current backend, so a Tab between block (live JPEG)
-	// and a graphics backend (PNG settled) restarts in the right format.
+	// Re-pick the format for the current backend, so a Tab between block (live JPEG),
+	// Kitty (live PNG), and Sixel (PNG settled) restarts in the right format.
 	fmtSel := e.initialScreencastFormat()
-	e.screencastCtl.Lock()
-	defer e.screencastCtl.Unlock()
 	e.mu.Lock()
 	e.screencastFmt = fmtSel
 	e.mu.Unlock()

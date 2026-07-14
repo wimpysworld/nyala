@@ -2,11 +2,15 @@ package viewer
 
 import (
 	"bytes"
+	"encoding/base64"
 	"image"
 	"image/color"
+	"image/draw"
+	"image/png"
 	"strings"
 	"testing"
 
+	"github.com/wimpysworld/nyala/internal/capture"
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
@@ -70,6 +74,15 @@ func renderKittyFrame(t *testing.T, s *State, img *image.RGBA) []string {
 		t.Fatalf("render kitty frame: %v", err)
 	}
 	return kittyCommands(buf.String())
+}
+
+func encodedPNG(t *testing.T, img image.Image) string {
+	t.Helper()
+	var raw bytes.Buffer
+	if err := png.Encode(&raw, img); err != nil {
+		t.Fatalf("encode PNG: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(raw.Bytes())
 }
 
 // assertTransmit fails unless cmd is a transmit-and-place (a=T) under the given
@@ -149,6 +162,140 @@ func TestKittyDoubleBufferResize(t *testing.T) {
 	assertDelete(t, f2[1], "1")
 	if !hasOpt(f2[0], "s=32") || !hasOpt(f2[0], "v=24") {
 		t.Fatalf("post-resize transmit %q missing new dimensions s=32,v=24", f2[0])
+	}
+}
+
+func TestKittyDirectPNGUsesRawPayloadAndIDs(t *testing.T) {
+	s := NewState(8, 4, 16, 16)
+	s.Backend = BackendKitty
+	data := encodedPNG(t, solidImageSize(8, 8, color.RGBA{R: 0x31, G: 0x72, B: 0xb4, A: 0xff}))
+
+	var first bytes.Buffer
+	if err := s.RenderStreamFrame(render.Frame{EncodedPNG: data}, &first); err != nil {
+		t.Fatalf("render direct PNG: %v", err)
+	}
+	cmds := kittyCommands(first.String())
+	if len(cmds) != 1 {
+		t.Fatalf("first direct PNG emitted %d commands, want 1", len(cmds))
+	}
+	for _, opt := range []string{"f=100", "t=d", "a=T", "q=2", "i=1"} {
+		if !hasOpt(cmds[0], opt) {
+			t.Errorf("direct PNG command %q missing %s", cmds[0], opt)
+		}
+	}
+	_, body, ok := strings.Cut(strings.TrimSuffix(strings.TrimPrefix(first.String(), "\x1b_G"), "\x1b\\"), ";")
+	if !ok || body != data {
+		t.Fatal("direct PNG terminal body differs from retained CDP payload")
+	}
+
+	s.Resize(16, 8)
+	var second bytes.Buffer
+	if err := s.RenderStreamFrame(render.Frame{EncodedPNG: data}, &second); err != nil {
+		t.Fatalf("render direct PNG after resize: %v", err)
+	}
+	cmds = kittyCommands(second.String())
+	if len(cmds) != 2 {
+		t.Fatalf("second direct PNG emitted %d commands, want transmit and delete", len(cmds))
+	}
+	assertTransmit(t, cmds[0], "2")
+	assertDelete(t, cmds[1], "1")
+}
+
+func TestRetainedPNGFallsBackAfterBackendSwitch(t *testing.T) {
+	s := NewState(8, 4, 16, 16)
+	s.Backend = BackendSixel
+	data := encodedPNG(t, solidImageSize(8, 8, color.RGBA{G: 0xff, A: 0xff}))
+	var out bytes.Buffer
+	if err := s.RenderStreamFrame(render.Frame{EncodedPNG: data}, &out); err != nil {
+		t.Fatalf("render retained PNG through Sixel: %v", err)
+	}
+	if !strings.HasPrefix(out.String(), "\x1bPq") || !strings.HasSuffix(out.String(), "\x1b\\") {
+		t.Fatalf("fallback output is not a framed Sixel image")
+	}
+}
+
+func TestRetainedPNGBlockFallbackMatchesDecodedPath(t *testing.T) {
+	img := solidImageSize(16, 16, color.RGBA{R: 0x21, G: 0x84, B: 0xc6, A: 0xff})
+	data := encodedPNG(t, img)
+	rawState := NewState(8, 4, 16, 16)
+	rawState.Backend = BackendBlock
+	var rawOut bytes.Buffer
+	if err := rawState.RenderStreamFrame(render.Frame{EncodedPNG: data}, &rawOut); err != nil {
+		t.Fatalf("render retained PNG through Block: %v", err)
+	}
+
+	decodedState := NewState(8, 4, 16, 16)
+	decodedState.Backend = BackendBlock
+	var decodedOut bytes.Buffer
+	if err := decodedState.RenderStreamFrame(render.Frame{Img: img}, &decodedOut); err != nil {
+		t.Fatalf("render decoded PNG through Block: %v", err)
+	}
+	if !bytes.Equal(rawOut.Bytes(), decodedOut.Bytes()) {
+		t.Fatal("retained PNG Block fallback differs from decoded pixel path")
+	}
+}
+
+func TestInvalidDirectPNGFallsBackToDecodedPixels(t *testing.T) {
+	s := NewState(8, 4, 16, 16)
+	s.Backend = BackendKitty
+	img := solidImageSize(8, 8, color.RGBA{R: 0xff, A: 0xff})
+	var out bytes.Buffer
+	if err := s.RenderStreamFrame(render.Frame{Img: img, EncodedPNG: "not-a-png"}, &out); err != nil {
+		t.Fatalf("render fallback pixels: %v", err)
+	}
+	cmds := kittyCommands(out.String())
+	if len(cmds) != 1 || !hasOpt(cmds[0], "f=24") {
+		t.Fatalf("fallback command = %v, want decoded f=24 transmit", cmds)
+	}
+}
+
+func TestNativeJPEGGraphicsOutputMatchesRGBAPath(t *testing.T) {
+	yc := image.NewYCbCr(image.Rect(0, 0, 16, 16), image.YCbCrSubsampleRatio420)
+	for i := range yc.Y {
+		yc.Y[i] = byte(i*17 + 31)
+	}
+	for i := range yc.Cb {
+		yc.Cb[i] = byte(i*11 + 73)
+		yc.Cr[i] = byte(i*7 + 149)
+	}
+	rgba := image.NewRGBA(yc.Bounds())
+	draw.Draw(rgba, rgba.Bounds(), yc, yc.Bounds().Min, draw.Src)
+
+	for _, backend := range []Backend{BackendKitty, BackendSixel} {
+		nativeState := NewState(8, 4, 16, 16)
+		nativeState.Backend = backend
+		var native bytes.Buffer
+		if err := nativeState.RenderStreamFrame(render.Frame{Img: yc}, &native); err != nil {
+			t.Fatalf("backend %d native render: %v", backend, err)
+		}
+
+		rgbaState := NewState(8, 4, 16, 16)
+		rgbaState.Backend = backend
+		var prior bytes.Buffer
+		if err := rgbaState.RenderStreamFrame(render.Frame{Img: rgba}, &prior); err != nil {
+			t.Fatalf("backend %d RGBA render: %v", backend, err)
+		}
+		if backend == BackendKitty {
+			if !bytes.Equal(native.Bytes(), prior.Bytes()) {
+				t.Errorf("Kitty native JPEG output differs from prior RGBA path")
+			}
+			continue
+		}
+		nativeImg, err := capture.DecodeSixel(native.Bytes())
+		if err != nil {
+			t.Fatalf("decode native Sixel: %v", err)
+		}
+		priorImg, err := capture.DecodeSixel(prior.Bytes())
+		if err != nil {
+			t.Fatalf("decode prior Sixel: %v", err)
+		}
+		for y := nativeImg.Bounds().Min.Y; y < nativeImg.Bounds().Max.Y; y++ {
+			for x := nativeImg.Bounds().Min.X; x < nativeImg.Bounds().Max.X; x++ {
+				if nativeImg.RGBAAt(x, y) != priorImg.RGBAAt(x, y) {
+					t.Fatalf("Sixel native JPEG pixel (%d,%d) differs from prior RGBA path", x, y)
+				}
+			}
+		}
 	}
 }
 

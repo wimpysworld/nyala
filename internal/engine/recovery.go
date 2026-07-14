@@ -94,7 +94,8 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 		motion = make(chan time.Time, 8)
 	}
 	// Pick the initial screencast format from the backend and capture flag before the
-	// first start: capture PNG, live block JPEG, live graphics PNG (settled).
+	// first start: capture PNG, live block JPEG, live Kitty PNG, and live Sixel PNG
+	// (settled).
 	fmtSel := e.initialScreencastFormat()
 	e.mu.Lock()
 	e.slot = slot

@@ -194,9 +194,10 @@ browsh render blocks with cell diffing**; only brow6el (Sixel + Kitty) and casty
   until a `1/fps` deadline and renders once, blocking at 0% CPU when idle
   (`render_thread.rs`, `frame_sync.rs`). Nyala's `drainFrames` already does the
   coalescing half.
-- **Lossless, not lossy, frames.** Carbonyl requests PNG so JPEG ringing does not
-  create phantom cell changes that defeat a frame diff. Nyala's screencast is JPEG
-  q90 today (Theme 7); switch it to PNG before relying on bitmap diffing.
+- **Lossless where pixels must stay exact.** Carbonyl requests PNG so JPEG ringing
+  does not create phantom cell changes that defeat a frame diff. Nyala now uses PNG
+  for Kitty, settled Sixel, and every capture. Block uses JPEG quality 90 because its
+  quantised output does not preserve source pixels for a lossless diff.
 - **Kitty specifics from brow6el:** double-buffered alternating image IDs for
   flicker-free swap, `f=24` RGB to drop alpha (~25% fewer bytes), 16 KB chunks,
   `z=-1` to layer the page under terminal text, `Z_BEST_SPEED` zlib.
@@ -227,48 +228,37 @@ graphics wins:
 
 ### Theme 7 - Screencast image format
 
-Nyala requests **JPEG q90** today: `page.StartScreencast().WithFormat(page.ScreencastFormatJpeg).WithQuality(screencastQuality)`
-(`internal/engine/screencast.go:197-201`, `screencastQuality = 90` in
-`internal/engine/frame.go:16`), and records that format into the capture bundle
-(`internal/engine/capture_record.go:371`). The pinned cdproto enum exposes only
-`Jpeg` and `Png`; the current DevTools protocol also allows `webp`, but cdproto has
-no constant for it.
+The wire format now follows the backend. Live Block requests JPEG quality 90. The
+block path needs pixels, and its sub-cell downsample plus colour quantisation hide
+JPEG artefacts. Live Kitty always requests PNG and passes Chromium's owned base64
+payload straight to Kitty `f=100,t=d,a=T` framing. Live Sixel keeps the existing
+adaptive policy: decoded PNG while settled, decoded JPEG quality 90 while moving,
+then PNG after settle. Diagnostic capture remains lossless PNG on every backend.
 
-The existing q90 rationale (`frame.go:13-16`) is about display fidelity after the
-2-colour downsample, not about frame-to-frame diff stability, so it does not cover
-the planned damage-diff (recommendation 10).
+The frame seam no longer expands every decode to a full RGBA plane. `Frame.Img` is
+`image.Image`: JPEG stays as the decoder's `*image.YCbCr`, and PNG keeps its native
+decoder layout. Block converts while producing its small RGBA sample surface. Sixel
+converts at the encoder boundary. Capture converts where its raster and bundle paths
+require RGBA. Live Kitty carries no decoded image on the direct path; `EncodedPNG`
+holds the CDP string. A backend switch decodes that retained PNG if the queued frame
+reaches Block or Sixel.
 
-Diff-safety analysis:
-- Truly static regions do **not** flip frame to frame under JPEG. Chromium encodes
-  each frame as a fresh full-frame baseline JPEG with no inter-frame prediction, and
-  libjpeg is deterministic, so unchanged source pixels decode identically. A naive
-  cell diff sees nothing on a static page.
-- The real cost is a damage halo: JPEG's unit is the 16x16 MCU (4:2:0). A Nyala cell
-  is smaller than an MCU, so a change in one cell shifts the whole MCU's decode and
-  the diff false-positives a ~16px halo. Over-reporting damage is safe, just wasteful.
-- The correctness risk is gradient cells near the 2-colour threshold: q90 banding can
-  nudge a boundary cell across the quantisation split when a nearby region changes,
-  flipping its drawn colour. A per-cell tolerance cannot cleanly catch a quantised
-  flip and would also mask real single-level changes.
+The focused benchmark tiled the same source to 2560x2880, ran ten iterations per
+sample, and reports the median of five samples. The real-CDP benchmark used one
+2560x2880 Chromium screencast payload. Timings cover Nyala's frame processing and
+Kitty framing only. They stop before the terminal decodes or draws the image.
 
-Recommendation: **switch the screencast to PNG lossless.** It gives an exact,
-tolerance-free cell diff (identical source -> identical bytes, no MCU halo, no
-gradient flips), and Nyala's flat UI content compresses well, so the higher PNG
-encode cost is acceptable for a TTY, non-60fps target. This is a quick, standalone
-change that also removes lossy artefacts from the drawn bitmap now. Fallback if PNG
-encode latency proves too high at video rate: keep JPEG but dilate damage by one MCU
-rather than using a per-cell colour tolerance.
+| Path | Before | After | Result |
+|---|---:|---:|---|
+| Focused Kitty PNG | 51.950 ms | 0.014 ms | Decode and re-encode removed |
+| Real CDP Kitty PNG | 45.985 ms | 0.027 ms | Direct payload framing |
+| Focused shared JPEG | 25.446 ms | 10.209 ms | 15.237 ms saved |
+| Kitty terminal bytes | JPEG q90: about 3.25 MB | PNG: 1.68 MB | PNG was smaller for this page |
 
-Status: PNG shipped (Tier 1 batch, recommendation 4b). MEASURED (aquarium, 100 frames,
-photographic full-motion): PNG cost ~1.0-1.6 MB per frame and 14-23 ms per frame to
-decode (203 MB for 100 frames), the worst case this recommendation flagged (flat UI
-compresses well, photographic does not). On a full-motion page every frame is fully
-dirty, so the damage-diff (recommendation 10) yields nothing and PNG only adds cost.
-So PNG stays the right default for typical and idle pages, but motion pages want
-adaptive quality (JPEG while moving, PNG when settled) - recommendation 15. Throughput
-on this page was ~7 usable frames/s; nyala's own per-frame CPU (~14-23 ms decode plus
-~3 ms compose plus ~0.4 ms write) is small against the ~140 ms/frame budget, so
-Chromium's software WebGL render plus PNG encode set the limit here, not nyala.
+The target is 16.67 ms per frame for 60 FPS. Direct PNG clears Nyala's side of that
+budget, and decoder-native JPEG saves about 15.2 ms. The next measurement must cover
+terminal-side PNG decode and draw latency plus sustained real-terminal FPS. A smaller
+Nyala framing number does not prove a higher terminal frame rate.
 
 ---
 
@@ -344,11 +334,9 @@ landed, unmarked items are open.
    (spawn-return, screencast-start, first-frame, first-text). `NYALA_DEBUG_TIMING`
    plus the `just debug-run` recipe and the capture bundle's `load_timings`. Impact
    medium (enables the rest), effort low.
-4b. **[DONE - 67936b1]** **Switch the screencast to PNG lossless**
-   (`internal/engine/screencast.go:197-201`, drop `WithQuality`, update
-   `capture_record.go:371` and the `frame.go` rationale). Removes lossy artefacts now
-   and makes the future damage-diff exact (feeds 10). Impact 6, effort low. See
-   Theme 7.
+4b. **[DONE - 67936b1]** **Add the lossless PNG screencast path.** PNG remains the
+   capture format, the settled Sixel format, and the direct Kitty format. The later
+   backend policy keeps JPEG quality 90 for Block and moving Sixel frames. See Theme 7.
 
 Also landed on the load-time theme, beyond the ranked list:
 - **[DONE - 8d288d5]** Publish the overlay at first paint with near-calibrated text,
@@ -423,8 +411,12 @@ Also landed on the load-time theme, beyond the ranked list:
    damage/dirty-rect gives little on full motion (the whole frame changes each tick).
    Cumulative aquarium arc this session, all lossless and no downscale: 4.5 (stdlib zlib)
    -> 5.8 (klauspost) -> 8.5 fps (pipeline).
-   REMAINING: Kitty-through-multiplexer (virtual placement
-   `U=1` plus passthrough, gated off today). Impact 8, effort medium.
+   [DONE - current] Live Kitty now bypasses this decoded `f=24` path: every Kitty
+   stream requests PNG and rechunks the CDP base64 payload as `f=100`. Keep the
+   decoded encoder for explicit fallback and tests. REMAINING: measure terminal PNG
+   decode and draw latency, sustained Kitty FPS, and Kitty-through-multiplexer
+   placement. Reconsider JPEG Kitty only if an end-to-end terminal benchmark beats
+   direct PNG. Impact 8, effort medium.
 6. **Sixel cached palette + dirty-band diffing.** Vendor and extend the charmbracelet
    encoder: hold the quantised palette, `memcmp` 6-px bands (or reuse scroll/CDP
    dirty info), re-emit only changed bands via cursor positioning. Removes the
@@ -443,22 +435,20 @@ Also landed on the load-time theme, beyond the ranked list:
    `utf8.AppendRune`). `BenchmarkGridDiff` on a full-motion 120x40 truecolour grid:
    14440 -> 40 allocs/op, 230861 -> 678 B/op, ~3.3x faster; output byte-identical
    (golden track green). Impact 6, effort low.
-15. **Adaptive screencast quality.** Request lossy (JPEG) while the page is in motion
+15. **[DONE - backend-specific] Adaptive screencast quality.** Request lossy (JPEG)
+    while the page is in motion
     and a lossless (PNG) refinement when it settles - casty's model. The aquarium
     capture measured PNG at ~1.6 MB and 14-23 ms/frame on photographic full-motion
     content, where the damage-diff gives nothing; PNG stays best for typical and idle
     pages. MEASURED again (bbc, kitty, live): `in_decode_mean_ms ~34`, over the 16.6 ms
     60fps budget, so PNG decode was the ingest ceiling once the paint wall (5) cleared.
-    [DONE - staged] Landed backend-aware, refined by the owner: the block backend is the
-    big artefact creator (sub-cell downsample plus 2-colour quantisation), so block-live
-    uses JPEG q80 always with no state machine and the artefacts wash out; graphics
-    backends (kitty, sixel) run the SETTLED(PNG)/MOVING(JPEG) machine so a static page
-    stays crisp and motion hides the artefacts. Capture forces PNG on every backend, so
-    the corpus stays byte-identical. Onset: 2 short-gap (<200 ms) frames within 600 ms;
-    settle: 400 ms idle; the switch runs off the receiver goroutine (#920), keeps the
-    per-session listener, and preserves the ack-decouple/off-goroutine-decode/watchdog.
-    Headless probe: block JPEG decode **3.63 ms** against ~34 ms PNG. Pairs with 4b and
-    10. Impact 6 (motion pages), effort medium. See Theme 7.
+    The final policy is consumer-specific. Block uses JPEG quality 90 without a state
+    machine. Sixel runs the SETTLED(PNG)/MOVING(JPEG-quality-90) machine, so static
+    pages stay crisp and motion avoids the full PNG cost. Kitty is excluded from the
+    state machine and always requests PNG for zero-decode direct framing. Capture
+    forces PNG on every backend, so the corpus stays byte-identical. Onset is two
+    short-gap (<200 ms) frames within 600 ms; settle is 400 ms idle. Impact 6 (motion
+    pages), effort medium. See Theme 7.
 
 ### Tier 3 - larger and strategic
 
@@ -544,15 +534,11 @@ bytes, so the next lever is downscale-in-motion (cuts encode, decode, and write 
 
 ### Idea 2 - PNG/JPEG hybrid screencast
 
-The backend is PNG-only today (67936b1, recommendation 4b). The hybrid holds water, but
-only as a motion-triggered switch. This is recommendation 15. Its payoff lands on the
-fast content that idea 1 unlocks.
-
-Data point: the aquarium PNG decode cost 14-23 ms per frame (Theme 7), over the 16.6 ms
-budget for 60 fps. So the ingest side needs JPEG-while-moving to approach 60 fps, not
-only lossless PNG. On static and text pages, PNG stays best (compresses well, exact
-future cell diff for recommendation 10). Sequence idea 2 after idea 1, so the
-measurement proves PNG encode and transport is the next wall before building the switch.
+Built for the pixel consumers. Block uses JPEG quality 90. Sixel switches to JPEG
+quality 90 in motion and back to PNG after settle. Kitty always stays PNG because it
+passes the CDP payload to the terminal without a Nyala decode. The remaining question
+is end-to-end: measure whether terminal PNG decode and draw stays inside 16.67 ms, and
+only restore a JPEG Kitty path if that measurement beats direct PNG.
 
 ### Audio (moved)
 
@@ -623,10 +609,11 @@ the real ceiling and see which wall is next.
 
 1. [DONE] Idea 1 (GPU accel: `--enable-gpu` plus the flake driver path). Owner verified
    hardware WebGL and aquarium 26 -> 60 fps.
-2. [DONE] JPEG-in-motion (recommendation 15) landed before idea 1, so ingest already
-   tracked 60 fps once the browser rendered it. Idea 2 is that switch.
-3. NEXT: paint is the wall (Out ~24 against In 60). Downscale the graphics bitmap in
-   motion to cut encode, decode, and write together toward 60 fps on screen.
+2. [DONE] JPEG-in-motion (recommendation 15) is active for Sixel. Block stays JPEG
+   quality 90. Kitty stays direct PNG.
+3. NEXT: measure sustained terminal FPS and split Kitty terminal PNG decode/draw from
+   Nyala framing. Then address Sixel quantisation and dirty bands. Downscale graphics
+   in motion only after those measurements.
 
 ---
 
@@ -1121,9 +1108,9 @@ not motion-only. That is a separate, unbuilt item.
 
 ## Open questions
 
-- RESOLVED: the screencast is JPEG q90 (`internal/engine/screencast.go:197-201`).
-  Switch it to PNG lossless so the damage diff (recommendation 10) is exact. Full
-  analysis and the fallback are in Theme 7; the change is recommendation 4b.
+- RESOLVED: screencast format is backend-specific. Block uses JPEG quality 90, Kitty
+  always uses direct PNG, Sixel adapts between PNG and JPEG quality 90, and capture
+  always uses PNG. Theme 7 records the policy and measurements.
 - RESOLVED: Nyala runs inside multiplexers (tmux, herd, Zellij is supported). So
   the Kitty path must use virtual placement (`U=1`) plus passthrough wrapping, not a
   plain placement. This lands with the Tier 2 Kitty animation-frame work
