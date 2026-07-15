@@ -18,9 +18,10 @@ and research documents.
   drift during live scroll and reflow. Tune only from recorded skew and visible
   placement faults. Sources: `STAGE-3.md`, "Frame-sync tolerance and overlay
   staleness", and `AGENTS.md`, project status.
-- [ ] Run the pending full `pprof` and `go test -bench` pass, then update the
-  performance rankings from measured profiles. Source:
-  [Performance introduction](./PERFORMANCE.md#nyala-performance).
+- [x] Run the full `pprof` and five-sample `go test -bench` pass. Completed on
+  2026-07-14; the measured profiles close the RGBA ring and residual Compose split,
+  and reopen only the fused Block sampler as a bounded spike. Source:
+  [Full headless profile](./PERFORMANCE.md#full-headless-profile-and-benchmark-pass-2026-07-14).
 - [ ] Validate the adopted SIMD decode paths on real arm64 hardware. Confirm that the
   base64 and `jpegn` NEON paths improve performance, and rerun byte-identity tests
   before treating the amd64 results as portable evidence. Source:
@@ -77,17 +78,24 @@ Nyala's renderer or the terminal.
   quality and a content-aware PNG/JPEG policy on flat, text, photo, and motion pages.
   Keep the current format unless decode time falls with no visible or placement-gate
   regression. Sources: `PERFORMANCE.md`, "Theme 7" and "PNG Decoder Research".
-- [ ] Add a dimension-keyed reusable RGBA decode ring if a current profile still shows
-  material garbage-collection cost. Invalidate it on resize and keep ownership clear
-  across parallel decode workers. Source:
-  [Block performance recommendation 4](./PERFORMANCE.md#ranked-recommendations-impact-vs-effort).
+- [x] Keep the dimension-keyed RGBA decode ring closed as stale. The 2026-07-14 q80
+  allocation profile shows `image.NewRGBA` at 2.86 percent of allocation space, and
+  the clean CPU profile puts GC background marking at 2.00 percent cumulative. The
+  old full-resolution RGBA destination no longer exists. Source:
+  [Full headless profile](./PERFORMANCE.md#full-headless-profile-and-benchmark-pass-2026-07-14).
 - [ ] Revisit the Block sub-cell screencast resolution only on an owner decision. It is
   on hold because it removes the full-resolution benchmark that exposes renderer and
   terminal differences. Source:
   [Block performance recommendation 1](./PERFORMANCE.md#ranked-recommendations-impact-vs-effort).
-- [ ] Revisit the residual fused Block sampling and Compose split only if a new profile
-  puts those stages back on top. The row-band downscale win made them unnecessary.
-  Source: [Block performance recommendation 2](./PERFORMANCE.md#ranked-recommendations-impact-vs-effort).
+- [ ] Run a bounded `averageYCbCrToRGBA` optimisation spike. The 2026-07-14 q80
+  Block profile puts it first at 50.94 percent cumulative CPU, while the serial arm
+  takes 16.202 ms. Require lower q80 decode time, unchanged placement and image
+  quality, and no concurrent delivered-frame regression. Source:
+  [Full headless profile](./PERFORMANCE.md#full-headless-profile-and-benchmark-pass-2026-07-14).
+- [x] Keep the residual Compose split closed. Production parallel Compose measures
+  0.054 ms at 120x40 and 0.138 ms at 240x86 with zero allocations, so it is neither
+  dominant nor a material share of 16.67 ms. Source:
+  [Full headless profile](./PERFORMANCE.md#full-headless-profile-and-benchmark-pass-2026-07-14).
 
 ## 3. Build Stage 4 UI
 
