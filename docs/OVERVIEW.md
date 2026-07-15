@@ -225,7 +225,7 @@ chromedp.ListenTarget(ctx, func(ev interface{}) {
 | Half-block fallback | Custom compositor (port Carbonyl quad maths; reference `charmbracelet/x/mosaic`) | The permanent floor for KMSCON. Combined cell grid (bitmap + optional grapheme); quadrant (2x2) default, half-block (`U+2584`) floor; text overwrites cells. `rivo/uniseg` + `mattn/go-runewidth` for glyph width |
 | Sixel encode | `mattn/go-sixel` v0.0.12 | Retained pure-Go encoder; adaptive 256-colour palette; dithering off |
 | Kitty graphics | `charmbracelet/x/ansi/kitty` | Full protocol; unicode-placeholder support |
-| Sixel quantisation | `mattn/go-sixel` adaptive palette | 256 colours; dithering off; fixed palettes rejected by the matched corpus |
+| Sixel quantisation | `mattn/go-sixel` adaptive palette | Adaptive 256 remains production; fixed-255 temporal reuse is the next validation |
 | Colour degradation | Direct truecolour SGR (default); hardcoded RGB→xterm-256 formula (Carbonyl) fallback | Truecolour passthrough where present; closed-form per pixel (6x6x6 cube + 24-step grey ramp) otherwise. Stage 1 detects colour from env plus terminfo via `colorprofile.Detect`; a present `COLORTERM` (`kmscon`, `truecolor`, `24bit`) is a trusted positive that short-circuits to truecolour; no DCS round-trip. See `docs/STAGE-1.md` |
 | Capability detect | DA1-fenced startup handshake on the tty (Kitty `a=q`, Sixel via DA1, cell pixel size via `CSI 16t`/`14t`/`18t`), failing closed to block in 200 ms | Built in Stage 1, with the colour detector above; never trust `$TERM`. See `docs/STAGE-1.md` |
 | Config | `koanf` v2 + TOML | Pure Go, no cgo; layered env, file, and flag sources merged by load order; opt-in parsers keep the binary small. Chosen over viper (heavier dep set, larger binary) and stdlib (hand-rolled merge) |
@@ -417,8 +417,10 @@ browser layer (Stage 3) and the tint (Stage 4) first.
 
 Verdict, updated 2026-07-15: use retained `mattn/go-sixel` v0.0.12 with an
 adaptive 256-colour palette and dithering off. It owns the complete parameterised
-DCS and writes out of band at an absolute cursor position. Fixed palettes remain
-rejected because build cost and stale-frame quality are unproved.
+DCS and writes out of band at an absolute cursor position. Fixed 255 matches adaptive
+static output and is faster when reused, but motion quality is untested. Keep the
+current band builder. Validate long-count RLE in a temporary upstream worktree; see
+the [Sixel hot-path record](./PERFORMANCE.md#sixel-hot-path-research-and-decisions-2026-07-15).
 
 ### Kitty graphics protocol in Go
 
@@ -532,7 +534,7 @@ enhancements gated behind capability detection.
 | Kitty | `charmbracelet/x/ansi/kitty` | 9/10 | Full protocol with unicode-placeholder support |
 | Half-block fallback | Custom (ref `x/mosaic`) | 6/10 | Mandatory KMSCON floor; composable cell grid for text overlay |
 | Resize/composite | `golang.org/x/image/draw` | 9/10 | In-place scale into a reused buffer; stdlib-grade |
-| Sixel palette | `mattn/go-sixel` adaptive 256 colours | 9/10 | Dithering off; fixed palettes rejected by the five-image corpus |
+| Sixel palette | `mattn/go-sixel` adaptive 256 colours | 9/10 | Dithering off; fixed-255 temporal motion validation is next |
 | Colour detect | `colorprofile` (+ hardcoded RGB→256) | 8/10 | Env plus terminfo via `colorprofile.Detect`; trusted `COLORTERM`; closed-form formula per pixel. Built in Stage 1 |
 | Capability detect | DA1-fenced tty handshake (`x/ansi` + `x/term`) | 9/10 | Kitty `a=q`, Sixel via DA1, cell size via `CSI 16t`/`14t`/`18t`; fails closed to block; never trust `$TERM`. Built in Stage 1 |
 | Viewport substrate alt | vaxis | 8/10 | Runner-up if Charm graphics coexistence proves intractable |
@@ -558,8 +560,8 @@ enhancements gated behind capability detection.
   edit path was not portable, so the old decoded-damage design is retired. See
   [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
 - Does a fixed or cached Sixel palette give acceptable quality for arbitrary web
-  pages? Still open. Benchmark cached against per-frame quantisation on a photo-heavy
-  fixture before changing the encoder; see
+  pages? Static fixed 255 is exact; temporal reuse remains open. Run the committed
+  motion sequence before changing production policy; see
   [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
 - Sixel lacks a Kitty-style ID and scrolls with text; it needs its own placement/erase discipline and tearing test. Resolved: anchor every frame with `ESC 7` (DECSC), `CSI <row>;<col> H` (CUP to a fixed origin), sixel `ESC P q ... ESC \`, `ESC 8` (DECRC), all wrapped in DEC mode 2026 and written once to stop tearing; prefer `ESC 7`/`ESC 8` over `CSI s`/`CSI u`. Leave DECSDM (mode 80, `CSI ?80h/l`) alone: its set/reset sense is inverted across terminals, and the save/CUP/restore wrap anchors the frame regardless. Erase: a same-size full-viewport overwrite needs no clear; clear the region first (background fill or `CSI 2 J`) only on viewport shrink or geometry change, because sixel leaves opaque pixels with no alpha. Sixel reaches xterm, foot, wezterm, mlterm, contour, Windows Terminal, Konsole, and tmux (`--enable-sixel`), but not ghostty, kitty, or Alacritty, so it stays the broad-compatibility fallback below Kitty. Stage 3 spike: measure full-viewport FPS, per-frame encoded bytes, and whether mode 2026 removes visible tearing on foot/wezterm/xterm/mlterm at target resolution.
 - Truecolour over SSH/Docker is unreliable via `COLORTERM`. Will Nyala implement Carbonyl's DCS background-colour round-trip handshake, and does it interact cleanly with Bubble Tea v2 setup? (Resolved in Stage 1 (see `docs/STAGE-1.md`): no. The DCS round-trip is dropped and not planned. Nyala detects colour from env plus terminfo via `colorprofile.Detect`, and treats a present `COLORTERM` as a trusted positive.)

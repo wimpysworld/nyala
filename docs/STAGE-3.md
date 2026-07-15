@@ -518,9 +518,13 @@ reviews it.
   documented fallback gated on that number.
 - **Terminal PNG cost and graphics follow-ups.** Measure terminal-side PNG decode and
   draw latency separately from Nyala's 0.014-0.027 ms framing cost. Keep the 16.67 ms
-  target. Sixel still needs cached-palette and dirty-band work. Kitty needs no JPEG
-  live path today; retain the decoded JPEG encoder only as a measured fallback if a
-  future adaptive Kitty mode beats direct PNG end to end.
+  target. Static fixed-255 reuse is faster with identical output, but motion remains
+  untested. Band research closed with no change. Long-count RLE needs full-encoder
+  and compatibility validation. See
+  [the Sixel hot-path record](./PERFORMANCE.md#sixel-hot-path-research-and-decisions-2026-07-15).
+  Dirty-region transport stays separately gated by terminal measurements.
+  Kitty needs no JPEG live path today; retain the decoded JPEG encoder only as a
+  measured fallback if a future adaptive Kitty mode beats direct PNG end to end.
 - **Partial-emission threshold and advisory DOM box drift.** Carried forward as
   accepted measurements that feed future tuning: the graphics terminal-latency gate
   and the sub-cell box jitter past the clip rule.
