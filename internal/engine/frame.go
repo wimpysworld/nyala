@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image"
-	"image/color"
 	"image/draw"
 	_ "image/jpeg" // register the JPEG decoder for the image.Decode JPEG fallback
 	"sync"
@@ -85,19 +84,17 @@ func decodeBase64Pooled(data string) (raw []byte, release func(), err error) {
 	return out, func() {}, nil
 }
 
-// screencastQuality is a JPEG compression quality value. The live screencast is
-// now lossless PNG, so it no longer sets the stream quality; it survives as the
-// quality recorded in the capture bundle's screencast config and as the encode
-// quality for the JPEG decode benchmark fixture. Lossless frames are what the
-// planned per-frame damage diff needs: JPEG's 16x16 MCU decode shifts around every
-// change and its banding can flip gradient cells near the 2-colour threshold, so a
-// tolerance cannot cleanly catch a real change; PNG gives an exact per-cell diff.
+// screencastQuality is recorded in capture metadata and encodes the JPEG decode
+// test fixture. Live wire formats follow the backend policy: Block uses JPEG q90,
+// moving Sixel uses JPEG q90 and settles to PNG, and Kitty uses PNG. Capture stays
+// PNG for byte-exact bundles, so this value does not select its wire format.
 const screencastQuality = 90
 
 // blockScreencastQuality is the JPEG quality the block backend uses for its live
-// stream. Quality 80 keeps the full-surface decode inside one 60 FPS frame budget
-// before compose. Capture stays PNG, so this value does not affect corpus output.
-const blockScreencastQuality = 80
+// stream. Quality 90 retains page detail while native-YCbCr composition keeps the
+// live Block path within its processing budget. Capture stays PNG, so this value
+// does not affect corpus output.
+const blockScreencastQuality = 90
 
 // movingScreencastQuality is the JPEG quality the adaptive live Sixel screencast uses
 // when the page is moving. Kitty stays PNG so it can pass each CDP payload straight
@@ -211,8 +208,8 @@ func imageToRGBA(img image.Image) *image.RGBA {
 // decodeJPEGFast decodes one live-frame image, preferring the SIMD jpegn decoder
 // and falling back to decodeFrameImage on the same bytes. jpegn returns a
 // native *image.YCbCr about four times faster than stdlib on baseline 4:2:0, the
-// live block stream's exact class, so the fused YCbCr sub-cell downscale still
-// applies. jpegn returns jpegn.ErrUnsupported for inputs it declines (non-8-bit
+// live block stream's exact class, so Block can compose its grid from the native
+// planes. jpegn returns jpegn.ErrUnsupported for inputs it declines (non-8-bit
 // precision, unusual subsampling, smoothing); any non-nil jpegn error, not only
 // ErrUnsupported, falls back to decodeFrameImage so a declined frame decodes exactly
 // as it does today. decodeFrameImage also covers the block PNG frame (routed through
@@ -225,25 +222,10 @@ func decodeJPEGFast(raw []byte) (image.Image, error) {
 	return decodeFrameImage(raw)
 }
 
-// decodeLiveFrame is the live decode-pool's pixel decode: it decodes one base64
-// screencast payload to its decoder-native image, fusing the YCbCr-to-RGBA convert
-// into the sub-cell
-// downscale on the live block JPEG path so that path never materialises a
-// full-resolution RGBA surface only to average ~15/16 of it away.
-//
-// The fuse is gated tightly to the case it helps. When the active backend is block
-// and the decoded image is *image.YCbCr (a JPEG frame, which the live block stream
-// always is) and the engine holds a sub-cell target smaller than the surface, it
-// box-averages the Y/Cb/Cr planes straight down to that sub-cell footprint
-// (e.captureW x e.captureH, the same BlockCaptureSize the viewer downscales to) and
-// converts only the small result, emitting a frame already at sub-cell resolution.
-// The viewer's renderBlock detects that resolution and skips its own downscale.
-//
-// Every other case keeps the decoder-native image: a graphics-backend JPEG stays
-// YCbCr until its consumer, while a PNG keeps the PNG decoder's native layout. A
-// block PNG or an unset/degenerate block target is downscaled by the viewer.
-// The capture path never calls this: capture forces PNG and keeps runFrameLoop with
-// decodeScreencastNative, so the byte-exact corpus is untouched.
+// decodeLiveFrame is the live decode-pool's pixel decode. It keeps the decoder's
+// native image layout for every pixel consumer. Block averages native JPEG YCbCr
+// planes directly while composing its final grid; graphics consumers convert only
+// at their own boundary. Capture does not call this path and remains lossless PNG.
 func (e *ChromiumEngine) decodeLiveFrame(data string) (image.Image, error) {
 	raw, release, err := decodeBase64Pooled(data)
 	if err != nil {
@@ -254,143 +236,5 @@ func (e *ChromiumEngine) decodeLiveFrame(data string) (image.Image, error) {
 	if err != nil {
 		return nil, fmt.Errorf("engine: decode frame image: %w", err)
 	}
-	yc, isYCbCr := img.(*image.YCbCr)
-	e.mu.Lock()
-	onBlock := e.backend == "block"
-	cw, ch := e.captureW, e.captureH
-	e.mu.Unlock()
-	if onBlock && isYCbCr && cw > 0 && ch > 0 {
-		b := yc.Bounds()
-		if cw < b.Dx() && ch < b.Dy() {
-			dst := image.NewRGBA(image.Rect(0, 0, cw, ch))
-			averageYCbCrToRGBA(dst, yc)
-			return dst, nil
-		}
-	}
 	return img, nil
-}
-
-// averageYCbCrToRGBA box-averages the Y/Cb/Cr planes of src straight down to dst's
-// sub-cell footprint, then converts each destination pixel once from the averaged
-// YCbCr to RGBA. dst's bounds set the output size; every destination pixel is fully
-// written, so a reused dst carries no stale content. Byte order is RGBA and alpha is
-// opaque, matching the screencast surface.
-//
-// Averaging in YCbCr then converting equals converting then averaging apart from
-// chroma subsampling replication and the clamp in YCbCrToRGB, because YCbCr-to-RGB is
-// an affine per-pixel transform; the result is near-identical to the current
-// decode-then-convert-then-area-average, not byte-identical. The averaged Y plane is
-// read once (the same source reads the full convert makes) but only the small
-// sub-cell result is written and converted, so no full-resolution RGBA surface is
-// materialised. A per-source-column chroma index is precomputed once from the
-// subsample ratio, so the inner loop needs no per-pixel division and the kernel
-// handles every subsample ratio, not only 4:2:0.
-func averageYCbCrToRGBA(dst *image.RGBA, src *image.YCbCr) {
-	db := dst.Bounds()
-	dw, dh := db.Dx(), db.Dy()
-	sb := src.Bounds()
-	sw, sh := sb.Dx(), sb.Dy()
-	if dw == 0 || dh == 0 || sw == 0 || sh == 0 {
-		return
-	}
-	ratH, ratV := subsampleShift(src.SubsampleRatio)
-	// Per-source-column chroma index, the same for every source row: it removes the
-	// per-pixel divide from the inner loop and folds the subsample ratio in once. The
-	// index is relative to the source bounds origin (x/ratH - Min.X/ratH), matching
-	// image.YCbCr.COffset, so a non-zero-origin source (a subimage) reads the right
-	// chroma sample and never runs past the plane. Min zero, the live decode case,
-	// leaves it px/ratH as before.
-	minXc := sb.Min.X / ratH
-	minYc := sb.Min.Y / ratV
-	cxIdx := make([]int, sw)
-	for px := range sw {
-		cxIdx[px] = (sb.Min.X+px)/ratH - minXc
-	}
-	// Per-destination-column source x-range, the same for every destination row.
-	sx0s := make([]int, dw)
-	sx1s := make([]int, dw)
-	for dx := range dw {
-		sx0s[dx] = dx * sw / dw
-		sx1s[dx] = (dx + 1) * sw / dw
-	}
-	// Per-destination-column accumulators for one destination row, reused per row.
-	sumY := make([]uint64, dw)
-	sumCb := make([]uint64, dw)
-	sumCr := make([]uint64, dw)
-	cnt := make([]uint64, dw)
-	for dy := range dh {
-		for dx := range dw {
-			sumY[dx], sumCb[dx], sumCr[dx], cnt[dx] = 0, 0, 0, 0
-		}
-		sy0 := dy * sh / dh
-		sy1 := (dy + 1) * sh / dh
-		if sy1 <= sy0 {
-			sy1 = sy0 + 1
-		}
-		for py := sy0; py < sy1; py++ {
-			// Y and chroma both index relative to the source bounds origin, matching
-			// image.YCbCr.YOffset/COffset, so a non-zero-origin source stays correct.
-			yRow := src.Y[py*src.YStride:]
-			cBase := ((sb.Min.Y+py)/ratV - minYc) * src.CStride
-			cb := src.Cb[cBase:]
-			cr := src.Cr[cBase:]
-			for dx := range dw {
-				sx0, sx1 := sx0s[dx], sx1s[dx]
-				if sx1 <= sx0 {
-					sx1 = sx0 + 1
-				}
-				var ay, acb, acr, an uint64
-				for px := sx0; px < sx1; px++ {
-					ci := cxIdx[px]
-					ay += uint64(yRow[px])
-					acb += uint64(cb[ci])
-					acr += uint64(cr[ci])
-					an++
-				}
-				sumY[dx] += ay
-				sumCb[dx] += acb
-				sumCr[dx] += acr
-				cnt[dx] += an
-			}
-		}
-		for dx := range dw {
-			n := cnt[dx]
-			if n == 0 {
-				n = 1
-			}
-			// The mean of bytes stays in 0..255, so the low-byte mask is a no-op that
-			// keeps the conversion in range without a per-pixel bounds check.
-			yv := byte(sumY[dx] / n & 0xFF)
-			cbv := byte(sumCb[dx] / n & 0xFF)
-			crv := byte(sumCr[dx] / n & 0xFF)
-			r, g, b := color.YCbCrToRGB(yv, cbv, crv)
-			o := dst.PixOffset(db.Min.X+dx, db.Min.Y+dy)
-			dst.Pix[o] = r
-			dst.Pix[o+1] = g
-			dst.Pix[o+2] = b
-			dst.Pix[o+3] = 0xff
-		}
-	}
-}
-
-// subsampleShift returns the horizontal and vertical chroma downsample divisors for
-// a YCbCr subsample ratio: the amount a luma coordinate divides by to index the
-// chroma planes. 4:2:0 is (2, 2), 4:2:2 is (2, 1), 4:4:0 is (1, 2), 4:1:1 is (4, 1),
-// 4:1:0 is (4, 2), and 4:4:4 is (1, 1). The live block JPEG stream is 4:2:0; the
-// others keep the kernel correct for any ratio a frame might carry.
-func subsampleShift(r image.YCbCrSubsampleRatio) (h, v int) {
-	switch r {
-	case image.YCbCrSubsampleRatio420:
-		return 2, 2
-	case image.YCbCrSubsampleRatio422:
-		return 2, 1
-	case image.YCbCrSubsampleRatio440:
-		return 1, 2
-	case image.YCbCrSubsampleRatio411:
-		return 4, 1
-	case image.YCbCrSubsampleRatio410:
-		return 4, 2
-	default: // YCbCrSubsampleRatio444
-		return 1, 1
-	}
 }

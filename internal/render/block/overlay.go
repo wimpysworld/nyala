@@ -22,14 +22,37 @@ import (
 // width, so the partition stays monotonic and the visible remainder lands in the
 // right columns. On the skip path col advances by the grapheme width, so the
 // partition stays monotonic there too. The cell background is the average of the
-// source pixels the run's box does not cover (cellBGAverage), read in RGBA
+// source pixels the run's box does not cover (cellBGAverageFrom), read in RGBA
 // order, so a snapped run that only partly covers its lead cell keeps the
 // uncovered sub-columns out of the average. After the run's own cells, the two
-// bitmap cells beside it (recomposeBoundaryCells) are repainted to drop the
+// bitmap cells beside it (recomposeBoundaryCellsFrom) are repainted to drop the
 // sub-cell residue the box paints into a neighbour the overlay never wrote.
 // Paint-order z-ordering (a later run overlaying an earlier one) stays deferred.
 func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 	img, _ := f.Img.(*image.RGBA)
+	applyOverlayFrom(g, f, scheme, rgbaPixelSource{img: img})
+}
+
+// applyOverlayYCbCr folds the overlay against direct native-YCbCr samples. The
+// sampler returns the same sub-cell colours the former intermediate RGBA image
+// held, so overlay background and boundary recomposition stay byte-identical.
+func applyOverlayYCbCr(g *Grid, f render.Frame, scheme Scheme, src *ycbcrSampler) {
+	applyOverlayFrom(g, f, scheme, src)
+}
+
+type pixelSource interface {
+	pixelAt(x, y int) (r, g, b uint8)
+}
+
+type rgbaPixelSource struct {
+	img *image.RGBA
+}
+
+func (s rgbaPixelSource) pixelAt(x, y int) (r, g, b uint8) {
+	return pixel(s.img, x, y)
+}
+
+func applyOverlayFrom(g *Grid, f render.Frame, scheme Scheme, src pixelSource) {
 	for _, run := range f.Text {
 		row := run.Row
 		if row < 0 || row >= g.Rows {
@@ -56,7 +79,7 @@ func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 					// A wide glyph in the last column would cross the right edge;
 					// write a background space instead of half-emitting it.
 					if !claimed(cell) {
-						bg := cellBGAverage(img, col, row, scheme, run, off, cellCSSW)
+						bg := cellBGAverageFrom(src, col, row, scheme, run, off, cellCSSW)
 						*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: " "}
 					}
 					col++
@@ -69,7 +92,7 @@ func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 					off += 2
 					continue
 				}
-				bg := cellBGAverage(img, col, row, scheme, run, off, cellCSSW)
+				bg := cellBGAverageFrom(src, col, row, scheme, run, off, cellCSSW)
 				*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: cluster}
 				*trailing = Cell{Glyph: trailing.Glyph, FG: run.FG, BG: bg, Wide: true}
 				col += 2
@@ -81,12 +104,12 @@ func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 				off++
 				continue
 			}
-			bg := cellBGAverage(img, col, row, scheme, run, off, cellCSSW)
+			bg := cellBGAverageFrom(src, col, row, scheme, run, off, cellCSSW)
 			*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: cluster}
 			col++
 			off++
 		}
-		recomposeBoundaryCells(g, img, run, scheme, cellCSSW)
+		recomposeBoundaryCellsFrom(g, src, run, scheme, cellCSSW)
 	}
 }
 
@@ -102,7 +125,7 @@ func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 // (Text set or a Wide trailing cell), and the run covers at least one of its
 // source columns. A run without geometry (cellCSSW <= 0) covers nothing, so the
 // whole-cell identity is preserved.
-func recomposeBoundaryCells(g *Grid, img *image.RGBA, run render.GlyphRun, scheme Scheme, cellCSSW float64) {
+func recomposeBoundaryCellsFrom(g *Grid, src pixelSource, run render.GlyphRun, scheme Scheme, cellCSSW float64) {
 	if cellCSSW <= 0 {
 		return
 	}
@@ -133,7 +156,7 @@ func recomposeBoundaryCells(g *Grid, img *image.RGBA, run render.GlyphRun, schem
 		if !anyCovered(covered) {
 			continue
 		}
-		bg := averageUncovered(img, gridCol*pxW, row*pxH, pxW, pxH, covered)
+		bg := averageUncoveredFrom(src, gridCol*pxW, row*pxH, pxW, pxH, covered)
 		*cell = Cell{Glyph: lowerHalfBlock, FG: bg, BG: bg}
 	}
 }
@@ -193,6 +216,11 @@ func claimed(c *Cell) bool {
 //
 // Out-of-bounds reads return opaque black via pixel, matching the bitmap path.
 func cellBGAverage(img *image.RGBA, col, row int, scheme Scheme, run render.GlyphRun, off int, cellCSSW float64) color.RGBA {
+	src := rgbaPixelSource{img: img}
+	return cellBGAverageFrom(src, col, row, scheme, run, off, cellCSSW)
+}
+
+func cellBGAverageFrom(src pixelSource, col, row int, scheme Scheme, run render.GlyphRun, off int, cellCSSW float64) color.RGBA {
 	pxW, pxH := cellPxW, cellPxH
 	switch scheme {
 	case SchemeHalfBlock:
@@ -203,23 +231,23 @@ func cellBGAverage(img *image.RGBA, col, row int, scheme Scheme, run render.Glyp
 	covered := coveredColumns(run, off, cellCSSW, pxW)
 	x0 := col * pxW
 	y0 := row * pxH
-	return averageUncovered(img, x0, y0, pxW, pxH, covered)
+	return averageUncoveredFrom(src, x0, y0, pxW, pxH, covered)
 }
 
-// averageUncovered averages the source pixels of the cell block at (x0, y0)
+// averageUncoveredFrom averages the source pixels of the cell block at (x0, y0)
 // whose column is not marked covered, in RGBA channel order. covered is a
 // bitmask, one bit per source column. When every source column is covered it
 // falls back to the whole-cell mean, so a fully-covered cell keeps a sensible
 // background rather than black and reproduces the geometry-free identity byte
 // for byte.
-func averageUncovered(img *image.RGBA, x0, y0, pxW, pxH int, covered uint) color.RGBA {
+func averageUncoveredFrom(src pixelSource, x0, y0, pxW, pxH int, covered uint) color.RGBA {
 	var rs, gs, bs, n int
 	for dx := range pxW {
 		if covered&(1<<uint(dx)) != 0 {
 			continue
 		}
 		for dy := range pxH {
-			r, gc, b := pixel(img, x0+dx, y0+dy)
+			r, gc, b := src.pixelAt(x0+dx, y0+dy)
 			rs += int(r)
 			gs += int(gc)
 			bs += int(b)
@@ -227,7 +255,7 @@ func averageUncovered(img *image.RGBA, x0, y0, pxW, pxH int, covered uint) color
 		n += pxH
 	}
 	if n == 0 {
-		return wholeCellAverage(img, x0, y0, pxW, pxH)
+		return wholeCellAverageFrom(src, x0, y0, pxW, pxH)
 	}
 	return color.RGBA{
 		R: clampByte(rs / n),
@@ -276,14 +304,14 @@ func coveredColumnsAt(run render.GlyphRun, gridCol int, cellCSSW float64, pxW in
 	return mask
 }
 
-// wholeCellAverage averages every source pixel of the cell block at (x0, y0)
+// wholeCellAverageFrom averages every source pixel of the cell block at (x0, y0)
 // into one RGBA colour, in RGBA channel order. It is the geometry-free identity:
 // the fully-covered and no-geometry fallbacks reproduce it byte for byte.
-func wholeCellAverage(img *image.RGBA, x0, y0, pxW, pxH int) color.RGBA {
+func wholeCellAverageFrom(src pixelSource, x0, y0, pxW, pxH int) color.RGBA {
 	var rs, gs, bs int
 	for dy := range pxH {
 		for dx := range pxW {
-			r, gc, b := pixel(img, x0+dx, y0+dy)
+			r, gc, b := src.pixelAt(x0+dx, y0+dy)
 			rs += int(r)
 			gs += int(gc)
 			bs += int(b)

@@ -135,7 +135,7 @@ func (q *rawFrameQueue) put(f seqRawFrame) {
 }
 
 // runDecodeWorker is one worker of the live decode pool. It pulls raw frames from the
-// shared queue, decodes each to an RGBA bitmap with its own decode call (no shared
+// shared queue, decodes each to a decoder-native bitmap with its own decode call (no shared
 // destination buffer, so parallel workers never race a bitmap), and hands the decoded
 // frame to the collector still tagged with its arrival sequence. The decode is the
 // ~28 ms wall the pool parallelises; the collector serialises the cheap compose and
