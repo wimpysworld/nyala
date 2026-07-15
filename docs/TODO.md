@@ -174,8 +174,13 @@ Nyala's renderer or the terminal.
   text is hidden from the Block bitmap. Measure a known non-text feature or provide a
   metric-only text-bearing raster. The DOM-box placement gate cannot catch a shared
   scale error. Source: `STAGE-3.md`, "Monospace block render".
-- [ ] Fix `layout-04-multicolumn-justified` wrong-column mapping, remove its expected
-  collision allowance, and turn the paint-displacement expected failure green.
+- [x] Fix `layout-04-multicolumn-justified` wrong-column mapping and remove its
+  collision allowance. The walk now maps word and code-unit rects to whole-node
+  visual fragment identities, so separate columns can share a snapped row without
+  joining. All three corpus legs record zero collisions and pass the default placement
+  gate. Paint displacement is not green: separate layers remove source glyph ink, so
+  the metric skips every run and is not applicable. The preceding alignment-gate item
+  tracks the replacement.
   Sources: `STAGE-3.md`, "Corpus placement gate", and the fixture's `fixture.json`.
 - [ ] Make the `layout-03-cjk-vertical-ruby` wide leg settle deterministically. Wait
   for layout stability across snapshots, then tighten the collision threshold from 8

@@ -190,3 +190,31 @@ func TestBuildTextWalkScriptContents(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildTextWalkScriptKeepsVisualFragmentsSeparate guards multi-column text
+// nodes whose visual fragments share a snapped row. The whole-node range gives
+// each visual fragment a stable identity. Word and code-unit rects must use that
+// identity, rather than row changes, to keep adjacent words together without
+// joining columns.
+func TestBuildTextWalkScriptKeepsVisualFragmentsSeparate(t *testing.T) {
+	script := buildTextWalkScript(8, 16)
+	for _, fragment := range []string{
+		"rng.selectNodeContents(node);",
+		"var nodeRects=rng.getClientRects();",
+		"function fragmentOf(rr){",
+		"var lines=[];",
+		"function lineAt(frag,row){",
+		"var ln=lines.length?lines[lines.length-1]:null;",
+		"if(!ln||ln.frag!==frag",
+		"var frag=fragmentOf(rr);",
+		"var ln=lineAt(frag,row);",
+		"var ln=lineAt(wd.frag,wd.row);",
+	} {
+		if !strings.Contains(script, fragment) {
+			t.Errorf("walk script missing visual fragment identity: %q", fragment)
+		}
+	}
+	if strings.Contains(script, "if(!ln||ln.row!==row)") {
+		t.Error("walk script still splits line fragments only when the snapped row changes")
+	}
+}
