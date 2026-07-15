@@ -13,9 +13,9 @@ import (
 	gosixel "github.com/mattn/go-sixel"
 )
 
-// dcsIntro opens a Sixel Device Control String: ESC P, then the q final byte
-// selecting the Sixel graphics function. sixel.Renderer emits this prefix.
-const dcsIntro = "\x1bPq"
+// dcsPrefix opens a Device Control String. Sixel parameters may follow before
+// the q final byte selects the Sixel graphics function.
+const dcsPrefix = "\x1bP"
 
 // apcIntro opens a Kitty graphics Application Programming Command: ESC _ G.
 // st is the String Terminator, ESC backslash, that closes both envelopes.
@@ -25,14 +25,14 @@ const (
 )
 
 // DecodeSixel decodes a complete Sixel DCS payload back to an *image.RGBA. It
-// accepts the framed bytes sixel.Renderer writes (the ESC P q introducer, the
-// encoder body, and the ESC backslash terminator) and reverses them with
+// accepts the framed bytes sixel.Renderer writes (ESC P, optional parameter
+// bytes, the q final byte, the encoder body, and ESC backslash) and reverses them with
 // mattn/go-sixel. The decoder reconstructs the encoder palette, so the result
 // reproduces the quantised palette the encoder chose, not the full-range input.
 // The returned image is in RGBA channel order.
 func DecodeSixel(payload []byte) (*image.RGBA, error) {
-	if !bytes.HasPrefix(payload, []byte(dcsIntro)) {
-		return nil, errors.New("capture: sixel payload missing DCS introducer ESC P q")
+	if !hasSixelIntroducer(payload) {
+		return nil, errors.New("capture: sixel payload missing DCS introducer ESC P ... q")
 	}
 	var img image.Image
 	if err := gosixel.NewDecoder(bytes.NewReader(payload)).Decode(&img); err != nil {
@@ -42,6 +42,21 @@ func DecodeSixel(payload []byte) (*image.RGBA, error) {
 		return nil, errors.New("capture: sixel payload decoded to no image")
 	}
 	return toRGBA(img), nil
+}
+
+func hasSixelIntroducer(payload []byte) bool {
+	if !bytes.HasPrefix(payload, []byte(dcsPrefix)) {
+		return false
+	}
+	for _, b := range payload[len(dcsPrefix):] {
+		if b == 'q' {
+			return true
+		}
+		if b < 0x30 || b > 0x3f {
+			return false
+		}
+	}
+	return false
 }
 
 // DecodeKitty decodes a complete Kitty graphics APC payload back to an

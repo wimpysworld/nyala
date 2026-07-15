@@ -48,30 +48,28 @@ Nyala's renderer or the terminal.
   by 18.43%. Exactness, race, allocation, build, test, and lint gates pass with the
   existing 16 workers. Source:
   [Colour conversion research](./PERFORMANCE.md#colour-conversion-research-2026-07-15).
-- [ ] Benchmark and remove the Sixel encoder wall before revisiting colour conversion.
-  Split the actual q90 `State` path under decode contention into palette, pixel-map,
-  bitset, and output phases. Persist the encoder and palette, buffer the writer,
-  compare the documented faster quantisers or encoder, then add dirty-band emission
-  if the terminal matrix shows a gain. Require at least a 5% end-to-end or throughput
-  gain, no tail regression, protocol-conformant output, and a clean photo-heavy A/B.
-  Sources: [Colour conversion research](./PERFORMANCE.md#colour-conversion-research-2026-07-15),
-  [Performance recommendations](./PERFORMANCE.md#top-recommendations-ranked-by-impact-vs-effort),
-  recommendations 6 and 8, and `OVERVIEW.md`, "Sixel in Go".
-- [ ] Revisit Sixel colour conversion only after encoder work or a profile shift.
-  Compare `jpegn` v0.4.4 direct RGBA decode with the current decoder plus banded
-  `draw.Draw` on the actual `State` path under decode contention. Reuse the viewer
-  pool. Require at least a 5% end-to-end or throughput gain and no tail regression.
+- [x] Adopt the retained `mattn/go-sixel` v0.0.12 encoder with an adaptive
+  256-colour palette and dithering off. The matched q90 State median falls from
+  960.437 to 101.670 ms (89.41%, 9.45x), allocations fall 99.993%, and payload
+  falls 18.47%. The five-image corpus chooses 256 over 192 colours; the owner
+  accepts the measured colour loss for this compatibility backend. Fixed palettes
+  remain rejected because their build cost and stale-frame quality are unproved.
+  Source: [Sixel encoder adoption](./PERFORMANCE.md#sixel-encoder-adoption-2026-07-15).
+- [ ] Revisit Sixel colour conversion only if later work raises it above the current
+  15.05% CPU share. Compare `jpegn` v0.4.4 direct RGBA decode with the current
+  decoder plus banded `draw.Draw` on the actual `State` path under decode contention.
+  Reuse the viewer pool. Require a statistically sound end-to-end or throughput gain
+  and no tail regression.
   Banded draw must stay byte-exact; the `jpegn` arm must pass decoded visual equality
   within its per-channel tolerance. Reject both if they miss the gate. The best
   isolated banded result saves 12.978 ms but only 1.25% of the measured Sixel path.
   Source: [Colour conversion research](./PERFORMANCE.md#colour-conversion-research-2026-07-15).
-- [ ] Tighten Sixel output after palette reuse: use aggressive RLE, omit empty bands,
-  set `P2=0` for opaque frames, and keep dither off. Require smaller output, lower
-  terminal decode time, protocol-conformant output, and no fixture regression. Source:
-  `PERFORMANCE.md`, "Sixel/Kitty library verdict".
-- [ ] Parallelise Sixel band encoding only after palette caching and tighter output
-  land, and only if a benchmark with per-worker buffers beats the serial encoder on
-  target frame sizes. Source: `PERFORMANCE.md`, "Sixel/Kitty library verdict".
+- [ ] Benchmark Sixel band generation as the next narrow performance target. It uses
+  about 31% of post-adoption CPU, the largest remaining phase. Measure candidate
+  changes on the matched State path before choosing tighter RLE, buffer reuse, or
+  parallel bands. Require lower State time with no quality, payload, protocol, or tail
+  regression. This is a measurement target, not an implementation commitment.
+  Source: [Sixel encoder adoption](./PERFORMANCE.md#sixel-encoder-adoption-2026-07-15).
 - [ ] Add graphics support through tmux, Zellij, and herdr. Keep the present block-only
   fallback until each path passes capability, placement, resize, scroll, and cleanup
   tests. Kitty needs protocol-supported placement plus passthrough wrapping. Its

@@ -157,6 +157,43 @@ func TestDecodeSixelRejectsMalformed(t *testing.T) {
 	}
 }
 
+func TestHasSixelIntroducerAcceptsParameters(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    bool
+	}{
+		{name: "legacy", payload: "\x1bPq", want: true},
+		{name: "parameters", payload: "\x1bP0;0;8q", want: true},
+		{name: "missing DCS", payload: "P0;0;8q", want: false},
+		{name: "wrong final", payload: "\x1bP0;0;8x", want: false},
+		{name: "invalid parameter byte", payload: "\x1bP0Aq", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasSixelIntroducer([]byte(tc.payload)); got != tc.want {
+				t.Fatalf("hasSixelIntroducer(%q) = %t, want %t", tc.payload, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecodeSixelAcceptsLegacyUnparameterisedDCS(t *testing.T) {
+	var payload bytes.Buffer
+	var renderer sixel.Renderer
+	if err := renderer.Render(frameFixture(), &payload); err != nil {
+		t.Fatalf("render parameterised Sixel: %v", err)
+	}
+	legacy := bytes.Replace(payload.Bytes(), []byte("\x1bP0;0;8q"), []byte("\x1bPq"), 1)
+	decoded, err := DecodeSixel(legacy)
+	if err != nil {
+		t.Fatalf("DecodeSixel legacy DCS: %v", err)
+	}
+	if got, want := decoded.Bounds(), frameFixture().Img.Bounds(); !got.Eq(want) {
+		t.Fatalf("decoded bounds = %v, want %v", got, want)
+	}
+}
+
 // mseRGBA returns the mean squared error between two equal-bounds RGBA images,
 // averaged over every channel of every pixel.
 func mseRGBA(a, b *image.RGBA) float64 {

@@ -230,6 +230,18 @@ func TestRendererConcreteTypes(t *testing.T) {
 	}
 }
 
+func TestSixelRendererPersistsAcrossBackendSwitch(t *testing.T) {
+	s := NewState(8, 4, 16, 16)
+	s.Backend = BackendSixel
+	first := s.Renderer()
+	s.Backend = BackendBlock
+	_ = s.Renderer()
+	s.Backend = BackendSixel
+	if second := s.Renderer(); second != first {
+		t.Fatal("Sixel renderer was replaced across a backend switch")
+	}
+}
+
 // TestHandleKey asserts the hotkey table: Tab cycles, 'q' and Ctrl-C quit, and
 // any other key (including the retired 's' and 'c' toggles) is an inert no-op.
 func TestHandleKey(t *testing.T) {
