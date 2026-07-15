@@ -34,8 +34,10 @@ to terminal framing, so the old transmit-once animation-frame plan does not appl
 Live Sixel now uses a retained `mattn/go-sixel` encoder with an adaptive 256-colour
 palette and dithering off. Moving q90 JPEG uses `jpegn` fused RGBA when the live
 session has at most four decode workers. The matched sequential path is now
-103.014 ms, while State processing is 88.637 ms before terminal work. Band
-generation remains the next narrow benchmark candidate.
+103.014 ms, while State processing is 88.637 ms before terminal work. Static
+fixed-255 reuse later cut warm State time by 45.8% with identical output, but a
+per-frame palette rebuild erased the gain. Motion validation is next. Band research
+closed with no change; long-count RLE needs a full-fork compatibility test.
 Partial Kitty transport remains conditional on terminal measurements and a supported
 protocol path; see
 [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
@@ -293,10 +295,10 @@ its working set. The matched sequential path falls a further 10.43%; see the
 [four-worker policy](#bounded-sixel-rgba-decode-and-four-worker-policy-2026-07-15).
 
 This supersedes the earlier prediction that an encoder swap would be only a
-partial win. The five-image corpus chose 256 colours over 192 because SSIM was
-higher on every image and grayscale quality was safer. Dithering was slower,
-larger, and lower quality. A fixed or cached palette is rejected because neither
-same-frame palette-build cost nor stale-palette quality was validated. Sixel is a
+partial win. The five-image quality set chose 256 colours over 192 because SSIM
+was higher on every image and grayscale quality was safer. Dithering was slower,
+larger, and lower quality. The later fixed-palette track proved a static reuse gain,
+but temporal quality and refresh cost remain open. Sixel is a
 compatibility backend, so the authorised speed and colour-quality trade-off favours
 the adopted encoder. The full evidence is in the
 [dated adoption record](#sixel-encoder-adoption-2026-07-15).
@@ -412,10 +414,11 @@ Also landed on the load-time theme, beyond the ranked list:
    decode and draw latency, sustained Kitty FPS, and Kitty-through-multiplexer
    placement. Reconsider JPEG Kitty only if an end-to-end terminal benchmark beats
    direct PNG. Impact 8, effort medium.
-6. **[CLOSED - rejected 2026-07-15] Sixel fixed or cached palette.** The adopted
-   adaptive 256-colour encoder cuts State processing by 89.41%. A fixed palette is
-   rejected because same-frame build cost and stale-frame quality remain unproved.
-   Dirty-band transport remains separate and terminal-measurement-gated.
+6. **[IN PROGRESS] Sixel temporal palette reuse.** Static fixed-255 output matches
+   adaptive output byte for byte and cuts warm State time by 45.8%, but rebuilding
+   it every frame removes the gain. Add the deterministic motion fixture and test
+   refresh at frame 0, every eight frames, and every frame. Dirty-band transport
+   remains separate and terminal-measurement-gated.
 7. **[DONE - 3861ccc]** **Accumulate scroll keys** instead of latest-wins-drop
    (`internal/viewer/stream.go`). `keySender` now accumulates every scroll key and
    forwards it in order, so the engine's `dispatchWheel` sums the deltas; a burst no
@@ -1371,7 +1374,7 @@ large. Output remains 2560x2880, opaque, and protocol-valid.
 | RGB absolute p50 / p95 / p99 / maximum | 1 / 3 / 8 / 85 | 2 / 5 / 11 / 98 |
 | Delta E 2000 mean / p95 | 0.5118 / 2.3953 | 0.9989 / 3.2267 |
 
-The five-image corpus selected 256 colours over 192. The 256-colour arm produced
+The five-image quality set selected 256 colours over 192. The 256-colour arm produced
 higher SSIM on all five images and safer grayscale output.
 
 | Corpus measure | 192 colours | 256 colours |
@@ -1383,15 +1386,16 @@ higher SSIM on all five images and safer grayscale output.
 
 For 256 colours, worst PSNR was 32.930 dB, worst encode was 108.618 ms, median
 payload was 2,076,375 B, and the largest payload was 3,712,566 B. Dithering was
-slower, larger, and lower quality. A fixed palette remains rejected because the
-tests did not validate same-frame build cost or stale-palette quality.
+slower, larger, and lower quality. This arm did not test fixed palettes, so their
+same-frame build cost and stale-palette quality remain open.
 
 #### Pre-ToRGBA profile and limit
 
 The adopted path spends 15.05% of CPU in YCbCr-to-RGBA conversion, 30.10% in
 palette sampling, 6.96% in LUT construction, 7.93% in pixel mapping, and about
 31% in band generation. Allocation space is 74.73% RGBA, 17.94% paletted image,
-and 4.72% quantisation.
+and 4.72% quantisation. These percentages are pre-ToRGBA CPU profile shares, not
+per-frame wall times. In particular, 15.05% does not mean 15.05 ms.
 
 This profile motivated the bounded fused-RGBA follow-up below. Headless capacity
 does not close the real-terminal FPS, decode, draw, byte, or tearing tasks.
@@ -1453,7 +1457,133 @@ moves from 10.042 to 9.963 ms, which is noise rather than a claimed Block gain.
 The raw decoded images differ by at most one channel level, with PSNR 63.129 dB
 and SSIM 0.99989759. Retain the fused path and four-worker cap: the matched
 sequential gain is 10.43%, quality is stable, saturated supply exceeds demand, and
-the retained bound rises only 1.1%. Band generation remains the next narrow target.
+the retained bound rises only 1.1%. The public fixed-palette sweep below became the
+next narrow Sixel target.
+
+#### Sixel hot-path research and decisions (2026-07-15)
+
+`Encoder.Encode` accepts an `image.Image`; it does not decode JPEG, and the encoder
+implementation does not import `jpegn`. Nyala decodes each CDP JPEG before `State`,
+and bounded live Sixel pools already request packed RGBA through
+`jpegn.Options{ToRGBA: true}`. The earlier 14.321 ms figure measured isolated warm
+YCbCr-to-RGBA wall time in the former `x/ansi` State path. The 15.05% figure above
+is a pre-ToRGBA CPU share, not a duration. The matched 2560x2880 q90 table above is
+the acceptance evidence: the extra decode time is offset by a larger State saving,
+which cuts sequential decode plus State by 11.990 ms.
+
+An independent post-ToRGBA CPU profile attributed about 39.4% to the band loop and
+RLE, 36.0% to palette sampling, 7.8% to LUT construction, and 9.6% to pixel mapping.
+These shares are directional profile evidence, not acceptance data.
+
+The public seams are `Encoder.Palette`, which caches a fixed palette and its LUT,
+`Colors`, `Dither`, `Transparent`, and direct `*image.Paletted` input. Quantisation,
+mapping, band construction, RLE, and scratch are private. Private-stage tests belong
+in a temporary upstream worktree. Keep stage-only, encoder, and combined decode plus
+State results separate. Do not combine medians from different fixtures or harnesses.
+
+##### Palette track, benchmark A
+
+Benchmark A used commit `5598f343`, Go 1.26.4, Linux amd64, `GOMAXPROCS=1`, five
+samples, and one 2560x2880 q90 frame decoded to RGBA by `jpegn`. Fixed palettes use
+the `go-sixel` sample budget and median quantiser. Warm reuses the palette, LUT, and
+encoder scratch. Cold replaces the palette and rebuilds the LUT. Palette plus cold
+adds external palette construction. Decode plus palette plus cold adds JPEG decode.
+All values are medians from this benchmark only.
+
+| Colours | Warm State | Cold State | Palette plus cold | Decode plus palette plus cold | Pre-palettised output control |
+|---:|---:|---:|---:|---:|---:|
+| Adaptive | 91.667 ms | Not measured | Not measured | 105.163 ms | Not applicable |
+| 64 | 36.884 ms | 38.909 ms | 67.666 ms | 82.807 ms | 29.118 ms |
+| 128 | 41.859 ms | 45.809 ms | 77.589 ms | 91.748 ms | 40.237 ms |
+| 216 | 48.435 ms | 54.118 ms | 87.331 ms | 102.478 ms | 55.144 ms |
+| 255 | 49.665 ms | 56.768 ms | 90.045 ms | 105.142 ms | 60.847 ms |
+
+Fixed 255 is 45.8% faster than adaptive when warm. Its same-frame output is byte
+identical to adaptive, but rebuilding the palette for every frame leaves combined
+decode plus State unchanged within 0.021 ms. The pre-palettised arm is an output-path
+control, not a band-only result. It keeps palette-register output, opacity scanning,
+bitsets, DCS framing, scratch reuse, RLE, and the final write. It excludes conversion,
+adaptive quantisation, LUT construction, mapping, and alpha remapping.
+
+| Palette | Median PSNR | Worst PSNR | Median SSIM | Worst SSIM |
+|---|---:|---:|---:|---:|
+| Adaptive | 34.944 dB | 33.490 dB | 0.995019 | 0.973668 |
+| Fixed 255 | 34.944 dB | 33.490 dB | 0.995019 | 0.973668 |
+| Fixed 216 | 34.916 dB | Not recorded | 0.994726 | Not recorded |
+
+The quality set is `linuxmatters.png` plus `testpage-01-grayscale.png` through
+`testpage-04-color.png`. Fixed 64 and 128 lost more quality than fixed 216. The
+repository has no deterministic motion fixture, so static reuse is not production
+evidence. The next acceptance run needs 32 committed frames with static repeats,
+small translations, local tile changes, and full-frame changes. Test palette refresh
+at frame 0 only, every eight frames, and every frame. Report per-frame latency,
+allocations, payload, PSNR, windowed SSIM, and combined decode plus State.
+
+##### Palette track, benchmark B
+
+Benchmark B used another canonical frame and harness. Its medians cannot be compared
+with benchmark A. It tests aggressive palette modes and reports incomplete quality
+data.
+
+| Arm | Warm encoder | Payload | PSNR | SSIM |
+|---|---:|---:|---:|---:|
+| Adaptive | 88.24 ms | 2,118,201 B | 37.31 dB | Not recorded |
+| Direct Plan9 256 | 27.81 ms | 1,009,015 B | 29.67 dB | 0.996700 global Y |
+| WebSafe 216 | 27.35 ms | Not recorded | 25.09 dB | Not recorded |
+| Reused current median | 42.76 ms | Not recorded | Exact static output | Not recorded |
+| `go-quantize` | 37.43 ms | Not recorded | 30.62 dB | Not recorded |
+
+Direct Plan9 is aggressive speed-mode evidence. It needs the motion sequence and
+windowed SSIM before acceptance. WebSafe 216 loses too much quality. Reject
+`octreequant` and other unmeasured algorithms. Do not infer a result for them from
+these measured arms.
+
+##### RLE track
+
+`go-sixel` v0.0.12 already delays each run decision, uses threshold 4, appends into
+a reused output buffer with `strconv.AppendInt`, and performs one final write. It
+splits repeat counts at 255 for compatibility, while DEC STD 070 permits 32767.
+
+The temporary exact-payload harness processed 36.5 million band bytes across 22,003
+planes. These are stage-only results and do not measure a complete candidate path.
+
+| RLE arm | Stage result | Payload result |
+|---|---:|---:|
+| Current 255 split | 24.662 ms | 2,244,229 B |
+| Legal 32767 split, direct digits | 23.080 ms, 6.4% faster | 1,819,461 B, 18.9% smaller |
+| 255 split, decimal table | 5.1% faster | Byte identical to current |
+
+The 1.582 ms stage saving is an arithmetic ceiling of about 1.55% against the local
+102.227 ms full baseline, not a measured full-path gain. One harness decoded exact
+pixels and boundaries through both decoders. Another scratch validation failed
+because its terminator was malformed. Cross-decoder compatibility therefore remains
+unconfirmed until a full fork test. Counts above 255 can also affect old
+VT240-class terminals. Prototype 32767 in a temporary upstream worktree, test the
+full encoder and both decoders, and retain an old-limit policy before proposing an
+upstream patch.
+
+##### Band track
+
+The current builder already uses one-pass scatter, row masks, generation counters,
+sparse clearing, and reused buffers. The production-shaped full encoder with
+Plan9-palettised input measured 17.24 ms, zero allocations, and a 1,009,015-byte
+payload. Active-bitset and transposed variants were slower. Packed banks cut scratch
+96.7% but made band plus RLE 31% slower than the instrumented baseline. Bounded
+planes looked faster only in an inflated dual-mode harness and did not beat the
+17.24 ms full encoder.
+
+Every band variant produced identical bytes and decoded through both decoders across
+canonical, solid, sparse, dense, noisy, transparency, subimage and stride, width
+override, and odd-height inputs. Close this track with no code or fork. Defer
+parallel bands.
+
+##### Cross-track decision
+
+Keep adaptive 256 as production policy. Validate fixed-255 temporal reuse first,
+then validate long-count RLE in a temporary upstream worktree. The band track has no
+candidate to combine. Send only accepted wins upstream. If short-lived integration
+needs a fork, publish a versioned fork and use a temporary module replacement. Do
+not vendor, use `go:linkname`, or add a Nix-only patch.
 
 ### Option assessment
 
@@ -1462,6 +1592,9 @@ the retained bound rises only 1.1%. Band generation remains the next narrow targ
 | Current fused Block compositor | Exact weighted region average across six ratios, one conversion per terminal sub-cell, existing persistent workers | Keep |
 | Ratio-specialised Block plane sums | The retained 4:2:0 path removes common mapping and loop work without a full RGBA surface; generic fallback preserves every other case | Retained after exactness, paired, CPU, throughput, and tail gates |
 | `jpegn` v0.4.4 `Options.ToRGBA` | MIT, cgo-free packed RGBA; matched sequential Sixel processing falls 10.43% with stable quality and a 1.1% retained-bound increase | Retained for live moving Sixel JPEG at one to four workers |
+| `mattn/go-sixel` fixed 255 palette | Warm State falls 45.8% with byte-identical static output; per-frame rebuild removes the gain | Keep adaptive production policy; validate temporal reuse next |
+| Long-count Sixel RLE | Stage-only harness saves 6.4% and cuts payload 18.9%; complete-path gain and compatibility are unconfirmed | Test 32767 in a temporary upstream worktree |
+| Private Sixel band changes | Production-shaped variants do not beat the current 17.24 ms full encoder | Closed with no change; defer parallel bands |
 | Current decoder plus row-parallel `draw.Draw` | Uses the existing viewer pool, preserves current pixels, and measured 0 B/op and 0 allocs/op warm | Closed while bounded fused RGBA wins end to end |
 | Standard library `imageutil.DrawYCbCr` | Internal, full-frame, and specialised for four ratios | Use only through the public `draw.Draw` boundary |
 | Go 1.26 `archsimd` | Experimental, `GOEXPERIMENT`-gated, amd64-only | Reject for production |
@@ -1471,14 +1604,26 @@ the retained bound rises only 1.1%. Band generation remains the next narrow targ
 Nyala already pins `jpegn` v0.4.4, so the retained change adds no dependency.
 Its activation boundary is a memory policy, not a decoder capability limit. A
 manual pool above four workers stays native YCbCr because fused RGBA multiplies the
-larger per-frame working set. Band generation remains the next Sixel benchmark.
+larger per-frame working set. The next Sixel work follows the cross-track order above.
 
 ### Primary sources
 
-- `mattn/go-sixel` v0.0.12 source and release tree:
-  https://github.com/mattn/go-sixel/tree/v0.0.12
-- `mattn/go-sixel` v0.0.12 encoder API and adaptive palette controls:
-  https://github.com/mattn/go-sixel/blob/v0.0.12/encoder.go
+- `mattn/go-sixel` v0.0.12 encoder, fixed-palette cache, paletted fast path, and
+  private pipeline:
+  https://github.com/mattn/go-sixel/blob/v0.0.12/sixel.go
+- DEC STD 070 Sixel grammar and repeat limit:
+  https://archive.org/details/bitsavers_decstandar0VideoSystemsReferenceManualDec91_74264381
+- VT330 and VT340 Sixel grammar:
+  https://vt100.net/docs/vt3xx-gp/chapter14.html
+- Independent pure-Go picture-body decoder:
+  https://github.com/charmbracelet/x/blob/ansi/v0.11.7/ansi/sixel/decoder.go
+- `benchstat` sample and comparison guidance:
+  https://pkg.go.dev/golang.org/x/perf/cmd/benchstat
+- `mattn/go-sixel` v0.0.12 package record:
+  https://pkg.go.dev/github.com/mattn/go-sixel@v0.0.12
+- Upstream June and July encoder performance work:
+  https://github.com/mattn/go-sixel/pull/23 and
+  https://github.com/mattn/go-sixel/commit/44d338f95d08e64b3c61598c3c6b309d954f8130
 - `mattn/go-sixel` uses the MIT licence:
   https://github.com/mattn/go-sixel/blob/v0.0.12/LICENSE
 - `jpegn` v0.4.4 uses the MIT licence:
@@ -1501,6 +1646,12 @@ larger per-frame working set. Band generation remains the next Sixel benchmark.
   https://github.com/linuxmatters/jive-visualiser/blob/c939ee9e443c588b01a2a9491b1c1b9a99325ae9/internal/encoder/frame.go
 - `go-cv-simd` provides the stale BGRA-oriented comparison:
   https://github.com/fwessels/go-cv-simd
+- Go documents a published fork plus versioned `replace` and vendoring here:
+  https://go.dev/doc/modules/managing-dependencies#external_fork and
+  https://go.dev/ref/mod#vendoring
+- `libsixel` and `rasterm` provide external band-generation comparisons:
+  https://github.com/libsixel/libsixel and
+  https://github.com/BourgeoisBear/rasterm/blob/v1.1.2/sixel.go
 
 ---
 

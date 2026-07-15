@@ -51,9 +51,10 @@ Nyala's renderer or the terminal.
 - [x] Adopt the retained `mattn/go-sixel` v0.0.12 encoder with an adaptive
   256-colour palette and dithering off. The matched q90 State median falls from
   960.437 to 101.670 ms (89.41%, 9.45x), allocations fall 99.993%, and payload
-  falls 18.47%. The five-image corpus chooses 256 over 192 colours; the owner
-  accepts the measured colour loss for this compatibility backend. Fixed palettes
-  remain rejected because their build cost and stale-frame quality are unproved.
+  falls 18.47%. The five-image quality set chooses 256 over 192 colours; the owner
+  accepts the measured colour loss for this compatibility backend. The earlier
+  run did not test fixed-palette build cost or stale-frame quality. The later public
+  sweep completed; temporal reuse remains open.
   Source: [Sixel encoder adoption](./PERFORMANCE.md#sixel-encoder-adoption-2026-07-15).
 - [x] Retain bounded `jpegn.Options{ToRGBA:true}` for live moving Sixel JPEG.
   The adaptive default and Sixel RGBA cutoff are separate policies, both currently
@@ -63,13 +64,20 @@ Nyala's renderer or the terminal.
   plus State bound rises 1.1%. Block, Kitty, capture, settled Sixel PNG, and backend
   switches preserve their paths. Source:
   [Bounded Sixel RGBA decode](./PERFORMANCE.md#bounded-sixel-rgba-decode-and-four-worker-policy-2026-07-15).
-- [ ] Benchmark Sixel band generation as the next narrow performance target. It uses
-  about 31% of the pre-ToRGBA post-adoption profile, the largest measured encoder
-  phase. Refresh the phase profile, then measure candidate changes on the matched
-  State path before choosing tighter RLE, buffer reuse, or parallel bands. Require
-  lower State time with no quality, payload, protocol, or tail regression. This is a
-  measurement target, not an implementation commitment. Source:
-  [Bounded Sixel RGBA decode](./PERFORMANCE.md#bounded-sixel-rgba-decode-and-four-worker-policy-2026-07-15).
+- [ ] Create a committed deterministic 32-frame Sixel motion fixture with static
+  repeats, small translations, local tile changes, full-frame changes, and recorded
+  hashes. Benchmark fixed-255 reuse with refresh at frame 0 only, every eight frames,
+  and every frame. Include the aggressive Plan9 arm. Record per-frame combined
+  decode plus State, allocations, payload, PSNR, and windowed SSIM.
+- [ ] Prototype the 32767 repeat limit in a temporary upstream worktree. Validate the
+  full encoder, both decoders, payload, repeat boundaries, and an old-terminal limit
+  policy before accepting the stage-only result.
+- [ ] Send accepted palette or RLE patches upstream. Use a temporary published fork
+  plus versioned replacement only for short-lived integration. Do not vendor.
+- [x] Close Sixel band research with no code change. Active-bitset, transposed,
+  packed-bank, and bounded-plane variants did not beat the current production-shaped
+  full encoder. Defer parallel bands. Source:
+  [Sixel hot-path research](./PERFORMANCE.md#sixel-hot-path-research-and-decisions-2026-07-15).
 - [ ] Add graphics support through tmux, Zellij, and herdr. Keep the present block-only
   fallback until each path passes capability, placement, resize, scroll, and cleanup
   tests. Kitty needs protocol-supported placement plus passthrough wrapping. Its
