@@ -56,8 +56,9 @@ Nyala's renderer or the terminal.
   remain rejected because their build cost and stale-frame quality are unproved.
   Source: [Sixel encoder adoption](./PERFORMANCE.md#sixel-encoder-adoption-2026-07-15).
 - [x] Retain bounded `jpegn.Options{ToRGBA:true}` for live moving Sixel JPEG.
-  Adaptive decode workers now cap at four; the manual 1 to 16 override remains,
-  with values above four keeping native YCbCr. Matched sequential processing falls
+  The adaptive default and Sixel RGBA cutoff are separate policies, both currently
+  four. The manual 1 to 16 override remains, with values above four keeping native
+  YCbCr. Matched sequential processing falls
   from 115.005 to 103.014 ms (10.43%). Quality stays stable and the retained live
   plus State bound rises 1.1%. Block, Kitty, capture, settled Sixel PNG, and backend
   switches preserve their paths. Source:

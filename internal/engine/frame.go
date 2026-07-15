@@ -222,13 +222,17 @@ func decodeJPEGFast(raw []byte, toRGBA bool) (image.Image, error) {
 	return decodeFrameImage(raw)
 }
 
+// maxSixelRGBAWorkers is the session-worker safety limit for jpegn's fused RGBA
+// output. It is independent of the adaptive decode-pool ceiling.
+const maxSixelRGBAWorkers = 4
+
 // sixelJPEGToRGBA reports whether this session can use jpegn's fused RGBA output.
 // It reads the current backend and recorded session worker count together, so a
-// backend switch takes effect on the next decode. A manual pool above the adaptive
-// ceiling keeps native YCbCr and avoids multiplying RGBA's larger working set.
+// backend switch takes effect on the next decode. A manual pool above the Sixel RGBA
+// safety limit keeps native YCbCr and avoids multiplying RGBA's larger working set.
 func (e *ChromiumEngine) sixelJPEGToRGBA() bool {
 	e.mu.Lock()
-	enabled := !e.captureOn && e.backend == "sixel" && e.decodeWorkers >= 1 && e.decodeWorkers <= maxDefaultDecodeWorkers
+	enabled := !e.captureOn && e.backend == "sixel" && e.decodeWorkers >= 1 && e.decodeWorkers <= maxSixelRGBAWorkers
 	e.mu.Unlock()
 	return enabled
 }
