@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
@@ -209,7 +210,7 @@ func TestRetainedPNGFallsBackAfterBackendSwitch(t *testing.T) {
 	if err := s.RenderStreamFrame(render.Frame{EncodedPNG: data}, &out); err != nil {
 		t.Fatalf("render retained PNG through Sixel: %v", err)
 	}
-	if !strings.HasPrefix(out.String(), "\x1bPq") || !strings.HasSuffix(out.String(), "\x1b\\") {
+	if !strings.HasPrefix(out.String(), "\x1bP0;0;8q") || !strings.HasSuffix(out.String(), "\x1b\\") {
 		t.Fatalf("fallback output is not a framed Sixel image")
 	}
 }
@@ -315,12 +316,13 @@ func TestNativeJPEGGraphicsOutputMatchesRGBAPath(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decode prior Sixel: %v", err)
 		}
-		for y := nativeImg.Bounds().Min.Y; y < nativeImg.Bounds().Max.Y; y++ {
-			for x := nativeImg.Bounds().Min.X; x < nativeImg.Bounds().Max.X; x++ {
-				if nativeImg.RGBAAt(x, y) != priorImg.RGBAAt(x, y) {
-					t.Fatalf("Sixel native JPEG pixel (%d,%d) differs from prior RGBA path", x, y)
-				}
-			}
+		if !nativeImg.Bounds().Eq(priorImg.Bounds()) {
+			t.Fatalf("Sixel native JPEG bounds = %v, want %v", nativeImg.Bounds(), priorImg.Bounds())
+		}
+		psnr := metrics.PSNR(priorImg, nativeImg)
+		ssim := metrics.SSIM(priorImg, nativeImg)
+		if psnr < 30 || ssim < 0.95 {
+			t.Fatalf("Sixel native JPEG quality versus RGBA path: PSNR=%f SSIM=%f", psnr, ssim)
 		}
 	}
 }

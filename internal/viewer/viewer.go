@@ -128,9 +128,14 @@ type State struct {
 	// aliases. It stays nil on the block and sixel paths.
 	kittyEnc *kitty.LiveEncoder
 
+	// sixelEnc is the reused Sixel renderer. It retains encoder scratch across
+	// moving frames and switches its output through an internal writer proxy.
+	// The viewer draw path is serial, so one renderer owns the whole stream.
+	sixelEnc *sixel.Renderer
+
 	// graphicsRGBA is the reusable consumer-side conversion target for native
-	// JPEG YCbCr frames. The current Kitty packer and Sixel path keep their prior
-	// RGBA input, so conversion stays at those consumers.
+	// JPEG YCbCr frames. Kitty keeps its RGBA input, so conversion stays at that
+	// consumer. Sixel accepts the decoder-native image directly.
 	graphicsRGBA *image.RGBA
 }
 
@@ -293,7 +298,10 @@ func (s *State) Fit() block.Fit {
 func (s *State) Renderer() render.Renderer {
 	switch s.Backend {
 	case BackendSixel:
-		return &sixel.Renderer{}
+		if s.sixelEnc == nil {
+			s.sixelEnc = &sixel.Renderer{}
+		}
+		return s.sixelEnc
 	case BackendKitty:
 		return &kitty.Renderer{}
 	default:
@@ -531,7 +539,7 @@ func (s *State) encodeGraphics(img image.Image, fit block.Fit, w io.Writer) erro
 	if s.Backend == BackendKitty {
 		return s.encodeKitty(img, w)
 	}
-	return s.Renderer().Render(render.Frame{Img: s.graphicsPixels(img)}, w)
+	return s.Renderer().Render(render.Frame{Img: img}, w)
 }
 
 // encodeKitty draws one kitty frame with double-buffered image ids so the swap
@@ -580,9 +588,9 @@ func (s *State) encodeKittyPNG(data string, w io.Writer) error {
 	return nil
 }
 
-// graphicsPixels returns RGBA pixels for the current Kitty and Sixel consumers.
-// RGBA input is passed through. Native JPEG YCbCr is converted into a reusable
-// target at this consumer boundary, preserving the prior encoded pixels.
+// graphicsPixels returns RGBA pixels for the Kitty consumer. RGBA input is
+// passed through. Native JPEG YCbCr is converted into a reusable target at this
+// consumer boundary.
 func (s *State) graphicsPixels(img image.Image) *image.RGBA {
 	if rgba, ok := img.(*image.RGBA); ok {
 		return rgba
