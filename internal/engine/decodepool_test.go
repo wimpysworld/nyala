@@ -48,6 +48,9 @@ func seqOf(img *image.RGBA) int { return int(img.RGBAAt(0, 0).R) }
 // involved: the raw frames are fed straight into the queue.
 func drivePool(t *testing.T, e *ChromiumEngine, workers int) (*rawFrameQueue, <-chan render.Frame, func()) {
 	t.Helper()
+	e.mu.Lock()
+	e.decodeWorkers = workers
+	e.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	rawQ := newRawFrameQueue(workers + 1)
 	frames := make(chan render.Frame, 256)
@@ -169,10 +172,9 @@ func TestDecodePoolMonotonicUnderRace(t *testing.T) {
 	}
 }
 
-// TestAdaptiveDecodeWorkers proves the core-adaptive default is max(2, procs/2): the
-// floor of 2 holds on a low-core box, and the value is half the cores above that, staying
-// proportional on a many-core box with no fixed ceiling. It takes the core count as an
-// argument, so it does not depend on the test box's cores.
+// TestAdaptiveDecodeWorkers proves the core-adaptive default is procs/2 bounded to
+// [minDecodeWorkers, maxDefaultDecodeWorkers]. It takes the core count as an argument,
+// so it does not depend on the test box's cores.
 func TestAdaptiveDecodeWorkers(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -183,10 +185,11 @@ func TestAdaptiveDecodeWorkers(t *testing.T) {
 		{2, minDecodeWorkers}, // two cores: half is 1, floors to 2
 		{3, minDecodeWorkers}, // three cores: half is 1, floors to 2 (low-core heuristic)
 		{4, 2},                // half the cores
+		{6, 3},                // half the cores below the ceiling
 		{8, 4},                // half the cores
-		{16, 8},               // half the cores
-		{32, 16},              // half the cores, above the env override's fixed 16 cap
-		{64, 32},              // stays proportional, no ceiling
+		{16, 4},               // adaptive ceiling
+		{32, 4},               // adaptive ceiling on a many-core box
+		{64, 4},               // adaptive ceiling remains fixed
 	}
 	for _, c := range cases {
 		if got := adaptiveDecodeWorkers(c.procs); got != c.want {
@@ -196,6 +199,36 @@ func TestAdaptiveDecodeWorkers(t *testing.T) {
 			t.Errorf("adaptiveDecodeWorkers(%d) = %d, below the floor %d", c.procs, got, minDecodeWorkers)
 		}
 	}
+}
+
+// TestDecodeWorkerCountManualOverride proves the diagnostic override remains manual:
+// it can select counts above the adaptive ceiling up to the existing hard maximum.
+func TestDecodeWorkerCountManualOverride(t *testing.T) {
+	cases := []struct {
+		value string
+		want  int
+	}{
+		{"1", 1},
+		{"4", 4},
+		{"5", 5},
+		{"16", 16},
+		{"17", maxDecodeWorkers},
+	}
+	for _, tc := range cases {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv(decodeWorkersEnv, tc.value)
+			if got := decodeWorkerCount(); got != tc.want {
+				t.Fatalf("decodeWorkerCount() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("unset adaptive", func(t *testing.T) {
+		t.Setenv(decodeWorkersEnv, "")
+		if got := decodeWorkerCount(); got != defaultDecodeWorkers() {
+			t.Fatalf("decodeWorkerCount() = %d, want adaptive default %d", got, defaultDecodeWorkers())
+		}
+	})
 }
 
 // itoa renders a small non-negative int as decimal ASCII, the seqDecode payload.

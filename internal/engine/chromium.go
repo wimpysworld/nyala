@@ -25,7 +25,8 @@ type ChromiumEngine struct {
 	// viewer goroutine (Resize, SetBackend, SendKey, SendMouse, dispatchWheel)
 	// and the supervisor goroutine (startSession, teardownSession, launch,
 	// rebuild): ctx, cancel, slot, acks, text, frame, captureW, captureH, cols, rows, scrollX,
-	// scrollY, scrollYTarget, backend, blockScheme, cellW, cellH, layoutWidth, windowID, inputFailures, fontForcingID. Lock, copy the fields into locals or write
+	// scrollY, scrollYTarget, backend, blockScheme, cellW, cellH, layoutWidth, windowID,
+	// inputFailures, fontForcingID, decodeWorkers. Lock, copy the fields into locals or write
 	// the updates, unlock, then run the chromedp I/O on the locals. Never hold mu
 	// across a chromedp.Run or a channel send, or it deadlocks with the supervisor.
 	mu sync.Mutex
@@ -121,6 +122,11 @@ type ChromiumEngine struct {
 	// this nil. Either being non-nil means the session is streaming (see streaming).
 	// Reset per session by teardownSession.
 	rawQ *rawFrameQueue
+	// decodeWorkers records the worker count selected for this session. Live Sixel uses
+	// RGBA JPEG decode only at or below maxDefaultDecodeWorkers, which bounds its larger
+	// decoded-frame working set. Capture records its ordered count of one but never uses
+	// the live decoder. Guarded by mu and reset by teardownSession.
+	decodeWorkers int
 	// acks carries screencast frame SessionID values from the listener goroutine
 	// to the ack-pump goroutine, which runs page.ScreencastFrameAck off the event
 	// goroutine. Running the ack inside the ListenTarget callback is the chromedp

@@ -206,33 +206,44 @@ func imageToRGBA(img image.Image) *image.RGBA {
 }
 
 // decodeJPEGFast decodes one live-frame image, preferring the SIMD jpegn decoder
-// and falling back to decodeFrameImage on the same bytes. jpegn returns a
-// native *image.YCbCr about four times faster than stdlib on baseline 4:2:0, the
-// live block stream's exact class, so Block can compose its grid from the native
-// planes. jpegn returns jpegn.ErrUnsupported for inputs it declines (non-8-bit
-// precision, unusual subsampling, smoothing); any non-nil jpegn error, not only
-// ErrUnsupported, falls back to decodeFrameImage so a declined frame decodes exactly
-// as it does today. decodeFrameImage also covers the block PNG frame (routed through
-// woozymasta), which jpegn does not handle. Each call gets its own reader, so the
-// decode is safe under the parallel decode pool.
-func decodeJPEGFast(raw []byte) (image.Image, error) {
-	if img, err := jpegn.Decode(bytes.NewReader(raw)); err == nil {
+// and falling back to decodeFrameImage on the same bytes. toRGBA selects jpegn's
+// fused RGBA output for the bounded Sixel pool; false keeps native *image.YCbCr for
+// Block and other pixel consumers. Any non-nil jpegn error falls back, including
+// jpegn.ErrUnsupported and non-JPEG input. Each call gets its own reader and options,
+// so parallel workers share no decode state.
+func decodeJPEGFast(raw []byte, toRGBA bool) (image.Image, error) {
+	if toRGBA {
+		if img, err := jpegn.Decode(bytes.NewReader(raw), &jpegn.Options{ToRGBA: true}); err == nil {
+			return img, nil
+		}
+	} else if img, err := jpegn.Decode(bytes.NewReader(raw)); err == nil {
 		return img, nil
 	}
 	return decodeFrameImage(raw)
 }
 
+// sixelJPEGToRGBA reports whether this session can use jpegn's fused RGBA output.
+// It reads the current backend and recorded session worker count together, so a
+// backend switch takes effect on the next decode. A manual pool above the adaptive
+// ceiling keeps native YCbCr and avoids multiplying RGBA's larger working set.
+func (e *ChromiumEngine) sixelJPEGToRGBA() bool {
+	e.mu.Lock()
+	enabled := !e.captureOn && e.backend == "sixel" && e.decodeWorkers >= 1 && e.decodeWorkers <= maxDefaultDecodeWorkers
+	e.mu.Unlock()
+	return enabled
+}
+
 // decodeLiveFrame is the live decode-pool's pixel decode. It keeps the decoder's
-// native image layout for every pixel consumer. Block averages native JPEG YCbCr
-// planes directly while composing its final grid; graphics consumers convert only
-// at their own boundary. Capture does not call this path and remains lossless PNG.
+// native image layout except when a bounded live Sixel pool selects fused JPEG RGBA.
+// Block averages native JPEG YCbCr planes directly while composing its final grid.
+// Capture does not call this path and remains lossless PNG.
 func (e *ChromiumEngine) decodeLiveFrame(data string) (image.Image, error) {
 	raw, release, err := decodeBase64Pooled(data)
 	if err != nil {
 		return nil, fmt.Errorf("engine: base64-decode frame: %w", err)
 	}
 	defer release()
-	img, err := decodeJPEGFast(raw)
+	img, err := decodeJPEGFast(raw, e.sixelJPEGToRGBA())
 	if err != nil {
 		return nil, fmt.Errorf("engine: decode frame image: %w", err)
 	}

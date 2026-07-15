@@ -77,10 +77,11 @@ separate text channel may return in Stage 4 for link-hint geometry. See
 `docs/STAGE-3.md`.
 
 `render.Frame.Img` is an `image.Image`, not a forced full-frame RGBA plane. Live
-JPEG therefore crosses the engine/render seam as the decoder's `*image.YCbCr`, and
-pixel consumers convert only where their implementation needs RGBA. PNG keeps the
-PNG decoder's native layout on Block, Sixel, capture, and fallback paths. Every live
-Kitty stream instead requests PNG and carries the owned CDP base64 string in
+JPEG normally crosses the engine/render seam as the decoder's `*image.YCbCr`.
+Block always keeps that native layout. Live moving Sixel JPEG uses `jpegn` fused
+RGBA when the actual session has at most four decode workers; a larger manual pool
+keeps native YCbCr. PNG keeps the decoder's native layout on Block, Sixel, capture,
+and fallback paths. Every live Kitty stream requests PNG and carries the owned CDP base64 string in
 `Frame.EncodedPNG`; the Kitty consumer rechunks it as `f=100,t=d,a=T` without base64
 decode, PNG decode, pixel packing, zlib, or base64 encode. A frame queued across a
 backend switch decodes that retained PNG at the new pixel consumer, so switching and
@@ -92,8 +93,10 @@ moving Sixel. It improves fidelity over the former q80 default while the matched
 more headroom for higher resolutions than q95. Kitty always requests PNG for the
 direct path.
 Sixel keeps its decoded adaptive stream: PNG while settled, JPEG quality 90 while
-moving, then PNG again after settle. Diagnostic capture still requests and decodes
-PNG for every backend, so its bundle contract and quality gates do not change.
+moving, then PNG again after settle. The adaptive worker default is capped at four;
+`NYALA_DECODE_WORKERS` still accepts 1 to 16, with Sixel values above four keeping
+native YCbCr. Diagnostic capture still requests and decodes PNG for every backend,
+so its bundle contract and quality gates do not change.
 
 - **Engine #1: `ChromiumEngine` (chromedp).** Frames via `Page.startScreencast`;
   text layer via CDP DOM queries, placed by the snapshot's scroll and folded into
@@ -216,7 +219,7 @@ chromedp.ListenTarget(ctx, func(ev interface{}) {
 | Engine driver | `chromedp` | De-facto CDP client, pure Go, no external deps |
 | TUI runtime + chrome | Bubble Tea v2 + Bubbles v2 + Lipgloss v2 (`charm.land/*`) | Event loop, address bar, status line, layout; GA 2026-02-24. Do NOT route the bitmap viewport through its cell renderer |
 | Animation (optional) | Harmonica | Smooth chrome scroll/load polish; defer until chrome exists |
-| Frame decode | `gen2brain/jpegn`, `woozymasta/png`, decoder-native `image.Image` | Pixel consumers only. Live Kitty carries the CDP base64 PNG directly and does not decode it |
+| Frame decode | `gen2brain/jpegn`, `woozymasta/png`, native `image.Image` plus bounded Sixel RGBA | Block keeps native YCbCr; live moving Sixel JPEG fuses RGBA at one to four workers; Kitty carries CDP PNG directly |
 | Resize/composite | `golang.org/x/image/draw` | In-place scale into a reused RGBA buffer |
 | Half-block fallback | Custom compositor (port Carbonyl quad maths; reference `charmbracelet/x/mosaic`) | The permanent floor for KMSCON. Combined cell grid (bitmap + optional grapheme); quadrant (2x2) default, half-block (`U+2584`) floor; text overwrites cells. `rivo/uniseg` + `mattn/go-runewidth` for glyph width |
 | Sixel encode | `mattn/go-sixel` v0.0.12 | Retained pure-Go encoder; adaptive 256-colour palette; dithering off |

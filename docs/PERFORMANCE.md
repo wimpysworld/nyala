@@ -32,9 +32,10 @@ The reference projects agree on three durable ideas: coalesce frames, reuse buff
 and avoid redundant terminal bytes. Nyala now passes each live Kitty CDP PNG straight
 to terminal framing, so the old transmit-once animation-frame plan does not apply.
 Live Sixel now uses a retained `mattn/go-sixel` encoder with an adaptive 256-colour
-palette and dithering off. The matched State path is 9.45x faster, but still reaches
-only 9.84 processing frames/s before terminal work. Band generation is the largest
-remaining CPU phase and the next narrow benchmark candidate.
+palette and dithering off. Moving q90 JPEG uses `jpegn` fused RGBA when the live
+session has at most four decode workers. The matched sequential path is now
+103.014 ms, while State processing is 88.637 ms before terminal work. Band
+generation remains the next narrow benchmark candidate.
 Partial Kitty transport remains conditional on terminal measurements and a supported
 protocol path; see
 [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
@@ -286,6 +287,11 @@ parameterised DCS, uses an adaptive 256-colour palette, and disables dithering.
 The matched q90 State benchmark is 9.45x faster than the former
 `charmbracelet/x/ansi/sixel` path and cuts allocations by 99.993%.
 
+Live moving q90 Sixel JPEG now asks `jpegn` for fused RGBA when the actual session
+uses four decode workers or fewer. A larger manual pool keeps native YCbCr to bound
+its working set. The matched sequential path falls a further 10.43%; see the
+[four-worker policy](#bounded-sixel-rgba-decode-and-four-worker-policy-2026-07-15).
+
 This supersedes the earlier prediction that an encoder swap would be only a
 partial win. The five-image corpus chose 256 colours over 192 because SSIM was
 higher on every image and grayscale quality was safer. Dithering was slower,
@@ -419,7 +425,10 @@ Also landed on the load-time theme, beyond the ranked list:
    `mattn/go-sixel` encoder and switches its destination through a writer proxy.
    Adaptive 256-colour output with dithering off cuts the matched median from
    960.437 to 101.670 ms and payload by 18.47%. See the
-   [dated adoption record](#sixel-encoder-adoption-2026-07-15).
+   [dated adoption record](#sixel-encoder-adoption-2026-07-15). The bounded
+   `jpegn` RGBA follow-up then cuts matched sequential processing from 115.005 to
+   103.014 ms; see the
+   [four-worker policy](#bounded-sixel-rgba-decode-and-four-worker-policy-2026-07-15).
 9. **[DONE - 9c091c6]** **Cheap viewer allocs:** drop per-cell `fmt.Sprintf` (build
    with `strconv.AppendInt` into reused buffers, byte-compare against a cache so run
    coalescing stays exact in every colour mode) and `string(glyph)` (use
@@ -649,14 +658,14 @@ on a high-entropy aquarium frame `in_decode` 56 -> 29 ms (the Huffman decode and
 ~9 ms fuse average and ~2 ms base64 are the non-SIMD remainder). Net: two decode
 workers now lock 60 where four were needed, so `defaultDecodeWorkers` dropped 3 -> 2.
 
-### Core-adaptive decode-worker default (2026-07-07, committed on perf)
+### Core-adaptive decode-worker default (2026-07-07, superseded 2026-07-15)
 
-`defaultDecodeWorkers()` now returns `max(2, runtime.GOMAXPROCS(0)/2)`, read once at
-pool build (Go 1.26 GOMAXPROCS is cgroup-aware). So decode workers take about half the
-cores, leaving the rest for the render, encode, engine goroutines, and Chromium; the
-floor of 2 is the low-core heuristic. Resolves to 2 (4 cores), 4 (8), 8 (16), 16 (32).
-The `NYALA_DECODE_WORKERS` env override and its hard [1,16] clamp are unchanged.
-`internal/engine/decodepool.go` plus a `decodepool_test.go` clamp test.
+At this date, `defaultDecodeWorkers()` returned
+`max(2, runtime.GOMAXPROCS(0)/2)`. The 2026-07-15 Sixel RGBA work superseded that
+uncapped adaptive policy. The current default is
+`min(4, max(2, runtime.GOMAXPROCS(0)/2))`; it resolves to 2 on four cores and 4
+from eight cores upwards. `NYALA_DECODE_WORKERS` remains a manual 1 to 16 override.
+See the [bounded Sixel RGBA record](#bounded-sixel-rgba-decode-and-four-worker-policy-2026-07-15).
 
 ### Terminal ceiling found (2026-07-07)
 
@@ -874,7 +883,7 @@ All q95 samples stay within the 16.67 ms processing budget; the worst leaves
 Direct composition saves 2.83 to 3.08 percent of bytes per operation and 9 to 10
 allocations per operation across the five qualities.
 
-The saturated q80 benchmark used the production default of 16 decode workers on
+The saturated q80 benchmark used the then-current 16 decode workers on
 this 32-thread host. It feeds workers continuously and counts completed final grids.
 
 | Path | Completed-grid interval | Completed grids/s | B/op | allocs/op |
@@ -1244,7 +1253,7 @@ generic fallback. The change adds no workers and allocates nothing during warm
 sampling.
 
 The matched benchmark used one fixed q90 2560x2880 payload, a 160x90 sextant
-grid, `GOMAXPROCS=32`, and the production 16 workers. Fifteen end-to-end pairs ran
+grid, `GOMAXPROCS=32`, and a fixed 16-worker benchmark pool. Fifteen end-to-end pairs ran
 in interleaved baseline and candidate order. The candidate won 14 pairs, run order
 did not explain the result, and the paired test reported p=0.000 (p < 0.001).
 The 10.283 ms figure above is earlier profile context; the paired baseline below
@@ -1262,7 +1271,7 @@ is the acceptance comparison.
 | Isolated sampler | 4.390641 ms | 3.209646 ms | 26.90% |
 | `pixelAt` | 52.65 ns | 37.89 ns | 28.03% |
 
-The ten-pair saturated run used the same 16 workers. The candidate won every pair
+The ten-pair saturated run used the same fixed 16 workers. The candidate won every pair
 and reported p=0.000 (p < 0.001).
 
 | Saturated measure | Baseline | Candidate | Improvement |
@@ -1377,17 +1386,73 @@ payload was 2,076,375 B, and the largest payload was 3,712,566 B. Dithering was
 slower, larger, and lower quality. A fixed palette remains rejected because the
 tests did not validate same-frame build cost or stale-palette quality.
 
-#### Remaining profile and limit
+#### Pre-ToRGBA profile and limit
 
 The adopted path spends 15.05% of CPU in YCbCr-to-RGBA conversion, 30.10% in
 palette sampling, 6.96% in LUT construction, 7.93% in pixel mapping, and about
 31% in band generation. Allocation space is 74.73% RGBA, 17.94% paletted image,
 and 4.72% quantisation.
 
-Band generation is the next narrow benchmark candidate because it is the largest
-remaining CPU phase and could address much of the 35.00 ms State budget gap. This
-is a measurement target, not an implementation commitment. Headless capacity does
-not close the real-terminal FPS, decode, draw, byte, or tearing tasks.
+This profile motivated the bounded fused-RGBA follow-up below. Headless capacity
+does not close the real-terminal FPS, decode, draw, byte, or tearing tasks.
+
+#### Bounded Sixel RGBA decode and four-worker policy (2026-07-15)
+
+The retained follow-up uses `jpegn.Options{ToRGBA: true}` only for live moving
+Sixel JPEG when the actual session has one to four decode workers. The adaptive
+default is `min(4, max(2, GOMAXPROCS/2))`. `NYALA_DECODE_WORKERS` still accepts
+manual values from 1 to 16; values above 4 keep decoder-native YCbCr for Sixel.
+The engine records the actual count at session start and clears it at teardown.
+Backend switches read the active backend and count together, so Block remains
+native YCbCr and returning to Sixel restores the correct policy.
+
+Kitty direct PNG, capture PNG, settled Sixel PNG, Block composition, and the
+generic decode fallback are unchanged.
+
+The independent matched benchmark used the fixed 2560x2880 q90 4:2:0 frame from
+baseline commit `2560db7`, with five samples per arm.
+
+| Sequential measure | Native YCbCr | Fused RGBA | Change |
+|---|---:|---:|---:|
+| JPEG decode | 9.108 ms | 13.435 ms | 4.327 ms slower |
+| Sixel State | 105.184 ms | 88.637 ms | 16.547 ms faster |
+| Decode plus State | 115.005 ms | 103.014 ms | 11.990 ms, 10.43% faster |
+| Allocation | 52.27 MB/op | 74.31 MB/op | 42.2% higher |
+
+The fused decode costs 4.327 ms more, but it avoids the encoder's later full-frame
+conversion and wins end to end. At 88.637 ms, State alone remains 21.97 ms over
+the 66.67 ms budget for 15 frames/s and needs a further 24.8% reduction. These are
+processing figures, not terminal FPS.
+
+| Supply and memory measure | Native YCbCr | Fused RGBA | Change |
+|---|---:|---:|---:|
+| Saturated supply | 986 frames/s | 210 frames/s | Lower, still above encoder demand |
+| Saturated CPU | 1285% | 378% | 70.6% lower |
+| Peak RSS | 423,120 KiB | 625,760 KiB | 47.9% higher |
+| Per-frame allocation | 11.63 MB | 55.86 MB | 44.23 MB higher |
+| Retained live plus State bound | 458.6 MiB | 463.6 MiB | 5.0 MiB, 1.1% higher |
+
+Peak RSS rises because Go retains the larger transient heap after saturation; it
+does not represent the steady retained live-frame bound. Four current Block workers
+supply 372 frames/s. Applying the documented 29 ms slow-decode estimate still gives
+134 completed grids/s, 2.24x the 60 frames/s arrival target. Two workers were
+rejected because that slow-path margin was too small.
+
+A manual five-worker Sixel session stays native YCbCr and measures 114.568 ms
+sequentially with 438.2 frames/s saturated supply. Block decode plus a 160x90 grid
+moves from 10.042 to 9.963 ms, which is noise rather than a claimed Block gain.
+
+| Quality measure | Native YCbCr | Fused RGBA | Change |
+|---|---:|---:|---:|
+| Sixel payload | 2,142,324 B | 2,168,998 B | 1.25% larger |
+| PSNR | 39.1808 dB | 39.1575 dB | 0.023 dB lower |
+| SSIM | 0.9897798 | 0.9901145 | Higher |
+| Maximum channel error | 143 | 142 | One level lower |
+
+The raw decoded images differ by at most one channel level, with PSNR 63.129 dB
+and SSIM 0.99989759. Retain the fused path and four-worker cap: the matched
+sequential gain is 10.43%, quality is stable, saturated supply exceeds demand, and
+the retained bound rises only 1.1%. Band generation remains the next narrow target.
 
 ### Option assessment
 
@@ -1395,20 +1460,17 @@ not close the real-terminal FPS, decode, draw, byte, or tearing tasks.
 |---|---|---|
 | Current fused Block compositor | Exact weighted region average across six ratios, one conversion per terminal sub-cell, existing persistent workers | Keep |
 | Ratio-specialised Block plane sums | The retained 4:2:0 path removes common mapping and loop work without a full RGBA surface; generic fallback preserves every other case | Retained after exactness, paired, CPU, throughput, and tail gates |
-| `jpegn` v0.4.4 `Options.ToRGBA` | MIT, cgo-free, active but young; packed RGBA output, default `NearestNeighbor` conversion, AVX2 on amd64, NEON on arm64, scalar fallback, six ratios; tests allow a per-channel difference of 2 | Deferred Sixel candidate; conversion is now 15.05% of CPU |
-| Current decoder plus row-parallel `draw.Draw` | Uses the existing viewer pool, preserves current pixels, and measured 0 B/op and 0 allocs/op warm | Deferred Sixel candidate; band generation is the larger phase |
+| `jpegn` v0.4.4 `Options.ToRGBA` | MIT, cgo-free packed RGBA; matched sequential Sixel processing falls 10.43% with stable quality and a 1.1% retained-bound increase | Retained for live moving Sixel JPEG at one to four workers |
+| Current decoder plus row-parallel `draw.Draw` | Uses the existing viewer pool, preserves current pixels, and measured 0 B/op and 0 allocs/op warm | Closed while bounded fused RGBA wins end to end |
 | Standard library `imageutil.DrawYCbCr` | Internal, full-frame, and specialised for four ratios | Use only through the public `draw.Draw` boundary |
 | Go 1.26 `archsimd` | Experimental, `GOEXPERIMENT`-gated, amd64-only | Reject for production |
 | `go-cv-simd` | Stale, BGRA-oriented, and supports fewer input formats | Reject |
 | Jive row workers | Persistent disjoint-row scalar conversion | Prior art only; Block already uses the pattern and the Sixel experiment measured it |
 
-Nyala pins `jpegn` v0.4.4 at this record, so `Options.ToRGBA` is an API-path
-benchmark, not an accepted dependency change. The post-adoption profile keeps both
-conversion candidates deferred while band generation uses about 31% of CPU. If
-revisited, compare them on the actual `State` path under decode contention and
-require a statistically sound end-to-end or throughput gain with no tail
-regression. Banded draw must remain byte-exact. The `jpegn` arm must pass decoded
-visual-equality checks with its documented per-channel tolerance.
+Nyala already pins `jpegn` v0.4.4, so the retained change adds no dependency.
+Its activation boundary is a memory policy, not a decoder capability limit. A
+manual pool above four workers stays native YCbCr because fused RGBA multiplies the
+larger per-frame working set. Band generation remains the next Sixel benchmark.
 
 ### Primary sources
 

@@ -20,9 +20,13 @@ import (
 const decodeWorkersEnv = "NYALA_DECODE_WORKERS"
 
 // maxDecodeWorkers is the hard cap on the manual env override, so a stray large value
-// cannot spawn an unbounded pool and starve the render, encode, and browser of cores. The
-// core-adaptive default is core-proportional and does not use it.
+// cannot spawn an unbounded pool and starve the render, encode, and browser of cores.
 const maxDecodeWorkers = 16
+
+// maxDefaultDecodeWorkers caps the core-adaptive default. Four workers sustain the
+// measured Block and Sixel pipelines while bounding the decoded-frame working set. A
+// manual decodeWorkersEnv override can still select up to maxDecodeWorkers.
+const maxDefaultDecodeWorkers = 4
 
 // minDecodeWorkers is the floor default: two workers lock output at 60 on a strong CPU
 // (the jpegn SIMD decode roughly halves a screencast decode, ~29 ms on a large block
@@ -36,18 +40,20 @@ func defaultDecodeWorkers() int {
 	return adaptiveDecodeWorkers(runtime.GOMAXPROCS(0))
 }
 
-// adaptiveDecodeWorkers derives the pool as max(minDecodeWorkers, procs/2). The decode
-// workers take about half the cores, so half stays free for the render, the terminal
-// encode, the engine goroutines, and Chromium, which all run alongside the pool. procs/2
-// sits below the core count, so no separate ceiling is needed. The floor of 2 is the
-// low-core heuristic: a 2-core or 3-core box still gets 2 workers even though that exceeds
-// half, so a weak CPU (no AVX2, jpegn on its slower path) is not left with one. So a 4-core
-// box gets 2, an 8-core box 4, a 16-core box 8, and a 32-core box 16.
+// adaptiveDecodeWorkers derives the pool as min(maxDefaultDecodeWorkers,
+// max(minDecodeWorkers, procs/2)). The decode workers take at most half the cores and
+// leave capacity for rendering, terminal encoding, engine goroutines, and Chromium.
+// The floor keeps a low-core box from using only one worker; the ceiling bounds the
+// decoded-frame working set on a many-core box.
 func adaptiveDecodeWorkers(procs int) int {
-	if n := procs / 2; n > minDecodeWorkers {
-		return n
+	n := procs / 2
+	if n < minDecodeWorkers {
+		return minDecodeWorkers
 	}
-	return minDecodeWorkers
+	if n > maxDefaultDecodeWorkers {
+		return maxDefaultDecodeWorkers
+	}
+	return n
 }
 
 // decodeWorkerCount reads the live decode-pool size from NYALA_DECODE_WORKERS, clamped to

@@ -50,8 +50,9 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	live := !e.captureOn
 	var slot *frameSlot
 	var rawQ *rawFrameQueue
-	workers := decodeWorkerCount()
+	workers := 1
 	if live {
+		workers = decodeWorkerCount()
 		// Bound the queue to one buffered frame per worker plus one in flight, so the
 		// pool stays fed while memory stays bounded; a full queue drops the oldest
 		// undecoded frame.
@@ -91,6 +92,7 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	e.mu.Lock()
 	e.slot = slot
 	e.rawQ = rawQ
+	e.decodeWorkers = workers
 	e.acks = acks
 	e.text = ts
 	e.reSnap = reSnap
@@ -426,6 +428,7 @@ func (e *ChromiumEngine) teardownSession() {
 	cancel := e.cancel
 	e.ctx, e.cancel, e.slot, e.acks, e.text = nil, nil, nil, nil, nil
 	e.rawQ = nil
+	e.decodeWorkers = 0
 	e.reSnap, e.reflow, e.scroll, e.reEmit = nil, nil, nil, nil
 	e.motion = nil
 	e.screencastFmt = screencastFmt{}
