@@ -170,7 +170,10 @@ visits every text node with a `TreeWalker`, takes one client rect per visual lin
 `Range.getClientRects()`, and snaps the row with `Math.round(top/cellH)` from the
 line-box top, no inset and no bitmap scan. The forced `line-height` makes the divisor
 equal the painted line pitch, so a browser-laid line at `N*cellH` snaps to row `N` with
-no residue. `getClientRects()` returns the on-screen rect with the scroll already
+no residue. A whole-node `Range.getClientRects()` call gives each visual line
+fragment an ordered identity. Each word or code-unit rect maps to that identity.
+Adjacent words in one fragment stay together, while separate CSS columns cannot join
+even when all fragments snap to the same row. `getClientRects()` returns the on-screen rect with the scroll already
 subtracted, so each run places at the walk's own scroll offset; the runs, that scroll,
 and the layout generation come from one evaluate, so they stay internally consistent
 and a sustained scroll shows the current text. `decodeWalkRuns` trusts the page's
@@ -752,16 +755,17 @@ content. A breach sets the failure flag, and the sweep still continues past a fa
 and exits nonzero if any fixture fails. The sweep runs nine fixtures at two grids,
 120x40 and 240x48.
 
-Four fixtures carry a committed `placement_gate` override in `fixture.json`, each
-with a `reason`:
+Four fixtures established the initial fixture-specific placement evidence:
 
 - `layout-02-rtl-bidi` loosens mean, max, and drifted for Arabic shaped-cluster
   advances that exceed one cell.
 - `layout-03-cjk-vertical-ruby` loosens mean, max, and drifted and allows 2
   collisions for CJK vertical and ruby runs that fall off the embedded face.
-- `layout-04-multicolumn-justified` allows 8 collisions for a wrong-column paragraph
-  whose runs map onto another column's cells. This is an active render fault whose
-  root cause is deferred; the mean, max, and drifted defaults still apply.
+- `layout-04-multicolumn-justified` formerly allowed 8 collisions for a wrong-column
+  paragraph. Whole-node visual fragment identities fixed the row-key collision, and
+  the fixture now passes all three grids with zero collisions and no override. Paint
+  displacement is not applicable: separate layers remove glyph ink from the source
+  screenshot, so the metric skips every run.
 - `layout-08` loosens max to 1.1 and drifted to 2 for a trailing-whitespace metric
   artefact: the trim shortens two soft-wrapped runs while the box width keeps the
   trimmed whitespace, so the right edge errs exactly 1.0 cells. The render is correct;

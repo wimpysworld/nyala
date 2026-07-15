@@ -10,6 +10,116 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/font"
 )
 
+const multiColumnText = "alpha bravo cider delta ember fable gamma hotel ivory joker karma lemon " +
+	"mango noble ocean piano queen river solar tango ultra vivid water xenon " +
+	"young zesty acorn birch coral denim eagle frost grape hazel inlet juniper " +
+	"koala lilac maple north olive pearl quest robin stone tiger urban vocal " +
+	"whale xray yield zebra amber beach cloud drift earth flame green honey"
+
+// multiColumnTestPage keeps one text node in a four-row, two-column box. Its
+// overflow creates five visual columns, each with four fragments.
+const multiColumnTestPage = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<p style='margin:0;width:352px;height:64px;column-count:2;column-fill:auto;column-gap:32px'>" +
+	multiColumnText +
+	"</p></body></html>"
+
+// sameRowMultiColumnTestPage uses the same text in a one-row column box. Every
+// visual fragment snaps to row zero, so row changes cannot identify columns.
+const sameRowMultiColumnTestPage = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<p style='margin:0;width:352px;height:16px;column-count:2;column-fill:auto;column-gap:32px'>" +
+	multiColumnText +
+	"</p></body></html>"
+
+// TestLiveMultiColumnTextKeepsLineFragmentsSeparate checks a text node that
+// returns to the same snapped rows in later CSS columns. It must return exactly
+// five fragments on each of four rows. The exact count rejects both joined
+// columns and per-word over-fragmentation.
+func TestLiveMultiColumnTextKeepsLineFragmentsSeparate(t *testing.T) {
+	res := liveTextWalk(t, multiColumnTestPage)
+	assertFragmentGrid(t, res, 4, 5)
+}
+
+// TestLiveSameRowMultiColumnTextKeepsFragmentsSeparate checks the edge case
+// where every visual column fragment shares one snapped row. Whole-node visual
+// fragment identity must return twenty narrow runs on that row.
+func TestLiveSameRowMultiColumnTextKeepsFragmentsSeparate(t *testing.T) {
+	res := liveTextWalk(t, sameRowMultiColumnTestPage)
+	assertFragmentGrid(t, res, 1, 20)
+}
+
+func liveTextWalk(t *testing.T, page string) walkResult {
+	t.Helper()
+	if _, err := resolveExecutable(""); err != nil {
+		t.Skipf("no Chromium for the live test: %v", err)
+	}
+
+	const cellW, cellH = 8.0, 16.0
+
+	e := New("")
+	e.SetCellPx(cellW, cellH)
+	e.Resize(120, 24)
+	if err := e.Navigate(page); err != nil {
+		t.Fatalf("navigate: %v", err)
+	}
+	t.Cleanup(func() { _ = e.Close() })
+
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	select {
+	case _, ok := <-e.Frames():
+		if !ok {
+			t.Fatal("frames channel closed before a frame arrived")
+		}
+	case <-deadline.C:
+		t.Fatal("no synced frame within the deadline")
+	}
+
+	e.mu.Lock()
+	ctx := e.ctx
+	e.mu.Unlock()
+	if ctx == nil {
+		t.Fatal("engine context is nil after navigate")
+	}
+
+	styleScript := buildStylesheetScript(font.FiraCodeTTF(), cellW, cellH)
+	if err := evaluateVoid(ctx, "inject forcing", styleScript, false); err != nil {
+		t.Fatalf("inject forcing stylesheet: %v", err)
+	}
+	if err := evaluateVoid(ctx, "fonts ready", "document.fonts.ready", true); err != nil {
+		t.Fatalf("await fonts ready: %v", err)
+	}
+
+	res, err := evaluateWalk(ctx, buildTextWalkScript(cellW, cellH))
+	if err != nil {
+		t.Fatalf("text walk: %v", err)
+	}
+	return res
+}
+
+func assertFragmentGrid(t *testing.T, res walkResult, wantRows, wantPerRow int) {
+	t.Helper()
+	if wantRuns := wantRows * wantPerRow; len(res.Runs) != wantRuns {
+		t.Fatalf("runs = %d, want %d", len(res.Runs), wantRuns)
+	}
+	rows := make(map[int]int)
+	for _, run := range res.Runs {
+		rows[run.Row]++
+		if run.W > 160 {
+			t.Errorf("run %q width = %.1fpx, want one column fragment at most 160px", run.Text, run.W)
+		}
+	}
+	if len(rows) != wantRows {
+		t.Errorf("rows = %d, want %d: %+v", len(rows), wantRows, rows)
+	}
+	for row, count := range rows {
+		if count != wantPerRow {
+			t.Errorf("row %d fragments = %d, want %d", row, count, wantPerRow)
+		}
+	}
+}
+
 // srOnlyTestPage carries three text nodes: two screen-reader-only hidden variants
 // and one genuinely visible narrow element. The first hidden div uses the GitHub
 // Primer .sr-only idiom (1px-square, overflow-hidden, clip-path normalised to

@@ -231,13 +231,32 @@ corpus:
     # the point: the board is honest. A breach is logged as an expected-fail with
     # its real numbers and does NOT set fail, so the sweep exit code stays usable
     # while the architecture is unfixed; every later phase turns these expected-
-    # fails green. A pass is noted. This mirrors the report-the-number discipline
-    # the layout-13 scroll leg uses. The paint metric reads screenshot.png (the
-    # source page paint) not block-render.png (which folds our overlay on and would
-    # cancel), so it cannot self-cancel the way placement-score can.
+    # fails green. A run with no source glyph ink is N/A, not a pass. This mirrors
+    # the report-the-number discipline the layout-13 scroll leg uses. The paint
+    # metric reads screenshot.png, the source page paint, not block-render.png,
+    # which folds our overlay on and would cancel. It therefore cannot self-cancel
+    # the way placement-score can.
     paint_gate() {
         local fjson="$1" frame="$2" label="$3"
-        local numbers; numbers="$(go run ./tools/paint-displacement "$frame" 2>/dev/null | grep -E 'measured|skipped|disp')"
+        local numbers measure_status
+        numbers="$(go run ./tools/paint-displacement "$frame" 2>/dev/null | grep -E 'measured|skipped|disp')"
+        measure_status=$?
+        if [ "$measure_status" -ne 0 ]; then
+            printf 'paint-displacement ERROR (measurement failed): %s\n' "$label" >&2
+            fail=1
+            return
+        fi
+        local measured; measured="$(printf '%s\n' "$numbers" | awk '$1 == "measured" && $2 == "runs:" { print $3 }')"
+        if ! [[ "$measured" =~ ^[0-9]+$ ]]; then
+            printf 'paint-displacement ERROR (invalid measured-run count): %s\n' "$label" >&2
+            fail=1
+            return
+        fi
+        if [ "$measured" -eq 0 ]; then
+            printf 'paint-displacement N/A (no source glyph ink): %s\n' "$label"
+            printf '%s\n' "$numbers" | sed 's/^/    /'
+            return
+        fi
         if go run ./tools/paint-displacement -gate -thresholds "$fjson" "$frame" >/dev/null 2>&1; then
             printf 'paint-displacement PASS: %s\n' "$label"
         else
