@@ -23,6 +23,9 @@ type ycbcrSampler struct {
 	yChromaRanges []sampleSpan
 	xChromaGroups []weightedMapping
 	yChromaGroups []weightedMapping
+	x420Spans     []chromaSpan420
+	y420Spans     []chromaSpan420
+	fast420       bool
 }
 
 type sampleSpan struct {
@@ -36,6 +39,13 @@ type weightedMapping struct {
 	weight uint64
 }
 
+type chromaSpan420 struct {
+	offset      int
+	groups      int
+	firstWeight uint64
+	lastWeight  uint64
+}
+
 func newYCbCrSampler(src *image.YCbCr, dstW, dstH int) ycbcrSampler {
 	var s ycbcrSampler
 	s.prepare(src, dstW, dstH)
@@ -47,6 +57,7 @@ func newYCbCrSampler(src *image.YCbCr, dstW, dstH int) ycbcrSampler {
 // can share them safely. Reusing a sampler reuses every slice backing array.
 func (s *ycbcrSampler) prepare(src *image.YCbCr, dstW, dstH int) {
 	s.src, s.dstW, s.dstH = src, dstW, dstH
+	s.fast420 = false
 	if src == nil {
 		return
 	}
@@ -86,6 +97,22 @@ func (s *ycbcrSampler) prepare(src *image.YCbCr, dstW, dstH int) {
 		s.yChromaRanges,
 		s.yChromaGroups,
 	)
+	if src.SubsampleRatio == image.YCbCrSubsampleRatio420 && dstW <= sw && dstH <= sh {
+		s.x420Spans, s.fast420 = prepare420Spans(
+			s.xChromaRanges,
+			s.xChromaGroups,
+			1,
+			s.x420Spans,
+		)
+		if s.fast420 {
+			s.y420Spans, s.fast420 = prepare420Spans(
+				s.yChromaRanges,
+				s.yChromaGroups,
+				src.CStride,
+				s.y420Spans,
+			)
+		}
+	}
 }
 
 func reuseSlice[T any](buf []T, n int) []T {
@@ -142,6 +169,36 @@ func prepareWeightedMappings(
 	return ranges, groups
 }
 
+// prepare420Spans condenses the common 4:2:0 mapping into contiguous plane
+// spans. Crops that cross a negative odd coordinate can produce a three-pixel
+// chroma run under Go's signed division rules; those retain the generic path.
+func prepare420Spans(
+	ranges []sampleSpan,
+	groups []weightedMapping,
+	step int,
+	spans []chromaSpan420,
+) ([]chromaSpan420, bool) {
+	spans = reuseSlice(spans, len(ranges))
+	for i, r := range ranges {
+		mapping := groups[r.start:r.end]
+		if len(mapping) == 0 || mapping[0].weight > 2 {
+			return spans, false
+		}
+		for j := 1; j < len(mapping); j++ {
+			if mapping[j].offset != mapping[j-1].offset+step || mapping[j].weight > 2 {
+				return spans, false
+			}
+		}
+		spans[i] = chromaSpan420{
+			offset:      mapping[0].offset,
+			groups:      len(mapping),
+			firstWeight: mapping[0].weight,
+			lastWeight:  mapping[len(mapping)-1].weight,
+		}
+	}
+	return spans, true
+}
+
 // pixelAt returns one opaque RGB sub-cell sample. Coordinates outside the
 // destination grid read as black, matching the RGBA block pixel helper.
 func (s *ycbcrSampler) pixelAt(dx, dy int) (r, g, b uint8) {
@@ -156,6 +213,9 @@ func (s *ycbcrSampler) pixelAt(dx, dy int) (r, g, b uint8) {
 	n := xSpan.size * ySpan.size
 	if n == 0 {
 		return 0, 0, 0
+	}
+	if s.fast420 {
+		return s.pixelAt420(dx, dy, n)
 	}
 	var sumY uint64
 	for py := ySpan.start; py < ySpan.end; py++ {
@@ -177,6 +237,63 @@ func (s *ycbcrSampler) pixelAt(dx, dy int) (r, g, b uint8) {
 			sumCb += uint64(s.src.Cb[offset]) * weight
 			sumCr += uint64(s.src.Cr[offset]) * weight
 		}
+	}
+	y := byte(sumY / n & 0xff)
+	cb := byte(sumCb / n & 0xff)
+	cr := byte(sumCr / n & 0xff)
+	return color.YCbCrToRGB(y, cb, cr)
+}
+
+func (s *ycbcrSampler) pixelAt420(dx, dy int, n uint64) (r, g, b uint8) {
+	xLuma := s.xSpans[dx]
+	yLuma := s.ySpans[dy]
+	var sumY uint64
+	if xLuma.end-xLuma.start == 8 {
+		for py := yLuma.start; py < yLuma.end; py++ {
+			offset := s.yRowOffsets[py] + xLuma.start
+			row := s.src.Y[offset : offset+8]
+			sumY += uint64(row[0]) + uint64(row[1]) + uint64(row[2]) + uint64(row[3]) +
+				uint64(row[4]) + uint64(row[5]) + uint64(row[6]) + uint64(row[7])
+		}
+	} else {
+		for py := yLuma.start; py < yLuma.end; py++ {
+			yStart := s.yRowOffsets[py] + xLuma.start
+			for _, value := range s.src.Y[yStart : yStart+xLuma.end-xLuma.start] {
+				sumY += uint64(value)
+			}
+		}
+	}
+
+	xSpan := s.x420Spans[dx]
+	ySpan := s.y420Spans[dy]
+	var sumCb, sumCr uint64
+	for row := range ySpan.groups {
+		yWeight := uint64(2)
+		if row == 0 {
+			yWeight = ySpan.firstWeight
+		}
+		if row == ySpan.groups-1 {
+			yWeight = ySpan.lastWeight
+		}
+
+		offset := ySpan.offset + row*s.src.CStride + xSpan.offset
+		if xSpan.groups == 1 {
+			sumCb += uint64(s.src.Cb[offset]) * xSpan.firstWeight * yWeight
+			sumCr += uint64(s.src.Cr[offset]) * xSpan.firstWeight * yWeight
+			continue
+		}
+
+		rowCb := uint64(s.src.Cb[offset]) * xSpan.firstWeight
+		rowCr := uint64(s.src.Cr[offset]) * xSpan.firstWeight
+		for col := 1; col < xSpan.groups-1; col++ {
+			rowCb += uint64(s.src.Cb[offset+col]) * 2
+			rowCr += uint64(s.src.Cr[offset+col]) * 2
+		}
+		last := offset + xSpan.groups - 1
+		rowCb += uint64(s.src.Cb[last]) * xSpan.lastWeight
+		rowCr += uint64(s.src.Cr[last]) * xSpan.lastWeight
+		sumCb += rowCb * yWeight
+		sumCr += rowCr * yWeight
 	}
 	y := byte(sumY / n & 0xff)
 	cb := byte(sumCb / n & 0xff)

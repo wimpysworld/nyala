@@ -24,6 +24,29 @@ func patternedYCbCr(rect image.Rectangle, ratio image.YCbCrSubsampleRatio) *imag
 	return src
 }
 
+func patternedPaddedYCbCr420(rect image.Rectangle, padding int) *image.YCbCr {
+	chromaWidth := (rect.Max.X+1)/2 - rect.Min.X/2
+	chromaHeight := (rect.Max.Y+1)/2 - rect.Min.Y/2
+	src := &image.YCbCr{
+		Y:              make([]byte, (rect.Dx()+padding)*rect.Dy()),
+		Cb:             make([]byte, (chromaWidth+padding)*chromaHeight),
+		Cr:             make([]byte, (chromaWidth+padding)*chromaHeight),
+		YStride:        rect.Dx() + padding,
+		CStride:        chromaWidth + padding,
+		SubsampleRatio: image.YCbCrSubsampleRatio420,
+		Rect:           rect,
+	}
+	for y := rect.Min.Y; y < rect.Max.Y; y++ {
+		for x := rect.Min.X; x < rect.Max.X; x++ {
+			src.Y[src.YOffset(x, y)] = uint8((x*17 + y*29 + x*y) & 0xff)
+			ci := src.COffset(x, y)
+			src.Cb[ci] = uint8((x*11 + y*7 + 43) & 0xff)
+			src.Cr[ci] = uint8((x*5 + y*19 + 97) & 0xff)
+		}
+	}
+	return src
+}
+
 // referenceYCbCrAverage materialises the legacy sub-cell RGBA image as an
 // independent test oracle. It uses the standard library's coordinate lookup,
 // rather than the direct composer's plane-index arithmetic.
@@ -154,6 +177,84 @@ func TestYCbCrChromaGroups444(t *testing.T) {
 		if group.weight != 1 {
 			t.Fatalf("vertical 4:4:4 group weight = %d, want 1", group.weight)
 		}
+	}
+	assertSamplerMatchesReference(t, &sampler, referenceYCbCrAverage(src, dstW, dstH))
+}
+
+// TestYCbCr420NegativeOddCropFallback covers signed division around zero, where
+// one chroma coordinate can represent three luma pixels and the fast path must
+// retain the generic weighted mapping.
+func TestYCbCr420NegativeOddCropFallback(t *testing.T) {
+	const dstW, dstH = 7, 6
+	base := patternedYCbCr(image.Rect(-9, -9, 14, 14), image.YCbCrSubsampleRatio420)
+	src := base.SubImage(image.Rect(-1, -3, 12, 12)).(*image.YCbCr)
+	sampler := newYCbCrSampler(src, dstW, dstH)
+	if sampler.fast420 {
+		t.Fatal("negative odd crop selected the 4:2:0 fast path")
+	}
+	assertSamplerMatchesReference(t, &sampler, referenceYCbCrAverage(src, dstW, dstH))
+}
+
+// TestYCbCr420NegativeOddCropFastPath covers a cropped source that starts at
+// negative odd coordinates but stays below zero, so its chroma runs remain
+// two pixels wide and the specialised path must preserve signed plane offsets.
+func TestYCbCr420NegativeOddCropFastPath(t *testing.T) {
+	const dstW, dstH = 7, 6
+	base := patternedYCbCr(image.Rect(-31, -29, -2, -2), image.YCbCrSubsampleRatio420)
+	src := base.SubImage(image.Rect(-25, -23, -4, -4)).(*image.YCbCr)
+	sampler := newYCbCrSampler(src, dstW, dstH)
+	if !sampler.fast420 {
+		t.Fatal("negative odd crop did not select the 4:2:0 fast path")
+	}
+	assertSamplerMatchesReference(t, &sampler, referenceYCbCrAverage(src, dstW, dstH))
+}
+
+// TestYCbCr420PaddedStrideFastPath checks direct plane offsets when chroma rows
+// contain padding beyond the visible source width.
+func TestYCbCr420PaddedStrideFastPath(t *testing.T) {
+	const dstW, dstH = 9, 7
+	src := patternedPaddedYCbCr420(image.Rect(3, 5, 40, 34), 11)
+	sampler := newYCbCrSampler(src, dstW, dstH)
+	if !sampler.fast420 {
+		t.Fatal("padded 4:2:0 source did not select the fast path")
+	}
+	assertSamplerMatchesReference(t, &sampler, referenceYCbCrAverage(src, dstW, dstH))
+}
+
+// TestYCbCr420FastPathReuseAcrossRatios checks that ratio changes reset the
+// dispatch flag even when every mapping slice keeps the same length and backing
+// array.
+func TestYCbCr420FastPathReuseAcrossRatios(t *testing.T) {
+	const dstW, dstH = 11, 9
+	rect := image.Rect(3, 5, 100, 96)
+	sources := []struct {
+		ratio image.YCbCrSubsampleRatio
+		fast  bool
+	}{
+		{ratio: image.YCbCrSubsampleRatio420, fast: true},
+		{ratio: image.YCbCrSubsampleRatio422},
+		{ratio: image.YCbCrSubsampleRatio444},
+		{ratio: image.YCbCrSubsampleRatio420, fast: true},
+	}
+	var sampler ycbcrSampler
+	for i, tc := range sources {
+		src := patternedYCbCr(rect, tc.ratio)
+		sampler.prepare(src, dstW, dstH)
+		if sampler.fast420 != tc.fast {
+			t.Fatalf("step %d ratio %d fast420 = %t, want %t", i, tc.ratio, sampler.fast420, tc.fast)
+		}
+		assertSamplerMatchesReference(t, &sampler, referenceYCbCrAverage(src, dstW, dstH))
+	}
+}
+
+// TestYCbCr420UpscaleFallback keeps repeated one-pixel source spans on the
+// generic path.
+func TestYCbCr420UpscaleFallback(t *testing.T) {
+	const dstW, dstH = 11, 9
+	src := patternedYCbCr(image.Rect(3, 5, 10, 10), image.YCbCrSubsampleRatio420)
+	sampler := newYCbCrSampler(src, dstW, dstH)
+	if sampler.fast420 {
+		t.Fatal("upscaled 4:2:0 source selected the fast path")
 	}
 	assertSamplerMatchesReference(t, &sampler, referenceYCbCrAverage(src, dstW, dstH))
 }
