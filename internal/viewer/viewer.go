@@ -478,16 +478,23 @@ func (s *State) renderBlock(src image.Image, text []render.GlyphRun, w io.Writer
 			s.scratch.downscale = metrics.NewParallelDownscale()
 			s.scratch.compose = block.NewParallelCompose()
 		}
-		// The live block JPEG decode fuses the downscale into the decode worker, so a
-		// fused frame already arrives at the sub-cell resolution. Skip the downscale
-		// then and compose the frame's own bitmap: a full-surface block bitmap (a PNG
-		// frame, or a not-yet-fused path) can never equal the sub-cell extent, so an
-		// exact size match is a safe signal that the engine pre-averaged this frame.
-		sub, nativeRGBA := src.(*image.RGBA)
-		if !nativeRGBA || src.Bounds().Dx() != pxW || src.Bounds().Dy() != pxH {
-			sub = s.scratch.downscale.DownscaleInto(s.scratch.downscaleDst(pxW, pxH), src, s.scratch.pool)
+		frame := render.Frame{Img: src, Text: text}
+		var grid *block.Grid
+		_, nativeYCbCr := src.(*image.YCbCr)
+		srcW, srcH := src.Bounds().Dx(), src.Bounds().Dy()
+		downscaleYCbCr := nativeYCbCr && pxW <= srcW && pxH <= srcH && (pxW < srcW || pxH < srcH)
+		if downscaleYCbCr {
+			// Live Block JPEG frames stay in the decoder's native YCbCr planes. The
+			// Block compositor averages each source region straight into its final
+			// sub-cell colours, avoiding the intermediate downsampled RGBA image.
+			grid = s.scratch.compose.ComposeYCbCrInto(&br, &s.scratch.out, frame, s.scratch.pool)
+		} else {
+			// PNG, RGBA, and non-downscale inputs keep the established reusable
+			// downscale path. Capture uses the separate diff-nil path below.
+			sub := s.scratch.downscale.DownscaleInto(s.scratch.downscaleDst(pxW, pxH), src, s.scratch.pool)
+			frame.Img = sub
+			grid = s.scratch.compose.ComposeInto(&br, &s.scratch.out, frame, s.scratch.pool)
 		}
-		grid := s.scratch.compose.ComposeInto(&br, &s.scratch.out, render.Frame{Img: sub, Text: text}, s.scratch.pool)
 		if s.captureGrid != nil {
 			// Copy the cells, never alias: the live scratch grid is reused next frame,
 			// so the capture sink must own an independent backing array to serialise.

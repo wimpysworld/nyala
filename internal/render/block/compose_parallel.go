@@ -1,6 +1,8 @@
 package block
 
 import (
+	"image"
+
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/rowband"
 )
@@ -38,10 +40,12 @@ func (br *Renderer) composeBand(g *Grid, f render.Frame, row0, row1 int) {
 // nothing per frame. Drive it from a single goroutine, so the pool's WaitGroup
 // never overlaps calls.
 type ParallelCompose struct {
-	br   Renderer             // current frame's renderer, held by value so the band takes no per-frame heap
-	g    *Grid                // current frame's destination grid; the band writes it
-	f    render.Frame         // current frame; the band reads its image
-	band func(row0, row1 int) // persistent closure over br/g/f; built once
+	br          Renderer             // current frame's renderer, held by value so the band takes no per-frame heap
+	g           *Grid                // current frame's destination grid; the band writes it
+	f           render.Frame         // current frame; the band reads its image
+	ycbcr       ycbcrSampler         // native source and sample-grid mapping for direct Block composition
+	directYCbCr bool                 // selects ycbcr instead of f for the band body
+	band        func(row0, row1 int) // persistent closure over br/g/f; built once
 }
 
 // NewParallelCompose builds a compose driver with its band closure built once.
@@ -49,7 +53,13 @@ type ParallelCompose struct {
 // allocates a closure and the pool's WaitGroup never overlaps calls.
 func NewParallelCompose() *ParallelCompose {
 	pc := &ParallelCompose{}
-	pc.band = func(row0, row1 int) { pc.br.composeBand(pc.g, pc.f, row0, row1) }
+	pc.band = func(row0, row1 int) {
+		if pc.directYCbCr {
+			pc.br.composeYCbCrRows(pc.g, &pc.ycbcr, row0, row1)
+			return
+		}
+		pc.br.composeBand(pc.g, pc.f, row0, row1)
+	}
 	return pc
 }
 
@@ -65,11 +75,36 @@ func (pc *ParallelCompose) ComposeInto(br *Renderer, dst *Grid, f render.Frame, 
 	pc.br = *br
 	pc.g = dst
 	pc.f = f
+	pc.directYCbCr = false
 	if pool == nil {
 		pc.band(0, dst.Rows)
 	} else {
 		pool.Run(dst.Rows, composeBandMinRows, pc.band)
 	}
 	applyOverlay(dst, f, br.Scheme)
+	return dst
+}
+
+// ComposeYCbCrInto composes a full-size native YCbCr frame directly into dst,
+// splitting final grid rows across pool. It creates no downsampled RGBA image.
+// A non-YCbCr frame uses ComposeInto.
+func (pc *ParallelCompose) ComposeYCbCrInto(br *Renderer, dst *Grid, f render.Frame, pool *rowband.Pool) *Grid {
+	src, ok := f.Img.(*image.YCbCr)
+	if !ok {
+		return pc.ComposeInto(br, dst, f, pool)
+	}
+	reuseGrid(dst, br.Cols, br.Rows)
+	pc.br = *br
+	pc.g = dst
+	pc.f = f
+	width, height := br.ycbcrSampleSize()
+	pc.ycbcr.prepare(src, width, height)
+	pc.directYCbCr = true
+	if pool == nil {
+		pc.band(0, dst.Rows)
+	} else {
+		pool.Run(dst.Rows, composeBandMinRows, pc.band)
+	}
+	applyOverlayYCbCr(dst, f, br.Scheme, &pc.ycbcr)
 	return dst
 }

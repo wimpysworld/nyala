@@ -19,9 +19,10 @@ and research documents.
   placement faults. Sources: `STAGE-3.md`, "Frame-sync tolerance and overlay
   staleness", and `AGENTS.md`, project status.
 - [x] Run the full `pprof` and five-sample `go test -bench` pass. Completed on
-  2026-07-14; the measured profiles close the RGBA ring and residual Compose split,
-  and reopen only the fused Block sampler as a bounded spike. Source:
-  [Full headless profile](./PERFORMANCE.md#full-headless-profile-and-benchmark-pass-2026-07-14).
+  2026-07-14; the measured profiles closed the RGBA ring and residual Compose split.
+  The bounded sampler follow-up completed on 2026-07-15. Sources:
+  [Full headless profile](./PERFORMANCE.md#full-headless-profile-and-benchmark-pass-2026-07-14)
+  and [direct native-YCbCr Block grid](./PERFORMANCE.md#direct-native-ycbcr-block-grid-2026-07-15).
 - [ ] Validate the adopted SIMD decode paths on real arm64 hardware. Confirm that the
   base64 and `jpegn` NEON paths improve performance, and rerun byte-identity tests
   before treating the amd64 results as portable evidence. Source:
@@ -74,24 +75,32 @@ Nyala's renderer or the terminal.
 - [ ] Build the off-screen super-viewport scroll buffer after the transport work. Gate
   it on fewer CDP round trips and smoother scrolling without stale overlay geometry or
   excess memory. Source: [Performance recommendation 12](./PERFORMANCE.md#top-recommendations-ranked-by-impact-vs-effort).
-- [ ] Measure Block format choices before changing JPEG quality 80. Compare lower JPEG
-  quality and a content-aware PNG/JPEG policy on flat, text, photo, and motion pages.
-  Keep the current format unless decode time falls with no visible or placement-gate
-  regression. Sources: `PERFORMANCE.md`, "Theme 7" and "PNG Decoder Research".
+- [ ] Validate JPEG q95 on real terminals and delivered-frame measurements as a later
+  quality option. q90 is now the default because it improves fidelity over q80,
+  matches moving Sixel, and retains 6.39 ms median processing headroom in the matched
+  2560x2880 headless benchmark. It provides more headroom for higher resolutions than
+  q95, whose worst-sample processing headroom is 4.56 ms. q100 is rejected: its payload
+  grows 59.76 percent over q95 and its worst processing headroom is only 0.48 ms.
+  Include flat, text, photo, and motion pages in the terminal pass. Source:
+  [Direct native-YCbCr Block grid](./PERFORMANCE.md#direct-native-ycbcr-block-grid-2026-07-15).
 - [x] Keep the dimension-keyed RGBA decode ring closed as stale. The 2026-07-14 q80
   allocation profile shows `image.NewRGBA` at 2.86 percent of allocation space, and
   the clean CPU profile puts GC background marking at 2.00 percent cumulative. The
-  old full-resolution RGBA destination no longer exists. Source:
-  [Full headless profile](./PERFORMANCE.md#full-headless-profile-and-benchmark-pass-2026-07-14).
+  direct native-YCbCr Block path has now removed the remaining 320x270 RGBA
+  intermediate as well. Sources:
+  [Full headless profile](./PERFORMANCE.md#full-headless-profile-and-benchmark-pass-2026-07-14)
+  and [direct native-YCbCr Block grid](./PERFORMANCE.md#direct-native-ycbcr-block-grid-2026-07-15).
 - [ ] Revisit the Block sub-cell screencast resolution only on an owner decision. It is
   on hold because it removes the full-resolution benchmark that exposes renderer and
   terminal differences. Source:
   [Block performance recommendation 1](./PERFORMANCE.md#ranked-recommendations-impact-vs-effort).
-- [ ] Run a bounded `averageYCbCrToRGBA` optimisation spike. The 2026-07-14 q80
-  Block profile puts it first at 50.94 percent cumulative CPU, while the serial arm
-  takes 16.202 ms. Require lower q80 decode time, unchanged placement and image
-  quality, and no concurrent delivered-frame regression. Source:
-  [Full headless profile](./PERFORMANCE.md#full-headless-profile-and-benchmark-pass-2026-07-14).
+- [x] Replace `averageYCbCrToRGBA` with direct native-YCbCr Block composition. The
+  sampler precomputes source and chroma mappings, groups repeated chroma samples with
+  exact luma weights, and writes the final grid without an RGBA intermediate. The
+  final q80 matched median falls from 16.725 ms to 8.889 ms, while 16-worker saturated
+  throughput rises from 718.74 to 795.58 completed grids/s. Independent oracle and
+  transition tests preserve exact output. Source:
+  [Direct native-YCbCr Block grid](./PERFORMANCE.md#direct-native-ycbcr-block-grid-2026-07-15).
 - [x] Keep the residual Compose split closed. Production parallel Compose measures
   0.054 ms at 120x40 and 0.138 ms at 240x86 with zero allocations, so it is neither
   dominant nor a material share of 16.67 ms. Source:

@@ -22,7 +22,7 @@ func TestInitialScreencastFormatBackendMatrix(t *testing.T) {
 		wantQual   int
 	}{
 		{"block", true, page.ScreencastFormatPng, 0},    // block, capture: PNG
-		{"block", false, page.ScreencastFormatJpeg, 80}, // block, live: JPEG q80
+		{"block", false, page.ScreencastFormatJpeg, 90}, // block, live: JPEG q90
 		{"kitty", true, page.ScreencastFormatPng, 0},    // graphics, capture: PNG
 		{"kitty", false, page.ScreencastFormatPng, 0},   // Kitty, live: fixed PNG
 		{"sixel", true, page.ScreencastFormatPng, 0},    // graphics, capture: PNG

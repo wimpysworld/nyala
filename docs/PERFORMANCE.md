@@ -39,6 +39,8 @@ protocol path; see
 The full headless `pprof` and five-sample `go test -bench` pass completed on
 2026-07-14. Its measured rankings, limits, and profile-gated decisions are in
 [the dated record below](#full-headless-profile-and-benchmark-pass-2026-07-14).
+The accepted direct native-YCbCr Block follow-up and its matched q80-q100 sweep
+are in [the same record](#direct-native-ycbcr-block-grid-2026-07-15).
 Real-terminal decode, draw, write, FPS, and tearing measurements remain separate
 pending work in [`TODO.md`](./TODO.md#1-validate-the-stage-3-browser).
 
@@ -195,7 +197,7 @@ browsh render blocks with cell diffing**; only brow6el (Sixel + Kitty) and casty
   coalescing half.
 - **Lossless where pixels must stay exact.** Carbonyl requests PNG so JPEG ringing
   does not create phantom cell changes that defeat a frame diff. Nyala now uses PNG
-  for Kitty, settled Sixel, and every capture. Block uses JPEG quality 80 because its
+  for Kitty, settled Sixel, and every capture. Block uses JPEG quality 90 because its
   quantised output does not preserve source pixels for a lossless diff.
 - **Kitty specifics from brow6el:** double-buffered alternating image IDs for
   flicker-free swap, `f=24` RGB to drop alpha (~25% fewer bytes), 16 KB chunks,
@@ -227,20 +229,21 @@ graphics wins:
 
 ### Theme 7 - Screencast image format
 
-The wire format now follows the backend. Live Block requests JPEG quality 80. The
-block path needs pixels, and its sub-cell downsample plus colour quantisation hide
-JPEG artefacts. Live Kitty always requests PNG and passes Chromium's owned base64
-payload straight to Kitty `f=100,t=d,a=T` framing. Live Sixel keeps the existing
-adaptive policy: decoded PNG while settled, decoded JPEG quality 90 while moving,
-then PNG after settle. Diagnostic capture remains lossless PNG on every backend.
+The wire format now follows the backend. Live Block requests JPEG quality 90,
+matching moving Sixel. The direct native-YCbCr path retains measured processing
+headroom while improving fidelity over the former q80 default. Live Kitty always
+requests PNG and passes Chromium's owned base64 payload straight to Kitty
+`f=100,t=d,a=T` framing. Live Sixel keeps the existing adaptive policy: decoded PNG
+while settled, decoded JPEG quality 90 while moving, then PNG after settle.
+Diagnostic capture remains lossless PNG on every backend.
 
 The frame seam no longer expands every decode to a full RGBA plane. `Frame.Img` is
 `image.Image`: JPEG stays as the decoder's `*image.YCbCr`, and PNG keeps its native
-decoder layout. Block converts while producing its small RGBA sample surface. Sixel
-converts at the encoder boundary. Capture converts where its raster and bundle paths
-require RGBA. Live Kitty carries no decoded image on the direct path; `EncodedPNG`
-holds the CDP string. A backend switch decodes that retained PNG if the queued frame
-reaches Block or Sixel.
+decoder layout. Block now averages the native YCbCr planes directly into its final
+cell grid, with no intermediate RGBA sample surface. Sixel converts at the encoder
+boundary. Capture converts where its raster and bundle paths require RGBA. Live Kitty
+carries no decoded image on the direct path; `EncodedPNG` holds the CDP string. A
+backend switch decodes that retained PNG if the queued frame reaches Block or Sixel.
 
 The focused benchmark tiled the same source to 2560x2880, ran ten iterations per
 sample, and reports the median of five samples. The real-CDP benchmark used one
@@ -332,8 +335,9 @@ landed, unmarked items are open.
    medium (enables the rest), effort low.
 4b. **[DONE - 67936b1]** **Add the lossless PNG screencast path.** PNG remains the
    capture format, the settled Sixel format, and the direct Kitty format. The later
-   backend policy keeps JPEG quality 80 for Block and quality 90 for moving Sixel
-   frames. See Theme 7.
+   backend policy at that completion point kept JPEG quality 80 for Block and quality
+   90 for moving Sixel frames. The 2026-07-15 quality decision raises Block to q90.
+   See Theme 7.
 
 Also landed on the load-time theme, beyond the ranked list:
 - **[DONE - 8d288d5]** Publish the overlay at first paint with near-calibrated text,
@@ -441,7 +445,7 @@ Also landed on the load-time theme, beyond the ranked list:
     content, where the damage-diff gives nothing; PNG stays best for typical and idle
     pages. MEASURED again (bbc, kitty, live): `in_decode_mean_ms ~34`, over the 16.6 ms
     60fps budget, so PNG decode was the ingest ceiling once the paint wall (5) cleared.
-    The final policy is consumer-specific. Block uses JPEG quality 80 without a state
+    The final policy is consumer-specific. Block uses JPEG quality 90 without a state
     machine. Sixel runs the SETTLED(PNG)/MOVING(JPEG-quality-90) machine, so static
     pages stay crisp and motion avoids the full PNG cost. Kitty is excluded from the
     state machine and always requests PNG for zero-decode direct framing. Capture
@@ -540,7 +544,7 @@ active roadmap.
 
 ### Idea 2 - PNG/JPEG hybrid screencast
 
-Built for the pixel consumers. Block uses JPEG quality 80. Sixel switches to JPEG
+Built for the pixel consumers. Block uses JPEG quality 90. Sixel switches to JPEG
 quality 90 in motion and back to PNG after settle. Kitty always stays PNG because it
 passes the CDP payload to the terminal without a Nyala decode. The remaining question
 is end-to-end: measure whether terminal PNG decode and draw stays inside 16.67 ms, and
@@ -616,7 +620,7 @@ the real ceiling and see which wall is next.
 1. [DONE] Idea 1 (GPU accel: `--enable-gpu` plus the flake driver path). Owner verified
    hardware WebGL and aquarium 26 -> 60 fps.
 2. [DONE] JPEG-in-motion (recommendation 15) is active for Sixel. Block stays JPEG
-   quality 80. Kitty stays direct PNG.
+   quality 90. Kitty stays direct PNG.
 3. NEXT: measure sustained terminal FPS and split Kitty terminal PNG decode/draw from
    Nyala framing. Then address Sixel quantisation and dirty bands. Graphics downscaling
    is outside the active roadmap.
@@ -793,14 +797,16 @@ The retained allocation profile is read only for allocation-space evidence.
 Allocation space was `jpegn.decodeSOF` 89.21 percent, `jpegn.readAllData` 3.44
 percent, `image.NewRGBA` 2.86 percent, and `bytes.growSlice` 2.28 percent.
 
-The remaining fused output allocation is one required 320x270 RGBA result,
-345,600 bytes per frame. The old full-resolution RGBA surface no longer exists on
-live q80 Block. A reusable RGBA ring would target only 2.86 percent of allocation
-space and has no material GC case, so recommendation 4 is closed as stale.
+At that commit, the remaining fused output allocation was one 320x270 RGBA result,
+345,600 bytes per frame. The direct native-YCbCr follow-up below removes it. The old
+full-resolution RGBA surface was already gone, so a reusable RGBA ring had no
+material GC case and recommendation 4 remains closed.
 
 The viewer changed-frame profile put `areaAverageBand` at 56.71 percent flat and
 59.28 percent cumulative, but that synthetic benchmark feeds a full 960x640 RGBA
-surface. Production q80 frames arrive at sub-cell size and skip this viewer
+surface. At that commit, production q80 frames arrived at sub-cell RGBA size and
+skipped this viewer downscale. Current Block frames arrive as full-size native
+YCbCr and compose directly into the final grid, so they also bypass this RGBA
 downscale. Changed-frame allocation space was 99.42 percent `GridDiff.retainPrev`;
 96.86 percent of allocation objects came from `writeCUP`.
 
@@ -808,10 +814,10 @@ Separate 240x86 Compose profiles were allocation-free. Quadrant CPU was led by
 `quadrantColours` at 24.02 percent flat and 40.17 percent cumulative; sextant was
 led by `sextantColours` at 27.59 percent flat and 49.41 percent cumulative. Their
 production parallel wall times are too small to justify more splitting, so the
-residual Compose task is closed. The q80 fused sampler is reopened as a bounded
-spike because it is the current profile leader and consumes a material share of
-the serial frame budget. Any change must lower q80 Block decode time, preserve
-placement and image quality, and avoid a concurrent delivered-frame regression.
+residual RGBA Compose task is closed. The bounded q80 sampler follow-up is now
+complete in [the direct native-YCbCr record below](#direct-native-ycbcr-block-grid-2026-07-15).
+It lowers matched processing time, preserves exact final grids, and improves
+saturated compute throughput.
 
 These measurements do not form a matched end-to-end Block benchmark. Do not add
 decode, Compose, diff, viewer, CDP p50, or renderer numbers across mismatched inputs
@@ -819,6 +825,112 @@ and concurrency models. The decode workers overlap serial per-frame work, while 
 real delivered interval also depends on Chromium and the terminal. No bounded
 capture, `just fps`, terminal eyeballing, or real-terminal result was used. The
 terminal validation tasks remain open.
+
+#### Direct native-YCbCr Block grid (2026-07-15)
+
+The bounded sampler follow-up is complete and accepted. Live Block JPEG frames now
+remain as decoder-native `*image.YCbCr` values through decode. The Block compositor
+averages their source regions directly into the final `block.Grid`; it creates no
+320x270 RGBA intermediate. The sampler prepares destination source spans, luma-row
+offsets, chroma-row offsets, and chroma-column mappings once, then reuses their
+backing slices. Its final grouped-chroma pass weights each unique chroma sample by
+the number of luma pixels that map to it. This preserves the former repeat-weighted
+average while reducing repeated Cb and Cr reads.
+
+The live frame-parallel decode workers remain in place. Direct composition still
+uses the viewer's row-band pool, after text synchronisation, so the engine/render
+seam and overlay ordering stay unchanged. Kitty and Sixel keep their graphics paths.
+Capture keeps its lossless and bundle path. PNG, RGBA, non-downscale inputs, and
+backend-switch fallbacks keep the established generic compose path.
+
+The final pass ran on the same host as the 2026-07-14 pass: Go 1.26.4,
+linux/amd64, Linux 7.1.2, Chromium 149.0.7827.200, and an AMD Ryzen AI Max+ 395
+with 16 cores, 32 threads, and 64 MiB L3. Each benchmark suite ran separately.
+The live fixture was the static `testdata/linuxmatters.png` page captured at
+2560x2880. Each table reports the median of five 2-second samples with `-benchmem`;
+parentheses show the minimum and maximum.
+
+Exact commands:
+
+```text
+CGO_ENABLED=0 go test -tags live -run '^$' -bench '^BenchmarkCDPBlockComposeMatched$' -benchmem -benchtime=2s -count=5 ./internal/engine
+CGO_ENABLED=0 go test -tags live -run '^$' -bench '^BenchmarkBlockDecodePoolSaturatedCompute$' -benchmem -benchtime=2s -count=5 ./internal/engine
+CGO_ENABLED=0 go test -tags live -run '^$' -bench '^BenchmarkBlockDecodePoolSaturatedCompute$/^jpeg-q80$/^direct-workers\+ycbcr-grid$' -benchmem -benchtime=5s -count=1 -cpuprofile /tmp/nyala-perf-direct-ycbcr/final/direct-pool.cpu.pprof ./internal/engine
+CGO_ENABLED=0 go test -tags live -run '^TestCDPScreencastJPEGFidelity$' -count=1 -v ./internal/engine
+```
+
+The matched arms both decode the same captured payload and finish the same 160x90
+sextant grid. The legacy arm runs the removed optimised YCbCr-to-RGBA average before
+RGBA composition. The direct arm composes from native YCbCr. This comparison does
+not add CDP delivery, terminal write, terminal decode, or terminal draw time.
+
+| JPEG | Legacy ms/op | Direct ms/op | Time saved | Speed-up | Direct median headroom |
+|---|---:|---:|---:|---:|---:|
+| q80 | 16.725 (16.522-16.932) | 8.889 (8.767-9.111) | 7.836 ms, 46.85% | 1.882x | 7.78 ms |
+| q85 | 17.310 (16.985-17.849) | 9.361 (9.328-9.407) | 7.949 ms, 45.92% | 1.849x | 7.31 ms |
+| q90 | 18.012 (17.985-18.544) | 10.276 (10.253-10.390) | 7.736 ms, 42.95% | 1.753x | 6.39 ms |
+| q95 | 20.168 (19.899-20.239) | 12.031 (11.961-12.102) | 8.137 ms, 40.35% | 1.676x | 4.64 ms |
+| q100 | 23.987 (23.805-24.248) | 16.137 (16.089-16.187) | 7.850 ms, 32.73% | 1.486x | 0.53 ms |
+
+All q95 samples stay within the 16.67 ms processing budget; the worst leaves
+4.56 ms. Every q100 sample also passes, but the worst leaves only 0.48 ms.
+
+| JPEG | Legacy B/op | Direct B/op | Legacy allocs/op | Direct allocs/op |
+|---|---:|---:|---:|---:|
+| q80 | 12,248,664 | 11,870,982 | 31 | 21 |
+| q85 | 12,352,438 | 11,973,833 | 30 | 21 |
+| q90 | 12,500,886 | 12,125,319 | 30 | 21 |
+| q95 | 12,818,318 | 12,455,814 | 30 | 21 |
+| q100 | 13,617,107 | 13,224,043 | 30 | 21 |
+
+Direct composition saves 2.83 to 3.08 percent of bytes per operation and 9 to 10
+allocations per operation across the five qualities.
+
+The saturated q80 benchmark used the production default of 16 decode workers on
+this 32-thread host. It feeds workers continuously and counts completed final grids.
+
+| Path | Completed-grid interval | Completed grids/s | B/op | allocs/op |
+|---|---:|---:|---:|---:|
+| Legacy | 1.391 ms (1.381-1.435) | 718.74 (696.93-724.32) | 12,085,061 | 23 |
+| Direct | 1.257 ms (1.253-1.258) | 795.58 (794.68-797.90) | 11,637,983 | 12 |
+
+Direct saturated throughput improves by 10.69 percent. This is a compute-throughput
+benchmark, not FPS or delivered-frame latency. Its blocking feed does not model CDP
+acknowledgement, `rawFrameQueue.put` drops, monotonic delivery, display cadence, or
+terminal work.
+
+The clean q80 direct profile completed 4,490 grids. Direct composition used
+13.86 aggregate CPU-ms/grid, 12.7 percent above the old averaging-plus-compose
+target of 12.30. `pixelAt` used 12.70 CPU-ms/grid after grouped chroma, down from
+15.13. The change is accepted because the matched end-to-end processing time falls
+46.85 percent at q80 and saturated compute throughput rises 10.69 percent. The CPU
+number remains a profile reference, not a reopening trigger by itself.
+
+Fidelity compares each captured JPEG with the PNG captured from the same unchanged
+page. PSNR and SSIM use the project's BT.601-luma metrics.
+
+| JPEG | Payload bytes | PSNR | SSIM |
+|---|---:|---:|---:|
+| q80 | 425,401 | 45.234 dB | 0.995468 |
+| q85 | 477,761 | 46.806 dB | 0.996597 |
+| q90 | 563,559 | 49.021 dB | 0.997696 |
+| q95 | 730,950 | 52.682 dB | 0.998927 |
+| q100 | 1,167,773 | 58.282 dB | 0.999864 |
+
+The equality gate compares both timed kernels with an independent intermediate-RGBA
+oracle. Unit coverage includes all six YCbCr subsampling ratios, quadrant, half-block,
+and sextant schemes, odd and non-zero bounds, overlays, parallel reuse, resize and
+scheme transitions, and RGBA fallback. Every q80-q100 live preflight produced the
+same final grid.
+
+JPEG q90 is now the Block default. Against q80, it raises PSNR from 45.234 dB to
+49.021 dB and SSIM from 0.995468 to 0.997696; payload grows from 425,401 to 563,559
+bytes. Its 10.276 ms matched median at 2560x2880 leaves 6.39 ms median processing
+headroom. It matches moving Sixel and provides more headroom for higher resolutions
+than q95.
+q95 stays a later real-terminal and delivered-frame validation option. q100 is
+rejected as a candidate: it adds 59.76 percent payload over q95 and leaves too little
+processing headroom. These headless figures exclude terminal decode and draw time.
 
 ### Summary
 
@@ -1037,9 +1149,10 @@ faults by construction: no shared mutable state, and it targets the dominant sta
    (5.7x), 240x86 13.9 ms -> 1.40 ms (10x)**, 0 allocs. The downscale is no longer the
    dominant stage; the block stages are now roughly level. The fused downscale+binarise
    variant and the residual Compose split were not needed for the win. The 2026-07-14
-   profile later put only `averageYCbCrToRGBA` back on top, so that fused sampler has
-   a bounded spike and the residual Compose split is closed. See the
-   [full headless profile](#full-headless-profile-and-benchmark-pass-2026-07-14).
+   profile later put only `averageYCbCrToRGBA` back on top. The bounded sampler
+   follow-up replaced it with direct native-YCbCr grid composition; the residual
+   RGBA Compose split stays closed. See the
+   [direct native-YCbCr record](#direct-native-ycbcr-block-grid-2026-07-15).
    Effort medium, impact high (delivered).
 3. **[DONE - staged]** Integer luma (owner's faster two-colour quantise). Swapped float
    `luma` (`block.go`) for inline integer weights `77R + 150G + 29B`, feeding
@@ -1055,13 +1168,12 @@ faults by construction: no shared mutable state, and it targets the dominant sta
    the block grid). `baseline.json` stayed within tolerance (unchanged). Full diagnostics
    green. This frees compose CPU, which helps a paint-bound terminal (WezTerm ~40 fps),
    not the kitty 60 fps path.
-4. **[CLOSED - profile gate, 2026-07-14]** Reusable RGBA ring on the decode seam.
-   The q80 Block path now materialises only its required 320x270 result. That
-   `image.NewRGBA` is 345,600 bytes, 2.86 percent of allocation space; decoder planes
-   hold 89.21 percent, and clean CPU profiling puts GC background marking at 2.00
-   percent cumulative CPU.
-   The old full-resolution `draw.Draw` destination and its claimed 73 percent share
-   are stale. A ring has no material GC case.
+4. **[CLOSED - profile gate, strengthened 2026-07-15]** Reusable RGBA ring on the
+   decode seam. The 2026-07-14 path materialised one 320x270 result whose
+   `image.NewRGBA` was 345,600 bytes, 2.86 percent of allocation space. Direct
+   native-YCbCr composition has removed that result too. The old full-resolution
+   `draw.Draw` destination and its claimed 73 percent share are stale; no live Block
+   RGBA intermediate remains to pool.
 5. **[DONE - staged]** Faster SGR build in the diff. Replaced `strconv.AppendInt` with a
    precomputed `decByte [256]string` decimal table in `appendTrueColor` (`colour.go`),
    appended per component. Byte-identical (golden green). Measured BenchmarkBlockDiff
@@ -1265,7 +1377,7 @@ not motion-only. That is a separate, unbuilt item.
 
 ## Open questions
 
-- RESOLVED: screencast format is backend-specific. Block uses JPEG quality 80, Kitty
+- RESOLVED: screencast format is backend-specific. Block uses JPEG quality 90, Kitty
   always uses direct PNG, Sixel adapts between PNG and JPEG quality 90, and capture
   always uses PNG. Theme 7 records the policy and measurements.
 - RESOLVED for current code: a detected tmux, herdr, Zellij, or screen session uses
@@ -1689,8 +1801,9 @@ the flags reached Chromium and nothing shadowed the `--enable-features` list.
 byte identity are established. It fits Nyala's constraints: cgo-free (pure Go plus
 Plan9 assembly the Go toolchain assembles), MIT-licensed, with SIMD IDCT and
 upsample paths for both release targets (amd64 AVX2, arm64 NEON). It returns a
-native `image.YCbCr`, so Nyala's fused YCbCr to RGBA downscale still applies. The
-only active follow-up is real-arm64 performance validation, tracked in
+native `image.YCbCr`, which Block composes directly into the final grid without an
+intermediate RGBA surface. The only active follow-up is real-arm64 performance
+validation, tracked in
 [`TODO.md`](./TODO.md#1-validate-the-stage-3-browser).
 The only genuinely faster option is a cgo binding to libjpeg-turbo (about 4.8x),
 but that flips Nyala from a clean `GOOS`/`GOARCH` cross-build to a per-target C

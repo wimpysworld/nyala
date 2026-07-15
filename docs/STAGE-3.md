@@ -108,13 +108,19 @@ between the viewer goroutine and the supervisor goroutine.
 
 `screencast.go` implements the listen, decode, ack loop that `chromedp` ships no
 helper for. `startScreencast` caps the stream at the active capture size and picks
-its format from the consumer. Live Block uses JPEG quality 80. Live Kitty always
-uses PNG. Live Sixel keeps the adaptive settled-PNG, moving-JPEG-quality-90 policy.
-Capture always uses PNG. On each `EventScreencastFrame` the handler puts the payload
-in the bounded receive path and a worker performs any required pixel decode. The
-handler acks every frame on receipt, before decode, so a slow decoder cannot consume
-Chromium's in-flight credit. The live `rawFrameQueue` drops the oldest undecoded
-payload when full, and parallel workers publish only the newest completed sequence.
+its format from the consumer. At Stage 3, live Block used JPEG quality 80. Live Kitty
+always used PNG. Live Sixel kept the adaptive settled-PNG,
+moving-JPEG-quality-90 policy. Capture always used PNG. On each
+`EventScreencastFrame` the handler puts the payload in the bounded receive path and a
+worker performs any required pixel decode. The handler acks every frame on receipt,
+before decode, so a slow decoder cannot consume Chromium's in-flight credit. The live
+`rawFrameQueue` drops the oldest undecoded payload when full, and parallel workers
+publish only the newest completed sequence.
+
+**Later status (2026-07-15).** Live Block now uses JPEG quality 90, matching moving
+Sixel. At 2560x2880, q90 retains 6.39 ms median processing headroom in the matched
+headless benchmark. It improves fidelity over q80 and provides more headroom for
+higher resolutions than q95.
 Capture keeps the ordered `frameSlot`, because its bounded bundle must count each
 usable frame in order. A corrupt live frame is already acked and can be dropped
 without stalling the stream.
@@ -350,6 +356,10 @@ frame retains the owned CDP base64 PNG in `Frame.EncodedPNG` and sends it direct
 as Kitty `f=100` data. A queued frame decodes that retained PNG if a backend switch
 makes Block or Sixel the consumer before draw.
 
+**Later status (2026-07-15).** Current live Block bypasses the small RGBA sample
+surface described above. It composes the final grid directly from the full-size
+decoder-native `*image.YCbCr`.
+
 Two deadlines bound the run, not one total window: a first-draw deadline of 5
 seconds after navigate succeeds, and a per-frame idle deadline of 5 seconds since
 the last delivered frame, reset on every drawn frame. One resettable timer drives
@@ -400,12 +410,12 @@ reviews it.
   so the listener releases each frame's credit before decode. The live queue drops
   stale undecoded work and the collector rejects stale completed sequences. Capture
   keeps an ordered slot for deterministic bundles.
-- **Backend-specific screencast formats.** Block uses JPEG quality 80 because it
-  needs pixels and its sub-cell downsample plus colour quantisation hide JPEG
-  artefacts. Kitty always requests PNG and passes Chromium's owned base64 payload
-  straight to Kitty framing, with no image decode or re-encode. Sixel keeps its
-  decoded adaptive PNG/JPEG-quality-90 policy. Capture remains lossless PNG for all
-  backends.
+- **Backend-specific screencast formats at Stage 3.** Block used JPEG quality 80
+  because it needed pixels and its sub-cell downsample plus colour quantisation hid
+  JPEG artefacts. Kitty always requested PNG and passed Chromium's owned base64
+  payload straight to Kitty framing, with no image decode or re-encode. Sixel kept
+  its decoded adaptive PNG/JPEG-quality-90 policy. Capture remained lossless PNG for
+  all backends.
 - **Decoder-native frame seam.** `render.Frame.Img` is `image.Image`. JPEG stays
   `*image.YCbCr`, PNG keeps its decoder-native layout, and RGBA conversion happens
   only at a consumer that requires it. `Frame.EncodedPNG` carries the direct Kitty
