@@ -123,7 +123,7 @@ type ChromiumEngine struct {
 	// Reset per session by teardownSession.
 	rawQ *rawFrameQueue
 	// decodeWorkers records the worker count selected for this session. Live Sixel uses
-	// RGBA JPEG decode only at or below maxDefaultDecodeWorkers, which bounds its larger
+	// RGBA JPEG decode only at or below maxSixelRGBAWorkers, which bounds its larger
 	// decoded-frame working set. Capture records its ordered count of one but never uses
 	// the live decoder. Guarded by mu and reset by teardownSession.
 	decodeWorkers int

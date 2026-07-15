@@ -177,19 +177,22 @@ func TestDecodePoolMonotonicUnderRace(t *testing.T) {
 // so it does not depend on the test box's cores.
 func TestAdaptiveDecodeWorkers(t *testing.T) {
 	t.Parallel()
+	if maxDefaultDecodeWorkers != 4 {
+		t.Fatalf("maxDefaultDecodeWorkers = %d, want 4", maxDefaultDecodeWorkers)
+	}
 	cases := []struct {
 		procs, want int
 	}{
-		{0, minDecodeWorkers}, // degenerate: floors to 2
-		{1, minDecodeWorkers}, // one core: floors to 2
-		{2, minDecodeWorkers}, // two cores: half is 1, floors to 2
-		{3, minDecodeWorkers}, // three cores: half is 1, floors to 2 (low-core heuristic)
-		{4, 2},                // half the cores
-		{6, 3},                // half the cores below the ceiling
-		{8, 4},                // half the cores
-		{16, 4},               // adaptive ceiling
-		{32, 4},               // adaptive ceiling on a many-core box
-		{64, 4},               // adaptive ceiling remains fixed
+		{0, minDecodeWorkers},         // degenerate: floors to 2
+		{1, minDecodeWorkers},         // one core: floors to 2
+		{2, minDecodeWorkers},         // two cores: half is 1, floors to 2
+		{3, minDecodeWorkers},         // three cores: half is 1, floors to 2 (low-core heuristic)
+		{4, 2},                        // half the cores
+		{6, 3},                        // half the cores below the ceiling
+		{8, maxDefaultDecodeWorkers},  // half the cores
+		{16, maxDefaultDecodeWorkers}, // adaptive ceiling
+		{32, maxDefaultDecodeWorkers}, // adaptive ceiling on a many-core box
+		{64, maxDefaultDecodeWorkers}, // adaptive ceiling remains fixed
 	}
 	for _, c := range cases {
 		if got := adaptiveDecodeWorkers(c.procs); got != c.want {

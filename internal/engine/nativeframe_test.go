@@ -31,14 +31,17 @@ func TestDecodeLiveFrameKeepsNativeJPEGForGraphics(t *testing.T) {
 // four-worker Sixel session uses fused RGBA output, while a manual five-worker
 // session keeps native YCbCr.
 func TestDecodeLiveFrameSixelJPEGWorkerBoundary(t *testing.T) {
+	if maxSixelRGBAWorkers != 4 {
+		t.Fatalf("maxSixelRGBAWorkers = %d, want 4", maxSixelRGBAWorkers)
+	}
 	src := loadSourceRGBA(t)
 	data := base64.StdEncoding.EncodeToString(encodeBaseline420(t, src))
 	cases := []struct {
 		workers  int
 		wantRGBA bool
 	}{
-		{workers: 4, wantRGBA: true},
-		{workers: 5, wantRGBA: false},
+		{workers: maxSixelRGBAWorkers, wantRGBA: true},
+		{workers: maxSixelRGBAWorkers + 1, wantRGBA: false},
 	}
 	for _, tc := range cases {
 		t.Run(itoa(tc.workers), func(t *testing.T) {
@@ -66,7 +69,7 @@ func TestDecodeLiveFrameSixelJPEGWorkerBoundary(t *testing.T) {
 func TestSixelJPEGToRGBABackendSwitch(t *testing.T) {
 	src := loadSourceRGBA(t)
 	data := base64.StdEncoding.EncodeToString(encodeBaseline420(t, src))
-	e := &ChromiumEngine{backend: "block", decodeWorkers: 4}
+	e := &ChromiumEngine{backend: "block", decodeWorkers: maxSixelRGBAWorkers}
 
 	assertType := func(wantRGBA bool) {
 		t.Helper()
@@ -85,8 +88,8 @@ func TestSixelJPEGToRGBABackendSwitch(t *testing.T) {
 	assertType(true)
 	e.SetBackend("block")
 	assertType(false)
-	if e.decodeWorkers != 4 {
-		t.Fatalf("backend cycle changed session workers to %d, want 4", e.decodeWorkers)
+	if e.decodeWorkers != maxSixelRGBAWorkers {
+		t.Fatalf("backend cycle changed session workers to %d, want %d", e.decodeWorkers, maxSixelRGBAWorkers)
 	}
 }
 

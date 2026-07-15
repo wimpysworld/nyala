@@ -1399,9 +1399,10 @@ does not close the real-terminal FPS, decode, draw, byte, or tearing tasks.
 #### Bounded Sixel RGBA decode and four-worker policy (2026-07-15)
 
 The retained follow-up uses `jpegn.Options{ToRGBA: true}` only for live moving
-Sixel JPEG when the actual session has one to four decode workers. The adaptive
-default is `min(4, max(2, GOMAXPROCS/2))`. `NYALA_DECODE_WORKERS` still accepts
-manual values from 1 to 16; values above 4 keep decoder-native YCbCr for Sixel.
+Sixel JPEG when the actual session has one to four decode workers. This Sixel RGBA
+safety cutoff is independent of the adaptive default,
+`min(4, max(2, GOMAXPROCS/2))`. `NYALA_DECODE_WORKERS` still accepts manual values
+from 1 to 16; values above 4 keep decoder-native YCbCr for Sixel.
 The engine records the actual count at session start and clears it at teardown.
 Backend switches read the active backend and count together, so Block remains
 native YCbCr and returning to Sixel restores the correct policy.

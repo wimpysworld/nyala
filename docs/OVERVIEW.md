@@ -93,10 +93,11 @@ moving Sixel. It improves fidelity over the former q80 default while the matched
 more headroom for higher resolutions than q95. Kitty always requests PNG for the
 direct path.
 Sixel keeps its decoded adaptive stream: PNG while settled, JPEG quality 90 while
-moving, then PNG again after settle. The adaptive worker default is capped at four;
-`NYALA_DECODE_WORKERS` still accepts 1 to 16, with Sixel values above four keeping
-native YCbCr. Diagnostic capture still requests and decodes PNG for every backend,
-so its bundle contract and quality gates do not change.
+moving, then PNG again after settle. The adaptive worker default and the Sixel RGBA
+safety cutoff are independent policies, both currently four. `NYALA_DECODE_WORKERS`
+still accepts 1 to 16, with Sixel values above four keeping native YCbCr. Diagnostic
+capture still requests and decodes PNG for every backend, so its bundle contract and
+quality gates do not change.
 
 - **Engine #1: `ChromiumEngine` (chromedp).** Frames via `Page.startScreencast`;
   text layer via CDP DOM queries, placed by the snapshot's scroll and folded into
