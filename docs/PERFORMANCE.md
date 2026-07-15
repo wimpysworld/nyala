@@ -41,6 +41,8 @@ The full headless `pprof` and five-sample `go test -bench` pass completed on
 [the dated record below](#full-headless-profile-and-benchmark-pass-2026-07-14).
 The accepted direct native-YCbCr Block follow-up and its matched q80-q100 sweep
 are in [the same record](#direct-native-ycbcr-block-grid-2026-07-15).
+The colour-conversion follow-up and the resulting Block and Sixel benchmark order
+are in [the 2026-07-15 research record](#colour-conversion-research-2026-07-15).
 Real-terminal decode, draw, write, FPS, and tearing measurements remain separate
 pending work in [`TODO.md`](./TODO.md#1-validate-the-stage-3-browser).
 
@@ -1216,6 +1218,161 @@ faults by construction: no shared mutable state, and it targets the dominant sta
 - goperf false sharing and field alignment: https://goperf.dev/01-common-patterns/fields-alignment/
 - DXT range-fit vs cluster-fit (two-colour block pick): https://www.sjbrown.co.uk/posts/dxt-compression-techniques/
 - BC1 endpoint refinement: https://www.ludicon.com/castano/blog/2022/11/bc1-compression-revisited/
+
+---
+
+## Colour conversion research (2026-07-15)
+
+This follow-up tested whether a general or SIMD YCbCr-to-RGBA converter should
+replace either production path. Block keeps its fused compositor and its retained
+4:2:0 scalar fast path. Sixel should target its encoder before conversion because
+palette, pixel-map, bitset, and output generation dominate its measured path.
+
+### Block measurements
+
+The production benchmark used JPEG q90 at 2560x2880. The CPU figures are
+aggregate profile shares and derived CPU time per completed grid.
+
+| Measure | Result |
+|---|---:|
+| Production q90 median | 10.283 ms |
+| Direct Block composition | 51.6% cumulative CPU |
+| JPEG decode | 44.0% cumulative CPU |
+| `color.YCbCrToRGB` | 0.99% aggregate CPU, about 0.23 CPU-ms/grid |
+| Three average divisions | About 0.46 CPU-ms/grid |
+| Warm sampler preparation | 12.827 us |
+| Serial sampling plus conversion | 4.379 ms |
+
+Block already averages the source Y, Cb, and Cr planes, performs one RGB
+conversion per terminal sub-cell, binarises the result, and writes the final grid
+inside persistent row-band workers. No reviewed module provides Nyala's weighted
+region averages across all six YCbCr subsampling ratios. A full-frame converter
+would add an intermediate surface and memory pass. A second worker pool would
+duplicate the existing row-band pool.
+
+#### Retained 4:2:0 scalar fast path
+
+The completed follow-up specialises the common 4:2:0 chroma sampling path and
+unrolls the common eight-pixel luma span. Other ratios and span widths keep the
+generic fallback. The change adds no workers and allocates nothing during warm
+sampling.
+
+The matched benchmark used one fixed q90 2560x2880 payload, a 160x90 sextant
+grid, `GOMAXPROCS=32`, and the production 16 workers. Fifteen end-to-end pairs ran
+in interleaved baseline and candidate order. The candidate won 14 pairs, run order
+did not explain the result, and the paired test reported p=0.000 (p < 0.001).
+The 10.283 ms figure above is earlier profile context; the paired baseline below
+is the acceptance comparison.
+
+| End-to-end statistic | Baseline | Candidate | Time saved | Improvement |
+|---|---:|---:|---:|---:|
+| Median | 10.202621 ms | 10.022665 ms | 0.179956 ms | 1.76% |
+| p90 | 10.311689 ms | 10.084548 ms | 0.227141 ms | 2.20% |
+| p95 | 10.341147 ms | 10.110773 ms | 0.230374 ms | 2.23% |
+| Maximum | 10.369346 ms | 10.163974 ms | 0.205372 ms | 1.98% |
+
+| Kernel measure | Baseline | Candidate | Improvement |
+|---|---:|---:|---:|
+| Isolated sampler | 4.390641 ms | 3.209646 ms | 26.90% |
+| `pixelAt` | 52.65 ns | 37.89 ns | 28.03% |
+
+The ten-pair saturated run used the same 16 workers. The candidate won every pair
+and reported p=0.000 (p < 0.001).
+
+| Saturated measure | Baseline | Candidate | Improvement |
+|---|---:|---:|---:|
+| Median completed-grid interval | 1.257890 ms | 1.062180 ms | 15.56% |
+| Throughput | 448.02 MB/s | 530.57 MB/s | 18.43% |
+
+End-to-end CPU samples fell 11.61%, isolated samples fell 27.52%, and cumulative
+`pixelAt` CPU per grid fell 28.15%. The maximum saturated interval improved 15.76%.
+Warm sampling remained at 0 B/op and 0 allocs/op. Saturated allocations fell from
+12 to 10 per operation. The independent oracle and focused tests passed across
+every YCbCr ratio, scheme, overlay, fallback, parallel-parity case, and adversarial
+bound. `go test -race ./internal/render/block`, `just fmt-check`, `just build`,
+`just test`, and `just lint` also passed.
+
+Retain the fast path. Its 1.76% end-to-end median gain is below the former 5% gate,
+but the paired result is statistically sound, exact, uses the existing cores, and
+improves p90, p95, maximum latency, CPU use, and saturated throughput. Small gains
+remain acceptable when those conditions hold. The fixed-payload benchmark excludes
+CDP delivery, terminal work, other production pages, and other architectures.
+
+### Sixel measurements
+
+During motion, q90 JPEG frames decode to decoder-native YCbCr. `State.graphicsPixels`
+then serially materialises a reusable full-frame RGBA buffer before
+`x/ansi/sixel` encodes it.
+
+| Production q90 State path | Median | Range | B/op | allocs/op |
+|---|---:|---:|---:|---:|
+| Base64 and JPEG decode, conversion, Sixel encode | 1.039 s | 1.009 to 1.055 s | 791,275,808 | 14,859,761 |
+| Isolated warm `graphicsPixels` conversion | 14.321 ms | 14.292 to 14.342 ms | 0 | 0 |
+
+The profile puts `imageutil.DrawYCbCr` at 1.50% flat CPU and
+`sixel.Encoder.Encode` at 95.17% cumulative CPU. Removing conversion entirely has
+a 14.321 ms, or 1.38%, wall-time ceiling on the measured production path.
+
+The matched conversion experiment reused persistent workers and split the RGBA
+destination into disjoint row bands. Every parallel result was byte-equal to the
+serial result, warm, and allocation-free.
+
+| Conversion path | Median | Saving from serial | Share of 1.039 s path saved |
+|---|---:|---:|---:|
+| Serial | 14.321 ms | 0 | 0% |
+| 4 workers | 3.830 ms | 10.491 ms | 1.01% |
+| 8 workers | 2.171 ms | 12.150 ms | 1.17% |
+| 16 workers | 1.730 ms | 12.591 ms | 1.21% |
+| 31 workers | 1.343 ms | 12.978 ms | 1.25% |
+
+The 10.66x isolated speed-up at 31 workers does not justify production complexity
+while it saves only 1.25% end to end. Benchmark Sixel palette construction,
+pixel-map and bitset generation, and output first. Keep conversion parallelism as
+a secondary candidate if the profile shifts after those costs fall.
+
+### Option assessment
+
+| Option | Assessment | Decision |
+|---|---|---|
+| Current fused Block compositor | Exact weighted region average across six ratios, one conversion per terminal sub-cell, existing persistent workers | Keep |
+| Ratio-specialised Block plane sums | The retained 4:2:0 path removes common mapping and loop work without a full RGBA surface; generic fallback preserves every other case | Retained after exactness, paired, CPU, throughput, and tail gates |
+| `jpegn` v0.4.4 `Options.ToRGBA` | MIT, cgo-free, active but young; packed RGBA output, default `NearestNeighbor` conversion, AVX2 on amd64, NEON on arm64, scalar fallback, six ratios; tests allow a per-channel difference of 2 | Deferred Sixel candidate; require decoded visual equality |
+| Current decoder plus row-parallel `draw.Draw` | Uses the existing viewer pool, preserves current pixels, and measured 0 B/op and 0 allocs/op warm | Deferred Sixel candidate after encoder work |
+| Standard library `imageutil.DrawYCbCr` | Internal, full-frame, and specialised for four ratios | Use only through the public `draw.Draw` boundary |
+| Go 1.26 `archsimd` | Experimental, `GOEXPERIMENT`-gated, amd64-only | Reject for production |
+| `go-cv-simd` | Stale, BGRA-oriented, and supports fewer input formats | Reject |
+| Jive row workers | Persistent disjoint-row scalar conversion | Prior art only; Block already uses the pattern and the Sixel experiment measured it |
+
+Nyala pins `jpegn` v0.4.4 at this record, so `Options.ToRGBA` is an API-path
+benchmark, not an accepted dependency change. If revisited, compare it with the
+current decoder plus banded `draw.Draw` on the actual `State` path under decode
+contention. Require at least a 5% end-to-end or throughput gain with no tail
+regression. Banded draw must remain byte-exact. The `jpegn` arm must pass decoded
+visual-equality checks with its documented per-channel tolerance. If neither arm
+passes, close the conversion work and continue with the Sixel encoder.
+
+### Primary sources
+
+- `jpegn` v0.4.4 uses the MIT licence:
+  https://github.com/gen2brain/jpegn/blob/v0.4.4/LICENSE
+- `jpegn` exposes the decode options and packed RGBA result:
+  https://github.com/gen2brain/jpegn/blob/v0.4.4/jpegn.go
+- `jpegn` implements its decoder and colour-conversion paths here:
+  https://github.com/gen2brain/jpegn/blob/v0.4.4/decoder.go
+- The v0.4.4 tree contains the amd64, arm64, and scalar implementations:
+  https://github.com/gen2brain/jpegn/tree/v0.4.4
+- `jpegn` equivalence tests allow a per-channel difference of 2:
+  https://github.com/gen2brain/jpegn/blob/v0.4.4/jpegn_test.go
+- `x/ansi/sixel` builds its palette and colour map in this path:
+  https://github.com/charmbracelet/x/blob/ansi/v0.11.7/ansi/sixel/palette.go
+- Go 1.26.4 keeps `DrawYCbCr` internal and specialises four ratios:
+  https://github.com/golang/go/blob/go1.26.4/src/image/internal/imageutil/impl.go
+- Go 1.26 `archsimd` is an amd64-only experiment behind `GOEXPERIMENT`:
+  https://github.com/golang/go/blob/go1.26.4/src/simd/archsimd/doc.go
+- Jive converts persistent disjoint row bands in scalar Go:
+  https://github.com/linuxmatters/jive-visualiser/blob/c939ee9e443c588b01a2a9491b1c1b9a99325ae9/internal/encoder/frame.go
+- `go-cv-simd` provides the stale BGRA-oriented comparison:
+  https://github.com/fwessels/go-cv-simd
 
 ---
 

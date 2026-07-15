@@ -40,11 +40,31 @@ Nyala's renderer or the terminal.
 
 ## 2. Improve graphics transport where measurements justify it
 
-- [ ] Remove the Sixel quantisation wall. Persist the encoder and palette, buffer the
-  writer, compare the documented faster quantisers or encoder, then add dirty-band
-  emission if the terminal matrix shows a gain. Gate quality with the photo-heavy A/B.
-  Sources: [Performance recommendations](./PERFORMANCE.md#top-recommendations-ranked-by-impact-vs-effort),
+- [x] Retain the ratio-specialised Block scalar fast path. The 4:2:0 chroma path and
+  common eight-pixel luma span are specialised, with the generic fallback preserved.
+  Fifteen interleaved q90 pairs improve median end-to-end time from 10.202621 to
+  10.022665 ms (1.76%, p < 0.001), while p90, p95, and maximum latency also improve.
+  Ten saturated pairs improve median completed-grid interval by 15.56% and throughput
+  by 18.43%. Exactness, race, allocation, build, test, and lint gates pass with the
+  existing 16 workers. Source:
+  [Colour conversion research](./PERFORMANCE.md#colour-conversion-research-2026-07-15).
+- [ ] Benchmark and remove the Sixel encoder wall before revisiting colour conversion.
+  Split the actual q90 `State` path under decode contention into palette, pixel-map,
+  bitset, and output phases. Persist the encoder and palette, buffer the writer,
+  compare the documented faster quantisers or encoder, then add dirty-band emission
+  if the terminal matrix shows a gain. Require at least a 5% end-to-end or throughput
+  gain, no tail regression, protocol-conformant output, and a clean photo-heavy A/B.
+  Sources: [Colour conversion research](./PERFORMANCE.md#colour-conversion-research-2026-07-15),
+  [Performance recommendations](./PERFORMANCE.md#top-recommendations-ranked-by-impact-vs-effort),
   recommendations 6 and 8, and `OVERVIEW.md`, "Sixel in Go".
+- [ ] Revisit Sixel colour conversion only after encoder work or a profile shift.
+  Compare `jpegn` v0.4.4 direct RGBA decode with the current decoder plus banded
+  `draw.Draw` on the actual `State` path under decode contention. Reuse the viewer
+  pool. Require at least a 5% end-to-end or throughput gain and no tail regression.
+  Banded draw must stay byte-exact; the `jpegn` arm must pass decoded visual equality
+  within its per-channel tolerance. Reject both if they miss the gate. The best
+  isolated banded result saves 12.978 ms but only 1.25% of the measured Sixel path.
+  Source: [Colour conversion research](./PERFORMANCE.md#colour-conversion-research-2026-07-15).
 - [ ] Tighten Sixel output after palette reuse: use aggressive RLE, omit empty bands,
   set `P2=0` for opaque frames, and keep dither off. Require smaller output, lower
   terminal decode time, protocol-conformant output, and no fixture regression. Source:
