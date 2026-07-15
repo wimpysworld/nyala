@@ -121,6 +121,11 @@ publish only the newest completed sequence.
 Sixel. At 2560x2880, q90 retains 6.39 ms median processing headroom in the matched
 headless benchmark. It improves fidelity over q80 and provides more headroom for
 higher resolutions than q95.
+The adaptive live decode pool now caps at four workers, while
+`NYALA_DECODE_WORKERS` keeps its manual 1 to 16 range. Live moving Sixel JPEG uses
+`jpegn` fused RGBA only when the actual session count is four or fewer; larger
+manual pools keep native YCbCr. Block native YCbCr, Kitty PNG, settled Sixel PNG,
+and capture PNG remain unchanged.
 Capture keeps the ordered `frameSlot`, because its bounded bundle must count each
 usable frame in order. A corrupt live frame is already acked and can be dropped
 without stalling the stream.

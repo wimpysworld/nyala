@@ -46,7 +46,7 @@ Nyala's renderer or the terminal.
   10.022665 ms (1.76%, p < 0.001), while p90, p95, and maximum latency also improve.
   Ten saturated pairs improve median completed-grid interval by 15.56% and throughput
   by 18.43%. Exactness, race, allocation, build, test, and lint gates pass with the
-  existing 16 workers. Source:
+  fixed 16-worker benchmark pool. Source:
   [Colour conversion research](./PERFORMANCE.md#colour-conversion-research-2026-07-15).
 - [x] Adopt the retained `mattn/go-sixel` v0.0.12 encoder with an adaptive
   256-colour palette and dithering off. The matched q90 State median falls from
@@ -55,21 +55,20 @@ Nyala's renderer or the terminal.
   accepts the measured colour loss for this compatibility backend. Fixed palettes
   remain rejected because their build cost and stale-frame quality are unproved.
   Source: [Sixel encoder adoption](./PERFORMANCE.md#sixel-encoder-adoption-2026-07-15).
-- [ ] Revisit Sixel colour conversion only if later work raises it above the current
-  15.05% CPU share. Compare `jpegn` v0.4.4 direct RGBA decode with the current
-  decoder plus banded `draw.Draw` on the actual `State` path under decode contention.
-  Reuse the viewer pool. Require a statistically sound end-to-end or throughput gain
-  and no tail regression.
-  Banded draw must stay byte-exact; the `jpegn` arm must pass decoded visual equality
-  within its per-channel tolerance. Reject both if they miss the gate. The best
-  isolated banded result saves 12.978 ms but only 1.25% of the measured Sixel path.
-  Source: [Colour conversion research](./PERFORMANCE.md#colour-conversion-research-2026-07-15).
+- [x] Retain bounded `jpegn.Options{ToRGBA:true}` for live moving Sixel JPEG.
+  Adaptive decode workers now cap at four; the manual 1 to 16 override remains,
+  with values above four keeping native YCbCr. Matched sequential processing falls
+  from 115.005 to 103.014 ms (10.43%). Quality stays stable and the retained live
+  plus State bound rises 1.1%. Block, Kitty, capture, settled Sixel PNG, and backend
+  switches preserve their paths. Source:
+  [Bounded Sixel RGBA decode](./PERFORMANCE.md#bounded-sixel-rgba-decode-and-four-worker-policy-2026-07-15).
 - [ ] Benchmark Sixel band generation as the next narrow performance target. It uses
-  about 31% of post-adoption CPU, the largest remaining phase. Measure candidate
-  changes on the matched State path before choosing tighter RLE, buffer reuse, or
-  parallel bands. Require lower State time with no quality, payload, protocol, or tail
-  regression. This is a measurement target, not an implementation commitment.
-  Source: [Sixel encoder adoption](./PERFORMANCE.md#sixel-encoder-adoption-2026-07-15).
+  about 31% of the pre-ToRGBA post-adoption profile, the largest measured encoder
+  phase. Refresh the phase profile, then measure candidate changes on the matched
+  State path before choosing tighter RLE, buffer reuse, or parallel bands. Require
+  lower State time with no quality, payload, protocol, or tail regression. This is a
+  measurement target, not an implementation commitment. Source:
+  [Bounded Sixel RGBA decode](./PERFORMANCE.md#bounded-sixel-rgba-decode-and-four-worker-policy-2026-07-15).
 - [ ] Add graphics support through tmux, Zellij, and herdr. Keep the present block-only
   fallback until each path passes capability, placement, resize, scroll, and cleanup
   tests. Kitty needs protocol-supported placement plus passthrough wrapping. Its

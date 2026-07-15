@@ -27,6 +27,111 @@ func TestDecodeLiveFrameKeepsNativeJPEGForGraphics(t *testing.T) {
 	}
 }
 
+// TestDecodeLiveFrameSixelJPEGWorkerBoundary pins the memory-policy boundary. A
+// four-worker Sixel session uses fused RGBA output, while a manual five-worker
+// session keeps native YCbCr.
+func TestDecodeLiveFrameSixelJPEGWorkerBoundary(t *testing.T) {
+	src := loadSourceRGBA(t)
+	data := base64.StdEncoding.EncodeToString(encodeBaseline420(t, src))
+	cases := []struct {
+		workers  int
+		wantRGBA bool
+	}{
+		{workers: 4, wantRGBA: true},
+		{workers: 5, wantRGBA: false},
+	}
+	for _, tc := range cases {
+		t.Run(itoa(tc.workers), func(t *testing.T) {
+			e := &ChromiumEngine{backend: "sixel", decodeWorkers: tc.workers}
+			got, err := e.decodeLiveFrame(data)
+			if err != nil {
+				t.Fatalf("decodeLiveFrame() = %v", err)
+			}
+			_, rgba := got.(*image.RGBA)
+			if rgba != tc.wantRGBA {
+				t.Fatalf("decodeLiveFrame() type = %T, want RGBA=%v", got, tc.wantRGBA)
+			}
+			if !tc.wantRGBA {
+				if _, ok := got.(*image.YCbCr); !ok {
+					t.Fatalf("decodeLiveFrame() type = %T, want native *image.YCbCr", got)
+				}
+			}
+		})
+	}
+}
+
+// TestSixelJPEGToRGBABackendSwitch proves both switch directions use the current
+// backend without changing the recorded session count. Block stays native, Sixel
+// takes fused RGBA, and the return to Block restores native YCbCr.
+func TestSixelJPEGToRGBABackendSwitch(t *testing.T) {
+	src := loadSourceRGBA(t)
+	data := base64.StdEncoding.EncodeToString(encodeBaseline420(t, src))
+	e := &ChromiumEngine{backend: "block", decodeWorkers: 4}
+
+	assertType := func(wantRGBA bool) {
+		t.Helper()
+		got, err := e.decodeLiveFrame(data)
+		if err != nil {
+			t.Fatalf("decodeLiveFrame() = %v", err)
+		}
+		_, rgba := got.(*image.RGBA)
+		if rgba != wantRGBA {
+			t.Fatalf("backend %q decoded %T, want RGBA=%v", e.backend, got, wantRGBA)
+		}
+	}
+
+	assertType(false)
+	e.SetBackend("sixel")
+	assertType(true)
+	e.SetBackend("block")
+	assertType(false)
+	if e.decodeWorkers != 4 {
+		t.Fatalf("backend cycle changed session workers to %d, want 4", e.decodeWorkers)
+	}
+}
+
+// TestSixelJPEGToRGBAActivation pins the paths that must stay native or lossless.
+func TestSixelJPEGToRGBAActivation(t *testing.T) {
+	cases := []struct {
+		name    string
+		backend string
+		workers int
+		capture bool
+		enabled bool
+	}{
+		{name: "sixel four", backend: "sixel", workers: 4, enabled: true},
+		{name: "sixel five", backend: "sixel", workers: 5},
+		{name: "block four", backend: "block", workers: 4},
+		{name: "kitty four", backend: "kitty", workers: 4},
+		{name: "capture", backend: "sixel", workers: 1, capture: true},
+		{name: "no session", backend: "sixel"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &ChromiumEngine{backend: tc.backend, decodeWorkers: tc.workers, captureOn: tc.capture}
+			if got := e.sixelJPEGToRGBA(); got != tc.enabled {
+				t.Fatalf("sixelJPEGToRGBA() = %v, want %v", got, tc.enabled)
+			}
+		})
+	}
+}
+
+// TestSixelJPEGToRGBASessionReset proves teardown clears the worker count, so a
+// dead session cannot enable the larger RGBA decode in its replacement window.
+func TestSixelJPEGToRGBASessionReset(t *testing.T) {
+	e := &ChromiumEngine{backend: "sixel", decodeWorkers: 4}
+	if !e.sixelJPEGToRGBA() {
+		t.Fatal("live four-worker Sixel session did not enable RGBA")
+	}
+	e.teardownSession()
+	if e.sixelJPEGToRGBA() {
+		t.Fatal("torn-down session retained Sixel RGBA activation")
+	}
+	if e.decodeWorkers != 0 {
+		t.Fatalf("torn-down session workers = %d, want 0", e.decodeWorkers)
+	}
+}
+
 func TestDecodeLiveFrameKeepsNativePNGForPixelConsumer(t *testing.T) {
 	data := pngPayload(t)
 	raw, err := base64.StdEncoding.DecodeString(data)
@@ -37,7 +142,7 @@ func TestDecodeLiveFrameKeepsNativePNGForPixelConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeFrameImage() = %v", err)
 	}
-	e := &ChromiumEngine{backend: "sixel"}
+	e := &ChromiumEngine{backend: "sixel", decodeWorkers: 4}
 	got, err := e.decodeLiveFrame(data)
 	if err != nil {
 		t.Fatalf("decodeLiveFrame() = %v", err)

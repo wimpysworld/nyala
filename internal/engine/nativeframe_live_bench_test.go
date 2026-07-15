@@ -220,7 +220,7 @@ func decodeNativeScreencastImage(data string) (image.Image, error) {
 		return nil, fmt.Errorf("engine: base64-decode native frame: %w", err)
 	}
 	defer release()
-	img, err := decodeJPEGFast(raw)
+	img, err := decodeJPEGFast(raw, false)
 	if err != nil {
 		return nil, fmt.Errorf("engine: decode native frame image: %w", err)
 	}
