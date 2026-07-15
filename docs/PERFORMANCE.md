@@ -36,11 +36,11 @@ Partial Kitty transport remains conditional on terminal measurements and a suppo
 protocol path; see
 [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
 
-CAVEAT: the per-frame magnitudes are allocation-count and round-trip reasoning from
-source, not a profiler run. One measured capture (the WebGL aquarium, 100 frames,
-block backend, 120x40) is now folded into Themes 1, 2, and 7 and tagged MEASURED; a
-full `pprof` and `go test -bench` pass is still pending and is indexed in
-[`TODO.md`](./TODO.md#1-validate-the-stage-3-browser).
+The full headless `pprof` and five-sample `go test -bench` pass completed on
+2026-07-14. Its measured rankings, limits, and profile-gated decisions are in
+[the dated record below](#full-headless-profile-and-benchmark-pass-2026-07-14).
+Real-terminal decode, draw, write, FPS, and tearing measurements remain separate
+pending work in [`TODO.md`](./TODO.md#1-validate-the-stage-3-browser).
 
 ---
 
@@ -677,10 +677,155 @@ each terminal's bytes-per-frame ceiling: kitty, Alacritty, foot hold 60 at 2560x
 WezTerm and Ghostty saturate sooner. `--color=256` is the documented lever for
 byte-bound terminals; no code change needed.
 
+### Full headless profile and benchmark pass (2026-07-14)
+
+The pass ran at commit `edbc6f5` on Go 1.26.4, linux/amd64, Linux 7.1.2,
+Chromium 149.0.7827.200, and an AMD Ryzen AI Max+ 395 with 16 cores, 32 threads,
+and 64 MiB L3. Each suite ran serially against the others. Tables report the
+median of five samples with `-benchmem`.
+
+Exact benchmark commands:
+
+```text
+go test -run '^$' -bench '^BenchmarkRenderers$' -benchmem -benchtime=1s -count=5 ./internal/metrics
+go test -run '^$' -bench '^BenchmarkDownscale' -benchmem -benchtime=1s -count=5 ./internal/metrics
+go test -run '^$' -bench '.' -benchmem -benchtime=1s -count=5 ./internal/render/block
+CGO_ENABLED=0 go test -run '^$' -bench '^BenchmarkDecodePoolThroughput$' -benchmem -benchtime=1s -count=5 ./internal/engine
+CGO_ENABLED=0 go test -run '^$' -bench '^BenchmarkRenderStreamFrame' -benchmem -benchtime=1s -count=5 ./internal/viewer
+CGO_ENABLED=0 go test -tags live -run '^$' -bench '^BenchmarkCDPScreencastDecode$' -benchmem -benchtime=2s -count=5 ./internal/engine
+CGO_ENABLED=0 go test -tags live -run '^$' -bench '^BenchmarkCDPNativeFrame$' -benchmem -benchtime=1s -count=5 ./internal/engine
+```
+
+Pinned 240x160 renderer comparison:
+
+| Renderer | ms/op | B/op | allocs/op | bytes/frame |
+|---|---:|---:|---:|---:|
+| Block | 0.923771 | 948,408 | 41,734 | 182,116 |
+| Sixel | 18.472358 | 7,543,307 | 79,114 | 23,004 |
+| Kitty | 2.514828 | 1,750,077 | 76,882 | 164,349 |
+
+`BenchmarkRenderers` pins `GOMAXPROCS=1` and drives the generic decoded-image
+`Renderer` seam. Its results are not comparable with the parallel live Block path
+or direct-PNG live Kitty.
+
+Block, downscale, and viewer paths:
+
+| Benchmark | ms/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| Downscale serial 120x40 | 3.206531 | 0 | 0 |
+| Downscale parallel 120x40 | 0.491850 | 0 | 0 |
+| Downscale serial 240x86 | 14.059426 | 0 | 0 |
+| Downscale parallel 240x86 | 1.449950 | 0 | 0 |
+| Compose quadrant 120x40 | 0.220458 | 0 | 0 |
+| Compose parallel quadrant 120x40 | 0.054401 | 0 | 0 |
+| Compose quadrant 240x86 | 0.943217 | 0 | 0 |
+| Compose parallel quadrant 240x86 | 0.137701 | 0 | 0 |
+| Compose sextant 120x40 | 0.180430 | 0 | 0 |
+| Compose parallel sextant 120x40 | 0.046671 | 0 | 0 |
+| Compose sextant 240x86 | 0.785666 | 0 | 0 |
+| Compose parallel sextant 240x86 | 0.115816 | 0 | 0 |
+| Diff 120x40 | 0.132771 | 639 | 39 |
+| Diff 240x86 | 0.583436 | 1,375 | 85 |
+| Overlay 120x40 | 0.122987 | 0 | 0 |
+| Overlay 240x86 | 0.275170 | 0 | 0 |
+| Viewer unchanged | 0.325986 | 0 | 0 |
+| Viewer changed full repaint | 0.485812 | 197,518 | 41 |
+
+The extra Block compatibility benchmarks returned `ComposeQuadrant` 0.220285 ms,
+`ComposeSextant` 0.181007 ms, cached overlay 0.340626 ms, uncached overlay
+0.416589 ms, and `GridDiff` 0.132514 ms. The production parallel Compose maximum
+above is 0.137701 ms, 0.83 percent of the 16.67 ms frame budget. The changed viewer
+benchmark resets the differ on every iteration; its allocations describe forced
+full repaint, while the unchanged steady-state path allocates nothing.
+
+The synthetic fixed-5-ms decode-pool benchmark returned 5.109203, 2.561417,
+1.702833, and 1.279973 ms/op for one through four workers. It confirms parallel
+delivery of independent jobs. It does not measure JPEG latency or a real delivered
+frame interval.
+
+Real-CDP 2560x2880 format results:
+
+| Format | payload bytes | native decode ms | current decode ms | Block ms | Block B/op | Block allocs/op | CDP p50 ms |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| PNG | 1,255,170 | 18.925303 | 19.062252 | 21.558624 | 31,858,702 | 379 | 62.250 |
+| JPEG q80 | 425,401 | 7.668980 | 7.782389 | 16.201964 | 11,879,251 | 18 | 56.330 |
+| JPEG q85 | 477,761 | 8.200747 | 8.391783 | 16.818776 | 11,936,666 | 18 | 57.490 |
+| JPEG q90 | 563,559 | 9.047259 | 9.217286 | 17.790463 | 12,018,446 | 18 | 58.770 |
+| JPEG q95 | 730,950 | 10.760010 | 10.904083 | 19.431912 | 12,190,518 | 18 | 60.910 |
+| JPEG q100 | 1,167,773 | 14.883941 | 15.051112 | 23.498926 | 12,626,449 | 20 | 70.820 |
+
+The q80 Block arm covers base64 decode, JPEG decode, and fused 320x270 sampling.
+Its serial 16.201964 ms cost uses 97.19 percent of the budget and leaves 0.468 ms.
+The CDP p50 covers Chromium encoding, base64 creation, transport, and scheduling;
+it is neither Nyala decode latency nor FPS. Each timed operation reuses one captured
+payload, so the decode figures are warm-cache throughput.
+
+`BenchmarkCDPNativeFrame` passed every format. Its production direct-PNG Kitty arm
+measured 0.027523 ms, 320 B/op, 12 allocs/op, 1,255,170 input bytes, and 1,677,273
+terminal bytes. Its `current-rgba` and `proposed-native` labels are historical: the
+current decode already keeps native layouts. The Sixel current and proposed rows are
+headless encode arms. They remained near 1.0 second/op with about 14.8 million
+allocations/op, and exclude terminal decode, draw, and tearing.
+
+Exact profile commands:
+
+```text
+# Corrected CPU-only q80 Block profile
+CGO_ENABLED=0 go test -tags live -run '^$' -bench '^BenchmarkCDPScreencastDecode$/^jpeg-q80$/^block-decode-320x270$' -benchmem -benchtime=5s -count=1 -cpuprofile /tmp/nyala-perf-edbc6f5/q80-block-clean.cpu.pprof ./internal/engine
+
+# Original allocation-profile capture; its CPU samples are not used
+CGO_ENABLED=0 go test -tags live -run '^$' -bench '^BenchmarkCDPScreencastDecode$/^jpeg-q80$/^block-decode-320x270$' -benchmem -benchtime=5s -count=1 -cpuprofile /tmp/nyala-perf-edbc6f5/q80-block.cpu.pprof -memprofile /tmp/nyala-perf-edbc6f5/q80-block.mem.pprof -memprofilerate=1 ./internal/engine
+
+# Other representative profiles
+CGO_ENABLED=0 go test -run '^$' -bench '^BenchmarkRenderStreamFrameChanged$' -benchmem -benchtime=10s -count=1 -cpuprofile /tmp/nyala-perf-edbc6f5/viewer-changed.cpu.pprof -memprofile /tmp/nyala-perf-edbc6f5/viewer-changed.mem.pprof -memprofilerate=1 ./internal/viewer
+go test -run '^$' -bench '^BenchmarkBlockCompose$/^quadrant$/^240x86$' -benchmem -benchtime=10s -count=1 -cpuprofile /tmp/nyala-perf-edbc6f5/compose-quadrant.cpu.pprof -memprofile /tmp/nyala-perf-edbc6f5/compose-quadrant.mem.pprof -memprofilerate=1 ./internal/render/block
+go test -run '^$' -bench '^BenchmarkBlockCompose$/^sextant$/^240x86$' -benchmem -benchtime=10s -count=1 -cpuprofile /tmp/nyala-perf-edbc6f5/compose-sextant.cpu.pprof -memprofile /tmp/nyala-perf-edbc6f5/compose-sextant.mem.pprof -memprofilerate=1 ./internal/render/block
+```
+
+The corrected q80 Block CPU-only profile measured 16.164015 ms/op and put
+`averageYCbCrToRGBA` first at 49.81 percent flat and 50.94 percent cumulative.
+The next leaders were `jpegn.idctAVX2` at 11.99 percent flat, `jpegn.getVLC` at
+11.24 percent flat and 19.98 percent cumulative, and `jpegn.decodeBlock` at 8.36
+percent flat and 41.70 percent cumulative. GC background marking was 2.00 percent
+cumulative CPU.
+
+The retained allocation profile is read only for allocation-space evidence.
+Allocation space was `jpegn.decodeSOF` 89.21 percent, `jpegn.readAllData` 3.44
+percent, `image.NewRGBA` 2.86 percent, and `bytes.growSlice` 2.28 percent.
+
+The remaining fused output allocation is one required 320x270 RGBA result,
+345,600 bytes per frame. The old full-resolution RGBA surface no longer exists on
+live q80 Block. A reusable RGBA ring would target only 2.86 percent of allocation
+space and has no material GC case, so recommendation 4 is closed as stale.
+
+The viewer changed-frame profile put `areaAverageBand` at 56.71 percent flat and
+59.28 percent cumulative, but that synthetic benchmark feeds a full 960x640 RGBA
+surface. Production q80 frames arrive at sub-cell size and skip this viewer
+downscale. Changed-frame allocation space was 99.42 percent `GridDiff.retainPrev`;
+96.86 percent of allocation objects came from `writeCUP`.
+
+Separate 240x86 Compose profiles were allocation-free. Quadrant CPU was led by
+`quadrantColours` at 24.02 percent flat and 40.17 percent cumulative; sextant was
+led by `sextantColours` at 27.59 percent flat and 49.41 percent cumulative. Their
+production parallel wall times are too small to justify more splitting, so the
+residual Compose task is closed. The q80 fused sampler is reopened as a bounded
+spike because it is the current profile leader and consumes a material share of
+the serial frame budget. Any change must lower q80 Block decode time, preserve
+placement and image quality, and avoid a concurrent delivered-frame regression.
+
+These measurements do not form a matched end-to-end Block benchmark. Do not add
+decode, Compose, diff, viewer, CDP p50, or renderer numbers across mismatched inputs
+and concurrency models. The decode workers overlap serial per-frame work, while a
+real delivered interval also depends on Chromium and the terminal. No bounded
+capture, `just fps`, terminal eyeballing, or real-terminal result was used. The
+terminal validation tasks remain open.
+
 ### Summary
 
-Two conclusions. First, the dominant block-render cost is the source downscale, not
-the colour maths. `renderBlock` reduces the full screencast surface to the sub-cell
+This is the historical pre-fuse summary that led to the row-band and fused paths.
+The 2026-07-14 record above supersedes its current rankings. At this point, the
+dominant block-render cost was the source downscale, not the colour maths.
+`renderBlock` reduced the full screencast surface to the sub-cell
 grid before Compose runs (`internal/viewer/viewer.go:419`,
 `metrics.DownscaleLiveInto` over `areaAverage` in `internal/metrics/align.go:64`).
 Measured at a 16x33 cell it costs 3.13 ms at 120x40 and 13.9 ms at 240x86, which is
@@ -731,9 +876,10 @@ The `code:concurrency-feasibility` measurement adds the missing downscale stage 
 
 The downscale scales with source device pixels (cols*cellW by rows*cellH), so its
 cost falls on a small terminal cell and rises on a large one; Compose and diff scale
-with cell count. A separate cost sits off this path: the engine allocates a fresh
-`image.RGBA` per decoded frame (`internal/engine/frame.go:116`), the destination of
-the JPEG-to-RGBA convert, ~73 percent of decode bytes.
+with cell count. A separate historical cost sat off this path: the engine allocated
+a fresh full-resolution `image.RGBA` per decoded frame, the destination of the
+JPEG-to-RGBA convert, at about 73 percent of decode bytes. The live Block fuse later
+removed it; the dated record above measures the remaining small result allocation.
 
 pprof flat leaders (`bench:block`, combined run, 9.58 s; equal wall time per
 sub-benchmark, so read leaf hotspots here and per-frame share from the table above):
@@ -890,9 +1036,10 @@ faults by construction: no shared mutable state, and it targets the dominant sta
    unchanged. Measured on a 32-core box at cell 16x33: **120x40 3.17 ms -> 0.56 ms
    (5.7x), 240x86 13.9 ms -> 1.40 ms (10x)**, 0 allocs. The downscale is no longer the
    dominant stage; the block stages are now roughly level. The fused downscale+binarise
-   variant and the residual Compose split were not needed for the win. Reopen either
-   only if a new profile puts those stages back on top; this gate is indexed in
-   [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
+   variant and the residual Compose split were not needed for the win. The 2026-07-14
+   profile later put only `averageYCbCrToRGBA` back on top, so that fused sampler has
+   a bounded spike and the residual Compose split is closed. See the
+   [full headless profile](#full-headless-profile-and-benchmark-pass-2026-07-14).
    Effort medium, impact high (delivered).
 3. **[DONE - staged]** Integer luma (owner's faster two-colour quantise). Swapped float
    `luma` (`block.go`) for inline integer weights `77R + 150G + 29B`, feeding
@@ -908,12 +1055,13 @@ faults by construction: no shared mutable state, and it targets the dominant sta
    the block grid). `baseline.json` stayed within tolerance (unchanged). Full diagnostics
    green. This frees compose CPU, which helps a paint-bound terminal (WezTerm ~40 fps),
    not the kitty 60 fps path.
-4. Reusable RGBA ring on the decode seam. Round-robin the `draw.Draw` destination
-   into a dimension-keyed ring of 5 to 6 buffers owned by the frame loop
-   (`internal/engine/frame.go:116`), invalidated on resize. Effort low-medium. Impact
-   low (GC pressure only, ~73 percent of decode bytes, no CPU cut on the 6.8 ms
-   decode). Profile before building it; the gate is indexed in
-   [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
+4. **[CLOSED - profile gate, 2026-07-14]** Reusable RGBA ring on the decode seam.
+   The q80 Block path now materialises only its required 320x270 result. That
+   `image.NewRGBA` is 345,600 bytes, 2.86 percent of allocation space; decoder planes
+   hold 89.21 percent, and clean CPU profiling puts GC background marking at 2.00
+   percent cumulative CPU.
+   The old full-resolution `draw.Draw` destination and its claimed 73 percent share
+   are stale. A ring has no material GC case.
 5. **[DONE - staged]** Faster SGR build in the diff. Replaced `strconv.AppendInt` with a
    precomputed `decByte [256]string` decimal table in `appendTrueColor` (`colour.go`),
    appended per component. Byte-identical (golden green). Measured BenchmarkBlockDiff
