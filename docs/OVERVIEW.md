@@ -222,9 +222,9 @@ chromedp.ListenTarget(ctx, func(ev interface{}) {
 | Frame decode | `gen2brain/jpegn`, `woozymasta/png`, native `image.Image` plus bounded Sixel RGBA | Block keeps native YCbCr; live moving Sixel JPEG fuses RGBA at one to four workers; Kitty carries CDP PNG directly |
 | Resize/composite | `golang.org/x/image/draw` | In-place scale into a reused RGBA buffer |
 | Half-block fallback | Custom compositor (port Carbonyl quad maths; reference `charmbracelet/x/mosaic`) | The permanent floor for KMSCON. Combined cell grid (bitmap + optional grapheme); quadrant (2x2) default, half-block (`U+2584`) floor; text overwrites cells. `rivo/uniseg` + `mattn/go-runewidth` for glyph width |
-| Sixel encode | `mattn/go-sixel` v0.0.12 | Retained pure-Go encoder; adaptive 256-colour palette; dithering off |
+| Sixel encode | Nyala encoder derived from `mattn/go-sixel` v0.0.12 | Retained pure-Go opaque encoder; adaptive 256-colour palette; dithering off |
 | Kitty graphics | `charmbracelet/x/ansi/kitty` | Full protocol; unicode-placeholder support |
-| Sixel quantisation | `mattn/go-sixel` adaptive palette | Adaptive 256 remains production; fixed-255 temporal reuse is the next validation |
+| Sixel quantisation | Nyala's copied `mattn/go-sixel` adaptive palette | Adaptive 256 remains production; fixed-255 temporal reuse is the next validation |
 | Colour degradation | Direct truecolour SGR (default); hardcoded RGB→xterm-256 formula (Carbonyl) fallback | Truecolour passthrough where present; closed-form per pixel (6x6x6 cube + 24-step grey ramp) otherwise. Stage 1 detects colour from env plus terminfo via `colorprofile.Detect`; a present `COLORTERM` (`kmscon`, `truecolor`, `24bit`) is a trusted positive that short-circuits to truecolour; no DCS round-trip. See `docs/STAGE-1.md` |
 | Capability detect | DA1-fenced startup handshake on the tty (Kitty `a=q`, Sixel via DA1, cell pixel size via `CSI 16t`/`14t`/`18t`), failing closed to block in 200 ms | Built in Stage 1, with the colour detector above; never trust `$TERM`. See `docs/STAGE-1.md` |
 | Config | `koanf` v2 + TOML | Pure Go, no cgo; layered env, file, and flag sources merged by load order; opt-in parsers keep the binary small. Chosen over viper (heavier dep set, larger binary) and stdlib (hand-rolled merge) |
@@ -405,7 +405,7 @@ browser layer (Stage 3) and the tint (Stage 4) first.
 | Tool | Score | Maturity | Maintenance | Suitability for Nyala |
 |---|---|---|---|---|
 | `charmbracelet/x/ansi/sixel` | 6/10 | Merged 2026-02-21; in x/ansi v0.11.7; experimental module | Active; Charm-backed; charmbracelet/x ~300 stars | Former production encoder; the matched q90 State path measured 960.437 ms and 14,857,669 allocs/op |
-| `mattn/go-sixel` | 9/10 | Mature (2014); v0.0.12 | Active; single maintainer (mattn); 174 stars | Current production encoder; retained scratch, adaptive colours, and a 101.670 ms matched State median |
+| `mattn/go-sixel` | 9/10 | Mature (2014); v0.0.12 | Active; single maintainer (mattn); 174 stars | Source of Nyala's current opaque encoder; retained scratch, adaptive colours, and a 101.670 ms matched State median before alpha removal |
 | `BourgeoisBear/rasterm` | 7/10 | v1.1.2, 2025-12-21 | Maintained; 108 stars; multi-contributor | One library for Sixel + Kitty + iTerm2 plus capability detection. Sixel needs pre-quantised `*image.Paletted` (suits a streaming pipeline) |
 | `blacktop/go-termimg` | 6/10 | Pre-1.0; "needs love"; created 2024-09 | Single author; 59 stars | All three protocols plus half-block, auto-detect, Bubble Tea widget. Sixel ~90ms/render is too slow; sub-view clipping incomplete |
 | `zellij-org/sixel-image` | 4/10 | Production in Zellij (Rust) | Maintained within Zellij | Reference only (Rust). Proven design for Sixel-inside-TUI: decode to ARGB, track occupied cells, redraw on resize |
@@ -413,8 +413,8 @@ browser layer (Stage 3) and the tint (Stage 4) first.
 - Sources: `charmbracelet/x/pull/352`, `/pull/380`, `mattn/go-sixel/issues/19`, `BourgeoisBear/rasterm`, `blacktop/go-termimg`, `zellij-org/zellij/issues/371`, `arewesixelyet.com`.
 - KMSCON exclusion confirmed: KMSCON does NOT support Sixel; the maintainer said (March 2026) that adding it needs a near-total libtsm rewrite. Half-block only there.
 
-Verdict, updated 2026-07-15: use retained `mattn/go-sixel` v0.0.12 with an
-adaptive 256-colour palette and dithering off. It owns the complete parameterised
+Verdict, updated 2026-07-16: use Nyala's opaque encoder derived from
+`mattn/go-sixel` v0.0.12 with an adaptive 256-colour palette and dithering off. It owns the complete parameterised
 DCS and writes out of band at an absolute cursor position. Fixed 255 matches adaptive
 static output and is faster when reused, but motion quality is untested. Keep the
 current band builder. Validate long-count RLE in a temporary upstream worktree; see
@@ -461,7 +461,7 @@ are no plans for official graphics support, so graphics are always a bypass.
 |---|---|---|---|---|
 | `golang.org/x/image/draw` | 9/10 | v0.41.0 2026-05-21; stable | Go team; unlimited bus factor | The resizer. In-place draw into a reused RGBA buffer; multiple quality scalers; also composites |
 | `BourgeoisBear/rasterm` | 8/10 | v1.1.2 2025-12-21 | Maintained; 108 stars | Clean Kitty + iTerm2 + Sixel encode-to-bytes; caller owns I/O; terminal-detection tables. No half-block |
-| `mattn/go-sixel` | 9/10 | v0.0.12; Go 1.24+ | Very active in 2026 (real-time video work) | Current Sixel encoder: retained scratch, adaptive 256 colours, dithering off. Sixel only |
+| `mattn/go-sixel` | 9/10 | v0.0.12; Go 1.24+ | Very active in 2026 (real-time video work) | Source of Nyala's opaque Sixel encoder: retained scratch, adaptive 256 colours, dithering off |
 | `muesli/termenv` | 8/10 | v0.16.0 2025-02-21 | Healthy; ~2k stars | Capability detection and chrome styling. WARNING: per-colour search is too slow per pixel; do not quantise with it |
 | `makeworld/dither` v2 | 8/10 | v2.4.0 2023-12-20 | Stable; 450 stars | Best-quality paletted dithering (linearised, luminance-weighted). Use ordered/Bayer for speed; paletted path only |
 | `ericpauley/go-quantize` | 7/10 | Settled API; created 2016 | Quiet; 25 stars; algorithm fixed | Fastest Go median-cut palette (~17-23x faster). Cache palettes across frames; paletted Sixel only |
@@ -528,11 +528,11 @@ enhancements gated behind capability detection.
 | Styling/layout | Lipgloss v2 | 9/10 | Right layout and text-overlay engine; Canvas/Layer places glyphs over the bitmap |
 | Components | Bubbles v2 | 8/10 | Address bar, status line, page rect, spinner out of the box |
 | Animation | Harmonica | 5/10 | Optional chrome polish; defer or vendor |
-| Sixel | `mattn/go-sixel` v0.0.12 | 9/10 | Matched State path is 9.45x faster than the former encoder |
+| Sixel | Nyala encoder derived from `mattn/go-sixel` v0.0.12 | 9/10 | Matched State path is 9.45x faster than the former encoder, then alpha removal cuts the 2560x1600 mean by 5.853% |
 | Kitty | `charmbracelet/x/ansi/kitty` | 9/10 | Full protocol with unicode-placeholder support |
 | Half-block fallback | Custom (ref `x/mosaic`) | 6/10 | Mandatory KMSCON floor; composable cell grid for text overlay |
 | Resize/composite | `golang.org/x/image/draw` | 9/10 | In-place scale into a reused buffer; stdlib-grade |
-| Sixel palette | `mattn/go-sixel` adaptive 256 colours | 9/10 | Dithering off; fixed-255 temporal motion validation is next |
+| Sixel palette | Copied `mattn/go-sixel` adaptive 256 colours | 9/10 | Dithering off; fixed-255 temporal motion validation is next |
 | Colour detect | `colorprofile` (+ hardcoded RGB→256) | 8/10 | Env plus terminfo via `colorprofile.Detect`; trusted `COLORTERM`; closed-form formula per pixel. Built in Stage 1 |
 | Capability detect | DA1-fenced tty handshake (`x/ansi` + `x/term`) | 9/10 | Kitty `a=q`, Sixel via DA1, cell size via `CSI 16t`/`14t`/`18t`; fails closed to block; never trust `$TERM`. Built in Stage 1 |
 | Viewport substrate alt | vaxis | 8/10 | Runner-up if Charm graphics coexistence proves intractable |

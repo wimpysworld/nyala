@@ -31,8 +31,8 @@ Nyala's three reported problems each have a clear, code-level root cause.
 The reference projects agree on three durable ideas: coalesce frames, reuse buffers,
 and avoid redundant terminal bytes. Nyala now passes each live Kitty CDP PNG straight
 to terminal framing, so the old transmit-once animation-frame plan does not apply.
-Live Sixel now uses a retained `mattn/go-sixel` encoder with an adaptive 256-colour
-palette and dithering off. Moving q90 JPEG uses `jpegn` fused RGBA when the live
+Live Sixel now uses a retained opaque Nyala encoder derived from `mattn/go-sixel`
+v0.0.12, with its adaptive 256-colour policy and dithering off. Moving q90 JPEG uses `jpegn` fused RGBA when the live
 session has at most four decode workers. The matched sequential path is now
 103.014 ms, while State processing is 88.637 ms before terminal work. Static
 fixed-255 reuse later cut warm State time by 45.8% with identical output, but a
@@ -156,7 +156,8 @@ the cycle) or the kitty-to-sixel step looking identical.
 ### Theme 4 - Sixel renderer (~593 ms/frame, historical)
 
 This profile predates the 2026-07-15 encoder adoption. The live path then used
-`charmbracelet/x/ansi/sixel`. Production now uses `mattn/go-sixel`; see the
+`charmbracelet/x/ansi/sixel`. Production now uses Nyala's opaque encoder derived
+from `mattn/go-sixel`; see the
 [matched adoption record](#sixel-encoder-adoption-2026-07-15).
 KEY: **quantisation dominates, and it is rebuilt from scratch every frame.**
 `newSixelPalette` hashes every pixel into a `map[sixelColor]uint64`, median-cuts
@@ -286,9 +287,10 @@ only if terminal-side PNG decoding or drawing becomes a measured bottleneck. Any
 future partial update must use a supported protocol path and beat direct PNG end to
 end.
 
-**Sixel.** Production uses the already pinned, pure-Go MIT
-`mattn/go-sixel` v0.0.12. A retained encoder owns its scratch and complete
-parameterised DCS, uses an adaptive 256-colour palette, and disables dithering.
+**Sixel.** Production uses a pure-Go MIT encoder copied from `mattn/go-sixel`
+v0.0.12 and narrowed to Nyala's opaque CDP frames. A retained encoder owns its
+scratch and complete parameterised DCS, uses the same adaptive 256-colour policy,
+and disables dithering.
 The matched q90 State benchmark is 9.45x faster than the former
 `charmbracelet/x/ansi/sixel` path and cuts allocations by 99.993%.
 
@@ -428,8 +430,8 @@ Also landed on the load-time theme, beyond the ranked list:
    forwards it in order, so the engine's `dispatchWheel` sums the deltas; a burst no
    longer collapses to one step (down, up, page, and horizontal, sign preserved).
    Direct fix for sluggish scroll. Impact 7, effort medium.
-8. **[DONE - 2026-07-15] Sixel encoder adoption.** State retains a
-   `mattn/go-sixel` encoder and switches its destination through a writer proxy.
+8. **[DONE - 2026-07-16] Sixel encoder adoption.** State retains Nyala's opaque
+   encoder derived from `mattn/go-sixel` and switches its destination through a writer proxy.
    Adaptive 256-colour output with dithering off cuts the matched median from
    960.437 to 101.670 ms and payload by 18.47%. See the
    [dated adoption record](#sixel-encoder-adoption-2026-07-15). The bounded
@@ -1411,8 +1413,8 @@ a secondary candidate if the profile shifts after those costs fall.
 
 ### Sixel encoder adoption (2026-07-15)
 
-Production switched from `charmbracelet/x/ansi/sixel` to the already pinned,
-pure-Go MIT `mattn/go-sixel` v0.0.12. The renderer retains one encoder, redirects
+Production switched from `charmbracelet/x/ansi/sixel` to an encoder derived from
+the pure-Go MIT `mattn/go-sixel` v0.0.12. The renderer retains one encoder, redirects
 each call through a swappable writer proxy, and serialises concurrent calls with a
 mutex. The encoder owns the complete parameterised DCS and its scratch buffers.
 `State` retains the renderer across frames and backend switches. The capture
@@ -1561,6 +1563,55 @@ The public seams are `Encoder.Palette`, which caches a fixed palette and its LUT
 mapping, band construction, RLE, and scratch are private. Private-stage tests belong
 in a temporary upstream worktree. Keep stage-only, encoder, and combined decode plus
 State results separate. Do not combine medians from different fixtures or harnesses.
+
+##### Opaque-frame alpha-only experiment (2026-07-16)
+
+Nyala's current CDP page frames are composited and opaque. A temporary copy of
+`go-sixel` v0.0.12 removed only its post-map transparent-pixel remap scan, palette
+alpha scan, opaque scratch, and per-pixel opaque branch. Source pixels, adaptive
+palette selection, 256-colour budget, mapping, dithering policy, band construction,
+RLE, retained encoder state, and output writes stayed unchanged. No dependency or
+production file changed.
+
+The fixture was the first settled 2560x1600 Sixel PNG frame captured through CDP
+from `layout-13-linuxmatters`. An exhaustive scan confirmed all 4,096,000 source
+pixels had alpha 255. Eight alternating process pairs measured 50 warm encodes per
+arm after four warm-ups. The table aggregates those runs; the mean range is the
+range of the eight per-run means, and the within-run standard deviation is averaged
+across the eight runs.
+
+| Arm | Mean | Mean range | p90 | Estimated FPS from p90 | Average within-run standard deviation | allocs/op | Payload |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Current alpha handling | 46.832 ms | 46.593 to 47.155 ms | 47.843 ms | 20.902 | 0.775 ms | 1,303 | 461,879 B |
+| Opaque-only candidate | 42.891 ms | 42.588 to 43.537 ms | 43.843 ms | 22.809 | 0.736 ms | 1,303 | 461,879 B |
+
+Removing those alpha operations reduced the mean by 3.941 ms (8.416%) and p90 by
+4.000 ms (8.361%). All sixteen outputs had SHA-256
+`0acefb7d583330053463e7b7a5e3eab5ec93f7c399d768a0ef5a95f127abfccb`. The paired
+mean reduction ranged from 3.296 to 4.363 ms, with a 0.325 ms standard deviation and
+a paired t statistic of 34.35. The paired p90 reduction had a 0.554 ms standard
+deviation and a t statistic of 20.42. The gain is above measured noise.
+
+This result does not accept a palette algorithm. Nyala now owns the minimum encoder
+subset needed by its opaque CDP frames. The copied code keeps palette selection,
+the 256-colour policy, mapping, band construction, the 255-count RLE limit, framing,
+retained scratch, and output writes unchanged. The upstream decoder remains the
+round-trip test oracle.
+
+The production implementation was measured again on an opaque 2560x1600 RGBA image
+scaled from the committed Linux Matters fixture. Eight process runs performed 20
+warm encodes per arm. P90 is the highest of the eight run means. Both arms emitted
+the same 934,772-byte payload. Strict tests also require byte identity for opaque
+RGBA, NRGBA, and YCbCr inputs.
+
+| Arm | Mean | Run-mean range | Run-mean standard deviation | p90 | Estimated FPS from p90 | allocs/op |
+|---|---:|---:|---:|---:|---:|---:|
+| `go-sixel` v0.0.12 alpha path | 67.119 ms | 66.715 to 67.828 ms | 0.420 ms | 67.828 ms | 14.743 | 1,301 |
+| Nyala opaque encoder | 63.190 ms | 62.868 to 63.634 ms | 0.298 ms | 63.634 ms | 15.715 | 1,301 |
+
+The production path reduces mean processing by 3.929 ms (5.853%) and p90 by
+4.194 ms (6.183%). Fixture and machine differences make this result separate from
+the CDP experiment above. Both measurements show a repeatable total-path gain.
 
 ##### Palette track, benchmark A
 
