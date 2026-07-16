@@ -94,7 +94,10 @@ func BenchmarkBlockComposeParallel(b *testing.B) {
 	}
 }
 
-var benchColourFG, benchColourBG color.RGBA
+var (
+	benchColourFG, benchColourBG color.RGBA
+	benchQuadrantSample          [4]color.RGBA
+)
 
 // BenchmarkMaskColours isolates the mask-keyed foreground/background averaging
 // used after quadrant and sextant luma selection.
@@ -127,6 +130,25 @@ func BenchmarkMaskColours(b *testing.B) {
 		}
 		benchColourFG, benchColourBG = fg, bg
 	})
+}
+
+// BenchmarkQuadrantSampling isolates the exact-size source reads and vertical
+// two-pixel averages that produce one cell's four quadrant colours.
+func BenchmarkQuadrantSampling(b *testing.B) {
+	const cols, rows = 240, 86
+	img := benchImage(cols*cellPxW, rows*cellPxH)
+	cell := 0
+	var x, y, z, w color.RGBA
+	b.ReportAllocs()
+	for b.Loop() {
+		col, row := cell%cols, cell/cols
+		x, y, z, w = sampleQuadrantExact(img, col, row)
+		cell++
+		if cell == cols*rows {
+			cell = 0
+		}
+	}
+	benchQuadrantSample = [4]color.RGBA{x, y, z, w}
 }
 
 // BenchmarkBlockDiff drives the differ over a full-motion grid (every cell changes

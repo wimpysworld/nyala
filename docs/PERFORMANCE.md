@@ -920,11 +920,49 @@ ranges. Changed-frame median/p90 moved from 631,491/640,480 to
 2,651,767/2,766,768 to 2,602,373/2,702,522 ns at 240x86
 (-1.86/-2.32 percent). Unchanged frames moved -2.77/-3.84 percent and
 -1.58/-2.07 percent. Retained samples stayed at zero B/op and zero allocs/op.
-Payload, SGR count, and outer-writer calls were identical in both arms. The
-candidate post-profile placed `quadrantColours` at 25.86 percent flat and 27.73
-percent cumulative, and `sextantColours` at 33.12 percent flat and 39.06 percent
-cumulative. Colour selection remains on top, but the repeated whole-path gains
-and exact-output oracle close this pass without a second refinement.
+Payload, SGR count, and outer-writer calls were identical in both arms. The mask
+candidate post-profile, before the source-sampling pass below, placed
+`quadrantColours` at 25.86 percent flat and 27.73 percent cumulative, and
+`sextantColours` at 33.12 percent flat and 39.06 percent cumulative. Colour
+selection remained on top, but the repeated whole-path gains and exact-output
+oracle closed this pass without a second refinement.
+
+The next Quadrant-only profile put `avgBlock` at 20.99 percent flat and 40.95
+percent cumulative CPU, `pixel` at 12.58/18.43 percent, and `sampleQuadrant` at
+4.25/45.19 percent. The adopted exact-source branch requires a zero-origin,
+packed RGBA image of exactly `2*cols` by `4*rows`, with the expected stride and
+backing length. It reads row offsets directly and averages each vertical byte
+pair through an overflow-safe unsigned sum and floor divide. Nil, empty,
+undersized, oversized, odd, subimage, non-zero-origin, padded-stride, and rejected
+malformed layouts retain the generic sampler.
+
+The same six-process rotated method retained 30 timed samples per arm. All
+isolated, serial, and parallel Quadrant process-median ranges were separated.
+Exact Quadrant sampling fell from 23.75/23.91 to 8.62/8.64 ns median/p90
+(-63.71/-63.86 percent).
+
+| Quadrant path | 120x40 median/p90 before -> after | Change | 240x86 median/p90 before -> after | Change |
+|---|---:|---:|---:|---:|
+| Serial compose | 210,722/212,179 -> 113,405/113,864 ns | -46.18/-46.34% | 903,727/909,022 -> 488,345/491,275 ns | -45.96/-45.96% |
+| Parallel compose | 78,264/81,074 -> 43,838/45,794 ns | -43.99/-43.52% | 323,219/329,873 -> 176,833/182,628 ns | -45.29/-44.64% |
+| Production-shaped RGBA viewer, changed | 625,869/662,058 -> 596,592/636,164 ns | -4.68/-3.91% | 2,633,852/2,795,049 -> 2,550,455/2,697,161 ns | -3.17/-3.50% |
+| Production-shaped RGBA viewer, unchanged | 508,573/528,470 -> 479,583/493,612 ns | -5.70/-6.60% | 2,090,011/2,175,214 -> 1,961,860/2,013,553 ns | -6.13/-7.43% |
+
+The viewer rows use exact-size packed RGBA input. They do not measure Nyala's
+default native-YCbCr q90 JPEG path, which composes YCbCr directly and bypasses
+this sampler. The fast path benefits Quadrant traffic that reaches
+`Renderer.Compose` as exact-size packed RGBA, including RGBA/PNG-derived and
+fallback frames.
+
+Sextant and Half-block control ranges overlapped; serial median movements stayed
+within 0.3 percent. All retained samples had zero allocs/op; B/op was zero except
+one 6 B/op candidate sample. Payload, SGR count, writer calls, complete grids,
+and terminal bytes were unchanged. Exhaustive comparison covered all 65,536
+input byte pairs plus exact
+and fallback boundary/random images, overlays, alpha, and parallel reads. A
+post-profile removed `avgBlock`, `pixel`, and generic `sampleQuadrant` from the
+exact-source hot path; `sampleQuadrantExact` accounts for 5.30 percent flat and
+19.59 percent cumulative CPU.
 
 Historical pre-mask 240x86 Compose profiles were allocation-free. Before the
 mask-metadata change above, Quadrant CPU was led by `quadrantColours` at 24.02

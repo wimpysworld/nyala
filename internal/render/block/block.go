@@ -248,10 +248,46 @@ func (br *Renderer) composeQuadrantInto(g *Grid, f render.Frame) {
 // byte-identical to the serial pass.
 func (br *Renderer) composeQuadrantRows(g *Grid, f render.Frame, row0, row1 int) {
 	img, _ := f.Img.(*image.RGBA)
+	if exactQuadrantSource(img, g.Cols, g.Rows) {
+		br.composeQuadrantRowsExact(g, img, row0, row1)
+		return
+	}
 	for row := row0; row < row1; row++ {
 		for col := range g.Cols {
 			x, y, z, wq := sampleQuadrant(img, col, row)
 			glyph, fg, bg := binarizeQuadrant(x, y, z, wq)
+			*g.At(col, row) = Cell{Glyph: glyph, FG: fg, BG: bg}
+		}
+	}
+}
+
+// exactQuadrantSource reports whether img has the packed, zero-origin, exact
+// dimensions produced for live Quadrant composition. Every other layout stays
+// on the bounds-safe generic sampler.
+func exactQuadrantSource(img *image.RGBA, cols, rows int) bool {
+	if img == nil || cols <= 0 || rows <= 0 {
+		return false
+	}
+	maxInt := int(^uint(0) >> 1)
+	if cols > maxInt/cellPxW || rows > maxInt/cellPxH {
+		return false
+	}
+	w, h := cols*cellPxW, rows*cellPxH
+	if w > maxInt/4 {
+		return false
+	}
+	stride := w * 4
+	if h > maxInt/stride {
+		return false
+	}
+	return img.Rect == image.Rect(0, 0, w, h) && img.Stride == stride && len(img.Pix) == stride*h
+}
+
+func (br *Renderer) composeQuadrantRowsExact(g *Grid, img *image.RGBA, row0, row1 int) {
+	for row := row0; row < row1; row++ {
+		for col := range g.Cols {
+			x, y, z, w := sampleQuadrantExact(img, col, row)
+			glyph, fg, bg := binarizeQuadrant(x, y, z, w)
 			*g.At(col, row) = Cell{Glyph: glyph, FG: fg, BG: bg}
 		}
 	}
@@ -334,6 +370,31 @@ func sampleQuadrant(img *image.RGBA, col, row int) (x, y, z, w color.RGBA) {
 	y = avgBlock(img, x0+1, y0)   // top-right
 	z = avgBlock(img, x0, y0+2)   // bottom-left
 	w = avgBlock(img, x0+1, y0+2) // bottom-right
+	return x, y, z, w
+}
+
+func averagePair(a, b uint8) uint8 {
+	return uint8((uint16(a) + uint16(b)) >> 1) //nolint:gosec // byte average stays in range
+}
+
+func verticalPair(pix []byte, top, bottom int) color.RGBA {
+	return color.RGBA{
+		R: averagePair(pix[top], pix[bottom]),
+		G: averagePair(pix[top+1], pix[bottom+1]),
+		B: averagePair(pix[top+2], pix[bottom+2]),
+		A: 0xff,
+	}
+}
+
+// sampleQuadrantExact reads one cell from a source accepted by
+// exactQuadrantSource. Callers must establish that predicate first.
+func sampleQuadrantExact(img *image.RGBA, col, row int) (x, y, z, w color.RGBA) {
+	top := row*cellPxH*img.Stride + col*cellPxW*4
+	middle := top + 2*img.Stride
+	x = verticalPair(img.Pix, top, top+img.Stride)
+	y = verticalPair(img.Pix, top+4, top+img.Stride+4)
+	z = verticalPair(img.Pix, middle, middle+img.Stride)
+	w = verticalPair(img.Pix, middle+4, middle+img.Stride+4)
 	return x, y, z, w
 }
 
