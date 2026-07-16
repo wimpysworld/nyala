@@ -95,7 +95,6 @@ func BenchmarkBlockComposeParallel(b *testing.B) {
 // each pass) in truecolour, for both sizes. It is the worst-case live paint: no
 // cell coalesces, so every cell rebuilds its SGR and glyph and writes.
 func BenchmarkBlockDiff(b *testing.B) {
-	fg, bg := SGRFunc(AppendTrueColorFG), SGRFunc(AppendTrueColorBG)
 	for _, sz := range bpSizes {
 		b.Run(sz.name, func(b *testing.B) {
 			frames := [2]Grid{
@@ -103,13 +102,13 @@ func BenchmarkBlockDiff(b *testing.B) {
 				motionGrid(sz.cols, sz.rows, 1),
 			}
 			var d GridDiff
-			if err := d.Emit(io.Discard, frames[0], fg, bg); err != nil { // seed prev
+			if err := d.EmitTrueColour(io.Discard, frames[0]); err != nil { // seed prev
 				b.Fatal(err)
 			}
 			b.ReportAllocs()
 			i := 0
 			for b.Loop() {
-				if err := d.Emit(io.Discard, frames[i&1], fg, bg); err != nil {
+				if err := d.EmitTrueColour(io.Discard, frames[i&1]); err != nil {
 					b.Fatal(err)
 				}
 				i++

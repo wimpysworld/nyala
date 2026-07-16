@@ -2,17 +2,22 @@ package block
 
 import (
 	"bytes"
+	"errors"
 	"image/color"
 	"io"
 	"strings"
 	"testing"
 )
 
+var errDiffWrite = errors.New("diff write")
+
 // fixedFG and fixedBG are colour-mode-neutral SGR funcs for the differ tests: a
 // short stable token per colour, so the assertions read the escape stream
 // without truecolour noise.
-func fixedFG(dst []byte, c color.RGBA) []byte { return append(dst, '<', 'f', '0'+c.R, '>') }
-func fixedBG(dst []byte, c color.RGBA) []byte { return append(dst, '<', 'b', '0'+c.B, '>') }
+func fixedFG(dst []byte, c color.RGBA) []byte       { return append(dst, '<', 'f', '0'+c.R, '>') }
+func fixedBG(dst []byte, c color.RGBA) []byte       { return append(dst, '<', 'b', '0'+c.B, '>') }
+func wrappedTrueFG(dst []byte, c color.RGBA) []byte { return AppendTrueColorFG(dst, c) }
+func wrappedTrueBG(dst []byte, c color.RGBA) []byte { return AppendTrueColorBG(dst, c) }
 
 func gridOf(cols, rows int, fill Cell) Grid {
 	g := Grid{Cols: cols, Rows: rows, Cells: make([]Cell, cols*rows)}
@@ -67,6 +72,128 @@ func legacyCUP(row, col int) []byte {
 	b = append(b, ';')
 	b = appendInt(b, col+1)
 	return append(b, 'H')
+}
+
+// TestGridDiffTrueColourMatchesGeneric compares the specialised truecolour path
+// with the unchanged generic path over the state transitions the live differ uses.
+func TestGridDiffTrueColourMatchesGeneric(t *testing.T) {
+	fg, bg := SGRFunc(wrappedTrueFG), SGRFunc(wrappedTrueBG)
+	base := gridOf(4, 2, Cell{
+		Glyph: 'a', FG: color.RGBA{R: 1, G: 2, B: 3, A: 0xff},
+		BG: color.RGBA{R: 4, G: 5, B: 6, A: 0xff},
+	})
+	zero := gridOf(4, 2, Cell{Glyph: 'a'})
+	black := gridOf(4, 2, Cell{Glyph: 'a', FG: color.RGBA{A: 0xff}, BG: color.RGBA{A: 0xff}})
+	frames := []Grid{zero, black, cloneDiffGrid(base), cloneDiffGrid(base)}
+
+	fgOnly := cloneDiffGrid(base)
+	fgOnly.At(1, 0).FG.R++
+	frames = append(frames, fgOnly)
+	bgOnly := cloneDiffGrid(fgOnly)
+	bgOnly.At(2, 0).BG.B++
+	frames = append(frames, bgOnly)
+	both := cloneDiffGrid(bgOnly)
+	both.At(0, 1).FG.G++
+	both.At(0, 1).BG.R++
+	frames = append(frames, both)
+	alphaOnly := cloneDiffGrid(both)
+	alphaOnly.At(0, 1).FG.A = 1
+	alphaOnly.At(0, 1).BG.A = 2
+	frames = append(frames, alphaOnly)
+	sparse := cloneDiffGrid(alphaOnly)
+	sparse.At(0, 0).Glyph = 'x'
+	sparse.At(3, 1).Glyph = 'y'
+	frames = append(frames, sparse)
+	motion := cloneDiffGrid(sparse)
+	for i := range motion.Cells {
+		motion.Cells[i].Glyph = rune('k' + i)
+		motion.Cells[i].FG.R += uint8(i + 1)
+		motion.Cells[i].BG.B += uint8(i + 1)
+	}
+	frames = append(frames, motion)
+	overlay := cloneDiffGrid(motion)
+	overlay.At(0, 0).Text = "A"
+	overlay.At(1, 0).Text = "界"
+	overlay.At(2, 0).Wide = true
+	overlay.At(3, 0).Text = "’"
+	frames = append(frames, overlay)
+	frames = append(frames, gridOf(5, 3, base.Cells[0]))
+
+	var fast, generic GridDiff
+	for i, frame := range frames {
+		var fastOut, genericOut bytes.Buffer
+		if err := fast.EmitTrueColour(&fastOut, frame); err != nil {
+			t.Fatalf("frame %d fast: %v", i, err)
+		}
+		if err := generic.Emit(&genericOut, frame, fg, bg); err != nil {
+			t.Fatalf("frame %d generic: %v", i, err)
+		}
+		if !bytes.Equal(fastOut.Bytes(), genericOut.Bytes()) {
+			t.Fatalf("frame %d fast bytes differ from generic", i)
+		}
+	}
+	alphaRun := gridOf(2, 1, Cell{
+		Glyph: 'a', FG: color.RGBA{R: 1, G: 2, B: 3, A: 1},
+		BG: color.RGBA{R: 4, G: 5, B: 6, A: 1},
+	})
+	alphaRun.At(1, 0).FG.A = 2
+	alphaRun.At(1, 0).BG.A = 2
+	var alphaOut bytes.Buffer
+	if err := (&GridDiff{}).EmitTrueColour(&alphaOut, alphaRun); err != nil {
+		t.Fatal(err)
+	}
+	if got := bytes.Count(alphaOut.Bytes(), []byte("\x1b[38;2;")) +
+		bytes.Count(alphaOut.Bytes(), []byte("\x1b[48;2;")); got != 2 {
+		t.Fatalf("alpha-only run emitted %d RGB SGRs, want one FG and one BG", got)
+	}
+	fast.Reset()
+	generic.Reset()
+	var fastOut, genericOut bytes.Buffer
+	if err := fast.EmitTrueColour(&fastOut, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := generic.Emit(&genericOut, base, fg, bg); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(fastOut.Bytes(), genericOut.Bytes()) {
+		t.Fatal("reset fast bytes differ from generic")
+	}
+}
+
+func cloneDiffGrid(g Grid) Grid {
+	clone := Grid{Cols: g.Cols, Rows: g.Rows, Cells: make([]Cell, len(g.Cells))}
+	copy(clone.Cells, g.Cells)
+	return clone
+}
+
+type failDiffWriter struct {
+	writes int
+	failAt int
+}
+
+func (w *failDiffWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes == w.failAt {
+		return 0, errDiffWrite
+	}
+	return len(p), nil
+}
+
+// TestGridDiffTrueColourMatchesGenericErrors checks that the fast path returns
+// the same error on the same write as the generic path.
+func TestGridDiffTrueColourMatchesGenericErrors(t *testing.T) {
+	fg, bg := SGRFunc(wrappedTrueFG), SGRFunc(wrappedTrueBG)
+	g := gridOf(2, 1, Cell{Glyph: 'a', FG: color.RGBA{R: 1, A: 0xff}, BG: color.RGBA{B: 2, A: 0xff}})
+	for failAt := 1; failAt <= 5; failAt++ {
+		fastWriter := &failDiffWriter{failAt: failAt}
+		genericWriter := &failDiffWriter{failAt: failAt}
+		fastErr := (&GridDiff{}).EmitTrueColour(fastWriter, g)
+		genericErr := (&GridDiff{}).Emit(genericWriter, g, fg, bg)
+		if !errors.Is(fastErr, genericErr) || fastWriter.writes != genericWriter.writes {
+			t.Fatalf("failAt %d: fast (%v, %d writes), generic (%v, %d writes)",
+				failAt, fastErr, fastWriter.writes, genericErr, genericWriter.writes)
+		}
+	}
 }
 
 // TestGridDiffSkipsUnchanged checks an unchanged second frame emits no escapes.

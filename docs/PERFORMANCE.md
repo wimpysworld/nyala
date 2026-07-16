@@ -843,6 +843,29 @@ gone without a latency regression. The fixed array also keeps the first CUP
 allocation-free. These p90 values measure sustained in-process diff encoding,
 not terminal presentation or end-to-end per-frame tail latency.
 
+The 2026-07-16 True Colour follow-up keeps `GridDiff.Emit` fully generic for
+xterm-256, monochrome, wrappers, and other callers. The viewer explicitly selects
+`GridDiff.EmitTrueColour` only for `ColourTrue`. That path calls the concrete
+appenders directly and tracks RGB state without rebuilding, comparing, and
+copying encoded SGR bytes. Alpha remains absent from terminal colour state, so
+alpha-only differences do not add an SGR change after RGB state is seeded. A
+generic-wrapper comparison covers unchanged, foreground-only, background-only,
+both-colour, alpha-only, sparse, row-separated, full-motion, overlay, wide,
+non-ASCII, reset, resize, and error transitions byte-for-byte.
+
+Each benchmark series used six fresh processes in rotated baseline/candidate order
+with `GOMAXPROCS=4`, `GOGC=100`, four discarded warm-ups, and 30 timed one-second
+samples per variant. Production-shaped changed-frame median/p90 moved from
+668,816/678,684 to 643,955/655,490 ns at 120x40 (-3.72/-3.42 percent), and from
+2,803,482/2,859,927 to 2,705,675/2,751,554 ns at 240x86 (-3.49/-3.79 percent).
+The unchanged paths moved -0.02/-0.16 percent and -0.34/-0.47 percent. Isolated
+`BenchmarkBlockDiff` median/p90 improved -22.61/-22.91 percent at 120x40 and
+-24.07/-25.41 percent at 240x86. There were zero allocs/op in all samples; B/op
+was zero except one 2 B/op baseline sample. Both arms also match at 9,240 SGRs,
+178,579 payload bytes, and one outer-writer call for 120x40, and 40,506 SGRs,
+782,829 bytes, and one call for
+240x86 changed frames; unchanged frames report zero for all three counters.
+
 Separate 240x86 Compose profiles were allocation-free. Quadrant CPU was led by
 `quadrantColours` at 24.02 percent flat and 40.17 percent cumulative; sextant was
 led by `sextantColours` at 27.59 percent flat and 49.41 percent cumulative. Their
