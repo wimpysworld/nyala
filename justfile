@@ -436,6 +436,15 @@ internal-render-metrics:
     # The fenced Chromium wrapper owns its no-sandbox diagnostic switch.
     @FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" NYALA_INTERNAL_RENDER_METRICS=1 go test -tags live -run '^TestInternalRenderingMetrics$' -v -count=1 ./internal/viewer/
 
+# Compare Sixel palette implementations on the committed still-image matrix.
+palette-bench:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for run in 0 1 2 3 4 5; do
+        NYALA_PALETTE_BENCH=1 NYALA_PALETTE_BENCH_RUN="$run" \
+            go test -run '^TestPaletteBenchmark$' -v -count=1 ./internal/render/sixel/
+    done
+
 # Tidy Go modules
 tidy:
     @go mod tidy
