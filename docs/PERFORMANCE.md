@@ -889,9 +889,47 @@ fell from 40,506 SGRs and 782,829 bytes to 20,640 SGRs and 743,097 bytes. The
 outer writer stayed at one call per changed frame. The repeated range separation,
 smaller payload, and equal terminal state support retaining the combined SGR.
 
-Separate 240x86 Compose profiles were allocation-free. Quadrant CPU was led by
-`quadrantColours` at 24.02 percent flat and 40.17 percent cumulative; sextant was
-led by `sextantColours` at 27.59 percent flat and 49.41 percent cumulative. Their
+The next bounded Block pass targeted the already-known colour-selection hot
+path. Fresh 240x86 profiles placed `quadrantColours` at 23.44 percent flat and
+39.04 percent cumulative CPU, and `sextantColours` at 25.79 percent flat and
+46.19 percent cumulative, so both cleared the 10 percent profile gate. The
+adopted implementation stores mask membership and bright/dark counts in 16-entry
+quadrant and 64-entry sextant tables, then uses exact count-specific averaging.
+Half-block composition is unchanged. Exhaustive sum/count, all-mask, boundary,
+random-frame, complete-grid, overlay, and terminal-byte comparisons matched the
+former loop and division algorithm exactly.
+
+Six fresh, non-overlapping processes ran per comparison in rotated order with
+`GOMAXPROCS=4`, `GOGC=100`, four discarded warm-ups, and 30 retained 300 ms
+samples per arm. Every target's three candidate process-median ranges sat below
+every baseline range. Isolated quadrant median/p90 fell from 17.25/17.30 to
+11.59/11.63 ns (-32.81/-32.77 percent), and sextant from 18.33/18.44 to
+12.91/12.96 ns (-29.57/-29.72 percent).
+
+| Compose path | 120x40 median/p90 before -> after | Change | 240x86 median/p90 before -> after | Change |
+|---|---:|---:|---:|---:|
+| Quadrant serial | 217,637/219,668 -> 210,779/211,958 ns | -3.15/-3.51% | 937,365/943,765 -> 903,222/907,962 ns | -3.64/-3.79% |
+| Sextant serial | 180,573/181,491 -> 157,474/158,270 ns | -12.79/-12.79% | 773,581/777,401 -> 680,241/683,104 ns | -12.07/-12.13% |
+| Quadrant parallel | 81,727/84,219 -> 78,209/80,405 ns | -4.30/-4.53% | 336,700/347,087 -> 323,087/329,812 ns | -4.04/-4.98% |
+| Sextant parallel | 67,642/69,749 -> 60,100/61,657 ns | -11.15/-11.60% | 279,116/283,825 -> 245,297/252,417 ns | -12.12/-11.07% |
+| Half-block serial | 34,646/34,817 -> 34,603/34,744 ns | -0.12/-0.21% | 149,280/150,385 -> 149,110/150,497 ns | -0.11/+0.07% |
+
+The production-shaped quadrant path also retained separated process-median
+ranges. Changed-frame median/p90 moved from 631,491/640,480 to
+621,458/641,959 ns at 120x40 (-1.59/+0.23 percent), and from
+2,651,767/2,766,768 to 2,602,373/2,702,522 ns at 240x86
+(-1.86/-2.32 percent). Unchanged frames moved -2.77/-3.84 percent and
+-1.58/-2.07 percent. Retained samples stayed at zero B/op and zero allocs/op.
+Payload, SGR count, and outer-writer calls were identical in both arms. The
+candidate post-profile placed `quadrantColours` at 25.86 percent flat and 27.73
+percent cumulative, and `sextantColours` at 33.12 percent flat and 39.06 percent
+cumulative. Colour selection remains on top, but the repeated whole-path gains
+and exact-output oracle close this pass without a second refinement.
+
+Historical pre-mask 240x86 Compose profiles were allocation-free. Before the
+mask-metadata change above, Quadrant CPU was led by `quadrantColours` at 24.02
+percent flat and 40.17 percent cumulative; Sextant was led by `sextantColours`
+at 27.59 percent flat and 49.41 percent cumulative. Their
 production parallel wall times are too small to justify more splitting, so the
 residual RGBA Compose task is closed. The bounded q80 sampler follow-up is now
 complete in [the direct native-YCbCr record below](#direct-native-ycbcr-block-grid-2026-07-15).

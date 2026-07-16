@@ -1,6 +1,7 @@
 package block
 
 import (
+	"image/color"
 	"io"
 	"testing"
 
@@ -37,6 +38,7 @@ func BenchmarkBlockCompose(b *testing.B) {
 	}{
 		{"quadrant", SchemeQuadrant, render.BlockQuadrant},
 		{"sextant", SchemeSextant, render.BlockSextant},
+		{"half", SchemeHalfBlock, render.BlockHalf},
 	} {
 		b.Run(scheme.name, func(b *testing.B) {
 			for _, sz := range bpSizes {
@@ -72,6 +74,7 @@ func BenchmarkBlockComposeParallel(b *testing.B) {
 	}{
 		{"quadrant", SchemeQuadrant, render.BlockQuadrant},
 		{"sextant", SchemeSextant, render.BlockSextant},
+		{"half", SchemeHalfBlock, render.BlockHalf},
 	} {
 		b.Run(scheme.name, func(b *testing.B) {
 			for _, sz := range bpSizes {
@@ -89,6 +92,41 @@ func BenchmarkBlockComposeParallel(b *testing.B) {
 			}
 		})
 	}
+}
+
+var benchColourFG, benchColourBG color.RGBA
+
+// BenchmarkMaskColours isolates the mask-keyed foreground/background averaging
+// used after quadrant and sextant luma selection.
+func BenchmarkMaskColours(b *testing.B) {
+	cs := [6]color.RGBA{
+		{R: 1, G: 254, B: 63, A: 0xff},
+		{R: 255, G: 2, B: 191, A: 0xff},
+		{R: 17, G: 99, B: 240, A: 0xff},
+		{R: 203, G: 71, B: 5, A: 0xff},
+		{R: 88, G: 144, B: 222, A: 0xff},
+		{R: 250, G: 31, B: 127, A: 0xff},
+	}
+	b.Run("quadrant", func(b *testing.B) {
+		mask := 0
+		var fg, bg color.RGBA
+		b.ReportAllocs()
+		for b.Loop() {
+			mask = mask%14 + 1
+			fg, bg = quadrantColours(mask, cs[0], cs[1], cs[2], cs[3])
+		}
+		benchColourFG, benchColourBG = fg, bg
+	})
+	b.Run("sextant", func(b *testing.B) {
+		mask := 0
+		var fg, bg color.RGBA
+		b.ReportAllocs()
+		for b.Loop() {
+			mask = mask%62 + 1
+			fg, bg = sextantColours(mask, cs[0], cs[1], cs[2], cs[3], cs[4], cs[5])
+		}
+		benchColourFG, benchColourBG = fg, bg
+	})
 }
 
 // BenchmarkBlockDiff drives the differ over a full-motion grid (every cell changes

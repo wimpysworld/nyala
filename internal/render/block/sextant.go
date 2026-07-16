@@ -20,6 +20,16 @@ const (
 // transcription.
 var sextantGlyphs = buildSextantGlyphs()
 
+func buildSextantMaskMeta() [64]colourMaskMeta {
+	var table [64]colourMaskMeta
+	for mask := range table {
+		table[mask] = makeColourMaskMeta(mask, 6)
+	}
+	return table
+}
+
+var sextantMaskMeta = buildSextantMaskMeta()
+
 // buildSextantGlyphs computes the sextantGlyphs table, keyed by a 6-bit mask
 // with bit0=top-left, bit1=top-right, bit2=mid-left, bit3=mid-right,
 // bit4=bottom-left, bit5=bottom-right, row-major, set when that sub-cell is
@@ -129,22 +139,21 @@ func sextantColours(mask int, tl, tr, ml, mr, bl, br color.RGBA) (fg, bg color.R
 	// per non-flat cell. The arithmetic matches avgRGBA summed over the same
 	// sub-cells in cell order, so the result is byte-identical.
 	cells := [6]color.RGBA{tl, tr, ml, mr, bl, br}
-	var brs, bgs, bbs, bn int
-	var drs, dgs, dbs, dn int
+	meta := sextantMaskMeta[mask]
+	var brs, bgs, bbs int
+	var drs, dgs, dbs int
 	for i, c := range cells {
-		if mask&(1<<i) != 0 {
+		if meta.bright&(1<<i) != 0 {
 			brs += int(c.R)
 			bgs += int(c.G)
 			bbs += int(c.B)
-			bn++
 		} else {
 			drs += int(c.R)
 			dgs += int(c.G)
 			dbs += int(c.B)
-			dn++
 		}
 	}
-	return avgChannels(brs, bgs, bbs, bn), avgChannels(drs, dgs, dbs, dn)
+	return avgChannelsCount(brs, bgs, bbs, meta.brightN), avgChannelsCount(drs, dgs, dbs, meta.darkN)
 }
 
 // composeSextant binarises the frame image onto a fresh Cols x Rows sextant

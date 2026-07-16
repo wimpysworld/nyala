@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"image/draw"
 	"io"
+	"math/bits"
 	"unicode/utf8"
 
 	"github.com/wimpysworld/nyala/internal/render"
@@ -412,6 +413,35 @@ var quadrantGlyphs = [16]rune{
 	0x2588, // 1111 full block (flat cell, fg == bg)
 }
 
+// colourMaskMeta keeps the mask membership and both group counts once per mask.
+// The two schemes share the representation while retaining their documented bit
+// order in their own tables.
+type colourMaskMeta struct {
+	bright  uint8
+	brightN uint8
+	darkN   uint8
+}
+
+func makeColourMaskMeta(mask, cells int) colourMaskMeta {
+	boundedMask := uint8(mask) //nolint:gosec // table builders bound masks to six bits
+	brightN := bits.OnesCount8(boundedMask)
+	return colourMaskMeta{
+		bright:  boundedMask,
+		brightN: uint8(brightN),         //nolint:gosec // at most six set bits
+		darkN:   uint8(cells - brightN), //nolint:gosec // cells is four or six
+	}
+}
+
+func buildQuadrantMaskMeta() [16]colourMaskMeta {
+	var table [16]colourMaskMeta
+	for mask := range table {
+		table[mask] = makeColourMaskMeta(mask, 4)
+	}
+	return table
+}
+
+var quadrantMaskMeta = buildQuadrantMaskMeta()
+
 // binarizeQuadrant turns the four sub-cell colours (x top-left, y top-right,
 // z bottom-left, w bottom-right) into one block glyph and two averaged colours.
 // It converts each sub-cell to Rec.601 luma, splits at the luma midpoint, and
@@ -454,22 +484,21 @@ func quadrantColours(mask int, x, y, z, w color.RGBA) (fg, bg color.RGBA) {
 	// slices were the largest allocation source. The arithmetic matches avgRGBA
 	// summed over the same sub-cells in cell order, so the result is byte-identical.
 	cells := [4]color.RGBA{x, y, z, w}
-	var brs, bgs, bbs, bn int
-	var drs, dgs, dbs, dn int
+	meta := quadrantMaskMeta[mask]
+	var brs, bgs, bbs int
+	var drs, dgs, dbs int
 	for i, c := range cells {
-		if mask&(1<<(3-i)) != 0 {
+		if meta.bright&(1<<(3-i)) != 0 {
 			brs += int(c.R)
 			bgs += int(c.G)
 			bbs += int(c.B)
-			bn++
 		} else {
 			drs += int(c.R)
 			dgs += int(c.G)
 			dbs += int(c.B)
-			dn++
 		}
 	}
-	return avgChannels(brs, bgs, bbs, bn), avgChannels(drs, dgs, dbs, dn)
+	return avgChannelsCount(brs, bgs, bbs, meta.brightN), avgChannelsCount(drs, dgs, dbs, meta.darkN)
 }
 
 // avgRGBA averages a set of RGBA colours per channel, with alpha forced opaque.
@@ -497,6 +526,34 @@ func avgChannels(rs, gs, bs, n int) color.RGBA {
 		R: clampByte(rs / n),
 		G: clampByte(gs / n),
 		B: clampByte(bs / n),
+		A: 0xff,
+	}
+}
+
+// avgChannelsCount averages valid sub-cell sums using a count-specific constant
+// divisor. Its callers provide counts from mask metadata and sums in 0..255*n.
+func avgChannelsCount(rs, gs, bs int, n uint8) color.RGBA {
+	var r, g, b int
+	switch n {
+	case 1:
+		r, g, b = rs, gs, bs
+	case 2:
+		r, g, b = rs>>1, gs>>1, bs>>1
+	case 3:
+		r, g, b = rs/3, gs/3, bs/3
+	case 4:
+		r, g, b = rs>>2, gs>>2, bs>>2
+	case 5:
+		r, g, b = rs/5, gs/5, bs/5
+	case 6:
+		r, g, b = rs/6, gs/6, bs/6
+	default:
+		return color.RGBA{A: 0xff}
+	}
+	return color.RGBA{
+		R: uint8(r), //nolint:gosec // valid sums divided by their count stay in 0..255
+		G: uint8(g), //nolint:gosec // valid sums divided by their count stay in 0..255
+		B: uint8(b), //nolint:gosec // valid sums divided by their count stay in 0..255
 		A: 0xff,
 	}
 }
