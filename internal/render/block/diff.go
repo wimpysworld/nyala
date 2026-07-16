@@ -28,6 +28,7 @@ type GridDiff struct {
 	bgCol   color.RGBA // colour that built lastBG; zero (A==0) until set
 	sgrBuf  []byte     // reused scratch for building an SGR before its compare
 	runeBuf []byte     // reused scratch for encoding a bitmap glyph rune
+	cupBuf  [16]byte   // reused scratch for building a CUP cursor move
 }
 
 // Emit writes grid to w as the minimal escape stream that turns the previously
@@ -80,7 +81,7 @@ func (d *GridDiff) Emit(w io.Writer, grid Grid, fg, bg SGRFunc) error {
 				continue
 			}
 			if curRow != row || curCol != col {
-				if err := writeCUP(w, row, col); err != nil {
+				if err := d.writeCUP(w, row, col); err != nil {
 					return err
 				}
 				curRow, curCol = row, col
@@ -201,9 +202,8 @@ func cellUnchanged(a, b *Cell) bool {
 
 // writeCUP moves the cursor to a 0-based (col, row), emitting the 1-based CUP
 // escape ESC [ row ; col H.
-func writeCUP(w io.Writer, row, col int) error {
-	var buf [16]byte
-	b := buf[:0]
+func (d *GridDiff) writeCUP(w io.Writer, row, col int) error {
+	b := d.cupBuf[:0]
 	b = append(b, '\x1b', '[')
 	b = appendInt(b, row+1)
 	b = append(b, ';')
