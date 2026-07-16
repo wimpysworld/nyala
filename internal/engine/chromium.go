@@ -58,10 +58,14 @@ type ChromiumEngine struct {
 	// captureSize). Set once by SetScheme before Navigate.
 	blockScheme string
 	browserFlag string // --browser value, empty for env/PATH discovery
-	cols        int    // terminal grid width in cells
-	rows        int    // terminal grid height in cells
-	captureW    int    // capture width in pixels for the active backend
-	captureH    int    // capture height in pixels for the active backend
+	// disableFrameRateLimit passes Chromium's launch-time
+	// --disable-frame-rate-limit switch. It is set before Navigate and remains
+	// false by default, preserving Chromium's normal frame scheduling.
+	disableFrameRateLimit bool
+	cols                  int // terminal grid width in cells
+	rows                  int // terminal grid height in cells
+	captureW              int // capture width in pixels for the active backend
+	captureH              int // capture height in pixels for the active backend
 
 	// fontForcingID is the ScriptIdentifier of the registered font-forcing
 	// on-new-document script, empty when no forcing is active. Only the block backend
@@ -294,6 +298,14 @@ func New(browserFlag string) *ChromiumEngine {
 		proxyErr:    proxyErr,
 		ingest:      newIngestCounter(),
 	}
+}
+
+// SetDisableFrameRateLimit controls Chromium's launch-time
+// --disable-frame-rate-limit switch. Call it before Navigate.
+func (e *ChromiumEngine) SetDisableFrameRateLimit(disable bool) {
+	e.mu.Lock()
+	e.disableFrameRateLimit = disable
+	e.mu.Unlock()
 }
 
 // IngestFPS returns the rolling screencast-ingest rate over the trailing window,

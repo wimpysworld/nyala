@@ -173,8 +173,9 @@ func (e *ChromiumEngine) textOverlayBackend() bool {
 // media plays on load: Chromium otherwise blocks audible autoplay until a user
 // gesture, and Nyala has no input yet. Like the GPU flag both ride the live path
 // only, stay off under capture, and the caller gates them on a detected host audio
-// sink.
-func newAllocator(parent context.Context, execPath string, surfW, surfH int, z float64, cfg ProxyConfig, enableGPU, enableAudio bool) (context.Context, context.CancelFunc) {
+// sink. disableFrameRateLimit appends Chromium's matching launch switch when
+// requested; false preserves the default allocator options.
+func newAllocator(parent context.Context, execPath string, surfW, surfH int, z float64, cfg ProxyConfig, enableGPU, enableAudio, disableFrameRateLimit bool) (context.Context, context.CancelFunc) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(execPath),
 		chromedp.WindowSize(surfW, surfH),
@@ -191,10 +192,23 @@ func newAllocator(parent context.Context, execPath string, surfW, surfH int, z f
 		// pairs with the unmute above and rides the same live-path gate.
 		opts = append(opts, chromedp.Flag("autoplay-policy", "no-user-gesture-required"))
 	}
+	for _, name := range frameRateLimitFlags(disableFrameRateLimit) {
+		opts = append(opts, chromedp.Flag(name, true))
+	}
 	for _, pair := range proxyFlags(cfg) {
 		opts = append(opts, chromedp.Flag(pair[0], pair[1]))
 	}
 	return chromedp.NewExecAllocator(parent, opts...)
+}
+
+// frameRateLimitFlags returns Chromium's launch-time frame-rate-limit switch
+// only when the matching Nyala option is enabled. The pure result keeps flag
+// presence and absence unit-testable without launching Chromium.
+func frameRateLimitFlags(disable bool) []string {
+	if !disable {
+		return nil
+	}
+	return []string{"disable-frame-rate-limit"}
 }
 
 // proxyFlags returns the proxy-related Chromium flag name/value pairs newAllocator
@@ -313,6 +327,7 @@ func (e *ChromiumEngine) launch(flag string) error {
 	surfW, surfH := e.surfaceSize(e.cols, e.rows)
 	forcing := e.backend == "block"
 	z := e.layoutScale()
+	disableFrameRateLimit := e.disableFrameRateLimit
 	e.mu.Unlock()
 	// Enable the GPU on the live path only. captureOn is set once by EnableCapture
 	// before Navigate, so it is known here at allocator-build time; gating on it keeps
@@ -321,7 +336,7 @@ func (e *ChromiumEngine) launch(flag string) error {
 	// Audio rides the live path only; capture stays silent and deterministic. The
 	// sink gate keeps a no-audio host from unmuting pointlessly.
 	enableAudio := !e.captureOn && audioAvailable()
-	allocCtx, allocCancel := newAllocator(context.Background(), execPath, surfW, surfH, z, e.proxy, enableGPU, enableAudio)
+	allocCtx, allocCancel := newAllocator(context.Background(), execPath, surfW, surfH, z, e.proxy, enableGPU, enableAudio, disableFrameRateLimit)
 	ctx, ctxCancel := chromedp.NewContext(allocCtx)
 	cancel := func() {
 		ctxCancel()

@@ -74,6 +74,7 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 |---|---|---|
 | `<url>` | required | Page to open. |
 | `--browser` | auto | Path to the Chromium executable to drive. |
+| `--disable-frame-rate-limit` | off | Disable Chromium's browser frame-rate limit for benchmark testing. This does not control terminal or display synchronisation. |
 | `--backend` | `auto` | Renderer backend: `auto`, `block`, `kitty`, or `sixel`. `auto` picks the terminal's best supported backend. A named backend forces one renderer and fails fast if the terminal cannot run it. |
 | `--blocks` | `auto` | Block glyph mode: `auto`, `sextant`, `quadrant`, or `half`. `quadrant` (2x2) and `half` (half-block) map to the existing schemes; `sextant` renders 2x3 sextant blocks (Unicode legacy-computing) for sharper vertical resolution. `auto` picks sextant on terminals known to self-draw it (a static allow-list read from environment variables) and quadrant elsewhere. |
 | `--layout-width` | `1280` | Target CSS layout width in pixels for the block backend; a wider terminal reflows to this width. Must be positive. |
