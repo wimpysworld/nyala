@@ -431,6 +431,11 @@ test:
 live:
     @go test -tags live ./internal/engine/
 
+# Measure internal renderer-to-terminal-byte costs from production CDP frames.
+internal-render-metrics:
+    # The fenced Chromium wrapper owns its no-sandbox diagnostic switch.
+    @FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" NYALA_INTERNAL_RENDER_METRICS=1 go test -tags live -run '^TestInternalRenderingMetrics$' -v -count=1 ./internal/viewer/
+
 # Tidy Go modules
 tidy:
     @go mod tidy

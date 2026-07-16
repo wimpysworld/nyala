@@ -1225,6 +1225,81 @@ faults by construction: no shared mutable state, and it targets the dominant sta
 
 ---
 
+## Internal rendering test (2026-07-16)
+
+This is an **internal rendering test**, not a delivered-frame or terminal
+performance test. It measures each production viewer path from a retained
+production-shaped frame to terminal bytes in a counting writer. It excludes
+terminal transport, terminal protocol decode, terminal draw, display refresh,
+and the CDP capture and preparation span reported separately below.
+
+The source was the committed offline
+`testdata/corpus/layout-13-linuxmatters/index.html` page. Separate live
+`ChromiumEngine` sessions loaded it through CDP for each backend and size. The
+fixture contains prose, navigation, cards, borders, fixed content, and coloured
+SVG graphics without network input. Each session captured the settled top and
+half-viewport-scrolled states. The timed loop alternated those two retained
+frames through `viewer.State.RenderStreamFrame`, including terminal-byte
+generation. Block therefore ran its q90 native-YCbCr decode hand-off, quadrant
+compose, crisp DOM-text overlay, grid diff, SGR generation, and buffered byte
+write. Kitty validated and framed the owned CDP base64 PNG directly. Sixel used
+the settled production PNG hand-off, adaptive 256-colour palette, retained
+encoder state, and full Sixel encoding. The q90 policy applies to Block here;
+Sixel had returned to its lossless settled format before its frames were retained.
+
+Both exact device surfaces used a 10x20 pixel terminal cell: 192x54 cells for
+1920x1080 and 256x80 cells for 2560x1600. Block used the broadly supported
+quadrant scheme and the default 1280 CSS-pixel layout width. Thirty timed batches
+produced each distribution. A batch held 10 Block frames, 1000 Kitty frames, or
+one Sixel frame; each reported sample is normalised to one frame. Estimated FPS
+is `1000 / p90_ms`. `testing.AllocsPerRun(5, ...)` measured the warm production
+path separately from the latency batches.
+
+| Backend | Device surface | Grid | Mean ms | p90 ms | Estimated internal FPS from p90 | Mean terminal bytes | Allocations/frame |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Block | 1920x1080 | 192x54 | 0.659 | 0.730 | 1370.76 | 37,937 | 59 |
+| Kitty | 1920x1080 | 192x54 | 0.008 | 0.008 | 120,094.69 | 175,735 | 10 |
+| Sixel | 1920x1080 | 192x54 | 38.060 | 39.246 | 25.48 | 306,362 | 1,302 |
+| Block | 2560x1600 | 256x80 | 0.988 | 1.058 | 945.13 | 63,886 | 122 |
+| Kitty | 2560x1600 | 256x80 | 0.012 | 0.013 | 77,234.16 | 269,574 | 10 |
+| Sixel | 2560x1600 | 256x80 | 50.486 | 52.220 | 19.15 | 480,010 | 1,303 |
+
+CDP preparation was timed outside the renderer samples. Each value covers one
+Chromium launch, local-page load, first settled frame, injected half-viewport
+scroll, and second settled frame. It is a two-frame fixture preparation span,
+not a per-frame screencast latency.
+
+| Backend | Device surface | CDP preparation ms |
+|---|---:|---:|
+| Block | 1920x1080 | 2106.3 |
+| Kitty | 1920x1080 | 1445.3 |
+| Sixel | 1920x1080 | 1447.2 |
+| Block | 2560x1600 | 2142.4 |
+| Kitty | 2560x1600 | 1453.8 |
+| Sixel | 2560x1600 | 1470.4 |
+
+The test ran on Linux 7.1.2, amd64, an AMD Ryzen AI MAX+ 395 with 32 logical
+CPUs, and Go 1.26.4, from base commit `27f1fe3`. Run it again with:
+
+```sh
+just internal-render-metrics
+```
+
+Repeated full batched runs kept Sixel p90 within 2.1 ms at 1920x1080 and 2.2 ms
+at 2560x1600. Block stayed below 1.1 ms p90 and Kitty below 0.014 ms p90 in the
+selected run. The very high Block and Kitty FPS calculations are computation
+ceilings only. They do not predict terminal throughput. Sixel is the only
+internal encoder that falls below 30 FPS on this fixture before any terminal
+cost is added.
+
+Limits: this is one static local page at two scroll positions, not a motion,
+animation, photographic, or multi-page corpus. The counting writer never blocks
+and does not model tty copies or syscalls. The test does not measure terminal
+parsing, decompression, palette handling, raster draw, refresh cadence, tearing,
+or delivered FPS. Those remain part of the real-terminal matrix.
+
+---
+
 ## Colour conversion research (2026-07-15)
 
 This follow-up tested whether a general or SIMD YCbCr-to-RGBA converter should
