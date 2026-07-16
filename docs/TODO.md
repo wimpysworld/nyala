@@ -23,9 +23,8 @@ and research documents.
   The bounded sampler follow-up completed on 2026-07-15. Sources:
   [Full headless profile](./PERFORMANCE.md#full-headless-profile-and-benchmark-pass-2026-07-14)
   and [direct native-YCbCr Block grid](./PERFORMANCE.md#direct-native-ycbcr-block-grid-2026-07-15).
-- [ ] Validate the adopted SIMD decode paths on real arm64 hardware. Confirm that the
-  base64 and `jpegn` NEON paths improve performance, and rerun byte-identity tests
-  before treating the amd64 results as portable evidence. Source:
+- [x] Arm64 SIMD validation is not required. The upstream projects publish their
+  SIMD implementation details, so Nyala will not duplicate that validation. Source:
   [Decode optimisation](./PERFORMANCE.md#decode-optimization).
 - [ ] Re-test Kitty cursor anchoring, classic placement, Unicode placeholder support,
   repeated replacement, and image cleanup on the exact Kitty, WezTerm, and Ghostty
@@ -35,8 +34,8 @@ and research documents.
   photo-heavy fixture, and mode-2026 tearing on foot, WezTerm, xterm, and mlterm.
   Source: [TUI decisions](./OVERVIEW.md#decisions-tui-research).
 
-The CEF decision depends on the first checkbox. Do not reopen CEF for a limit in
-Nyala's renderer or the terminal.
+CEF is not required because CDP performance has already exceeded the owner's
+expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
 
 ## 2. Improve graphics transport where measurements justify it
 
@@ -93,22 +92,15 @@ Nyala's renderer or the terminal.
   supported protocol path and an end-to-end win. Sixel partial emission belongs to
   the canonical Sixel task above. Sources: [Stage 3 deferred scope](./STAGE-3.md#objective-and-scope)
   and [Performance recommendation 10](./PERFORMANCE.md#top-recommendations-ranked-by-impact-vs-effort).
-- [ ] Add a JPEG Kitty fallback only if a real-terminal end-to-end benchmark beats
-  direct PNG after image quality, terminal decode/draw latency, and bytes per frame
-  are included. Nyala's 0.014 to 0.027 ms PNG framing cost is not the gate. Sources:
+- [x] Do not add a JPEG Kitty fallback. The owner's measurement put
+  direct PNG pass-through at about 1 ms, so a JPEG fallback has no current value.
+  Reconsider it only if terminal-side PNG decoding or drawing becomes a measured
+  bottleneck. Sources:
   [Performance Theme 7](./PERFORMANCE.md#theme-7---screencast-image-format) and
   `STAGE-3.md`, "Terminal PNG cost and graphics follow-ups".
 - [ ] Build the off-screen super-viewport scroll buffer after the transport work. Gate
   it on fewer CDP round trips and smoother scrolling without stale overlay geometry or
   excess memory. Source: [Performance recommendation 12](./PERFORMANCE.md#top-recommendations-ranked-by-impact-vs-effort).
-- [ ] Validate JPEG q95 on real terminals and delivered-frame measurements as a later
-  quality option. q90 is now the default because it improves fidelity over q80,
-  matches moving Sixel, and retains 6.39 ms median processing headroom in the matched
-  2560x2880 headless benchmark. It provides more headroom for higher resolutions than
-  q95, whose worst-sample processing headroom is 4.56 ms. q100 is rejected: its payload
-  grows 59.76 percent over q95 and its worst processing headroom is only 0.48 ms.
-  Include flat, text, photo, and motion pages in the terminal pass. Source:
-  [Direct native-YCbCr Block grid](./PERFORMANCE.md#direct-native-ycbcr-block-grid-2026-07-15).
 - [x] Keep the dimension-keyed RGBA decode ring closed as stale. The 2026-07-14 q80
   allocation profile shows `image.NewRGBA` at 2.86 percent of allocation space, and
   the clean CPU profile puts GC background marking at 2.00 percent cumulative. The
@@ -139,6 +131,11 @@ Nyala's renderer or the terminal.
   Re-blit after repaint or resize, and do not let chrome erase or move the bitmap.
   Sources: [Stage 4 architecture](./OVERVIEW.md#tui-library-research) and
   [TUI decisions](./OVERVIEW.md#decisions-tui-research).
+- [ ] Add a user-facing q quality scale for Block and Sixel. Keep q90 as the default,
+  while allowing users on lower-spec hardware to reduce quality to reach acceptable
+  performance. Validate the choices with real-terminal and delivered-frame measurements
+  across flat, text, photo, and motion pages. Source:
+  [Direct native-YCbCr Block grid](./PERFORMANCE.md#direct-native-ycbcr-block-grid-2026-07-15).
 - [ ] Validate Stage 4 scheduling on KMSCON and graphics terminals. Chrome-only diffs
   plus any post-repaint viewport re-blit must finish within one frame budget. Test
   resize, alt-screen behaviour, cursor restoration, and concurrent frame arrival.
@@ -146,14 +143,11 @@ Nyala's renderer or the terminal.
 - [ ] Add direct interaction: address entry, keyboard input, mouse clicks, buttons,
   links, and focus mapped to CDP events. Scrolling already uses the Stage 3 engine
   transport. Source: `OVERVIEW.md`, "Input mapping".
-- [ ] Add back/forward history and Vimium-style link hints. Add a separate text or
-  geometry channel only when link hints need a cadence independent of rendered
-  frames. Sources: `OVERVIEW.md`, "v1 interaction scope", and
-  [Stage 3 deferred scope](./STAGE-3.md#objective-and-scope).
-- [ ] Decide the graphics-backend overlay contract during the link-hint work. Block
-  keeps the crisp DOM overlay; Sixel and Kitty currently render the page bitmap alone.
-  Do not burn crisp text back into graphics pixels. Sources: `STAGE-2.md`, "Out of
-  scope", and `STAGE-3.md`, "Out of scope, deferred".
+- [ ] Add clickable Back, Forward, and Reload controls to the Stage 4 chrome. Back
+  and Forward use Chromium's existing navigation state; Nyala does not own or persist
+  a navigation-history model. Bookmarks and other full-browser features remain out of
+  scope. Sources: `OVERVIEW.md`, "v1 interaction scope", and [Stage 3 deferred
+  scope](./STAGE-3.md#objective-and-scope).
 - [ ] Add chrome theming, OSC 11 light/dark handling, per-multiplexer background
   handling, typed capability messages, and terminal-colour downsampling. Use the
   documented bubbletint choice after chrome exists. Sources: `STAGE-1.md`, "Out of
@@ -208,16 +202,16 @@ Nyala's renderer or the terminal.
 
 ## 5. Conditional and later work
 
-- [ ] Open a CEF engine spike only if the real-terminal Stage 3 matrix shows CDP itself
-  cannot sustain the accepted frame rate. Account for cgo, bundled Chromium, BGRA
-  conversion, and loss of CDP text geometry. Sources:
+- [x] A CEF engine spike is not required because CDP performance has already exceeded
+  the owner's expectations. Sources:
   [Overview risks](./OVERVIEW.md#known-constraints--risks) and
   [Stage 3 deferred scope](./STAGE-3.md#objective-and-scope).
 - [ ] Add remote Chromium attach only when a locked-down or shared host needs it.
   Document which launch-only viewport and device-scale controls cannot be applied.
   Source: [Stage 3 deferred scope](./STAGE-3.md#objective-and-scope).
-- [ ] Add A/V synchronisation only if real media use shows audio leading the terminal
-  video path. Audio playback itself is complete. Source: `OVERVIEW.md`, "Audio".
+- [x] A/V synchronisation needs no Nyala-side delay. The owner manually tested several
+  media sources in Block and Kitty modes and found synchronisation acceptable. Audio
+  playback itself is complete. Source: `OVERVIEW.md`, "Audio".
 - [ ] Add Harmonica or equivalent chrome animation only after the Stage 4 UI and
   scrolling are stable. Source: [Harmonica](./OVERVIEW.md#harmonica-animation).
 - [ ] Re-evaluate Go's `archsimd` base64 decoder when it is enabled by default and has

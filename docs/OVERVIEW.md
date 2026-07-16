@@ -73,8 +73,7 @@ Stage 3 resolves the text layer to one synced channel. The engine places the tex
 the snapshot's own scroll offset and folds it onto `Frame.Text`, so consumers receive
 bitmap and crisp text on one channel, never two cadences to reconcile. The text is
 sticky state carried across frames, so a static page still composites its overlay. A
-separate text channel may return in Stage 4 for link-hint geometry. See
-`docs/STAGE-3.md`.
+second text or geometry channel is not planned for Stage 4. See `docs/STAGE-3.md`.
 
 `render.Frame.Img` is an `image.Image`, not a forced full-frame RGBA plane. Live
 JPEG normally crosses the engine/render seam as the decoder's `*image.YCbCr`.
@@ -102,15 +101,15 @@ quality gates do not change.
 - **Engine #1: `ChromiumEngine` (chromedp).** Frames via `Page.startScreencast`;
   text layer via CDP DOM queries, placed by the snapshot's scroll and folded into
   `Frame.Text`. This is the only engine to build now.
-- **Future engines** (e.g. WPE WebKit, CEF) implement the same interface. No other code
+- **Future engines** (e.g. WPE WebKit) implement the same interface. No other code
   changes. Do not build these yet; the seam keeps the option open.
-- **CEF (gated future engine).** CEF embeds Chromium in-process and hands back BGRA
-  frames from `OnPaint`, with no CDP screencast hop. It is a candidate fallback if the
-  Stage 3 FPS spike shows the CDP screencast cannot hold an acceptable frame rate at
-  LoDPI on the target terminals. It is not the default: it bakes Chromium into the
-  binary (a ~670MB build dependency), needs C/C++ bindings against the pure-Go cgo-free
-  stack, and gives no text geometry, so the crisp-text problem stays. See the Brow6el
-  internals section under "Half-Block Rendering Research" for the worked reference.
+- **CEF (not required).** CEF embeds Chromium in-process and hands back BGRA frames
+  from `OnPaint`, with no CDP screencast hop. CDP performance has already exceeded the
+  owner's expectations, so Nyala does not require a CEF engine spike. CEF would bake
+  Chromium into the binary (a ~670MB build dependency), needs C/C++ bindings against
+  the pure-Go cgo-free stack, and gives no text geometry, so the crisp-text problem
+  stays. See the Brow6el internals section under "Half-Block Rendering Research" for
+  the worked reference.
 
 ### Rendering pipeline (engine-agnostic)
 
@@ -136,8 +135,8 @@ character set, and the sampling model.
 - **Frame rate**: `startScreencast` streams JPEG/PNG over the CDP socket. Nyala's
   decoder and renderer measurements do not include the terminal's image decode and
   draw. Validate sustained full-viewport FPS on KMSCON and the target graphics
-  terminals. This is the CDP-vs-CEF gate: open a CEF engine spike only if that matrix
-  shows CDP itself is the remaining limit.
+  terminals. This validation does not gate a CEF spike: CDP performance has already
+  exceeded the owner's expectations, so the spike is not required.
 - **Frame budget**: a focused 2560x2880 benchmark cut direct Kitty PNG work from
   51.950 ms to 0.014 ms. A real CDP payload measured 45.985 ms to 0.027 ms. Keeping
   shared JPEG decoder-native cut 25.446 ms to 10.209 ms, about 15.2 ms saved. The
@@ -280,14 +279,13 @@ is reversible.
   `y = (cellY + 0.5) * cellHeightPx` at the LoDPI viewport. Pasted and IME text routes
   through `Input.insertText` so multi-byte input inserts atomically. Evidence: CDP Input
   domain and `chromedp/cdproto/input`; Bubble Tea v2 `key.go`/`mouse.go`.
-- **v1 interaction scope (recommendation, owner may override):** ship scrolling,
-  back/forward navigation history, and Vimium-style link hinting; defer tabs to post-v1.
-  Scrolling and history are baseline reading and browsing primitives; link hinting is core
-  to keyboard-only link following and should enumerate real anchor geometry from the text
-  layer, avoiding Carbonyl's cell-buffer heuristic, which it used for lack of DOM access.
+- **v1 interaction scope:** ship scrolling, direct page interaction, and clickable Back,
+  Forward, and Reload controls; defer tabs to post-v1. Back and Forward operate on
+  Chromium's existing navigation state. Nyala does not add custom history tracking,
+  bookmarks, navigation persistence, or a second geometry channel. Ordinary page links,
+  buttons, mouse clicks, keyboard input, and focus remain part of direct interaction.
   Tabs are deferred to keep v1 small; the single-page `Engine` model adds them later via a
-  child `NewContext` bound with `WithTargetID`, so the deferral is reversible. Evidence:
-  Carbonyl PR #219 (vimium-style scroll, history, `f` link hints); browsh keybindings.
+  child `NewContext` bound with `WithTargetID`, so the deferral is reversible.
 - **Process lifecycle: launch by default, attach optional, single page for v1.** Launch
   via chromedp `NewExecAllocator` (managed headless Chromium; chromedp owns the process and
   force-kills it on exit), with attach via `NewRemoteAllocator` (`ws://host:port`) as an
@@ -321,9 +319,9 @@ is reversible.
   constraints hold, both verified by hardware test not code: Chromium must be built with pulse
   support (the nixpkgs default has it) and reach an output device, and new headless (bare
   `--headless` on Chrome 132+, which chromedp passes) emits audio where old headless dropped
-  it. A/V sync is deferred: the
-  terminal video path runs slower than real-time audio, so audio leads choppy video; it does
-  not change frame rate, so it stays off the frame-rate critical path.
+  it. The owner manually tested several media sources in Block and Kitty modes and found
+  A/V synchronisation acceptable. Nyala needs no audio delay or other sync path, which
+  keeps audio off the frame-rate critical path.
 
 ## TUI Library Research
 
@@ -734,11 +732,6 @@ Techniques:
   dimensions and sizes the render by a zoom factor (`zoom_level`, DPI-aware `auto`
   behaviour). It needs no LoDPI/forced-monospace fork because it ships an image, not a
   cell grid. Nyala sizes the CDP viewport to its grid instead.
-- **Modal vim input and mouse emulation**: STANDARD/INSERT/MOUSE/VISUAL modes,
-  keyboard-driven mouse with a grid-jump overlay, hint-mode link labels, and a CDP-style
-  element inspector. A reference for terminal input mapping, independent of the engine
-  choice.
-
 | Tool | Score (n/10) | Maturity | Maintenance | Suitability |
 |---|---|---|---|---|
 | CEF (Chromium Embedded Framework) | 6 | CEF 148 / Chromium 148 beta pinned | Tracks Chromium; mature upstream | The engine-embed alternative to CDP: in-process BGRA frames, no external browser, but ~670MB build dependency, C/C++ binding, and Chromium baked into the binary |

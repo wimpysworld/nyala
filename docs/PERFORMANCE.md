@@ -280,8 +280,11 @@ Nyala framing number does not prove a higher terminal frame rate.
 owned base64 PNG as `f=100,t=d,a=T`, alternates image IDs, and deletes the previous
 ID after placement. The earlier `a=f,r=1,o=z` edit was tried and reverted because it
 rendered partially or black on target terminals. Keep the decoded RGB encoder for
-tests and a measured fallback, not as the normal optimisation path. Any future
-partial update must use a supported protocol path and beat direct PNG end to end.
+tests and existing fallback paths. A live JPEG fallback is not required: the owner's
+measurement put direct PNG pass-through at about 1 ms. Reconsider it
+only if terminal-side PNG decoding or drawing becomes a measured bottleneck. Any
+future partial update must use a supported protocol path and beat direct PNG end to
+end.
 
 **Sixel.** Production uses the already pinned, pure-Go MIT
 `mattn/go-sixel` v0.0.12. A retained encoder owns its scratch and complete
@@ -410,10 +413,11 @@ Also landed on the load-time theme, beyond the ranked list:
    -> 5.8 (klauspost) -> 8.5 fps (pipeline).
    [DONE - current] Live Kitty now bypasses this decoded `f=24` path: every Kitty
    stream requests PNG and rechunks the CDP base64 payload as `f=100`. Keep the
-   decoded encoder for explicit fallback and tests. REMAINING: measure terminal PNG
-   decode and draw latency, sustained Kitty FPS, and Kitty-through-multiplexer
-   placement. Reconsider JPEG Kitty only if an end-to-end terminal benchmark beats
-   direct PNG. Impact 8, effort medium.
+   decoded encoder for existing fallback paths and tests. The owner's measurement put
+   direct PNG pass-through at about 1 ms, so a JPEG Kitty fallback is
+   not required. Reconsider it only if terminal-side PNG decoding or drawing becomes
+   a measured bottleneck. REMAINING: measure sustained Kitty FPS and
+   Kitty-through-multiplexer placement. Impact 8, effort medium.
 6. **[IN PROGRESS] Sixel temporal palette reuse.** Static fixed-255 output matches
    adaptive output byte for byte and cuts warm State time by 45.8%, but rebuilding
    it every frame removes the gain. Add the deterministic motion fixture and test
@@ -546,9 +550,10 @@ active roadmap.
 
 Built for the pixel consumers. Block uses JPEG quality 90. Sixel switches to JPEG
 quality 90 in motion and back to PNG after settle. Kitty always stays PNG because it
-passes the CDP payload to the terminal without a Nyala decode. The remaining question
-is end-to-end: measure whether terminal PNG decode and draw stays inside 16.67 ms, and
-only restore a JPEG Kitty path if that measurement beats direct PNG.
+passes the CDP payload to the terminal without a Nyala decode. The owner's measurement
+put that pass-through at about 1 ms, so a JPEG Kitty path
+is not required. Reconsider it only if terminal-side PNG decoding or drawing becomes
+a measured bottleneck.
 
 ### Audio (moved)
 
@@ -928,9 +933,10 @@ JPEG q90 is now the Block default. Against q80, it raises PSNR from 45.234 dB to
 bytes. Its 10.276 ms matched median at 2560x2880 leaves 6.39 ms median processing
 headroom. It matches moving Sixel and provides more headroom for higher resolutions
 than q95.
-q95 stays a later real-terminal and delivered-frame validation option. q100 is
-rejected as a candidate: it adds 59.76 percent payload over q95 and leaves too little
-processing headroom. These headless figures exclude terminal decode and draw time.
+Stage 4 will expose a user-facing q quality scale for Block and Sixel, with q90 as the
+default. Lower-spec hardware can use lower quality to reach acceptable performance.
+q100 is rejected as a candidate: it adds 59.76 percent payload over q95 and leaves too
+little processing headroom. These headless figures exclude terminal decode and draw time.
 
 ### Summary
 
@@ -2238,8 +2244,8 @@ byte identity are established. It fits Nyala's constraints: cgo-free (pure Go pl
 Plan9 assembly the Go toolchain assembles), MIT-licensed, with SIMD IDCT and
 upsample paths for both release targets (amd64 AVX2, arm64 NEON). It returns a
 native `image.YCbCr`, which Block composes directly into the final grid without an
-intermediate RGBA surface. The only active follow-up is real-arm64 performance
-validation, tracked in
+intermediate RGBA surface. Real-arm64 performance validation is not required because
+the upstream projects publish their SIMD implementation details, as tracked in
 [`TODO.md`](./TODO.md#1-validate-the-stage-3-browser).
 The only genuinely faster option is a cgo binding to libjpeg-turbo (about 4.8x),
 but that flips Nyala from a clean `GOOS`/`GOARCH` cross-build to a per-target C
@@ -2305,7 +2311,8 @@ Anchored to stdlib at about 56 ms per 7 MP frame:
 ### Adoption spike [DONE]
 
 The amd64 spike completed and `gen2brain/jpegn` was adopted. The criteria below
-record the pre-adoption test. Only real-arm64 performance validation remains, in
+record the pre-adoption test. Real-arm64 performance validation is not required
+because the upstream projects publish their SIMD implementation details, as recorded in
 [`TODO.md`](./TODO.md#1-validate-the-stage-3-browser).
 
 Historical criteria:
