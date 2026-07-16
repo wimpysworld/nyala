@@ -135,14 +135,25 @@ func sameRGB(a, b color.RGBA) bool {
 // writeTrueColour emits exact RGB changes directly. Alpha is absent from the SGR
 // bytes, so it is intentionally absent from the retained colour comparison.
 func (d *GridDiff) writeTrueColour(w io.Writer, c *Cell) error {
-	if (!d.fgSet && c.FG != (color.RGBA{})) || (d.fgSet && !sameRGB(c.FG, d.fgCol)) {
+	fgChanged := (!d.fgSet && c.FG != (color.RGBA{})) || (d.fgSet && !sameRGB(c.FG, d.fgCol))
+	bgChanged := (!d.bgSet && c.BG != (color.RGBA{})) || (d.bgSet && !sameRGB(c.BG, d.bgCol))
+	if fgChanged && bgChanged {
+		d.sgrBuf = appendTrueColors(d.sgrBuf[:0], c.FG, c.BG)
+		if _, err := w.Write(d.sgrBuf); err != nil {
+			return err
+		}
+		d.fgCol, d.fgSet = c.FG, true
+		d.bgCol, d.bgSet = c.BG, true
+		return nil
+	}
+	if fgChanged {
 		d.sgrBuf = AppendTrueColorFG(d.sgrBuf[:0], c.FG)
 		if _, err := w.Write(d.sgrBuf); err != nil {
 			return err
 		}
 		d.fgCol, d.fgSet = c.FG, true
 	}
-	if (!d.bgSet && c.BG != (color.RGBA{})) || (d.bgSet && !sameRGB(c.BG, d.bgCol)) {
+	if bgChanged {
 		d.sgrBuf = AppendTrueColorBG(d.sgrBuf[:0], c.BG)
 		if _, err := w.Write(d.sgrBuf); err != nil {
 			return err

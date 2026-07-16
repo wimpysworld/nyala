@@ -82,6 +82,25 @@ func AppendTrueColorBG(dst []byte, c color.RGBA) []byte {
 	return appendTrueColor(dst, trueBGPrefix, c)
 }
 
+// appendTrueColors appends one SGR that sets both exact 24-bit colours. The
+// foreground and background parameter groups share one CSI introducer and one
+// final byte. Alpha is ignored.
+func appendTrueColors(dst []byte, fg, bg color.RGBA) []byte {
+	dst = append(dst, trueFGPrefix...)
+	dst = append(dst, decByte[fg.R]...)
+	dst = append(dst, ';')
+	dst = append(dst, decByte[fg.G]...)
+	dst = append(dst, ';')
+	dst = append(dst, decByte[fg.B]...)
+	dst = append(dst, ";48;2;"...)
+	dst = append(dst, decByte[bg.R]...)
+	dst = append(dst, ';')
+	dst = append(dst, decByte[bg.G]...)
+	dst = append(dst, ';')
+	dst = append(dst, decByte[bg.B]...)
+	return append(dst, 'm')
+}
+
 // TrueColorFG returns the SGR sequence that sets the foreground to an exact
 // 24-bit RGBA colour. The alpha channel is ignored. The form is
 // "\x1b[38;2;R;G;Bm".
