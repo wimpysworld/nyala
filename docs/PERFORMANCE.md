@@ -827,6 +827,22 @@ YCbCr and compose directly into the final grid, so they also bypass this RGBA
 downscale. Changed-frame allocation space was 99.42 percent `GridDiff.retainPrev`;
 96.86 percent of allocation objects came from `writeCUP`.
 
+The 2026-07-16 follow-up replaced `writeCUP`'s local `[16]byte` with one
+`GridDiff`-owned `[16]byte` scratch array. The emitted stream is byte-identical.
+A focused comparison covered every row and column from 0 through 999 against
+the former encoder. Six fresh benchmark processes ran in rotated
+baseline/candidate order with `GOMAXPROCS=4`, `GOGC=100`, four discarded warm-ups,
+and 30 timed one-second samples per variant. At 120x40, median time moved from
+131,533 to 130,668 ns/op
+(-0.66 percent), p90 from 133,400 to 132,160 ns/op (-0.93 percent), and
+allocations from 39 and 639-640 B/op to zero. At 240x86, median moved from
+578,443 to 577,406 ns/op (-0.18 percent), p90 from 583,425 to 585,538 ns/op
+(+0.36 percent), and allocations from 85 and 1,375 B/op to zero. The small p90
+movement at 240x86 is within run variation; the row-scaled CUP allocations are
+gone without a latency regression. The fixed array also keeps the first CUP
+allocation-free. These p90 values measure sustained in-process diff encoding,
+not terminal presentation or end-to-end per-frame tail latency.
+
 Separate 240x86 Compose profiles were allocation-free. Quadrant CPU was led by
 `quadrantColours` at 24.02 percent flat and 40.17 percent cumulative; sextant was
 led by `sextantColours` at 27.59 percent flat and 49.41 percent cumulative. Their

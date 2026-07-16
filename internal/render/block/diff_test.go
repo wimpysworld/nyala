@@ -3,6 +3,7 @@ package block
 import (
 	"bytes"
 	"image/color"
+	"io"
 	"strings"
 	"testing"
 )
@@ -19,6 +20,53 @@ func gridOf(cols, rows int, fill Cell) Grid {
 		g.Cells[i] = fill
 	}
 	return g
+}
+
+// TestGridDiffCUPScratchByteIdentical compares the retained CUP scratch against
+// the former stack-buffer encoder across every row and column from 0 through
+// 999. This covers each decimal-width boundary used by practical terminal grids.
+func TestGridDiffCUPScratchByteIdentical(t *testing.T) {
+	var d GridDiff
+	var got bytes.Buffer
+	for row := range 1000 {
+		for col := range 1000 {
+			got.Reset()
+			if err := d.writeCUP(&got, row, col); err != nil {
+				t.Fatal(err)
+			}
+			want := legacyCUP(row, col)
+			if !bytes.Equal(got.Bytes(), want) {
+				t.Fatalf("CUP (%d,%d) = %q, want %q", col, row, got.Bytes(), want)
+			}
+		}
+	}
+}
+
+// TestGridDiffCUPFreshScratchNoAlloc checks that a zero-value differ can emit
+// its first CUP without allocating backing storage for the fixed scratch array.
+func TestGridDiffCUPFreshScratchNoAlloc(t *testing.T) {
+	var d GridDiff
+	var writeErr error
+	allocs := testing.AllocsPerRun(1000, func() {
+		d = GridDiff{}
+		writeErr = d.writeCUP(io.Discard, 85, 239)
+	})
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if allocs != 0 {
+		t.Fatalf("fresh CUP allocations = %v, want 0", allocs)
+	}
+}
+
+func legacyCUP(row, col int) []byte {
+	var buf [16]byte
+	b := buf[:0]
+	b = append(b, '\x1b', '[')
+	b = appendInt(b, row+1)
+	b = append(b, ';')
+	b = appendInt(b, col+1)
+	return append(b, 'H')
 }
 
 // TestGridDiffSkipsUnchanged checks an unchanged second frame emits no escapes.
@@ -189,6 +237,27 @@ func TestGridDiffReanchorsAfterNonASCIIOverlay(t *testing.T) {
 	}
 	if !strings.Contains(got, "\x1b[1;3H") {
 		t.Fatalf("mixed overlay run: missing re-anchor CUP to column 2: %q", got)
+	}
+}
+
+// TestGridDiffWideOverlayByteStream checks that a wide grapheme skips its
+// trailing cell and re-anchors the following cell with the same CUP bytes.
+func TestGridDiffWideOverlayByteStream(t *testing.T) {
+	fg := color.RGBA{A: 0xff}
+	bg := color.RGBA{A: 0xff}
+	g := Grid{Cols: 3, Rows: 1, Cells: []Cell{
+		{Text: "界", FG: fg, BG: bg},
+		{Wide: true, FG: fg, BG: bg},
+		{Text: "x", FG: fg, BG: bg},
+	}}
+	var d GridDiff
+	var out bytes.Buffer
+	if err := d.Emit(&out, g, fixedFG, fixedBG); err != nil {
+		t.Fatal(err)
+	}
+	const want = "\x1b[1;1H<f0><b0>界\x1b[1;3Hx"
+	if got := out.String(); got != want {
+		t.Fatalf("wide overlay stream = %q, want %q", got, want)
 	}
 }
 
