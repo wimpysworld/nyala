@@ -510,7 +510,13 @@ func (s *State) renderBlock(src image.Image, text []render.GlyphRun, w io.Writer
 			s.captureGrid.Cells = append(s.captureGrid.Cells[:0], grid.Cells...)
 		}
 		bw := s.scratch.writer(w, frameBufferSize(s.Cols, s.Rows))
-		if err := s.diff.Emit(bw, *grid, fgSGRFunc(s.Colour), bgSGRFunc(s.Colour)); err != nil {
+		var err error
+		if s.Colour == ColourTrue {
+			err = s.diff.EmitTrueColour(bw, *grid)
+		} else {
+			err = s.diff.Emit(bw, *grid, fgSGRFunc(s.Colour), bgSGRFunc(s.Colour))
+		}
+		if err != nil {
 			return err
 		}
 		return bw.Flush()

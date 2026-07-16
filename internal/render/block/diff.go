@@ -26,6 +26,8 @@ type GridDiff struct {
 	lastBG  []byte     // last emitted background SGR this frame, empty until set
 	fgCol   color.RGBA // colour that built lastFG; zero (A==0) until set
 	bgCol   color.RGBA // colour that built lastBG; zero (A==0) until set
+	fgSet   bool       // truecolour foreground RGB state is seeded this frame
+	bgSet   bool       // truecolour background RGB state is seeded this frame
 	sgrBuf  []byte     // reused scratch for building an SGR before its compare
 	runeBuf []byte     // reused scratch for encoding a bitmap glyph rune
 	cupBuf  [16]byte   // reused scratch for building a CUP cursor move
@@ -58,6 +60,17 @@ type GridDiff struct {
 // where the virtual cursor is also marked unknown so the first emitted cell
 // always carries a CUP and its colour.
 func (d *GridDiff) Emit(w io.Writer, grid Grid, fg, bg SGRFunc) error {
+	return d.emit(w, grid, fg, bg, false)
+}
+
+// EmitTrueColour writes grid using the exact 24-bit RGB appenders. It preserves
+// Emit's bytes and cursor policy while avoiding the generic formatter and encoded
+// SGR comparison path. Callers must select it only for truecolour output.
+func (d *GridDiff) EmitTrueColour(w io.Writer, grid Grid) error {
+	return d.emit(w, grid, nil, nil, true)
+}
+
+func (d *GridDiff) emit(w io.Writer, grid Grid, fg, bg SGRFunc, trueColour bool) error {
 	full := len(d.prev.Cells) == 0 || d.prev.Cols != grid.Cols || d.prev.Rows != grid.Rows
 
 	// Reset the colour cache and the virtual cursor for this frame. A cursor row
@@ -66,6 +79,7 @@ func (d *GridDiff) Emit(w io.Writer, grid Grid, fg, bg SGRFunc) error {
 	// opaque, so the first emitted cell always builds and emits its colour.
 	d.lastFG, d.lastBG = d.lastFG[:0], d.lastBG[:0]
 	d.fgCol, d.bgCol = color.RGBA{}, color.RGBA{}
+	d.fgSet, d.bgSet = false, false
 	curRow, curCol := -1, -1
 
 	for row := range grid.Rows {
@@ -86,7 +100,13 @@ func (d *GridDiff) Emit(w io.Writer, grid Grid, fg, bg SGRFunc) error {
 				}
 				curRow, curCol = row, col
 			}
-			if err := d.writeColour(w, c, fg, bg); err != nil {
+			var err error
+			if trueColour {
+				err = d.writeTrueColour(w, c)
+			} else {
+				err = d.writeColour(w, c, fg, bg)
+			}
+			if err != nil {
 				return err
 			}
 			if err := d.writeCellGlyph(w, c); err != nil {
@@ -105,6 +125,30 @@ func (d *GridDiff) Emit(w io.Writer, grid Grid, fg, bg SGRFunc) error {
 	}
 
 	d.retainPrev(grid)
+	return nil
+}
+
+func sameRGB(a, b color.RGBA) bool {
+	return a.R == b.R && a.G == b.G && a.B == b.B
+}
+
+// writeTrueColour emits exact RGB changes directly. Alpha is absent from the SGR
+// bytes, so it is intentionally absent from the retained colour comparison.
+func (d *GridDiff) writeTrueColour(w io.Writer, c *Cell) error {
+	if (!d.fgSet && c.FG != (color.RGBA{})) || (d.fgSet && !sameRGB(c.FG, d.fgCol)) {
+		d.sgrBuf = AppendTrueColorFG(d.sgrBuf[:0], c.FG)
+		if _, err := w.Write(d.sgrBuf); err != nil {
+			return err
+		}
+		d.fgCol, d.fgSet = c.FG, true
+	}
+	if (!d.bgSet && c.BG != (color.RGBA{})) || (d.bgSet && !sameRGB(c.BG, d.bgCol)) {
+		d.sgrBuf = AppendTrueColorBG(d.sgrBuf[:0], c.BG)
+		if _, err := w.Write(d.sgrBuf); err != nil {
+			return err
+		}
+		d.bgCol, d.bgSet = c.BG, true
+	}
 	return nil
 }
 
