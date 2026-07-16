@@ -11,7 +11,9 @@ require (
 	github.com/charmbracelet/x/vt v0.0.0-20260615092313-b57e5e6d29bb
 	github.com/chromedp/cdproto v0.0.0-20260427013145-5737772c319b
 	github.com/chromedp/chromedp v0.15.1
+	github.com/delthas/octreequant v0.0.0-20240724152321-2675d824f212
 	github.com/emmansun/base64 v0.10.0
+	github.com/ericpauley/go-quantize v0.0.0-20200331213906-ae555eb2afa4
 	github.com/fogleman/gg v1.3.0
 	github.com/gen2brain/jpegn v0.4.4
 	github.com/klauspost/compress v1.19.0
@@ -20,6 +22,7 @@ require (
 	github.com/mattn/go-sixel v0.0.12
 	github.com/raf555/pixelmatch v1.0.1
 	github.com/rivo/uniseg v0.4.7
+	github.com/soniakeys/quant v1.0.0
 	github.com/woozymasta/png v1.1.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/tools v0.48.0
@@ -46,7 +49,6 @@ require (
 	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
-	github.com/soniakeys/quant v1.0.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/exp v0.0.0-20260603202125-055de637280b // indirect
 	golang.org/x/sync v0.22.0 // indirect

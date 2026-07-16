@@ -36,8 +36,15 @@ v0.0.12, with its adaptive 256-colour policy and dithering off. Moving q90 JPEG 
 session has at most four decode workers. The matched sequential path is now
 103.014 ms, while State processing is 88.637 ms before terminal work. Static
 fixed-255 reuse later cut warm State time by 45.8% with identical output, but a
-per-frame palette rebuild erased the gain. Motion validation is next. Band research
-closed with no change; long-count RLE needs a full-fork compatibility test.
+per-frame palette rebuild erased the gain. A later still-image matrix found a
+stateless alternative: a 64K median-cut sample cap cuts combined q90 decode plus
+encode by 30.39% against the prior parallel-LUT production path. A deterministic
+phase sweep records colour-category shifts, but
+every feature remains visible and structurally intact, so the performance win is
+retained. Parallel construction
+of the unchanged 15-bit LUT cuts the same path by 6.21% with byte-identical output.
+Band research closed with no change; long-count RLE needs a full-fork compatibility
+test.
 Partial Kitty transport remains conditional on terminal measurements and a supported
 protocol path; see
 [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
@@ -420,11 +427,14 @@ Also landed on the load-time theme, beyond the ranked list:
    not required. Reconsider it only if terminal-side PNG decoding or drawing becomes
    a measured bottleneck. REMAINING: measure sustained Kitty FPS and
    Kitty-through-multiplexer placement. Impact 8, effort medium.
-6. **[IN PROGRESS] Sixel temporal palette reuse.** Static fixed-255 output matches
-   adaptive output byte for byte and cuts warm State time by 45.8%, but rebuilding
-   it every frame removes the gain. Add the deterministic motion fixture and test
-   refresh at frame 0, every eight frames, and every frame. Dirty-band transport
-   remains separate and terminal-measurement-gated.
+6. **[DONE - staged] Sixel 64K per-frame palette sampling.** A ten-cell still-image
+   matrix cuts mean combined q90 decode plus encode by 30.39% against the prior
+   parallel-LUT production path, but output quality is
+   mixed and mean payload rises 1.75%. A deterministic phase sweep records colour
+   shifts on thin lines, badges, blocks, icons, and antialias shades, while all 800
+   features remain above 3:1 and preserve structure. Retain the cap. Reopen only if
+   content disappears, merges with its background, becomes unreadable, or loses
+   structure. The former temporal palette-reuse motion fixture is not required.
 7. **[DONE - 3861ccc]** **Accumulate scroll keys** instead of latest-wins-drop
    (`internal/viewer/stream.go`). `keySender` now accumulates every scroll key and
    forwards it in order, so the engine's `dispatchWheel` sums the deltas; a burst no
@@ -1644,12 +1654,9 @@ adaptive quantisation, LUT construction, mapping, and alpha remapping.
 | Fixed 216 | 34.916 dB | Not recorded | 0.994726 | Not recorded |
 
 The quality set is `linuxmatters.png` plus `testpage-01-grayscale.png` through
-`testpage-04-color.png`. Fixed 64 and 128 lost more quality than fixed 216. The
-repository has no deterministic motion fixture, so static reuse is not production
-evidence. The next acceptance run needs 32 committed frames with static repeats,
-small translations, local tile changes, and full-frame changes. Test palette refresh
-at frame 0 only, every eight frames, and every frame. Report per-frame latency,
-allocations, payload, PSNR, windowed SSIM, and combined decode plus State.
+`testpage-04-color.png`. Fixed 64 and 128 lost more quality than fixed 216. Static
+reuse is not production evidence. The later stateless 64K sample-cap matrix
+supersedes the proposed temporal motion fixture.
 
 ##### Palette track, benchmark B
 
@@ -1665,10 +1672,107 @@ data.
 | Reused current median | 42.76 ms | Not recorded | Exact static output | Not recorded |
 | `go-quantize` | 37.43 ms | Not recorded | 30.62 dB | Not recorded |
 
-Direct Plan9 is aggressive speed-mode evidence. It needs the motion sequence and
-windowed SSIM before acceptance. WebSafe 216 loses too much quality. Reject
-`octreequant` and other unmeasured algorithms. Do not infer a result for them from
-these measured arms.
+Direct Plan9 and WebSafe 216 lose too much quality. The later matrix below measures
+`octreequant` directly; do not infer results for any other algorithm from these arms.
+
+##### Internal Sixel palette matrix (2026-07-16)
+
+This is an internal rendering test, not terminal FPS. It measures complete Sixel
+byte generation and combined q90 JPEG decode plus byte generation. It excludes tty
+transport and terminal decode, draw, and refresh.
+
+The opt-in `just palette-bench` harness uses the five committed quality images at
+1920x1080 and 2560x1600. Each source is composited opaque, scaled to the target
+width, and top-cropped or bottom-padded to the target height before timing. Every
+arm keeps the exact-colour fast path, 255 usable adaptive colours, current band and
+RLE code, framing, and final write. Each of six independent processes rotates the
+arm and fixture order, runs four warm-ups and three timed samples per cell, and pins
+`GOMAXPROCS=4`, `GOGC=100`. The machine was Linux amd64, Go 1.26.4, on an AMD Ryzen
+AI Max+ 395. Baseline commit was `1ad80b2`.
+
+The table averages the ten cell means and cell p90s across the six processes. The
+range and standard deviation are over process means. FPS is `1000 / p90`. Payload
+is the ten-cell mean and does not include terminal transport wrappers.
+
+| Arm | Full mean, range, SD | Full p90 / FPS | Decode plus encode mean | Decode plus encode p90 / FPS | allocs/op | mean payload |
+|---|---:|---:|---:|---:|---:|---:|
+| Original `go-sixel` v0.0.12 | 52.830 ms, 52.644 to 53.026, 0.135 | 53.574 ms / 18.67 | 62.980 ms | 64.102 ms / 15.60 | 1,296 | 558,357 B |
+| Nyala serial-LUT baseline | 51.196 ms, 51.002 to 51.420, 0.156 | 51.861 ms / 19.28 | 61.946 ms | 63.168 ms / 15.83 | 1,296 | 558,357 B |
+| Nyala parallel 15-bit LUT | 48.359 ms, 47.666 to 49.764, 0.798 | 49.439 ms / 20.23 | 58.101 ms | 59.301 ms / 16.86 | 1,304 | 558,357 B |
+| Inherited 64K sample cap | 31.572 ms, 31.348 to 31.902, 0.195 | 31.972 ms / 31.28 | 40.443 ms | 41.312 ms / 24.21 | 1,286 | 568,106 B |
+| `ericpauley/go-quantize` | 44.351 ms, 43.684 to 45.173, 0.571 | 45.760 ms / 21.85 | 54.844 ms | 57.472 ms / 17.40 | 525 | 515,687 B |
+| `delthas/octreequant` | 171.350 ms, 170.332 to 172.546, 0.987 | 174.306 ms / 5.74 | 186.957 ms | 190.516 ms / 5.25 | 6,339,928 | 466,110 B |
+
+Original, serial Nyala, and parallel Nyala emit 246 to 255 colour registers across
+the cells; 64K emits 232 to 255, `go-quantize` emits 255, and `octreequant` emits
+249 to 255. Both decoders return the requested dimensions in every cell, and the
+production decoder returns opaque output.
+
+Parallel construction changes only how the existing 32,768-entry nearest-colour
+LUT is filled. Each worker owns a disjoint range. Palette selection, lookup values,
+mapping, band generation, RLE, and framing are unchanged. All ten payloads match
+the serial baseline byte for byte. Full encode falls 5.54%; combined decode plus
+encode falls 6.21%. Every process mean improves. Adopt this bounded change.
+
+The 64K cap changes only the median-cut sample budget from `2^18` to `2^16`. Against
+the serial baseline, full encode falls 38.33% and combined decode plus encode falls
+34.71%. Against the prior parallel-LUT production path, the reductions are 34.71%
+and 30.39%. Mean payload rises 1.75%. It changes every non-trivial payload. The
+phase gate below decides it.
+Signed quality deltas below are candidate minus current Nyala. Positive PSNR and
+SSIM are better; negative dE mean is better.
+
+| Fixture and size | Payload | PSNR | SSIM | dE mean | dE p95 result |
+|---|---:|---:|---:|---:|---|
+| Linux Matters 1920x1080 | +7,177 B | -0.728 dB | +0.003628 | +0.0452 | improves |
+| Linux Matters 2560x1600 | +18,107 B | +2.340 dB | -0.001580 | -0.0917 | improves |
+| Grayscale 1920x1080 | -834 B | -0.004 dB | -0.000002 | +0.0004 | unchanged |
+| Grayscale 2560x1600 | -7,065 B | -0.005 dB | -0.000003 | +0.0005 | unchanged |
+| Basic 1920x1080 | +2,606 B | +0.014 dB | +0.000031 | +0.0002 | unchanged |
+| Basic 2560x1600 | +4,059 B | +1.298 dB | +0.000148 | +0.4548 | worsens |
+| CMYK 1920x1080 | +18,225 B | +0.030 dB | -0.000044 | +0.0029 | unchanged |
+| CMYK 2560x1600 | +2,001 B | +0.049 dB | +0.000330 | +0.0224 | worsens |
+| Colour 1920x1080 | +10,805 B | +0.580 dB | -0.000275 | +0.5332 | improves |
+| Colour 2560x1600 | +42,404 B | +0.290 dB | +0.000123 | -0.3238 | slightly worsens |
+
+The deterministic rare-colour gate generates one opaque fixture at each target
+size. It covers every regular-grid sampling phase with 1 px and 2 px lines, badges,
+blocks, icons, antialias shades, and rare saturated colours. Both `go-sixel` and
+Charm decoders must accept deterministic payloads at the requested dimensions, and
+the production decoder must remain opaque. WCAG 3:1 defines feature visibility.
+CIEDE2000 2.3 and colour-category changes are recorded as quality evidence. Only a
+feature disappearing, merging with its background, becoming unreadable, or losing
+structure rejects the policy.
+
+| Size | 64K stride | Features | Category changes | dE increases >= 2.3 | Current-to-64K dE >= 2.3 | Maximum output change |
+|---|---:|---:|---:|---:|---:|---:|
+| 1920x1080 | 6 | 288 | 13 | 18 | 20 | 7.767 dE, antialias shade phase (2,3) |
+| 2560x1600 | 8 | 512 | 28 | 39 | 72 | 16.155 dE, antialias shade phase (4,1) |
+
+Every feature stays above 3:1 and preserves its structure. Category changes repeat
+byte for byte across runs. Examples include cyan badges becoming blue, blue 1 px
+lines becoming magenta, red 2 px lines becoming yellow, yellow badges becoming red,
+and magenta icons becoming blue. Accept this measured quality trade-off and retain
+the 64K production cap. Reopen the decision only if later evidence shows content
+disappearing, merging with its background, becoming unreadable, or losing structure.
+The small exact-colour path stays byte-identical.
+
+`go-quantize` is BSD-3-Clause, dependency-free, and last changed in 2020. It is
+13.37% faster than the serial baseline on full encode, but slower than the inherited
+64K arm and changes quality. Keep it test-only. `octreequant` is MIT,
+dependency-free, and last changed in 2024. Its direct indexed output is 3.35 times
+slower than the serial baseline with about 6.34 million allocations per operation;
+reject it. The GPL `color-thief` candidate was excluded. `pixelize` was not added
+because it is a quality reference without published speed evidence and would widen
+the dependency and run-time cost.
+
+Both the production `go-sixel` decoder and the independent Charm decoder accept
+every payload and return the requested dimensions. Quality and opacity use the
+production decoder. Charm's decoder does not reproduce identical pixels or opaque
+alpha at every pixel for these parameterised payloads, so it remains the independent
+protocol acceptance check, not the quality oracle. PSNR is BT.601 luma, SSIM is the
+validated 11x11 windowed luma implementation, and CIEDE2000 mean and p95 supply the
+colour check. These quality calculations run outside the timed region.
 
 ##### RLE track
 
@@ -1711,9 +1815,9 @@ parallel bands.
 
 ##### Cross-track decision
 
-Keep adaptive 256 as production policy. Validate fixed-255 temporal reuse first,
-then validate long-count RLE in a temporary upstream worktree. The band track has no
-candidate to combine. Send only accepted wins upstream. If short-lived integration
+Keep adaptive 256 with the stateless 64K sample cap as production policy. Next
+validate long-count RLE in a temporary upstream worktree. The band
+track has no candidate to combine. Send only accepted wins upstream. If short-lived integration
 needs a fork, publish a versioned fork and use a temporary module replacement. Do
 not vendor, use `go:linkname`, or add a Nix-only patch.
 
@@ -1724,7 +1828,9 @@ not vendor, use `go:linkname`, or add a Nix-only patch.
 | Current fused Block compositor | Exact weighted region average across six ratios, one conversion per terminal sub-cell, existing persistent workers | Keep |
 | Ratio-specialised Block plane sums | The retained 4:2:0 path removes common mapping and loop work without a full RGBA surface; generic fallback preserves every other case | Retained after exactness, paired, CPU, throughput, and tail gates |
 | `jpegn` v0.4.4 `Options.ToRGBA` | MIT, cgo-free packed RGBA; matched sequential Sixel processing falls 10.43% with stable quality and a 1.1% retained-bound increase | Retained for live moving Sixel JPEG at one to four workers |
-| `mattn/go-sixel` fixed 255 palette | Warm State falls 45.8% with byte-identical static output; per-frame rebuild removes the gain | Keep adaptive production policy; validate temporal reuse next |
+| Parallel inherited 15-bit Sixel LUT | Ten-cell full encode falls 5.54% and combined q90 decode plus encode falls 6.21%; all payloads are byte-identical | Retained at up to four workers |
+| 64K median-cut sample cap | Combined q90 decode plus encode falls 30.39% against prior production; colour-category shifts are accepted because all 800 phase-swept features remain visible and structurally intact | Retained |
+| `mattn/go-sixel` fixed 255 palette | Warm State falls 45.8% with byte-identical static output; per-frame rebuild removes the gain | Superseded by the stateless 64K sample-cap decision |
 | Long-count Sixel RLE | Stage-only harness saves 6.4% and cuts payload 18.9%; complete-path gain and compatibility are unconfirmed | Test 32767 in a temporary upstream worktree |
 | Private Sixel band changes | Production-shaped variants do not beat the current 17.24 ms full encoder | Closed with no change; defer parallel bands |
 | Current decoder plus row-parallel `draw.Draw` | Uses the existing viewer pool, preserves current pixels, and measured 0 B/op and 0 allocs/op warm | Closed while bounded fused RGBA wins end to end |

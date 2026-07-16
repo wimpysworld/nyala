@@ -53,10 +53,13 @@ expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
   falls 18.47%. The five-image quality set chooses 256 over 192 colours; the owner
   accepts the measured colour loss for this compatibility backend. The earlier
   run did not test fixed-palette build cost or stale-frame quality. The later public
-  sweep completed; temporal reuse remains open. Nyala now owns the minimum opaque
+  sweep completed; the stateless sample-cap result supersedes temporal reuse and is
+  retained after the rare-colour phase gate. Nyala now owns the minimum opaque
   encoder subset. Removing alpha work cuts the 2560x1600 mean from 67.119 to
   63.190 ms (5.853%) with byte-identical output; palette selection and RLE remain
-  unchanged.
+  unchanged. Parallel construction of the inherited 15-bit palette LUT then cuts
+  the ten-cell matrix mean full encode by 5.54% and combined q90 decode plus encode
+  by 6.21%, with byte-identical payloads across all fixtures.
   Source: [Sixel encoder adoption](./PERFORMANCE.md#sixel-encoder-adoption-2026-07-15).
 - [x] Retain bounded `jpegn.Options{ToRGBA:true}` for live moving Sixel JPEG.
   The adaptive default and Sixel RGBA cutoff are separate policies, both currently
@@ -66,11 +69,17 @@ expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
   plus State bound rises 1.1%. Block, Kitty, capture, settled Sixel PNG, and backend
   switches preserve their paths. Source:
   [Bounded Sixel RGBA decode](./PERFORMANCE.md#bounded-sixel-rgba-decode-and-four-worker-policy-2026-07-15).
-- [ ] Create a committed deterministic 32-frame Sixel motion fixture with static
-  repeats, small translations, local tile changes, full-frame changes, and recorded
-  hashes. Benchmark fixed-255 reuse with refresh at frame 0 only, every eight frames,
-  and every frame. Include the aggressive Plan9 arm. Record per-frame combined
-  decode plus State, allocations, payload, PSNR, and windowed SSIM.
+- [x] Reduce the inherited per-frame median-cut sample cap from `2^18` to `2^16`.
+  The internal ten-cell still-image matrix cuts mean full encode by 34.71% and
+  combined q90 decode plus encode by 30.39% against the prior parallel-LUT
+  production path, but changes every
+  non-trivial payload, raises mean payload 1.75%, and has mixed per-fixture quality.
+  A deterministic phase sweep records repeatable rare-colour category changes on
+  thin lines, badges, blocks, icons, and antialias shades at both target sizes, but
+  all 800 features remain above 3:1 and preserve structure. Accept the quality
+  trade-off. Reopen only if content disappears, merges with its background, becomes
+  unreadable, or loses structure. The exact-colour path remains byte-identical. The
+  former 32-frame motion and temporal palette-reuse task is not required.
 - [ ] Prototype the 32767 repeat limit in a temporary upstream worktree. Validate the
   full encoder, both decoders, payload, repeat boundaries, and an old-terminal limit
   policy before accepting the stage-only result.

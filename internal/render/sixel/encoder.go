@@ -8,7 +8,9 @@ import (
 	"image/color"
 	"image/draw"
 	"io"
+	"runtime"
 	"strconv"
+	"sync"
 
 	"github.com/soniakeys/quant/median"
 )
@@ -193,7 +195,7 @@ func toRGBA(img image.Image) *image.RGBA {
 }
 
 func samplePalette(rgba *image.RGBA, maxColours int) color.Palette {
-	const budget = 1 << 18
+	const budget = 1 << 16
 	bounds := rgba.Bounds()
 	src := image.Image(rgba)
 	if bounds.Dx()*bounds.Dy() > budget {
@@ -223,19 +225,29 @@ func newPaletteLUT(palette color.Palette) []uint8 {
 		pr[i], pg[i], pb[i] = int32(r>>8), int32(g>>8), int32(b>>8)
 	}
 	lut := make([]uint8, 1<<15)
-	for i := range lut {
-		r := int32(i>>10&31<<3 | 4) //nolint:gosec // A 15-bit LUT index bounds this to 252.
-		g := int32(i>>5&31<<3 | 4)  //nolint:gosec // A 15-bit LUT index bounds this to 252.
-		b := int32(i&31<<3 | 4)     //nolint:gosec // A 15-bit LUT index bounds this to 252.
-		best, bestDistance := 0, int32(1<<31-1)
-		for j := range palette {
-			dr, dg, db := r-pr[j], g-pg[j], b-pb[j]
-			if distance := dr*dr + dg*dg + db*db; distance < bestDistance {
-				best, bestDistance = j, distance
+	workers := min(4, runtime.GOMAXPROCS(0))
+	var wg sync.WaitGroup
+	for worker := range workers {
+		lo, hi := len(lut)*worker/workers, len(lut)*(worker+1)/workers
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := lo; i < hi; i++ {
+				r := int32(i>>10&31<<3 | 4) //nolint:gosec // A 15-bit LUT index bounds this to 252.
+				g := int32(i>>5&31<<3 | 4)  //nolint:gosec // A 15-bit LUT index bounds this to 252.
+				b := int32(i&31<<3 | 4)     //nolint:gosec // A 15-bit LUT index bounds this to 252.
+				best, bestDistance := 0, int32(1<<31-1)
+				for j := range palette {
+					dr, dg, db := r-pr[j], g-pg[j], b-pb[j]
+					if distance := dr*dr + dg*dg + db*db; distance < bestDistance {
+						best, bestDistance = j, distance
+					}
+				}
+				lut[i] = uint8(best)
 			}
-		}
-		lut[i] = uint8(best)
+		}()
 	}
+	wg.Wait()
 	return lut
 }
 
