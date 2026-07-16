@@ -225,7 +225,7 @@ chromedp.ListenTarget(ctx, func(ev interface{}) {
 | Sixel encode | Nyala encoder derived from `mattn/go-sixel` v0.0.12 | Retained pure-Go opaque encoder; adaptive 256-colour palette; dithering off; inherited 15-bit palette LUT built across at most four workers |
 | Kitty graphics | `charmbracelet/x/ansi/kitty` | Full protocol; unicode-placeholder support |
 | Sixel quantisation | Nyala's copied `mattn/go-sixel` adaptive palette | Adaptive 256 with a 64K per-frame sample cap; the rare-colour phase gate records its accepted colour trade-off |
-| Colour degradation | Direct truecolour SGR (default); hardcoded RGB→xterm-256 formula (Carbonyl) fallback | Truecolour passthrough where present; closed-form per pixel (6x6x6 cube + 24-step grey ramp) otherwise. Stage 1 detects colour from env plus terminfo via `colorprofile.Detect`; a present `COLORTERM` (`kmscon`, `truecolor`, `24bit`) is a trusted positive that short-circuits to truecolour; no DCS round-trip. See `docs/STAGE-1.md` |
+| Colour degradation | Direct truecolour SGR (default); generated perceptual xterm-256 lookup fallback | Truecolour passthrough where present; otherwise a static 32 KiB 15-bit RGB LUT selects the CIEDE2000-nearest canonical index from 16..255. Stage 1 detects colour from env plus terminfo via `colorprofile.Detect`; a present `COLORTERM` (`kmscon`, `truecolor`, `24bit`) is a trusted positive that short-circuits to truecolour; no DCS round-trip. See `docs/STAGE-1.md` and the internal test in `docs/PERFORMANCE.md` |
 | Capability detect | DA1-fenced startup handshake on the tty (Kitty `a=q`, Sixel via DA1, cell pixel size via `CSI 16t`/`14t`/`18t`), failing closed to block in 200 ms | Built in Stage 1, with the colour detector above; never trust `$TERM`. See `docs/STAGE-1.md` |
 | Config | `koanf` v2 + TOML | Pure Go, no cgo; layered env, file, and flag sources merged by load order; opt-in parsers keep the binary small. Chosen over viper (heavier dep set, larger binary) and stdlib (hand-rolled merge) |
 
@@ -533,7 +533,7 @@ enhancements gated behind capability detection.
 | Half-block fallback | Custom (ref `x/mosaic`) | 6/10 | Mandatory KMSCON floor; composable cell grid for text overlay |
 | Resize/composite | `golang.org/x/image/draw` | 9/10 | In-place scale into a reused buffer; stdlib-grade |
 | Sixel palette | Copied `mattn/go-sixel` adaptive 256 colours | 9/10 | Dithering off; inherited LUT construction is parallel; the 64K sample cap is guarded against disappearing or unreadable features |
-| Colour detect | `colorprofile` (+ hardcoded RGB→256) | 8/10 | Env plus terminfo via `colorprofile.Detect`; trusted `COLORTERM`; closed-form formula per pixel. Built in Stage 1 |
+| Colour detect | `colorprofile` plus owned perceptual RGB→256 LUT | 8/10 | Env plus terminfo via `colorprofile.Detect`; trusted `COLORTERM`; generated 15-bit table lookup per pixel. Built in Stage 1; conversion corrected by the 2026-07-16 internal test |
 | Capability detect | DA1-fenced tty handshake (`x/ansi` + `x/term`) | 9/10 | Kitty `a=q`, Sixel via DA1, cell size via `CSI 16t`/`14t`/`18t`; fails closed to block; never trust `$TERM`. Built in Stage 1 |
 | Viewport substrate alt | vaxis | 8/10 | Runner-up if Charm graphics coexistence proves intractable |
 
@@ -861,6 +861,9 @@ Techniques:
 - **tmux/colette nearest-of-two**: compares the cube candidate and the grey candidate by
   squared RGB distance. More accurate than Carbonyl's single threshold, two distance
   computations per pixel. A drop-in if 256-colour fidelity matters.
+- **Generated perceptual lookup**: a 32 KiB table maps each 5-bit RGB key to the
+  CIEDE2000-nearest canonical xterm index from 16..255. It avoids per-frame search,
+  terminal-configurable indices, start-up generation, and allocations.
 - **KMSCON-aware detection**: KMSCON sets `TERM=linux` and `COLORTERM=kmscon`, and its
   truecolour landed in libtsm on 2025-11-28. Off-the-shelf detectors map `TERM=linux`
   to 16 colours and ignore `COLORTERM=kmscon`. Stage 1 special-cases it: a present
@@ -873,20 +876,21 @@ Techniques:
 | Tool | Score (n/10) | Maturity | Maintenance | Suitability |
 |---|---|---|---|---|
 | Custom closed-form converter (port of Carbonyl `xterm.rs`) | 9 | Own code; algorithm proven | Owned by Nyala; ~30 lines | Exact fit for the hot loop: uint8 in/out, no boxing, no lock, no search |
+| Generated 15-bit perceptual LUT | 9 | Owned generated asset; exhaustive key coverage | Owned by Nyala; 32 KiB | Selected by the five-fixture internal test: lower mean and worst CIEDE2000 than nearest-of-two, faster full path, no allocation or low-contrast regression |
 | `charmbracelet/colorprofile` | 7 | v0.4.3 + pseudo-versions; created 2024-09 | Charm; very active | Best for detection and chrome colours; `Convert` boxes and locks, so not for the per-pixel loop; misses `COLORTERM=kmscon` |
 | `muesli/termenv` | 6 | v0.16.0 2025-02-21 | Maintained, maintenance mode | Detection and chrome only; per-pixel HSLuv distance is too slow |
 | `makeworld/dither` v2 | 5 | v2.x; correctness-focused | Quiet; single maintainer | Bayer matrices as a reference for the optional 256-path dither; whole-image API is awkward per cell |
 | `ericpauley/go-quantize` | 3 | Dormant since 2020; pre-modules | ~25 stars; inactive | Wrong tool; the xterm-256 palette is fixed, no adaptive palette needed |
 
-- Pros: the owned closed-form converter is the fastest possible path; colorprofile fits
-  the stack for detection and chrome.
-- Cons: every library boxes colour through interfaces, too slow per pixel; detectors
-  miss KMSCON.
+- Pros: the owned LUT gives a direct indexed load with the best measured perceptual
+  accuracy; colorprofile fits the stack for detection and chrome.
+- Cons: the table adds 32 KiB to the binary; every reviewed library boxes colour
+  through interfaces, too slow per pixel; detectors miss KMSCON.
 - Sources: `github.com/fathyb/carbonyl` (`src/output/xterm.rs`),
   `github.com/charmbracelet/colorprofile`, `github.com/muesli/termenv`,
   `github.com/makeworld-the-better-one/dither`, `github.com/ericpauley/go-quantize`.
 
-Verdict: own a tiny closed-form RGB to xterm-256 converter for the per-pixel loop;
+Verdict: use the generated 15-bit perceptual LUT for the xterm-256 per-pixel loop;
 emit direct truecolour SGR where supported; use colorprofile for detection and chrome
 only, with a trusted `COLORTERM` positive and no DCS probe (Stage 1 dropped the
 round-trip, see `docs/STAGE-1.md`); keep dither off by default.
@@ -995,9 +999,9 @@ End-to-end, in order. Each step names the pick and its score.
 2. **Glyph choice**: custom compositor (8-9/10). Quadrant (2x2) default for detail,
    half-block (`U+2584`, 1x2) floor for safety, octant (2x4) only where the terminal
    and font prove Unicode 16. Default scheme: quadrant, falling back to half-block.
-3. **Colour conversion**: custom closed-form converter (9/10), ported from Carbonyl
-   `xterm.rs`. Default: emit direct truecolour SGR where present; closed-form xterm-256
-   (6x6x6 cube + 24-step grey ramp) as the fallback. Stage 1 detects with `colorprofile`
+3. **Colour conversion**: custom generated perceptual LUT (9/10). Default: emit direct
+   truecolour SGR where present; use the static 32 KiB 15-bit xterm-256 table as the
+   fallback. Every result stays within canonical indices 16..255. Stage 1 detects with `colorprofile`
    (7/10) over env plus terminfo, trusting a present `COLORTERM`; no DCS round-trip (see
    `docs/STAGE-1.md`).
 4. **Text overlay**: custom combined cell grid (9/10) on Browsh's indexed-grid model.
@@ -1012,11 +1016,11 @@ End-to-end, in order. Each step names the pick and its score.
    use `WithoutRenderer`.
 
 How this relates to the Tech Stack rows. It reuses the existing choices and sharpens
-two. `x/image/draw`, `colorprofile` plus the closed-form RGB to xterm-256 formula, and
+two. `x/image/draw`, `colorprofile` plus the generated RGB to xterm-256 LUT, and
 the layered capability probe are unchanged. The "Half-block fallback" row now states the
 default glyph scheme (quadrant with a half-block floor) and the combined cell grid with
 text overlay. The "Colour degradation" row now records that truecolour SGR passthrough
-is the default and the closed-form xterm-256 formula is the fallback. New supporting
+is the default and the perceptual xterm-256 LUT is the fallback. New supporting
 modules are `rivo/uniseg` and `mattn/go-runewidth` for grapheme width in the text
 overlay; both already enter the tree via the Charm stack. The compositor and the
 viewport diff writer are custom, owned in `internal/`, and locked with golden-frame
@@ -1043,15 +1047,13 @@ tests.
   round-trip is a no-op on KMSCON's libtsm, so Nyala detects from env plus terminfo and
   treats a present `COLORTERM` as a trusted positive; no live colour query is sent.
   The install-base count does not affect runtime behaviour, so it is not a task.)
-- Carbonyl's single-threshold grey-vs-cube branch versus tmux's nearest-of-two: is the
-  accuracy gap visible at half-block resolution on real pages, and is the extra distance
-  computation per pixel affordable at target FPS? Resolved: Carbonyl closed-form
-  single-threshold default (grey ramp when colour spread < 8, else the 6x6x6 cube via a
-  fused mul-add dot product, no search); nearest-of-two stays an opt-in. At half-block or
-  quadrant resolution the cube step is already coarse and the viewport moves, so the
-  accuracy gap sits below per-cell visibility while the cost doubles in the hot loop.
-  Stage 2 spike: A/B both converters on text and photo fixtures via the harness before
-  promoting nearest-of-two beyond opt-in.
+- Carbonyl's cube-or-exact-grey branch versus nearest-of-two and a perceptual LUT:
+  resolved by the 2026-07-16 internal rendering test. Nearest-of-two improved mean
+  CIEDE2000 from 1.735 to 1.359, but the static LUT improved it to 1.293, reduced the
+  worst p95 from nearest-of-two's 11.178 to 8.932, and cut aggregate full-path p90 by
+  9.9% against nearest-of-two across six rotated fresh processes. It added no
+  allocations or low-contrast text cells.
+  The LUT is production; the two arithmetic arms remain benchmark references only.
 - On the 256-colour path, is ordered Bayer dither a net win on text-heavy pages or does
   it muddy small glyphs? Resolved: dither off by default. Dither noise muddies small
   glyphs and hurts legibility more than banding hurts text; it earns its place on photo

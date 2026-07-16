@@ -1389,6 +1389,66 @@ improves p90, p95, maximum latency, CPU use, and saturated throughput. Small gai
 remain acceptable when those conditions hold. The fixed-payload benchmark excludes
 CDP delivery, terminal work, other production pages, and other architectures.
 
+### Block ANSI 256-colour conversion (internal rendering test, 2026-07-16)
+
+The bounded comparison measured three RGB-to-xterm-256 arms: the former
+cube-or-exact-grey formula, a corrected nearest cube-versus-grey formula using
+squared RGB distance, and an offline-generated 32 KiB perceptual LUT. The LUT has
+one byte for each 5-bit RGB key and searches only canonical xterm indices 16..255
+when generated. Production performs one indexed load. It does no search, start-up
+generation, dithering, content sampling, or configurable-palette access.
+
+The five committed PNG fixtures and overlay run sets ran at 120x40 and 240x86.
+Each source was scaled to the quadrant sample footprint, composed with its crisp
+text overlay, then full-repainted through `GridDiff.Emit` in ANSI 256-colour mode.
+Quality used a truecolour raster of that composed grid as its reference. Before
+raster comparison, both colours in every candidate cell were replaced by the
+canonical RGB value of the emitted xterm index. This emulates the actual fixed
+palette display rather than scoring the unconverted RGBA grid.
+
+Six fresh processes ran with arm and fixture order rotated, `GOMAXPROCS=4`, GC at
+100%, four warmups, and 21 timed samples per arm and fixture-size cell. Each arm
+therefore has 1,260 full-path samples. Mapper time covers both colours of every
+cell and amortises each sample over 64 passes. Full path covers compose plus a
+complete indexed diff emit to a reused buffer. The p90 is taken from each arm's
+combined 1,260-sample distribution, not from per-cell summaries. FPS is its
+reciprocal. Allocations were identical within each geometry: 41 at 120x40 and 87
+at 240x86, or 64 averaged across the matrix. The LUT arm calls the production
+`block.XTerm256` accessor, including its embedded-string table load.
+
+| Arm | Mapper mean | Mapper p90 | Full mean | Full p90 | Internal FPS | Run p90 range | Allocs | Mean payload |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Former formula | 53.939 us | 98.355 us | 0.816360 ms | 1.399837 ms | 714.37 | 1.363707..1.431656 ms | 64.0 | 84,888 B |
+| Nearest-two | 260.900 us | 441.023 us | 0.873034 ms | 1.516894 ms | 659.24 | 1.511947..1.523398 ms | 64.0 | 87,745 B |
+| Perceptual LUT | 41.198 us | 67.032 us | 0.813130 ms | 1.367396 ms | 731.32 | 1.329855..1.459407 ms | 64.0 | 85,917 B |
+
+| Arm | PSNR mean / worst | SSIM mean / worst | dE mean | Mean cell-p95 | Worst mean / p95 | Low-contrast text cells |
+|---|---:|---:|---:|---:|---:|---:|
+| Former formula | 31.527955 / 27.882311 dB | 0.946861107 / 0.873665341 | 1.735178 | 7.912803 | 3.199048 / 13.024775 | 18 |
+| Nearest-two | 36.678401 / 33.076967 dB | 0.984075344 / 0.968215506 | 1.358837 | 6.210657 | 2.655186 / 11.177667 | 18 |
+| Perceptual LUT | 34.388752 / 30.978571 dB | 0.976917333 / 0.954109397 | 1.293465 | 5.624615 | 2.298853 / 8.932386 | 16 |
+
+Adopt the perceptual LUT. Against nearest-two it improves mean CIEDE2000 by
+4.81%, mean cell-p95 by 9.44%, worst mean by 13.42%, and worst p95 by 20.09%.
+It adds no allocations or low-contrast text cells and improves aggregate full-path
+p90 by 9.86%. It also improves p90 by 2.32% against the former formula. PSNR and
+SSIM favour nearest-two because they measure channel and structural error rather
+than perceptual colour distance; the stated decision gives colour correctness
+priority and uses CIEDE2000 for selection. The generated asset is deterministic,
+exactly 32,768 bytes, and a focused exhaustive test pins every output to indices
+16..255. The command is:
+
+```console
+for run in 0 1 2 3 4 5; do
+  NYALA_COLOUR256_BENCH=1 NYALA_COLOUR256_BENCH_RUN="$run" \
+    go test ./internal/render/block -run TestColour256Benchmark -count=1 -v
+done
+```
+
+This is an internal rendering test. It excludes CDP delivery, terminal parsing and
+draw time, terminal palette reconfiguration, and manual terminal inspection. The
+estimated FPS is processing capacity, not observed display FPS.
+
 ### Sixel measurements
 
 During motion, q90 JPEG frames decode to decoder-native YCbCr. `State.graphicsPixels`
