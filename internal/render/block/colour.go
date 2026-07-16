@@ -1,6 +1,6 @@
 // Package block implements the terminal block-cell renderer and its colour
-// conversion. It maps RGBA pixels to xterm-256 indices in closed form and emits
-// truecolour SGR sequences, ported from Carbonyl's xterm.rs.
+// conversion. It maps RGBA pixels to xterm-256 indices through a generated
+// perceptual lookup table and emits truecolour SGR sequences.
 //
 // Channel order is RGBA throughout: the R, G, and B accessors of color.RGBA map
 // to the red, green, and blue terminal channels in that order. CDP decodes to
@@ -8,9 +8,19 @@
 package block
 
 import (
+	_ "embed"
 	"image/color"
 	"strconv"
 )
+
+//go:generate go run generate_xterm256_lut.go
+
+// xterm256PerceptualLUT maps a 15-bit RGB key to the nearest canonical xterm
+// colour from indices 16..255 by CIEDE2000 distance. The generated table is
+// immutable, adds no start-up work, and avoids configurable indices 0..15.
+//
+//go:embed xterm256_perceptual_lut.bin
+var xterm256PerceptualLUT string
 
 // decByte holds the decimal text of each byte value 0..255, with no leading
 // zeros, so a truecolour SGR component appends as a direct string copy rather
@@ -25,49 +35,14 @@ func buildDecByte() [256]string {
 	return t
 }
 
-// cubeIndex projects one 8-bit channel onto the 0..5 cube axis. It mirrors
-// Carbonyl's xterm.rs: the first break sits below the 0/95 midpoint, then each
-// further step lands on the midpoint between adjacent cube levels.
-func cubeIndex(c uint8) int {
-	switch {
-	case c < 48:
-		return 0
-	case c < 115:
-		return 1
-	default:
-		return int((c - 35) / 40)
-	}
-}
-
-// XTerm256 converts an RGBA colour to its closest xterm-256 index in closed
-// form, O(1) per pixel with no nearest-colour search. Pure-grey inputs
-// (R == G == B) map onto the 24-step grey ramp (indices 232..255), not the
-// colour cube, except the ramp endpoints that the cube renders exactly. Every
-// other colour projects onto the 6x6x6 cube (indices 16..231).
+// XTerm256 converts an RGBA colour to a perceptually nearest canonical
+// xterm-256 index through a generated 15-bit lookup table. The result always
+// lies in indices 16..255, avoiding the terminal-configurable system colours.
 //
 // The alpha channel is ignored; only R, G, and B drive the index.
 func XTerm256(c color.RGBA) uint8 {
-	r, g, b := c.R, c.G, c.B
-
-	if r == g && g == b {
-		// Grey ramp branch. The ramp runs 8, 18, ... 238 in steps of 10 over
-		// indices 232..255. Values outside the ramp fall back to the nearest
-		// cube grey (black 16, white 231).
-		if r < 8 {
-			return 16
-		}
-		if r > 248 {
-			return 231
-		}
-		step := min((int(r)-8)/10, 23)
-		return clampByte(232 + step)
-	}
-
-	ri := cubeIndex(r)
-	gi := cubeIndex(g)
-	bi := cubeIndex(b)
-
-	return clampByte(16 + 36*ri + 6*gi + bi)
+	key := uint16(c.R>>3)<<10 | uint16(c.G>>3)<<5 | uint16(c.B>>3)
+	return xterm256PerceptualLUT[key]
 }
 
 // trueFGPrefix and trueBGPrefix are the truecolour foreground and background SGR

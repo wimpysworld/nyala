@@ -10,7 +10,7 @@ import (
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
-func TestXTerm256GreyRamp(t *testing.T) {
+func TestXTerm256Greys(t *testing.T) {
 	cases := []struct {
 		name string
 		grey uint8
@@ -18,7 +18,7 @@ func TestXTerm256GreyRamp(t *testing.T) {
 	}{
 		{"black below ramp", 0, 16},
 		{"ramp low edge", 8, 232},
-		{"mid grey 128", 128, 244},
+		{"mid grey 128", 128, 102},
 		{"ramp high", 238, 255},
 		{"white above ramp", 255, 231},
 	}
@@ -28,9 +28,10 @@ func TestXTerm256GreyRamp(t *testing.T) {
 			if got != c.want {
 				t.Fatalf("grey %d: got index %d, want %d", c.grey, got, c.want)
 			}
-			// Pure grey must land on the ramp (232..255) or a cube grey
-			// endpoint (16 black, 231 white), never a chromatic cube cell.
-			isGrey := got == 16 || got == 231 || got >= 232
+			// Pure grey must land on the ramp or one of the six cube greys,
+			// never a chromatic cube cell.
+			isCubeGrey := got >= 16 && got <= 231 && (got-16)%43 == 0
+			isGrey := isCubeGrey || got >= 232
 			if !isGrey {
 				t.Fatalf("grey %d mapped to non-grey cube index %d", c.grey, got)
 			}
@@ -73,6 +74,23 @@ func TestXTerm256ChannelOrder(t *testing.T) {
 	blueOnly := color.RGBA{R: 0, G: 0, B: 255, A: 0xff}
 	if got := XTerm256(blueOnly); got != 21 {
 		t.Fatalf("RGBA blue pixel: got index %d, want 21 (channel order wrong?)", got)
+	}
+}
+
+func TestXTerm256CanonicalRangeAndDeterminism(t *testing.T) {
+	for r := range 32 {
+		for g := range 32 {
+			for b := range 32 {
+				c := color.RGBA{R: uint8(r << 3), G: uint8(g << 3), B: uint8(b << 3), A: 0xff}
+				first, second := XTerm256(c), XTerm256(c)
+				if first < 16 {
+					t.Fatalf("RGB %v mapped to configurable index %d", c, first)
+				}
+				if first != second {
+					t.Fatalf("RGB %v changed from index %d to %d", c, first, second)
+				}
+			}
+		}
 	}
 }
 
