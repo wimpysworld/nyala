@@ -33,7 +33,8 @@ What remains is post-build validation, not new code. The measured spikes feed
 future tuning, not a gate: sustained FPS on KMSCON and the target emulators,
 terminal-side PNG decode and draw latency, the `scrollMatchTolerancePx` frame-sync
 tolerance, and the advisory DOM box drift. The CEF fallback stays documented and
-gated on the FPS spike. [`TODO.md`](./TODO.md) is the canonical index.
+is not required because CDP performance has already exceeded the owner's expectations.
+[`TODO.md`](./TODO.md) is the canonical index.
 
 ## Objective and scope
 
@@ -53,12 +54,12 @@ In scope, delivered:
 - Managed-Chromium launch, executable discovery, and crash recovery.
 - The shared capture-size helper, the Nix runtime browser, and the live test.
 
-Out of scope, deferred, each with the bar to promote it:
+Out of scope, with promotion bars where applicable:
 
-- **CEF engine.** A documented fallback that embeds Chromium in-process for BGRA
-  frames with no CDP hop. It bakes Chromium into the binary, needs C/C++ bindings
-  against the cgo-free stack, and gives no text geometry. Promote only if the
-  post-build FPS spike shows CDP cannot hold an acceptable frame rate.
+- **CEF engine.** Not required because CDP performance has already exceeded the
+  owner's expectations. The documented fallback would embed Chromium in-process for
+  BGRA frames with no CDP hop, bake Chromium into the binary, need C/C++ bindings
+  against the cgo-free stack, and give no text geometry.
 - **Graphics-backend damage-rectangle (sub-image) emission.** The block path diffs
   the grid and emits only changed cells; the Sixel and Kitty backends still redraw
   the full image per frame. Promote sub-image emission when sustained per-frame
@@ -69,11 +70,9 @@ Out of scope, deferred, each with the bar to promote it:
   Promote when a locked-down host needs to drive an already-running browser.
 - **Tabs.** The seam keeps the page behind one interface. Promote with a child
   `NewContext` bound by `WithTargetID`, no allocator change.
-- **Link hinting and a separate `TextLayer()` channel.** Stage 3 carries text on
-  one synced `Frames()` channel. Promote a second channel in Stage 4 when link-hint
-  geometry needs its own cadence.
-- **The Sixel and Kitty overlay, full Bubble Tea chrome, history, and address
-  entry.** Stage 4.
+- **Full Bubble Tea chrome, address entry, and clickable Back, Forward, and Reload
+  controls.** Stage 4. Back and Forward use Chromium's navigation state rather than
+  a Nyala-owned history model.
 
 Later status: live Kitty now passes the CDP PNG directly, so the historical decoded
 damage design does not describe its normal path. Current partial-emission work is
@@ -412,8 +411,8 @@ reviews it.
 
 - **One synced `Frames()` channel, not two.** The engine folds the matched text onto
   `Frame.Text` after the sync, so each frame carries the bitmap and its keyed text.
-  This drops the two-cadence reconcile from the consumer. A separate text channel
-  returns in Stage 4 for link-hint geometry.
+  This drops the two-cadence reconcile from the consumer. Stage 4 has no consumer
+  for a separate text or geometry channel, so none is planned.
 - **Ack on receipt, bounded latest-wins work.** Chrome withholds frames until acked,
   so the listener releases each frame's credit before decode. The live queue drops
   stale undecoded work and the collector rejects stale completed sequences. Capture
@@ -516,18 +515,19 @@ reviews it.
   spike tunes both.
 - **Live-browser CI flakiness.** Resolved. The pure cores keep `just test` and CI
   browser-free; the live test sits behind `//go:build live` and `just live`, off CI.
-- **Sustained FPS and the CEF fallback.** Carried forward as accepted. Measure real
-  sustained output FPS on KMSCON, Kitty, WezTerm, and Sixel terminals. CEF stays the
-  documented fallback gated on that number.
+- **Sustained FPS.** Carried forward as accepted. Measure real sustained output FPS
+  on KMSCON, Kitty, WezTerm, and Sixel terminals. The CEF fallback is not required
+  because CDP performance has already exceeded the owner's expectations.
 - **Terminal PNG cost and graphics follow-ups.** Measure terminal-side PNG decode and
   draw latency separately from Nyala's 0.014-0.027 ms framing cost. Keep the 16.67 ms
   target. Static fixed-255 reuse is faster with identical output, but motion remains
   untested. Band research closed with no change. Long-count RLE needs full-encoder
   and compatibility validation. See
   [the Sixel hot-path record](./PERFORMANCE.md#sixel-hot-path-research-and-decisions-2026-07-15).
-  Dirty-region transport stays separately gated by terminal measurements.
-  Kitty needs no JPEG live path today; retain the decoded JPEG encoder only as a
-  measured fallback if a future adaptive Kitty mode beats direct PNG end to end.
+  Dirty-region transport stays separately gated by terminal measurements. The
+  owner's measurement put direct PNG pass-through at about 1 ms, so a
+  JPEG Kitty fallback is not required. Reconsider it only if terminal-side PNG
+  decoding or drawing becomes a measured bottleneck.
 - **Partial-emission threshold and advisory DOM box drift.** Carried forward as
   accepted measurements that feed future tuning: the graphics terminal-latency gate
   and the sub-cell box jitter past the clip rule.

@@ -10,7 +10,7 @@ Acceptance criteria are met. The compositor folds the overlay into `block.Compos
 
 The KMSCON quadrant fallback was verified by the owner on a real KMSCON TTY via `just kmscon-testcard` (an owner-eyeball check, like Stage 0's terminal verification, not an automated gate).
 
-What remains for later stages: the diff writer, REP, and the text-only monochrome readout are deferred; the Sixel and Kitty overlay is deferred to Stage 3+; the chromedp screencast replaces the PNG in Stage 3; and Bubble Tea chrome wraps the viewer in Stage 4.
+What remains for later stages: the diff writer, REP, and the text-only monochrome readout are deferred; the chromedp screencast replaces the PNG in Stage 3; and Bubble Tea chrome wraps the viewer in Stage 4. The Sixel and Kitty overlay is retired because the graphics backends render the page bitmap with its own text and Stage 4 has no separate overlay consumer.
 
 This paragraph records the Stage 2 boundary. Stage 3 later delivered the Chromium
 screencast and Block grid diff writer; current open work is indexed in
@@ -31,11 +31,11 @@ In scope, all delivered:
 - Run-set fixtures under `testdata/overlay/*.runs` and a loader.
 - The four-measure grade folded into `just diagnostics`, the overlay goldens, the overlay baseline rows, the `just overlay` artefact recipe, and the `just kmscon-testcard` owner check.
 
-Out of scope, deferred:
+Out of scope:
 
 - The diff writer and REP (Stage 3; static PNG input has no motion, so a per-frame diff saves nothing).
 - The text-only monochrome readout (later refinement).
-- The overlay over Sixel and Kitty (Stage 3+; the graphics backends ignore `Frame.Text` in Stage 2, as all three did before).
+- The overlay over Sixel and Kitty. This was deferred in Stage 2, then retired when Stage 4 no longer needed a separate graphics overlay.
 - The DOM text source and cell-binning (Stage 3); Stage 2 feeds hardcoded runs.
 - The luma-distance background nudge, dither, and the nearest-of-two colour converter (opt-in or off by default; promoted only if a measured case demands it). Each is promoted in a future stage only after a harness A/B on its fixture: the luma nudge after a thin-glyph-on-photo contrast measure, the nearest-of-two converter after an A/B on a text and a photo fixture, and dither after a text-OCR versus photo-banding benchmark (per-region only).
 - Bidi reorder: Stage 2 accepts CDP visual-order positions; there is no DOM to test against until Stage 3.
@@ -138,7 +138,7 @@ The harness grades the overlay through four measures, three gated and one report
 - The matcher is an exact-template placement-and-coverage check, not general OCR. Its candidate set is fixed (run graphemes plus the block glyphs), it is polarity-invariant, and it gates on `CER == 0`. This is the distinct role the matcher was deferred from Stage 0 to fill: it needs the crisp glyph cells the Stage 2 overlay provides.
 - Gate the deterministic measures, report the variable one. The golden, the matcher, and the WCAG count are deterministic and hard-gated; the gosseract differentiator varied and was reported (since removed).
 - Quadrant default, half-block floor, with a built font fallback and a manual KMSCON card. There is no automatic bleed probe on a bare TTY, so the fallback is decided from font coverage (`sfnt.GlyphIndex`) and the bleed is owner-verified on a real console.
-- The Sixel and Kitty overlay is block-path-only for Stage 2. Stage 2's risk is the grapheme-wins compositor, which lives on the block path (the KMSCON floor). The graphics backends carry no text risk in Stage 2, so they ignore `Frame.Text`, as all three did before. Burning glyphs into the bitmap is rejected permanently: it re-rasterises text into fuzzy pixels, the browsh failure mode Nyala exists to avoid. The `Frame.Text` seam keeps the deferred graphics-overlay path open at zero cost.
+- Stage 2 keeps the overlay on the block path. Its risk is the grapheme-wins compositor, which lives on the block path (the KMSCON floor). The graphics backends carry no text risk, so they ignore `Frame.Text`, as all three did before. Burning glyphs into the bitmap is rejected permanently: it re-rasterises text into fuzzy pixels, the browsh failure mode Nyala exists to avoid. The later Stage 4 scope retired the graphics-overlay path because it has no remaining consumer.
 - The viewer renders no overlay in Stage 2. The demo is harness-only; the viewer `writeGrid` branch is added now to ready Stage 3 but sees no text cells yet.
 
 ## Acceptance criteria and how each was met
