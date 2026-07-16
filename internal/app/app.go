@@ -45,6 +45,10 @@ type CLI struct {
 	// to NYALA_BROWSER, CHROME_PATH, then a PATH lookup at launch.
 	Browser string `help:"Path to the Chromium executable to drive." name:"browser"`
 
+	// DisableFrameRateLimit removes Chromium's browser frame-rate limit. It does
+	// not control terminal or display synchronisation.
+	DisableFrameRateLimit bool `help:"Disable Chromium's browser frame-rate limit." name:"disable-frame-rate-limit"`
+
 	// LayoutWidth is the target CSS-pixel width the block backend lays out at. A
 	// terminal wider than this shrinks its device scale so the page fits the target.
 	// It must be positive; Validate rejects a non-positive value. It defaults to
@@ -88,7 +92,9 @@ func Run(cli CLI, tty *os.File) error {
 	if err != nil {
 		return err
 	}
-	eng := engineAdapter{engine.New(cli.Browser)}
+	chromium := engine.New(cli.Browser)
+	chromium.SetDisableFrameRateLimit(cli.DisableFrameRateLimit)
+	eng := engineAdapter{chromium}
 	if capture.Enabled {
 		return viewer.Capture(eng, target, tty, cli.Color, cli.Backend, cli.Blocks, cli.LayoutWidth, capture.N, capture.ScrollPx, capture.ScrollSettle)
 	}

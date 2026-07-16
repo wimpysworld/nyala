@@ -78,6 +78,27 @@ func TestResolveExecutableNoneResolves(t *testing.T) {
 	}
 }
 
+func TestFrameRateLimitFlags(t *testing.T) {
+	if got := frameRateLimitFlags(false); got != nil {
+		t.Errorf("frameRateLimitFlags(false) = %v, want nil", got)
+	}
+	want := []string{"disable-frame-rate-limit"}
+	if got := frameRateLimitFlags(true); !reflect.DeepEqual(got, want) {
+		t.Errorf("frameRateLimitFlags(true) = %v, want %v", got, want)
+	}
+}
+
+func TestSetDisableFrameRateLimit(t *testing.T) {
+	e := New("")
+	if e.disableFrameRateLimit {
+		t.Fatal("new engine has disableFrameRateLimit = true, want false")
+	}
+	e.SetDisableFrameRateLimit(true)
+	if !e.disableFrameRateLimit {
+		t.Fatal("SetDisableFrameRateLimit(true) left disableFrameRateLimit false")
+	}
+}
+
 func TestProxyFlagsCredentialFreeServer(t *testing.T) {
 	// A credentialed URL must yield a proxy-server flag whose value is the
 	// credential-free Server, with no user:pass@ in any flag value. This is the

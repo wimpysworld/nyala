@@ -44,6 +44,16 @@ func TestParseDefaults(t *testing.T) {
 	if cli.Browser != "" {
 		t.Errorf("Browser = %q, want empty by default", cli.Browser)
 	}
+	if cli.DisableFrameRateLimit {
+		t.Errorf("DisableFrameRateLimit = true, want false by default")
+	}
+}
+
+func TestParseDisableFrameRateLimit(t *testing.T) {
+	cli := parse(t, "--disable-frame-rate-limit", "example.com")
+	if !cli.DisableFrameRateLimit {
+		t.Errorf("--disable-frame-rate-limit: DisableFrameRateLimit = false, want true")
+	}
 }
 
 func TestParseURL(t *testing.T) {
