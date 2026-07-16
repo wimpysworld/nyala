@@ -866,6 +866,29 @@ was zero except one 2 B/op baseline sample. Both arms also match at 9,240 SGRs,
 782,829 bytes, and one call for
 240x86 changed frames; unchanged frames report zero for all three counters.
 
+A bounded follow-up combines foreground and background parameters into one SGR
+when both RGB states change. Foreground-only and background-only sequences stay
+unchanged. The `charmbracelet/x/vt` emulator parsed separate and combined streams
+at different byte boundaries and produced equal cells, RGB rendition, cursor
+positions, text, and wide-cell state across the transition corpus. Exact sequence
+and writer-error tests also pass.
+
+Six fresh processes per arm ran in rotated order without another benchmark load,
+using the same environment, warm-up, and sample counts above. Changed-frame
+median/p90 moved from 642,497/654,780 to 631,157/646,725 ns at 120x40
+(-1.76/-1.23 percent), and from 2,715,011/2,751,996 to
+2,645,464/2,708,548 ns at 240x86 (-2.56/-1.58 percent). The three retained
+candidate process medians were below every baseline process median at both sizes.
+Unchanged median/p90 moved -0.34/+0.77 percent and -0.36/-0.29 percent, with
+overlapping process ranges. Isolated diff median/p90 moved -2.19/-2.72 percent
+and -1.46/-0.43 percent; its process-median ranges were also fully separated.
+All samples had zero allocs/op; B/op was zero except three 2 B/op samples. The
+120x40 changed frame fell from 9,240 SGRs and 178,579 bytes to 4,800 SGRs and
+169,699 bytes; 240x86
+fell from 40,506 SGRs and 782,829 bytes to 20,640 SGRs and 743,097 bytes. The
+outer writer stayed at one call per changed frame. The repeated range separation,
+smaller payload, and equal terminal state support retaining the combined SGR.
+
 Separate 240x86 Compose profiles were allocation-free. Quadrant CPU was led by
 `quadrantColours` at 24.02 percent flat and 40.17 percent cumulative; sextant was
 led by `sextantColours` at 27.59 percent flat and 49.41 percent cumulative. Their

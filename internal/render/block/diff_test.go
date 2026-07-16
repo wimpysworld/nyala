@@ -7,6 +7,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/vt"
 )
 
 var errDiffWrite = errors.New("diff write")
@@ -74,9 +76,9 @@ func legacyCUP(row, col int) []byte {
 	return append(b, 'H')
 }
 
-// TestGridDiffTrueColourMatchesGeneric compares the specialised truecolour path
-// with the unchanged generic path over the state transitions the live differ uses.
-func TestGridDiffTrueColourMatchesGeneric(t *testing.T) {
+// TestGridDiffTrueColourMatchesGenericState compares the combined specialised
+// stream with the separate-SGR generic stream through an independent VT model.
+func TestGridDiffTrueColourMatchesGenericState(t *testing.T) {
 	fg, bg := SGRFunc(wrappedTrueFG), SGRFunc(wrappedTrueBG)
 	base := gridOf(4, 2, Cell{
 		Glyph: 'a', FG: color.RGBA{R: 1, G: 2, B: 3, A: 0xff},
@@ -120,6 +122,7 @@ func TestGridDiffTrueColourMatchesGeneric(t *testing.T) {
 	frames = append(frames, gridOf(5, 3, base.Cells[0]))
 
 	var fast, generic GridDiff
+	var fastStream, genericStream bytes.Buffer
 	for i, frame := range frames {
 		var fastOut, genericOut bytes.Buffer
 		if err := fast.EmitTrueColour(&fastOut, frame); err != nil {
@@ -128,9 +131,12 @@ func TestGridDiffTrueColourMatchesGeneric(t *testing.T) {
 		if err := generic.Emit(&genericOut, frame, fg, bg); err != nil {
 			t.Fatalf("frame %d generic: %v", i, err)
 		}
-		if !bytes.Equal(fastOut.Bytes(), genericOut.Bytes()) {
-			t.Fatalf("frame %d fast bytes differ from generic", i)
+		if fastOut.Len() > genericOut.Len() {
+			t.Fatalf("frame %d combined payload = %d, separate = %d", i, fastOut.Len(), genericOut.Len())
 		}
+		fastStream.Write(fastOut.Bytes())
+		genericStream.Write(genericOut.Bytes())
+		assertVTEquivalent(t, i, fastStream.Bytes(), genericStream.Bytes())
 	}
 	alphaRun := gridOf(2, 1, Cell{
 		Glyph: 'a', FG: color.RGBA{R: 1, G: 2, B: 3, A: 1},
@@ -142,9 +148,8 @@ func TestGridDiffTrueColourMatchesGeneric(t *testing.T) {
 	if err := (&GridDiff{}).EmitTrueColour(&alphaOut, alphaRun); err != nil {
 		t.Fatal(err)
 	}
-	if got := bytes.Count(alphaOut.Bytes(), []byte("\x1b[38;2;")) +
-		bytes.Count(alphaOut.Bytes(), []byte("\x1b[48;2;")); got != 2 {
-		t.Fatalf("alpha-only run emitted %d RGB SGRs, want one FG and one BG", got)
+	if got := bytes.Count(alphaOut.Bytes(), []byte("m")); got != 1 {
+		t.Fatalf("alpha-only run emitted %d RGB SGRs, want one combined SGR", got)
 	}
 	fast.Reset()
 	generic.Reset()
@@ -155,9 +160,85 @@ func TestGridDiffTrueColourMatchesGeneric(t *testing.T) {
 	if err := generic.Emit(&genericOut, base, fg, bg); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(fastOut.Bytes(), genericOut.Bytes()) {
-		t.Fatal("reset fast bytes differ from generic")
+	assertVTEquivalent(t, len(frames), fastOut.Bytes(), genericOut.Bytes())
+}
+
+func assertVTEquivalent(t *testing.T, frame int, combined, separate []byte) {
+	t.Helper()
+	combinedVT := vt.NewEmulator(12, 8)
+	separateVT := vt.NewEmulator(12, 8)
+	writeChunks := func(e *vt.Emulator, stream []byte, chunk int) {
+		for len(stream) > 0 {
+			n := min(chunk, len(stream))
+			if _, err := e.Write(stream[:n]); err != nil {
+				t.Fatalf("frame %d VT write: %v", frame, err)
+			}
+			stream = stream[n:]
+		}
 	}
+	writeChunks(combinedVT, combined, 1)
+	writeChunks(separateVT, separate, 7)
+	if got, want := combinedVT.CursorPosition(), separateVT.CursorPosition(); got != want {
+		t.Fatalf("frame %d cursor = %v, want %v", frame, got, want)
+	}
+	// A probe written without another SGR exposes the retained RGB rendition.
+	writeChunks(combinedVT, []byte("\x1b[8;1H#"), 1)
+	writeChunks(separateVT, []byte("\x1b[8;1H#"), 2)
+	for row := range 8 {
+		for col := range 12 {
+			got, want := combinedVT.CellAt(col, row), separateVT.CellAt(col, row)
+			if (got == nil) != (want == nil) || (got != nil && !got.Equal(want)) {
+				t.Fatalf("frame %d cell (%d,%d) = %#v, want %#v", frame, col, row, got, want)
+			}
+		}
+	}
+	if got, want := combinedVT.CursorPosition(), separateVT.CursorPosition(); got != want {
+		t.Fatalf("frame %d probe cursor = %v, want %v", frame, got, want)
+	}
+}
+
+func TestGridDiffTrueColourCombinedSequence(t *testing.T) {
+	base := Cell{
+		Glyph: 'a',
+		FG:    color.RGBA{R: 1, G: 2, B: 3, A: 1},
+		BG:    color.RGBA{R: 4, G: 5, B: 6, A: 2},
+	}
+	t.Run("both", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := (&GridDiff{}).EmitTrueColour(&out, gridOf(1, 1, base)); err != nil {
+			t.Fatal(err)
+		}
+		const want = "\x1b[1;1H\x1b[38;2;1;2;3;48;2;4;5;6ma"
+		if got := out.String(); got != want {
+			t.Fatalf("combined output = %q, want %q", got, want)
+		}
+	})
+	t.Run("foreground only", func(t *testing.T) {
+		changed := base
+		changed.Glyph, changed.FG.R = 'b', 7
+		g := Grid{Cols: 2, Rows: 1, Cells: []Cell{base, changed}}
+		var out bytes.Buffer
+		if err := (&GridDiff{}).EmitTrueColour(&out, g); err != nil {
+			t.Fatal(err)
+		}
+		const want = "\x1b[1;1H\x1b[38;2;1;2;3;48;2;4;5;6ma\x1b[38;2;7;2;3mb"
+		if got := out.String(); got != want {
+			t.Fatalf("foreground output = %q, want %q", got, want)
+		}
+	})
+	t.Run("background only", func(t *testing.T) {
+		changed := base
+		changed.Glyph, changed.BG.B = 'b', 7
+		g := Grid{Cols: 2, Rows: 1, Cells: []Cell{base, changed}}
+		var out bytes.Buffer
+		if err := (&GridDiff{}).EmitTrueColour(&out, g); err != nil {
+			t.Fatal(err)
+		}
+		const want = "\x1b[1;1H\x1b[38;2;1;2;3;48;2;4;5;6ma\x1b[48;2;4;5;7mb"
+		if got := out.String(); got != want {
+			t.Fatalf("background output = %q, want %q", got, want)
+		}
+	})
 }
 
 func cloneDiffGrid(g Grid) Grid {
@@ -179,19 +260,28 @@ func (w *failDiffWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// TestGridDiffTrueColourMatchesGenericErrors checks that the fast path returns
-// the same error on the same write as the generic path.
-func TestGridDiffTrueColourMatchesGenericErrors(t *testing.T) {
-	fg, bg := SGRFunc(wrappedTrueFG), SGRFunc(wrappedTrueBG)
-	g := gridOf(2, 1, Cell{Glyph: 'a', FG: color.RGBA{R: 1, A: 0xff}, BG: color.RGBA{B: 2, A: 0xff}})
-	for failAt := 1; failAt <= 5; failAt++ {
-		fastWriter := &failDiffWriter{failAt: failAt}
-		genericWriter := &failDiffWriter{failAt: failAt}
-		fastErr := (&GridDiff{}).EmitTrueColour(fastWriter, g)
-		genericErr := (&GridDiff{}).Emit(genericWriter, g, fg, bg)
-		if !errors.Is(fastErr, genericErr) || fastWriter.writes != genericWriter.writes {
-			t.Fatalf("failAt %d: fast (%v, %d writes), generic (%v, %d writes)",
-				failAt, fastErr, fastWriter.writes, genericErr, genericWriter.writes)
+// TestGridDiffTrueColourErrors checks that combined, FG-only, and BG-only SGR
+// writes return the writer error without advancing to the glyph.
+func TestGridDiffTrueColourErrors(t *testing.T) {
+	for _, cell := range []Cell{
+		{Glyph: 'a', FG: color.RGBA{R: 1}, BG: color.RGBA{B: 2}},
+		{Glyph: 'a', FG: color.RGBA{R: 1}},
+		{Glyph: 'a', BG: color.RGBA{B: 2}},
+	} {
+		for failAt := 1; failAt <= 3; failAt++ {
+			var d GridDiff
+			w := &failDiffWriter{failAt: failAt}
+			err := d.EmitTrueColour(w, gridOf(1, 1, cell))
+			if !errors.Is(err, errDiffWrite) || w.writes != failAt {
+				t.Fatalf("cell %#v failAt %d: error = %v after %d writes", cell, failAt, err, w.writes)
+			}
+			var retry bytes.Buffer
+			if err := d.EmitTrueColour(&retry, gridOf(1, 1, cell)); err != nil {
+				t.Fatalf("cell %#v failAt %d retry: %v", cell, failAt, err)
+			}
+			if retry.Len() == 0 {
+				t.Fatalf("cell %#v failAt %d retry emitted nothing", cell, failAt)
+			}
 		}
 	}
 }
