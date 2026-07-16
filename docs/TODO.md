@@ -47,13 +47,16 @@ expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
   by 18.43%. Exactness, race, allocation, build, test, and lint gates pass with the
   fixed 16-worker benchmark pool. Source:
   [Colour conversion research](./PERFORMANCE.md#colour-conversion-research-2026-07-15).
-- [x] Adopt the retained `mattn/go-sixel` v0.0.12 encoder with an adaptive
+- [x] Adopt the retained encoder derived from `mattn/go-sixel` v0.0.12 with an adaptive
   256-colour palette and dithering off. The matched q90 State median falls from
   960.437 to 101.670 ms (89.41%, 9.45x), allocations fall 99.993%, and payload
   falls 18.47%. The five-image quality set chooses 256 over 192 colours; the owner
   accepts the measured colour loss for this compatibility backend. The earlier
   run did not test fixed-palette build cost or stale-frame quality. The later public
-  sweep completed; temporal reuse remains open.
+  sweep completed; temporal reuse remains open. Nyala now owns the minimum opaque
+  encoder subset. Removing alpha work cuts the 2560x1600 mean from 67.119 to
+  63.190 ms (5.853%) with byte-identical output; palette selection and RLE remain
+  unchanged.
   Source: [Sixel encoder adoption](./PERFORMANCE.md#sixel-encoder-adoption-2026-07-15).
 - [x] Retain bounded `jpegn.Options{ToRGBA:true}` for live moving Sixel JPEG.
   The adaptive default and Sixel RGBA cutoff are separate policies, both currently
