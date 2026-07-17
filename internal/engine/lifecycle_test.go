@@ -215,6 +215,117 @@ func TestRunFrameLoopReturnsWhenSessionClearedBeforeStart(t *testing.T) {
 	}
 }
 
+// TestCaptureTeardownDropsPublishedSessionFrames proves recovery removes capture
+// frames already buffered by the old session before a replacement starts publishing.
+func TestCaptureTeardownDropsPublishedSessionFrames(t *testing.T) {
+	e := New("")
+	e.captureOn = true
+	ctx, cancel := context.WithCancel(context.Background())
+	slot := newFrameSlot()
+	frames := make(chan render.Frame, frameChannelBuffer)
+	oldImg := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	newImg := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	e.ctx, e.cancel, e.slot, e.frames = ctx, cancel, slot, frames
+	e.decode = func(string) (*image.RGBA, error) { return oldImg, nil }
+	publisherDone := make(chan struct{})
+	e.framePublisherDone = publisherDone
+	go func() {
+		defer close(publisherDone)
+		e.runFrameLoop(ctx, slot, frames, &textSync{}, nil, nil)
+	}()
+
+	slot.put(rawFrame{data: "old"})
+	select {
+	case old := <-frames:
+		if old.Img != oldImg {
+			t.Fatal("capture publisher emitted the wrong old-session bitmap")
+		}
+		frames <- old
+	case <-time.After(time.Second):
+		t.Fatal("capture publisher did not emit the old-session frame")
+	}
+
+	teardownDone := make(chan struct{})
+	go func() {
+		e.teardownSession()
+		close(teardownDone)
+	}()
+	select {
+	case <-teardownDone:
+	case <-time.After(time.Second):
+		t.Fatal("capture teardown did not join its frame publisher")
+	}
+
+	frames <- render.Frame{Img: newImg}
+	if got := <-frames; got.Img != newImg {
+		t.Fatal("replacement received a buffered frame from the old capture session")
+	}
+}
+
+// TestCaptureShutdownJoinsPublisherBeforeClosingFrames proves shutdown cannot close
+// the engine-lifetime channel while a capture frame loop is still inside decode and
+// may send. The frame channel must remain open until that publisher exits.
+func TestCaptureShutdownJoinsPublisherBeforeClosingFrames(t *testing.T) {
+	e := New("")
+	e.captureOn = true
+	ctx, cancel := context.WithCancel(context.Background())
+	slot := newFrameSlot()
+	frames := make(chan render.Frame, frameChannelBuffer)
+	decodeStarted := make(chan struct{})
+	releaseDecode := make(chan struct{})
+	e.ctx, e.cancel, e.slot, e.frames = ctx, cancel, slot, frames
+	e.closing = make(chan struct{})
+	e.supDone = make(chan struct{})
+	e.decode = func(string) (*image.RGBA, error) {
+		close(decodeStarted)
+		<-releaseDecode
+		return image.NewRGBA(image.Rect(0, 0, 1, 1)), nil
+	}
+	publisherDone := make(chan struct{})
+	e.framePublisherDone = publisherDone
+	go func() {
+		defer close(publisherDone)
+		e.runFrameLoop(ctx, slot, frames, &textSync{}, nil, nil)
+	}()
+
+	slot.put(rawFrame{data: "blocked"})
+	select {
+	case <-decodeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("capture frame loop did not enter decode")
+	}
+	close(e.closing)
+	go e.supervise(make(chan struct{}))
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("capture shutdown did not cancel the session")
+	}
+	select {
+	case _, ok := <-frames:
+		if !ok {
+			t.Fatal("frames closed before the capture publisher exited")
+		}
+		t.Fatal("capture publisher emitted while decode was blocked")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(releaseDecode)
+	select {
+	case <-e.supDone:
+	case <-time.After(time.Second):
+		t.Fatal("capture shutdown did not finish after the publisher exited")
+	}
+	select {
+	case _, ok := <-frames:
+		if ok {
+			t.Fatal("frames remained open after capture shutdown")
+		}
+	default:
+		t.Fatal("frames did not close after capture shutdown")
+	}
+}
+
 // TestComposeFrameNilTextKeepsBitmap checks a frame composed with no published
 // overlay (a nil textSync, as before the first snapshot lands) keeps the bitmap
 // and emits a bitmap-only frame, without panicking.

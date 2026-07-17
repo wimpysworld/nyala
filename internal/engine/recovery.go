@@ -117,14 +117,28 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 		// tracking, and the frame send. The decoded channel is buffered to the worker
 		// count so a finished worker never blocks handing off to the collector.
 		decoded := make(chan decodedFrame, workers)
+		publisherDone := make(chan struct{})
+		e.mu.Lock()
+		e.framePublisherDone = publisherDone
+		e.mu.Unlock()
 		for range workers {
 			go e.runDecodeWorker(ctx, rawQ, decoded)
 		}
-		go e.runDecodeCollector(ctx, decoded, frames, ts, scroll, reEmit)
+		go func() {
+			defer close(publisherDone)
+			e.runDecodeCollector(ctx, decoded, frames, ts, scroll, reEmit)
+		}()
 	} else {
 		// Capture: the single ordered decode worker, unchanged, so the corpus stays
 		// complete and in order.
-		go e.runFrameLoop(ctx, slot, frames, ts, scroll, reEmit)
+		publisherDone := make(chan struct{})
+		e.mu.Lock()
+		e.framePublisherDone = publisherDone
+		e.mu.Unlock()
+		go func() {
+			defer close(publisherDone)
+			e.runFrameLoop(ctx, slot, frames, ts, scroll, reEmit)
+		}()
 	}
 
 	// Navigate and the held-scroll restore run on one ordered path: navigateAsync
@@ -403,16 +417,22 @@ func (e *ChromiumEngine) pokeReflow() {
 // channel, so it is safe on both a crash rebuild and Close. It drains the capture
 // slot (releasing the frame loop parked on it; the held raw frame is already acked)
 // then cancels the context, which stops the screencast, force-kills the managed
-// Chromium, and releases the frame loop's send select. The live decode pool takes no
-// drain: its workers and collector park on ctx.Done, so cancel alone releases them.
-// It clears the per-session fields so a stale context is never reused.
+// Chromium, and releases the publisher's send select. It then waits for the session's
+// sole frame publisher and drains frames buffered before cancellation won its selects.
+// This prevents an old-session frame surviving recovery and prevents the capture frame
+// loop racing the supervisor's final channel close. Live decode workers need no join
+// because their decoded channel is session-local and only the joined collector can
+// reach frames. It clears the per-session fields so a stale context is never reused.
 func (e *ChromiumEngine) teardownSession() {
 	e.mu.Lock()
 	slot := e.slot
 	cancel := e.cancel
+	publisherDone := e.framePublisherDone
+	frames := e.frames
 	e.ctx, e.cancel, e.slot, e.acks, e.text = nil, nil, nil, nil, nil
 	e.rawQ = nil
 	e.reSnap, e.reflow, e.scroll, e.reEmit = nil, nil, nil, nil
+	e.framePublisherDone = nil
 	e.screencastFmt = screencastFmt{}
 	e.screencastStarted = false
 	e.windowID = 0
@@ -424,6 +444,19 @@ func (e *ChromiumEngine) teardownSession() {
 	}
 	if cancel != nil {
 		cancel()
+	}
+	if publisherDone != nil {
+		<-publisherDone
+		for {
+			select {
+			case _, ok := <-frames:
+				if !ok {
+					return
+				}
+			default:
+				return
+			}
+		}
 	}
 }
 
