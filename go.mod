@@ -4,13 +4,13 @@ go 1.26
 
 require (
 	github.com/agnivade/levenshtein v1.2.1
-	github.com/alecthomas/kong v1.15.0
+	github.com/alecthomas/kong v1.16.0
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/charmbracelet/x/vt v0.0.0-20260615092313-b57e5e6d29bb
-	github.com/chromedp/cdproto v0.0.0-20260427013145-5737772c319b
-	github.com/chromedp/chromedp v0.15.1
+	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
+	github.com/chromedp/chromedp v0.16.0
 	github.com/delthas/octreequant v0.0.0-20240724152321-2675d824f212
 	github.com/emmansun/base64 v0.10.0
 	github.com/ericpauley/go-quantize v0.0.0-20200331213906-ae555eb2afa4
@@ -23,7 +23,7 @@ require (
 	github.com/raf555/pixelmatch v1.0.1
 	github.com/rivo/uniseg v0.4.7
 	github.com/soniakeys/quant v1.0.0
-	github.com/woozymasta/png v1.1.0
+	github.com/woozymasta/png v1.2.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/tools v0.48.0
 	gonum.org/v1/plot v0.17.0
@@ -43,7 +43,7 @@ require (
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
-	github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.4.0 // indirect
