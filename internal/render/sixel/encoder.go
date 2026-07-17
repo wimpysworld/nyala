@@ -216,10 +216,11 @@ func samplePalette(rgba *image.RGBA, maxColours int) color.Palette {
 	src := image.Image(rgba)
 	if bounds.Dx()*bounds.Dy() > budget {
 		step := 2
-		for (bounds.Dx()/step)*(bounds.Dy()/step) > budget {
+		width, height := max(1, bounds.Dx()/step), max(1, bounds.Dy()/step)
+		for width > budget/height {
 			step++
+			width, height = max(1, bounds.Dx()/step), max(1, bounds.Dy()/step)
 		}
-		width, height := bounds.Dx()/step, bounds.Dy()/step
 		sample := image.NewRGBA(image.Rect(0, 0, width, height))
 		for y := range height {
 			dstOffset := sample.PixOffset(0, y)

@@ -117,6 +117,20 @@ func TestSamplePalette64KRareColours(t *testing.T) {
 	}
 }
 
+func TestSamplePaletteExtremeAspectRatio(t *testing.T) {
+	t.Parallel()
+	const height = 65537
+	src := image.NewRGBA(image.Rect(0, 0, 1, height))
+	for y := range height {
+		src.SetRGBA(0, y, color.RGBA{R: uint8(y), G: uint8(y >> 8), B: uint8(y >> 4), A: 0xff})
+	}
+
+	palette := samplePalette(src, paletteColours)
+	if len(palette) == 0 || len(palette) > paletteColours {
+		t.Fatalf("samplePalette() returned %d colours, want 1..%d", len(palette), paletteColours)
+	}
+}
+
 func TestSamplePalette64KPreservesExactColourPath(t *testing.T) {
 	src := image.NewRGBA(image.Rect(0, 0, 24, 24))
 	for y := range 24 {
