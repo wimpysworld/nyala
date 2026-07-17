@@ -22,11 +22,20 @@
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
       pkgsFor = system: import nixpkgs { inherit system; };
+      goFor =
+        pkgs:
+        pkgs.go_1_26.overrideAttrs (_: {
+          version = "1.26.5";
+          src = pkgs.fetchurl {
+            url = "https://go.dev/dl/go1.26.5.src.tar.gz";
+            hash = "sha256-SVvkvIcXasVnOS5bQRar2YRm0z17SdQedkzMaXay3EI=";
+          };
+        });
       localPackage =
         system:
         let
           pkgs = pkgsFor system;
-          buildGoModule = pkgs.buildGoModule.override { go = pkgs.go_1_26; };
+          buildGoModule = pkgs.buildGoModule.override { go = goFor pkgs; };
           # Chromium is the Stage 3 runtime browser, Linux-only
           # (nixpkgs chromium is platforms = lib.platforms.linux). On Darwin
           # the build proceeds with no Chromium and no wrap.
@@ -73,6 +82,7 @@
         system:
         let
           pkgs = pkgsFor system;
+          go = goFor pkgs;
         in
         {
           default = pkgs.mkShell {
@@ -81,7 +91,7 @@
                 actionlint
                 cosign
                 gh
-                go_1_26
+                go
                 gocyclo
                 golangci-lint
                 goreleaser
