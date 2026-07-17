@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	xsixel "github.com/charmbracelet/x/ansi/sixel"
 	"github.com/delthas/octreequant"
 	goquant "github.com/ericpauley/go-quantize/quantize"
 	"github.com/gen2brain/jpegn"
@@ -389,27 +388,12 @@ func validatePalettePayload(t *testing.T, payload []byte, bounds image.Rectangle
 	if err := gosixel.NewDecoder(bytes.NewReader(payload)).Decode(&mattnImage); err != nil {
 		t.Fatalf("go-sixel decode: %v", err)
 	}
-	body := sixelBody(t, payload)
-	charmImage, err := (&xsixel.Decoder{}).Decode(bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("Charm decode: %v", err)
-	}
 	mattn := paletteImageRGBA(mattnImage)
-	charm := paletteImageRGBA(charmImage)
-	if mattn.Bounds() != bounds || charm.Bounds() != bounds {
-		t.Fatalf("decoded bounds mattn=%v charm=%v want=%v", mattn.Bounds(), charm.Bounds(), bounds)
+	if mattn.Bounds() != bounds {
+		t.Fatalf("decoded bounds = %v, want %v", mattn.Bounds(), bounds)
 	}
 	assertOpaque(t, mattn)
 	return mattn
-}
-
-func sixelBody(t *testing.T, payload []byte) []byte {
-	t.Helper()
-	q := bytes.IndexByte(payload, 'q')
-	if q < 2 || !bytes.HasPrefix(payload, []byte("\x1bP")) || !bytes.HasSuffix(payload, []byte("\x1b\\")) {
-		t.Fatal("invalid Sixel DCS framing")
-	}
-	return payload[q+1 : len(payload)-2]
 }
 
 func paletteImageRGBA(src image.Image) *image.RGBA {

@@ -417,8 +417,14 @@ Verdict, updated 2026-07-16: use Nyala's opaque encoder derived from
 `mattn/go-sixel` v0.0.12 with an adaptive 256-colour palette and dithering off. It owns the complete parameterised
 DCS and writes out of band at an absolute cursor position. Fixed 255 matches adaptive
 static output and is faster when reused, but motion quality is untested. Keep the
-current band builder. Validate long-count RLE in a temporary upstream worktree; see
-the [Sixel hot-path record](./PERFORMANCE.md#sixel-hot-path-research-and-decisions-2026-07-15).
+current band builder. Production uses an 8192 repeat ceiling. It covers Nyala's
+current 1920 and 2560 pixel widths plus wider displays without splitting and stays
+below tmux's native 10000 cap. At the measured widths it is byte-identical to 4096,
+which cuts payload by 17.17% and 21.28% against 255. Complete-path timing ranges
+overlap, so the latency change is directional. `mattn/go-sixel` decodes every
+distinct arm to identical pixels. Charm x/ansi v0.11.7 is no longer an acceptance
+oracle because its token-boundary defect affects DECGRI, including 255; see the
+[repeat-ceiling record](./PERFORMANCE.md#repeat-ceiling-benchmark-2026-07-16).
 
 ### Kitty graphics protocol in Go
 
