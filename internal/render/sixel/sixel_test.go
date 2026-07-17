@@ -79,6 +79,23 @@ func TestRenderEmitsFramedDCSPayload(t *testing.T) {
 	}
 }
 
+func TestRenderZeroAreaImageEmitsEmptyPayload(t *testing.T) {
+	t.Parallel()
+	for _, bounds := range []image.Rectangle{
+		image.Rect(0, 0, 0, 4),
+		image.Rect(0, 0, 4, 0),
+	} {
+		var r Renderer
+		var buf bytes.Buffer
+		if err := r.Render(render.Frame{Img: image.NewRGBA(bounds)}, &buf); err != nil {
+			t.Fatalf("Render(%v) = %v, want nil", bounds, err)
+		}
+		if got := buf.String(); got != emptyPayload {
+			t.Fatalf("Render(%v) = %q, want %q", bounds, got, emptyPayload)
+		}
+	}
+}
+
 func TestAppendRunRepeatBoundaries(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
