@@ -34,14 +34,18 @@ func seqDecode(sleep func(seq int) time.Duration) func(string) (*image.RGBA, err
 				time.Sleep(d)
 			}
 		}
-		img := image.NewRGBA(image.Rect(0, 0, 1, 1))
-		img.SetRGBA(0, 0, color.RGBA{R: uint8(seq), A: 255})
-		return img, nil
+		return seqImage(uint8(seq)), nil
 	}
 }
 
 // seqOf recovers the sequence a seqDecode bitmap encodes from its single red channel.
 func seqOf(img *image.RGBA) int { return int(img.RGBAAt(0, 0).R) }
+
+func seqImage(seq uint8) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.SetRGBA(0, 0, color.RGBA{R: seq, A: 255})
+	return img
+}
 
 // drivePool starts a decode pool (queue, workers, collector) for a test and returns
 // the queue to feed and the frames channel to read, plus a stop func. No browser is
@@ -165,6 +169,46 @@ func TestDecodePoolMonotonicUnderRace(t *testing.T) {
 				t.Fatal("no frame published before deadline")
 			}
 			return
+		}
+	}
+}
+
+// TestTeardownSessionDropsCancelledCollectorFrames proves a torn-down live session
+// cannot leave a decoded frame on the engine-lifetime channel for the replacement
+// session's viewer to consume.
+func TestTeardownSessionDropsCancelledCollectorFrames(t *testing.T) {
+	for range 64 {
+		e := &ChromiumEngine{backend: "block", frames: make(chan render.Frame, frameChannelBuffer)}
+		ctx, cancel := context.WithCancel(context.Background())
+		e.ctx, e.cancel = ctx, cancel
+		decoded := make(chan decodedFrame, 1)
+		decoded <- decodedFrame{seq: 1, pending: pendingFrame{img: seqImage(1)}}
+		done := make(chan struct{})
+		e.framePublisherDone = done
+		go func() {
+			defer close(done)
+			e.runDecodeCollector(ctx, decoded, e.frames, &textSync{}, nil, nil)
+		}()
+
+		teardownDone := make(chan struct{})
+		go func() {
+			e.teardownSession()
+			close(teardownDone)
+		}()
+		select {
+		case <-teardownDone:
+		case <-time.After(time.Second):
+			t.Fatal("teardown deadlocked waiting for the live collector")
+		}
+
+		e.frames <- render.Frame{Img: seqImage(2)}
+		select {
+		case got := <-e.frames:
+			if seq := seqOf(got.Img.(*image.RGBA)); seq != 2 {
+				t.Fatalf("replacement received sequence %d, want 2; cancelled session left a stale frame", seq)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("replacement frame was not available after teardown")
 		}
 	}
 }
