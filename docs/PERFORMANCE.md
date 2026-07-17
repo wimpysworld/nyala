@@ -1088,6 +1088,74 @@ default. Lower-spec hardware can use lower quality to reach acceptable performan
 q100 is rejected as a candidate: it adds 59.76 percent payload over q95 and leaves too
 little processing headroom. These headless figures exclude terminal decode and draw time.
 
+#### JPEG quality rerun (2026-07-17)
+
+The current tree reran the existing 2560x2880 live-CDP harness against the same
+static `testdata/linuxmatters.png` fixture. No Justfile recipe exists for this sweep
+in the current file or its Git history. The durable recipe is the exact Go command
+recorded above. The Block run retained that command unchanged and the results below
+select its production `direct-decode+ycbcr-grid` arm. The Sixel run selected the
+harness's existing production `sixel/current-rgba` arm for the same five JPEG
+payloads. That historical label now calls the current `render/sixel.Renderer`.
+
+```text
+CGO_ENABLED=0 go test -tags live -run '^$' -bench '^BenchmarkCDPBlockComposeMatched$' -benchmem -benchtime=2s -count=5 ./internal/engine
+CGO_ENABLED=0 go test -tags live -run '^$' -bench '^BenchmarkCDPNativeFrame$/^jpeg-q(80|85|90|95|100)$/^sixel$/^current-rgba$' -benchmem -benchtime=2s -count=5 ./internal/engine
+CGO_ENABLED=0 go test -tags live -run '^TestCDPScreencastJPEGFidelity$' -count=1 -v ./internal/engine
+```
+
+Each p90 below is the nearest-rank p90 of five independent two-second benchmark
+samples, which is the maximum sample for a set of five. The delta compares each
+quality with the current q90 p90 for that backend. FPS is processing capacity only.
+It excludes CDP delivery and terminal write, decode, draw, and refresh.
+
+| Backend | JPEG | Processing p90 | Delta from q90 | Projected internal FPS | JPEG payload bytes | PSNR | SSIM |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Block | q80 | 8.641409 ms | -1.468979 ms | 115.72 | 425,401 | 45.234 dB | 0.995468 |
+| Block | q85 | 9.238345 ms | -0.872043 ms | 108.24 | 477,761 | 46.806 dB | 0.996597 |
+| Block | q90 | 10.110388 ms | 0 | 98.91 | 563,559 | 49.021 dB | 0.997696 |
+| Block | q95 | 11.891159 ms | +1.780771 ms | 84.10 | 730,950 | 52.682 dB | 0.998927 |
+| Block | q100 | 15.967314 ms | +5.856926 ms | 62.63 | 1,167,773 | 58.282 dB | 0.999864 |
+| Sixel | q80 | 72.871305 ms | +0.193141 ms | 13.72 | 425,401 | 45.234 dB | 0.995468 |
+| Sixel | q85 | 71.860366 ms | -0.817798 ms | 13.92 | 477,761 | 46.806 dB | 0.996597 |
+| Sixel | q90 | 72.678164 ms | 0 | 13.76 | 563,559 | 49.021 dB | 0.997696 |
+| Sixel | q95 | 71.417698 ms | -1.260466 ms | 14.00 | 730,950 | 52.682 dB | 0.998927 |
+| Sixel | q100 | 72.780056 ms | +0.101892 ms | 13.74 | 1,167,773 | 58.282 dB | 0.999864 |
+
+The complete sorted p90 source samples in milliseconds are:
+
+| Backend | JPEG | Five samples |
+|---|---:|---|
+| Block | q80 | 8.510791, 8.547109, 8.598929, 8.623327, 8.641409 |
+| Block | q85 | 9.059109, 9.099007, 9.178857, 9.191994, 9.238345 |
+| Block | q90 | 10.021056, 10.043404, 10.079098, 10.080294, 10.110388 |
+| Block | q95 | 11.652069, 11.797957, 11.850965, 11.887974, 11.891159 |
+| Block | q100 | 15.829116, 15.870771, 15.886052, 15.931514, 15.967314 |
+| Sixel | q80 | 72.498017, 72.613538, 72.778532, 72.792896, 72.871305 |
+| Sixel | q85 | 71.274537, 71.519218, 71.817373, 71.836355, 71.860366 |
+| Sixel | q90 | 71.789372, 72.003334, 72.426034, 72.486270, 72.678164 |
+| Sixel | q95 | 70.206729, 70.900889, 71.004175, 71.037695, 71.417698 |
+| Sixel | q100 | 71.780684, 71.976316, 72.135756, 72.242218, 72.780056 |
+
+The Block medians are 8.598929, 9.178857, 10.079098, 11.850965, and
+15.886052 ms from q80 through q100. Against the historical medians above, they
+improve by 3.26, 1.95, 1.92, 1.50, and 1.56 percent. Historical raw samples were
+not retained, so a matched historical p90 comparison is not possible. The payload
+sizes and fidelity scores reproduce the historical values exactly.
+
+For Block, q95 still passes the 16.67 ms processing rule with 4.78 ms of p90
+headroom. q100 passes with only 0.70 ms. For Sixel, none of the five qualities
+passes that processing rule at this surface, and the small non-monotonic changes
+show no material quality-dependent processing trend. Sixel terminal payloads were
+1,861,958, 1,828,055, 1,768,045, 1,555,398, and 1,222,400 bytes from q80 through
+q100, but terminal handling remains outside this benchmark.
+
+Keep q90 as the default for both consumers. q95 adds 29.70 percent JPEG payload
+over q90 for a fidelity gain on an already high-quality source, while q100 adds
+107.21 percent and leaves Block too close to its processing limit. The headless
+results do not establish enough user-visible gain to accept those payload and
+headroom costs, especially without terminal-side measurements.
+
 ### Summary
 
 This is the historical pre-fuse summary that led to the row-band and fused paths.
@@ -1434,6 +1502,47 @@ CPUs, and Go 1.26.4, from base commit `27f1fe3`. Run it again with:
 ```sh
 just internal-render-metrics
 ```
+
+### Progression rerun (2026-07-17)
+
+This comparison uses runnable baseline commit `254f318`, whose durable record names
+`27f1fe3` as the measured production base. The commits differ only by the benchmark
+harness, recipe, and documentation. Current commit `9e151fc` used the unchanged
+harness, fixture, and `just internal-render-metrics` recipe. Each side ran as six
+fresh, interleaved processes with `CGO_ENABLED=0` in the same environment. Each
+process retained the same CDP fixture, two settled frames, q90 Block policy,
+production backends, grids, warm-up, batches, and 30 measured samples.
+
+The table reports the median of the six printed per-process p90 values. Projected FPS
+is internal byte-generation capacity, not delivered terminal FPS.
+
+| Surface | Backend | Baseline median p90 | Current median p90 | Delta | Improvement | Projected internal FPS baseline -> current |
+|---|---|---:|---:|---:|---:|---:|
+| 1920x1080 | Block | 0.7170 ms | 0.6960 ms | -0.0210 ms | 2.93% | 1394.70 -> 1436.78 (+42.08) |
+| 1920x1080 | Kitty | ~0.009 ms | ~0.009 ms | 0.000 ms | 0% | ~111111 -> ~111111 (+0) |
+| 1920x1080 | Sixel | 39.2310 ms | 15.3755 ms | -23.8555 ms | 60.81% | 25.49 -> 65.04 (+39.55) |
+| 2560x1600 | Block | 1.0700 ms | 1.0580 ms | -0.0120 ms | 1.12% | 934.58 -> 945.18 (+10.60) |
+| 2560x1600 | Kitty | ~0.013 ms | ~0.013 ms | 0.000 ms | 0% | ~76923 -> ~76923 (+0) |
+| 2560x1600 | Sixel | 52.4900 ms | 22.8110 ms | -29.6790 ms | 56.54% | 19.05 -> 43.84 (+24.79) |
+
+The complete sorted per-process p90 audit trail is:
+
+| Surface | Backend | Baseline p90 values (ms) | Current p90 values (ms) |
+|---|---|---|---|
+| 1920x1080 | Block | 0.662, 0.680, 0.710, 0.724, 0.731, 0.754 | 0.657, 0.670, 0.682, 0.710, 0.712, 0.744 |
+| 1920x1080 | Kitty | 0.008, 0.009, 0.009, 0.009, 0.009, 0.010 | 0.008, 0.008, 0.008, 0.009, 0.009, 0.010 |
+| 1920x1080 | Sixel | 38.669, 38.996, 39.063, 39.399, 39.439, 39.521 | 15.026, 15.143, 15.231, 15.520, 15.702, 15.763 |
+| 2560x1600 | Block | 1.027, 1.046, 1.059, 1.081, 1.095, 1.126 | 1.032, 1.051, 1.057, 1.059, 1.067, 1.105 |
+| 2560x1600 | Kitty | 0.012, 0.013, 0.013, 0.013, 0.013, 0.013 | 0.012, 0.013, 0.013, 0.013, 0.013, 0.013 |
+| 2560x1600 | Sixel | 51.673, 52.330, 52.445, 52.535, 52.723, 53.877 | 22.599, 22.642, 22.755, 22.867, 23.053, 23.065 |
+
+At 1920x1080, the literal Kitty medians are 0.0090 and 0.0085 ms. The
+millisecond output precision cannot resolve that half-microsecond difference as a
+material change, so the progression table records zero. The 2560x1600 medians are
+both 0.0130 ms. Kitty mean terminal bytes were also unchanged at 175,735 and
+269,574. Sixel mean bytes changed from 306,362 to 227,116 and from 480,010 to
+317,909. Block mean bytes varied by at most 14 bytes within a run set. The harness
+does not emit output hashes.
 
 Repeated full batched runs kept Sixel p90 within 2.1 ms at 1920x1080 and 2.2 ms
 at 2560x1600. Block stayed below 1.1 ms p90 and Kitty below 0.014 ms p90 in the
