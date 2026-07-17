@@ -423,7 +423,7 @@ test:
 
 # Run the live engine integration test (needs Chromium; off CI, not in `test`)
 live:
-    @go test -tags live ./internal/engine/
+    @FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" go test -tags live ./internal/engine/
 
 # Measure internal renderer-to-terminal-byte costs from production CDP frames.
 internal-render-metrics:
