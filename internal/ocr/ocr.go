@@ -1,15 +1,8 @@
-// Package ocr runs the Stage 0 OCR round-trip baseline.
+// Package ocr provides pure-Go glyph matching and recognition scoring.
 //
-// Stage 0 uses one OCR ruler: Tesseract through the otiai10/gosseract cgo
-// binding. The engine reads block-rendered ladder text and the result feeds the
-// legibility numbers that track regressions across builds. The bespoke
-// nearest-glyph matcher defers to Stage 2 (see matcher.go).
-//
-// The cgo engine lives in tesseract.go behind the "ocr" build tag, so the
-// default build and the shipped nyala binary stay cgo-free. This file and
-// condition.go are pure Go and always build: they hold the conditioning path
-// and the CER/WER scoring that the engine path reuses, so both stay testable
-// without Tesseract present.
+// Nyala uses a pure-Go nearest-glyph matcher for the overlay quality gate (see
+// matcher.go). This file holds the Character Error Rate and Word Error Rate
+// scoring shared by the matcher tests and diagnostics.
 package ocr
 
 import (

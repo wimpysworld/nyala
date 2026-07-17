@@ -56,7 +56,7 @@ Recipes:
 - `just genruns` - regenerate the committed `testdata/overlay/*.runs` fixtures.
 - `just kmscon-testcard` - print the KMSCON quadrant test card to the TTY for the owner to eyeball inter-row bleed; manual and owner-verified, off CI.
 - `just lint` - go vet, gocyclo, ineffassign, golangci-lint, actionlint.
-- `just fmt` - format with gofmt; `just fmt-check` verifies.
+- `just fmt` - format with golangci-lint's configured gofumpt formatter; `just fmt-check` checks the same formatter.
 - `just tidy` - `go mod tidy`; `just tidy-check` verifies go.mod/go.sum are clean.
 - `just coverage` - tests with a coverage report.
 - `just vuln` - govulncheck.
@@ -75,7 +75,7 @@ When you change code, `just build`, `just test`, and `just lint` must pass; this
 
 ## Code style
 
-Format with gofumpt (`just fmt` uses gofmt; both pass `fmt-check`). Lint config lives in `.golangci.yaml`; revive runs with the `exported` rule, so add a doc comment to every exported symbol you add.
+Format with golangci-lint's configured gofumpt formatter through `just fmt`; verify it with `just fmt-check`. Lint config lives in `.golangci.yaml`; revive runs with the `exported` rule, so add a doc comment to every exported symbol you add.
 
 ## Gotchas
 

@@ -110,12 +110,15 @@
       packages = forAllSystems (
         system:
         let
-          nyalaPkgs = nix-packages.packages.${system} or { };
-          nyala = nyalaPkgs.nyala or (localPackage system);
+          nyala = localPackage system;
+          externalNyala = nix-packages.packages.${system}.nyala or null;
         in
         {
           inherit nyala;
           default = nyala;
+        }
+        // nixpkgs.lib.optionalAttrs (externalNyala != null) {
+          nix-packages-nyala = externalNyala;
         }
       );
 
