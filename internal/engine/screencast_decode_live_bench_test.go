@@ -59,8 +59,10 @@ type screencastBenchPayload struct {
 	deliveryMS []float64
 }
 
-var screencastBenchImage image.Image
-var screencastBenchGrid block.Grid
+var (
+	screencastBenchImage image.Image
+	screencastBenchGrid  block.Grid
+)
 
 // BenchmarkCDPScreencastDecode captures Chromium screencast payloads from one
 // unchanged 2560x2880 page, then measures three distinct production costs:

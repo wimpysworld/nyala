@@ -387,17 +387,11 @@ regen-fixtures:
 
 # Format Go sources
 fmt:
-    @gofmt -w ./cmd ./internal ./tools
+    @golangci-lint fmt
 
 # Check Go formatting
 fmt-check:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    files="$(gofmt -l ./cmd ./internal ./tools)"
-    if [ -n "$files" ]; then
-        printf '%s\n' "$files"
-        exit 1
-    fi
+    @golangci-lint fmt --diff --color=never
 
 # Run linters
 lint:
