@@ -184,7 +184,14 @@ func TestDecodeSixelAcceptsLegacyUnparameterisedDCS(t *testing.T) {
 	if err := renderer.Render(frameFixture(), &payload); err != nil {
 		t.Fatalf("render parameterised Sixel: %v", err)
 	}
-	legacy := bytes.Replace(payload.Bytes(), []byte("\x1bP0;0;8q"), []byte("\x1bPq"), 1)
+	const parameterised = "\x1bP0;0;8q"
+	if !bytes.HasPrefix(payload.Bytes(), []byte(parameterised)) {
+		t.Fatalf("parameterised Sixel prefix = %q, want %q", payload.Bytes()[:min(len(payload.Bytes()), len(parameterised))], parameterised)
+	}
+	legacy := append([]byte("\x1bPq"), payload.Bytes()[len(parameterised):]...)
+	if !bytes.HasPrefix(legacy, []byte("\x1bPq")) {
+		t.Fatal("legacy Sixel payload does not use the unparameterised DCS prefix")
+	}
 	decoded, err := DecodeSixel(legacy)
 	if err != nil {
 		t.Fatalf("DecodeSixel legacy DCS: %v", err)
