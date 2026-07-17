@@ -175,6 +175,110 @@ func TestLongRunWarmEncodeDoesNotAllocate(t *testing.T) {
 	}
 }
 
+func TestRightmostPlaneBoundMatchesFullScan(t *testing.T) {
+	t.Parallel()
+	palette := make(color.Palette, 256)
+	for i := range palette {
+		palette[i] = color.RGBA{A: 0xff}
+	}
+	palette[0] = color.RGBA{R: 0xff, A: 0xff}
+	palette[1] = color.RGBA{G: 0xff, A: 0xff}
+	palette[255] = color.RGBA{B: 0xff, A: 0xff}
+	tests := map[string]*image.Paletted{
+		"right-edge": rightBoundFixture(image.Rect(0, 0, 37, 6), palette, func(x, _ int) uint8 {
+			if x == 36 {
+				return 1
+			}
+			return 0
+		}),
+		"sparse-zero-tail": rightBoundFixture(image.Rect(0, 0, 37, 6), palette, func(x, _ int) uint8 {
+			if x == 3 {
+				return 1
+			}
+			return 0
+		}),
+		"full-width-planes": rightBoundFixture(image.Rect(0, 0, 37, 6), palette, alternatingIndex),
+		"odd-height":        rightBoundFixture(image.Rect(0, 0, 37, 7), palette, alternatingIndex),
+		"indices-0-255": rightBoundFixture(image.Rect(0, 0, 37, 6), palette, func(x, _ int) uint8 {
+			if x == 5 {
+				return 255
+			}
+			return 0
+		}),
+		"non-zero-bounds": rightBoundFixture(image.Rect(3, 5, 40, 12), palette, alternatingIndex),
+	}
+	for name, src := range tests {
+		t.Run(name, func(t *testing.T) {
+			assertRightBoundMatchesFullScan(t, newOpaqueEncoder(io.Discard), src)
+		})
+	}
+}
+
+func TestRightmostPlaneBoundResetsOnEncoderReuse(t *testing.T) {
+	palette := color.Palette{
+		color.RGBA{R: 0xff, A: 0xff},
+		color.RGBA{B: 0xff, A: 0xff},
+	}
+	full := rightBoundFixture(image.Rect(0, 0, 61, 6), palette, alternatingIndex)
+	sparse := rightBoundFixture(image.Rect(0, 0, 23, 7), palette, func(x, _ int) uint8 {
+		if x == 2 {
+			return 1
+		}
+		return 0
+	})
+	var out bytes.Buffer
+	enc := newOpaqueEncoder(&out)
+	assertRightBoundMatchesFullScan(t, enc, full)
+	out.Reset()
+	assertRightBoundMatchesFullScan(t, enc, sparse)
+}
+
+func alternatingIndex(x, y int) uint8 {
+	if (x+y)%2 == 0 {
+		return 0
+	}
+	return 1
+}
+
+func rightBoundFixture(bounds image.Rectangle, palette color.Palette, index func(x, y int) uint8) *image.Paletted {
+	img := image.NewPaletted(bounds, palette)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			img.SetColorIndex(x, y, index(x-bounds.Min.X, y-bounds.Min.Y))
+		}
+	}
+	return img
+}
+
+func assertRightBoundMatchesFullScan(t *testing.T, enc *opaqueEncoder, src *image.Paletted) {
+	t.Helper()
+	var got bytes.Buffer
+	enc.w = &got
+	if err := enc.encode(src); err != nil {
+		t.Fatalf("bounded encode: %v", err)
+	}
+	var want bytes.Buffer
+	fullScan := gosixel.NewEncoder(&want)
+	fullScan.Colors = 256
+	if err := fullScan.Encode(src); err != nil {
+		t.Fatalf("full-scan encode: %v", err)
+	}
+	if !bytes.Equal(got.Bytes(), want.Bytes()) {
+		t.Fatalf("bounded output differs from full scan: got %d bytes, want %d", got.Len(), want.Len())
+	}
+	var decoded image.Image
+	if err := gosixel.NewDecoder(bytes.NewReader(got.Bytes())).Decode(&decoded); err != nil {
+		t.Fatalf("decode bounded output: %v", err)
+	}
+	gotRGBA := image.NewRGBA(image.Rect(0, 0, src.Bounds().Dx(), src.Bounds().Dy()))
+	draw.Draw(gotRGBA, gotRGBA.Bounds(), decoded, decoded.Bounds().Min, draw.Src)
+	wantRGBA := image.NewRGBA(gotRGBA.Bounds())
+	draw.Draw(wantRGBA, wantRGBA.Bounds(), src, src.Bounds().Min, draw.Src)
+	if !bytes.Equal(gotRGBA.Pix, wantRGBA.Pix) {
+		t.Fatal("bounded output decodes to different pixels")
+	}
+}
+
 func sixelRepeatCounts(payload []byte) []int {
 	var counts []int
 	for i := 0; i < len(payload); i++ {

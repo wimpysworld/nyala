@@ -98,9 +98,16 @@ expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
   [Sixel repeat-ceiling benchmark](./PERFORMANCE.md#repeat-ceiling-benchmark-2026-07-16).
 - [ ] Send accepted palette or RLE patches upstream. Use a temporary published fork
   plus versioned replacement only for short-lived integration. Do not vendor.
-- [x] Close Sixel band research with no code change. Active-bitset, transposed,
-  packed-bank, and bounded-plane variants did not beat the current production-shaped
-  full encoder. Defer parallel bands. Source:
+- [x] Retain one rightmost-nonblank bound per present Sixel colour plane. Against
+  commit `18bba495`, six fresh rotated process pairs cut complete median encode time
+  by 8.85% at 1920x1080 and 12.19% at 2560x1600, with both process-median ranges
+  separated. The isolated path falls 21.38% and 21.71%. It skips 38.7663% and
+  38.0022% of plane columns with identical payloads, hashes, decoded pixels, repeat
+  maxima, and allocation counts. Source:
+  [Sixel rightmost bound](./PERFORMANCE.md#rightmost-nonblank-plane-bound-2026-07-17).
+- [x] Close the other Sixel band research with no code change. Active-bitset,
+  transposed, and packed-bank variants did not beat the production-shaped full
+  encoder. Defer parallel bands. Source:
   [Sixel hot-path research](./PERFORMANCE.md#sixel-hot-path-research-and-decisions-2026-07-15).
 - [ ] Add graphics support through tmux, Zellij, and herdr. Keep the present block-only
   fallback until each path passes capability, placement, resize, scroll, and cleanup
