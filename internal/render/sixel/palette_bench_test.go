@@ -29,11 +29,14 @@ import (
 )
 
 const (
-	paletteBenchEnv     = "NYALA_PALETTE_BENCH"
-	paletteBenchRunEnv  = "NYALA_PALETTE_BENCH_RUN"
-	paletteBenchSamples = 3
-	paletteBenchWarmups = 4
-	paletteColours      = 255
+	paletteBenchEnv      = "NYALA_PALETTE_BENCH"
+	paletteBenchRunEnv   = "NYALA_PALETTE_BENCH_RUN"
+	paletteBenchSamples  = 3
+	paletteBenchWarmups  = 4
+	paletteColours       = 255
+	combinedBenchEnv     = "NYALA_COMBINED_BENCH"
+	combinedBenchRunEnv  = "NYALA_COMBINED_BENCH_RUN"
+	combinedBenchSamples = 30
 )
 
 type paletteBenchFixture struct {
@@ -81,6 +84,207 @@ type paletteBenchAggregate struct {
 	payloadBytes int
 	selectionMS  float64
 	mappingMS    float64
+}
+
+// TestCombinedMappingBenchmark is the opt-in paired screen for serial mapping
+// plus parallel bands against the combined parallel-mapping and band path.
+func TestCombinedMappingBenchmark(t *testing.T) {
+	if os.Getenv(combinedBenchEnv) != "1" {
+		t.Skip("set " + combinedBenchEnv + "=1")
+	}
+	oldProcs := runtime.GOMAXPROCS(4)
+	oldGC := debug.SetGCPercent(100)
+	t.Cleanup(func() {
+		runtime.GOMAXPROCS(oldProcs)
+		debug.SetGCPercent(oldGC)
+	})
+	run := envInt(combinedBenchRunEnv)
+	fixtures := []struct {
+		name string
+		src  *image.RGBA
+	}{
+		{name: "photo-1920x1080", src: loadPaletteBenchFrame(t, "../../../testdata/linuxmatters.png", paletteBenchSize{w: 1920, h: 1080})},
+		{name: "flat-1280x720", src: combinedBenchFlat(1280, 720)},
+		{name: "web-1280x720", src: combinedBenchWeb(1280, 720)},
+	}
+	if run%2 != 0 {
+		fixtures[0], fixtures[2] = fixtures[2], fixtures[0]
+	}
+	arms := []struct {
+		name     string
+		parallel bool
+	}{{name: "band-only"}, {name: "combined", parallel: true}}
+	if run%2 != 0 {
+		arms[0], arms[1] = arms[1], arms[0]
+	}
+	for _, fixture := range fixtures {
+		pngData := encodeCombinedBenchPNG(t, fixture.src)
+		for _, arm := range arms {
+			m := measureCombinedBenchArm(t, fixture.src, pngData, arm.parallel)
+			t.Logf("COMBINED run=%d fixture=%s arm=%s full-mean-ms=%.3f full-p90-ms=%.3f png-mean-ms=%.3f png-p90-ms=%.3f map-mean-ms=%.3f map-p90-ms=%.3f allocs=%.0f B/op=%d payload-B=%d sha256=%x",
+				run, fixture.name, arm.name, m.meanMS, m.p90MS, m.decodeMS, m.decodeP90MS,
+				m.selectMS, m.mapMS, m.allocs, m.bytesAlloc, len(m.payload), sha256.Sum256(m.payload))
+		}
+	}
+}
+
+func measureCombinedBenchArm(t *testing.T, src *image.RGBA, pngData []byte, parallel bool) paletteBenchMeasurement {
+	t.Helper()
+	enc := newOpaqueEncoder(io.Discard)
+	for range paletteBenchWarmups {
+		if err := encodeCombinedBench(enc, src, parallel); err != nil {
+			t.Fatal(err)
+		}
+	}
+	full := make([]time.Duration, combinedBenchSamples)
+	pngPath := make([]time.Duration, combinedBenchSamples)
+	for i := range combinedBenchSamples {
+		start := time.Now()
+		if err := encodeCombinedBench(enc, src, parallel); err != nil {
+			t.Fatal(err)
+		}
+		full[i] = time.Since(start)
+		start = time.Now()
+		decoded, err := png.Decode(bytes.NewReader(pngData))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := encodeCombinedBench(enc, decoded, parallel); err != nil {
+			t.Fatal(err)
+		}
+		pngPath[i] = time.Since(start)
+	}
+	mapMean, mapP90 := combinedBenchMapping(t, src, parallel)
+	var allocErr error
+	allocs := testing.AllocsPerRun(3, func() {
+		if allocErr == nil {
+			allocErr = encodeCombinedBench(enc, src, parallel)
+		}
+	})
+	if allocErr != nil {
+		t.Fatal(allocErr)
+	}
+	var mem runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&mem)
+	before := mem.TotalAlloc
+	for range 3 {
+		if err := encodeCombinedBench(enc, src, parallel); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime.ReadMemStats(&mem)
+	var out bytes.Buffer
+	if err := encodeCombinedBench(newOpaqueEncoder(&out), src, parallel); err != nil {
+		t.Fatal(err)
+	}
+	mean, p90 := paletteDurationStats(full)
+	pngMean, pngP90 := paletteDurationStats(pngPath)
+	return paletteBenchMeasurement{
+		meanMS: durationMS(mean), p90MS: durationMS(p90),
+		decodeMS: durationMS(pngMean), decodeP90MS: durationMS(pngP90),
+		allocs: allocs, bytesAlloc: (mem.TotalAlloc - before) / 3, payload: out.Bytes(),
+		selectMS: durationMS(mapMean), mapMS: durationMS(mapP90),
+	}
+}
+
+func encodeCombinedBench(enc *opaqueEncoder, img image.Image, parallel bool) error {
+	const colours = 255
+	var paletted *image.Paletted
+	switch src := img.(type) {
+	case *image.Paletted:
+		if len(src.Palette) <= colours+1 {
+			paletted = src
+		}
+	case *image.NRGBA:
+		paletted = palettedFromNRGBA(src, colours)
+	case *image.RGBA:
+		paletted = palettedFromRGBA(src, colours)
+	}
+	if paletted == nil {
+		rgba := toRGBA(img)
+		palette := samplePalette(rgba, colours)
+		paletted = image.NewPaletted(rgba.Bounds(), palette)
+		lut := newPaletteLUT(palette)
+		if parallel {
+			mapPaletted(paletted, rgba, lut)
+		} else {
+			bounds := rgba.Bounds()
+			mapPalettedRows(paletted, rgba, lut, bounds.Min.Y, bounds.Max.Y)
+		}
+	}
+	return enc.encode(paletted)
+}
+
+func combinedBenchMapping(t *testing.T, src *image.RGBA, parallel bool) (time.Duration, time.Duration) {
+	t.Helper()
+	if palettedFromRGBA(src, paletteColours) != nil {
+		return 0, 0
+	}
+	palette := samplePalette(src, paletteColours)
+	lut := newPaletteLUT(palette)
+	dst := image.NewPaletted(src.Bounds(), palette)
+	times := make([]time.Duration, combinedBenchSamples)
+	for i := range combinedBenchSamples {
+		start := time.Now()
+		if parallel {
+			mapPaletted(dst, src, lut)
+		} else {
+			bounds := src.Bounds()
+			mapPalettedRows(dst, src, lut, bounds.Min.Y, bounds.Max.Y)
+		}
+		times[i] = time.Since(start)
+	}
+	return paletteDurationStats(times)
+}
+
+func encodeCombinedBenchPNG(t *testing.T, src *image.RGBA) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	if err := png.Encode(&out, src); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+func combinedBenchFlat(width, height int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: color.RGBA{R: 0x20, G: 0x30, B: 0x40, A: 0xff}}, image.Point{}, draw.Src)
+	return img
+}
+
+func combinedBenchWeb(width, height int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	palette := mappingTestPalette()[:16]
+	for y := range height {
+		for x := range width {
+			img.Set(x, y, palette[(x/32+y/18)%len(palette)])
+		}
+	}
+	return img
+}
+
+func BenchmarkRGB555Mapping(b *testing.B) {
+	src := loadPaletteBenchFrame(b, "../../../testdata/linuxmatters.png", paletteBenchSize{w: 1920, h: 1080})
+	palette := samplePalette(src, paletteColours)
+	lut := newPaletteLUT(palette)
+	dst := image.NewPaletted(src.Bounds(), palette)
+	bounds := src.Bounds()
+	for _, arm := range []struct {
+		name     string
+		parallel bool
+	}{{name: "band-only"}, {name: "combined", parallel: true}} {
+		b.Run(arm.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				if arm.parallel {
+					mapPaletted(dst, src, lut)
+				} else {
+					mapPalettedRows(dst, src, lut, bounds.Min.Y, bounds.Max.Y)
+				}
+			}
+		})
+	}
 }
 
 var paletteBenchFixtures = []paletteBenchFixture{
@@ -309,7 +513,7 @@ func measurePaletteArm(t *testing.T, enc *paletteBenchEncoder, src *image.RGBA, 
 	}
 }
 
-func loadPaletteBenchFrame(t *testing.T, path string, size paletteBenchSize) *image.RGBA {
+func loadPaletteBenchFrame(t testing.TB, path string, size paletteBenchSize) *image.RGBA {
 	t.Helper()
 	f, err := os.Open(path)
 	if err != nil {

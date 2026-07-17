@@ -132,6 +132,34 @@ and temporary tests were removed after each rejection. Live Chrome delivery,
 first-contentful-paint, and contention checks did not run because the full-encode
 gate had already failed. Tasks 2.1 through 4.1 remain blocked.
 
+**Combined candidate status (2026-07-17): Implemented, pending user review.** At
+the user's request, the rejected four-worker mapper has been restored on top of
+the committed parallel-band candidate without changing either shared worker cap.
+The exact-colour scan stays serial. Adaptive mapping activates at 500,000 pixels,
+splits source and destination into disjoint row ranges, waits for all workers, and
+then enters band emission. LUT construction, mapping, and emission therefore use
+the same `sixelWorkerCount()` budget in sequence.
+
+Six fresh rotated paired processes used four warm-ups, 30 retained samples,
+`GOMAXPROCS=4`, and `GOGC=100`. On the adaptive 1920x1080 Linux Matters photo,
+median process p90 fell from 17.382 ms for the committed band-only shape to 15.592
+ms combined, 10.30% and 1.790 ms faster. PNG decode plus encode fell from 31.472
+ms to 29.457 ms, 6.40% and 2.015 ms faster. Isolated mapping fell from 2.107 ms to
+0.711 ms p90, 66.25% faster. It adds five isolated allocations and about 336
+B/op; the complete path stayed at 1,306 allocations within about 0.2 KiB/op of
+the baseline. CPU profiling rose from 99.9% to 352.5% across the bounded workers.
+
+The earlier 0.843 ms mapping saving persists after band parallelism and measures
+1.790 ms in this paired screen. Flat full encode improved 0.51%; web improved
+1.19%. Flat PNG decode plus encode improved 0.38%, while web regressed 0.28%,
+inside the 1% small-frame gate. Payload bytes and SHA-256 values match for every
+fixture. Focused tests also match mapped indexes, repeated payloads, and decoded
+pixels across the threshold edges, workers 1 and 4, and unusual bounds and stride.
+Keep this correct candidate in the working tree for review even though it misses
+the old 2 ms full-encode gate. Live Chromium delivery, first contentful paint, and
+terminal effects remain deferred because no supported automated Sixel terminal is
+available in this run.
+
 ## Phase 2: Reprofile gate
 
 ### 2.1 - Reprofile band emission after parallel mapping

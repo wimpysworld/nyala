@@ -457,6 +457,144 @@ func TestSixelWorkerCount(t *testing.T) {
 	}
 }
 
+func TestParallelMappingActivationBoundaries(t *testing.T) {
+	tests := []struct {
+		name            string
+		pixels, workers int
+		want            bool
+	}{
+		{name: "one-worker", pixels: parallelMapPixelThreshold, workers: 1},
+		{name: "below-threshold", pixels: parallelMapPixelThreshold - 1, workers: 4},
+		{name: "at-threshold", pixels: parallelMapPixelThreshold, workers: 4, want: true},
+		{name: "above-threshold", pixels: parallelMapPixelThreshold + 1, workers: 4, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := parallelMapping(test.pixels, test.workers); got != test.want {
+				t.Fatalf("parallelMapping(%d, %d) = %t, want %t", test.pixels, test.workers, got, test.want)
+			}
+		})
+	}
+}
+
+func TestParallelMappingMatchesSerial(t *testing.T) {
+	palette := mappingTestPalette()
+	lut := serialPaletteLUT(palette)
+	bounds := image.Rect(11, 7, 1012, 507)
+	storage := image.NewRGBA(bounds.Inset(-3))
+	src := storage.SubImage(bounds).(*image.RGBA)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			src.SetRGBA(x, y, color.RGBA{
+				R: uint8(x*17 + y*3), //nolint:gosec // Wrapping builds an RGB555 mapping fixture.
+				G: uint8(x*5 + y*11), //nolint:gosec // Wrapping builds an RGB555 mapping fixture.
+				B: uint8(x*7 + y*13), //nolint:gosec // Wrapping builds an RGB555 mapping fixture.
+				A: 0xff,
+			})
+		}
+	}
+	want := image.NewPaletted(bounds, palette)
+	mapPalettedRows(want, src, lut, bounds.Min.Y, bounds.Max.Y)
+
+	oldProcs := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(oldProcs) })
+	for _, workers := range []int{1, 4} {
+		runtime.GOMAXPROCS(workers)
+		storage := image.NewPaletted(bounds.Inset(-5), palette)
+		got := storage.SubImage(bounds).(*image.Paletted)
+		mapPaletted(got, src, lut)
+		if !palettedIndexesEqual(got, want) {
+			t.Fatalf("workers=%d mapped indexes differ", workers)
+		}
+		mapPaletted(got, src, lut)
+		if !palettedIndexesEqual(got, want) {
+			t.Fatalf("workers=%d repeated mapped indexes differ", workers)
+		}
+	}
+}
+
+func TestParallelMappingProductionPayloadMatchesSerial(t *testing.T) {
+	oldProcs := runtime.GOMAXPROCS(4)
+	t.Cleanup(func() { runtime.GOMAXPROCS(oldProcs) })
+	palette := mappingTestPalette()
+	lut := serialPaletteLUT(palette)
+	bounds := image.Rect(3, 5, 1283, 725)
+	srcStorage := image.NewRGBA(bounds.Inset(-2))
+	src := srcStorage.SubImage(bounds).(*image.RGBA)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			src.SetRGBA(x, y, color.RGBA{
+				R: uint8(x*29 + y*3),  //nolint:gosec // Wrapping builds an adaptive-photo fixture.
+				G: uint8(x*7 + y*31),  //nolint:gosec // Wrapping builds an adaptive-photo fixture.
+				B: uint8(x*13 + y*17), //nolint:gosec // Wrapping builds an adaptive-photo fixture.
+				A: 0xff,
+			})
+		}
+	}
+	serial := image.NewPaletted(bounds, palette)
+	mapPalettedRows(serial, src, lut, bounds.Min.Y, bounds.Max.Y)
+	candidate := image.NewPaletted(bounds, palette)
+	mapPaletted(candidate, src, lut)
+	if !bytes.Equal(candidate.Pix, serial.Pix) {
+		t.Fatal("production mapped indexes differ")
+	}
+	serialPayload := bandTestPayload(serial, newOpaqueEncoder(io.Discard).appendBands(nil, serial))
+	enc := newOpaqueEncoder(io.Discard)
+	candidatePayload := bandTestPayload(candidate, enc.appendBands(nil, candidate))
+	serialHash := sha256.Sum256(serialPayload)
+	if gotHash := sha256.Sum256(candidatePayload); gotHash != serialHash {
+		t.Fatalf("combined payload SHA-256 = %x, want %x", gotHash, serialHash)
+	}
+	if len(enc.band) != sixelWorkerCount() {
+		t.Fatalf("combined band workers = %d, want shared budget %d", len(enc.band), sixelWorkerCount())
+	}
+	for run := range 3 {
+		again := image.NewPaletted(bounds, palette)
+		mapPaletted(again, src, lut)
+		payload := bandTestPayload(again, newOpaqueEncoder(io.Discard).appendBands(nil, again))
+		if !bytes.Equal(payload, serialPayload) {
+			t.Fatalf("combined repeated payload %d differs", run)
+		}
+	}
+	var serialDecoded, candidateDecoded image.Image
+	if err := gosixel.NewDecoder(bytes.NewReader(serialPayload)).Decode(&serialDecoded); err != nil {
+		t.Fatalf("decode serial payload: %v", err)
+	}
+	if err := gosixel.NewDecoder(bytes.NewReader(candidatePayload)).Decode(&candidateDecoded); err != nil {
+		t.Fatalf("decode combined payload: %v", err)
+	}
+	for y := range bounds.Dy() {
+		for x := range bounds.Dx() {
+			if serialDecoded.At(x, y) != candidateDecoded.At(x, y) {
+				t.Fatalf("decoded pixel (%d,%d) differs", x, y)
+			}
+		}
+	}
+}
+
+func mappingTestPalette() color.Palette {
+	palette := make(color.Palette, 256)
+	for i := range palette {
+		palette[i] = color.RGBA{R: uint8(i), G: uint8(i * 37), B: uint8(i * 73), A: 0xff} //nolint:gosec // Overflow creates the mapping fixture palette.
+	}
+	return palette
+}
+
+func palettedIndexesEqual(a, b *image.Paletted) bool {
+	if a.Bounds() != b.Bounds() {
+		return false
+	}
+	bounds := a.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		aOffset := a.PixOffset(bounds.Min.X, y)
+		bOffset := b.PixOffset(bounds.Min.X, y)
+		if !bytes.Equal(a.Pix[aOffset:aOffset+bounds.Dx()], b.Pix[bOffset:bOffset+bounds.Dx()]) {
+			return false
+		}
+	}
+	return true
+}
+
 func TestParallelBandActivationBoundaries(t *testing.T) {
 	tests := []struct {
 		name                           string

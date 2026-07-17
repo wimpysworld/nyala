@@ -21,6 +21,7 @@ const (
 	repeatLimit = 8192
 
 	parallelBandWorkThreshold = 39_000_000
+	parallelMapPixelThreshold = 500_000
 )
 
 type bandScratch struct {
@@ -293,7 +294,7 @@ func toRGBA(img image.Image) *image.RGBA {
 	return rgba
 }
 
-func samplePalette(rgba *image.RGBA, maxColours int) color.Palette {
+func samplePalette(rgba *image.RGBA, maxColours int) color.Palette { //nolint:unparam // The fixed production limit remains explicit for test helpers.
 	const budget = 1 << 16
 	bounds := rgba.Bounds()
 	src := image.Image(rgba)
@@ -355,7 +356,32 @@ func sixelWorkerCount() int { return min(4, runtime.GOMAXPROCS(0)) }
 
 func mapPaletted(dst *image.Paletted, src *image.RGBA, lut []uint8) {
 	bounds := src.Bounds()
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+	workers := sixelWorkerCount()
+	if !parallelMapping(bounds.Dx()*bounds.Dy(), workers) {
+		mapPalettedRows(dst, src, lut, bounds.Min.Y, bounds.Max.Y)
+		return
+	}
+	workers = min(workers, bounds.Dy())
+	var wg sync.WaitGroup
+	for worker := range workers {
+		lo := bounds.Min.Y + bounds.Dy()*worker/workers
+		hi := bounds.Min.Y + bounds.Dy()*(worker+1)/workers
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			mapPalettedRows(dst, src, lut, lo, hi)
+		}()
+	}
+	wg.Wait()
+}
+
+func parallelMapping(pixels, workers int) bool {
+	return workers > 1 && pixels >= parallelMapPixelThreshold
+}
+
+func mapPalettedRows(dst *image.Paletted, src *image.RGBA, lut []uint8, first, last int) {
+	bounds := src.Bounds()
+	for y := first; y < last; y++ {
 		srcOffset := src.PixOffset(bounds.Min.X, y)
 		dstOffset := dst.PixOffset(bounds.Min.X, y)
 		for range bounds.Dx() {
