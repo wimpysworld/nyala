@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
-	"time"
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
@@ -81,25 +80,15 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// frame loop, so a static page repaints with text once the snapshot publishes.
 	// Capacity 1 latest-wins, so a burst of publishes coalesces to one re-emit.
 	reEmit := make(chan struct{}, 1)
-	// motion carries frame-arrival instants to the adaptive-format controller. It is
-	// created and the controller started only on the live path; under capture it stays
-	// nil so the format never switches (capture forces PNG). Buffered so the listener's
-	// non-blocking poke never drops under a normal cadence.
-	var motion chan time.Time
-	if !e.captureOn {
-		motion = make(chan time.Time, 8)
-	}
 	e.mu.Lock()
 	e.slot = slot
 	e.rawQ = rawQ
-	e.decodeWorkers = workers
 	e.acks = acks
 	e.text = ts
 	e.reSnap = reSnap
 	e.reflow = reflow
 	e.scroll = scroll
 	e.reEmit = reEmit
-	e.motion = motion
 	e.timing = timer
 	e.screencastFmt = screencastFmt{}
 	e.screencastStarted = false
@@ -121,11 +110,6 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	timer.mark(labelScreencastStarted)
 	go e.ackPump(ctx, acks)
 	go e.runScreencastWatchdog(ctx)
-	// The adaptive-format controller runs only on the live path; under capture motion
-	// is nil, so the format stays the deterministic PNG the corpus needs.
-	if motion != nil {
-		go e.runScreencastFormat(ctx, motion)
-	}
 	go e.runTextSync(ctx, ts, reSnap, reflow, scroll, reEmit)
 	if live {
 		// Live: a pool of decode workers feeds one collector that re-serialises them by
@@ -428,9 +412,7 @@ func (e *ChromiumEngine) teardownSession() {
 	cancel := e.cancel
 	e.ctx, e.cancel, e.slot, e.acks, e.text = nil, nil, nil, nil, nil
 	e.rawQ = nil
-	e.decodeWorkers = 0
 	e.reSnap, e.reflow, e.scroll, e.reEmit = nil, nil, nil, nil
-	e.motion = nil
 	e.screencastFmt = screencastFmt{}
 	e.screencastStarted = false
 	e.windowID = 0

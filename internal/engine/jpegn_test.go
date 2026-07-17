@@ -71,7 +71,7 @@ func tileTo(src *image.RGBA, w, h int) *image.RGBA {
 func encodeBaseline420(tb testing.TB, img image.Image) []byte {
 	tb.Helper()
 	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: movingScreencastQuality}); err != nil {
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: blockScreencastQuality}); err != nil {
 		tb.Fatalf("encode jpeg: %v", err)
 	}
 	return buf.Bytes()
@@ -119,7 +119,7 @@ func TestJpegnEquivalence(t *testing.T) {
 			t.Fatalf("%s: stdlib decode: %v", s.name, err)
 		}
 
-		got, err := decodeJPEGFast(jbytes, false)
+		got, err := decodeJPEGFast(jbytes)
 		if err != nil {
 			t.Fatalf("%s: decodeJPEGFast: %v", s.name, err)
 		}
@@ -139,38 +139,9 @@ func TestJpegnEquivalence(t *testing.T) {
 	}
 }
 
-// TestDecodeJPEGFastRGBAExact pins the Sixel fast path to jpegn's fused RGBA
-// result. Geometry and every decoded byte must match the direct decoder call.
-func TestDecodeJPEGFastRGBAExact(t *testing.T) {
-	raw := encodeBaseline420(t, loadSourceRGBA(t))
-	wantImg, err := jpegn.Decode(bytes.NewReader(raw), &jpegn.Options{ToRGBA: true})
-	if err != nil {
-		t.Fatalf("direct jpegn RGBA decode: %v", err)
-	}
-	want, ok := wantImg.(*image.RGBA)
-	if !ok {
-		t.Fatalf("direct jpegn RGBA decode returned %T, want *image.RGBA", wantImg)
-	}
-
-	gotImg, err := decodeJPEGFast(raw, true)
-	if err != nil {
-		t.Fatalf("decodeJPEGFast RGBA: %v", err)
-	}
-	got, ok := gotImg.(*image.RGBA)
-	if !ok {
-		t.Fatalf("decodeJPEGFast RGBA returned %T, want *image.RGBA", gotImg)
-	}
-	if got.Rect != want.Rect || got.Stride != want.Stride {
-		t.Fatalf("RGBA geometry = rect %v stride %d, want rect %v stride %d", got.Rect, got.Stride, want.Rect, want.Stride)
-	}
-	if !bytes.Equal(got.Pix, want.Pix) {
-		t.Fatal("decodeJPEGFast RGBA pixels differ from direct jpegn output")
-	}
-}
-
-// TestDecodeJPEGFastFallback proves both jpegn modes fall back on input they decline.
-// PNG bytes make jpegn error, then decodeFrameImage must decode the settled frame
-// unchanged. This exercises the same branch as jpegn.ErrUnsupported JPEG input.
+// TestDecodeJPEGFastFallback proves PNG bytes declined by jpegn fall back to the PNG
+// decoder unchanged. This exercises the same branch as jpegn.ErrUnsupported JPEG
+// input.
 func TestDecodeJPEGFastFallback(t *testing.T) {
 	raw, err := os.ReadFile("../../testdata/linuxmatters.png")
 	if err != nil {
@@ -186,14 +157,12 @@ func TestDecodeJPEGFastFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stdlib png decode: %v", err)
 	}
-	for _, toRGBA := range []bool{false, true} {
-		got, err := decodeJPEGFast(raw, toRGBA)
-		if err != nil {
-			t.Fatalf("decodeJPEGFast(toRGBA=%v) fallback: %v", toRGBA, err)
-		}
-		if d := maxRGBADelta(t, want, got); d != 0 {
-			t.Errorf("toRGBA=%v fallback differs from stdlib PNG: max delta %d, want 0", toRGBA, d)
-		}
+	got, err := decodeJPEGFast(raw)
+	if err != nil {
+		t.Fatalf("decodeJPEGFast fallback: %v", err)
+	}
+	if d := maxRGBADelta(t, want, got); d != 0 {
+		t.Errorf("fallback differs from stdlib PNG: max delta %d, want 0", d)
 	}
 }
 
@@ -201,10 +170,8 @@ func TestDecodeJPEGFastFallback(t *testing.T) {
 // attempts and reaches the fallback error without producing a partial frame.
 func TestDecodeJPEGFastCorruptReturnsError(t *testing.T) {
 	raw := []byte{0xff, 0xd8, 0xff, 0xdb, 0x00}
-	for _, toRGBA := range []bool{false, true} {
-		if img, err := decodeJPEGFast(raw, toRGBA); err == nil {
-			t.Fatalf("decodeJPEGFast(toRGBA=%v) returned %T, want error", toRGBA, img)
-		}
+	if img, err := decodeJPEGFast(raw); err == nil {
+		t.Fatalf("decodeJPEGFast returned %T, want error", img)
 	}
 }
 

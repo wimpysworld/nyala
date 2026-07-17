@@ -61,14 +61,28 @@ expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
   the ten-cell matrix mean full encode by 5.54% and combined q90 decode plus encode
   by 6.21%, with byte-identical payloads across all fixtures.
   Source: [Sixel encoder adoption](./PERFORMANCE.md#sixel-encoder-adoption-2026-07-15).
-- [x] Retain bounded `jpegn.Options{ToRGBA:true}` for live moving Sixel JPEG.
-  The adaptive default and Sixel RGBA cutoff are separate policies, both currently
-  four. The manual 1 to 16 override remains, with values above four keeping native
-  YCbCr. Matched sequential processing falls
-  from 115.005 to 103.014 ms (10.43%). Quality stays stable and the retained live
-  plus State bound rises 1.1%. Block, Kitty, capture, settled Sixel PNG, and backend
-  switches preserve their paths. Source:
+- [x] Supersede bounded `jpegn.Options{ToRGBA:true}` for live Sixel JPEG. Its
+  historical matched sequential result fell from 115.005 to 103.014 ms (10.43%),
+  but Sixel now requests PNG for every frame, so the JPEG-only branch, worker cutoff,
+  and tests are removed. Block retains native-YCbCr q90 JPEG. Source:
   [Bounded Sixel RGBA decode](./PERFORMANCE.md#bounded-sixel-rgba-decode-and-four-worker-policy-2026-07-15).
+- [x] Reject direct native-YCbCr Sixel palette sampling and mapping. It removes
+  full-frame RGBA materialisation but still performs YCbCr-to-RGB maths. It cuts
+  transient B/op by 44.39% to 60.49%, but complete median processing regresses
+  11.57% at 1920x1080 and 11.39% at 2560x1600. The 1.21% gain at 2560x2880 has
+  overlapping process ranges. Sixel's later PNG-only decision removes this JPEG
+  path, so do not add a resolution threshold. Source:
+  [Direct native-YCbCr Sixel follow-up](./PERFORMANCE.md#direct-native-ycbcr-sixel-follow-up-2026-07-17).
+- [x] Compare sustained distinct PNG and q90 JPEG CDP frames through production
+  Sixel processing at 1920x1080, 2560x1600, and 2560x2880. PNG cuts local service
+  p90 by 15.86%, 10.23%, and 0.69%, and cuts Sixel bytes by 49.93%, 46.16%, and
+  38.44%. Its serial delivery-plus-service p90 changes by -2.10%, -3.73%, and
+  +1.26%; the first two process ranges overlap and the torture size regresses.
+  The owner accepts the 1.26% torture-size serial loss for higher fidelity, 38% to
+  50% smaller Sixel output, and one input format. Sixel now uses PNG for every live
+  frame. Real-terminal write, parse, draw, FPS, and tearing measurements remain the
+  validation caveat. Do not add a resolution threshold. Source:
+  [Sustained moving PNG versus q90 JPEG](./PERFORMANCE.md#sustained-moving-png-versus-q90-jpeg-2026-07-17).
 - [x] Reduce the inherited per-frame median-cut sample cap from `2^18` to `2^16`.
   The internal ten-cell still-image matrix cuts mean full encode by 34.71% and
   combined q90 decode plus encode by 30.39% against the prior parallel-LUT
@@ -109,7 +123,9 @@ expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
   micro-path by 48.30% and isolated encode by 3.16% and 2.59%, but complete median
   gains are only 1.25% and 1.12%; both complete-path process ranges overlap baseline,
   and 1080p p90 regresses 0.48%. Output and allocations remain unchanged. Retain
-  `strconv.AppendInt`. Source:
+  `strconv.AppendInt`. A PNG-fed production decode and render recheck also rejects it:
+  median gains are 0.10-0.80%, every range overlaps, and two of three p90 values
+  regress. Source:
   [Sixel decimal formatter rejection](./PERFORMANCE.md#repeat-decimal-formatter-rejection-2026-07-17).
 - [x] Close the other Sixel band research with no code change. Active-bitset,
   transposed, and packed-bank variants did not beat the production-shaped full
@@ -169,7 +185,7 @@ expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
   Re-blit after repaint or resize, and do not let chrome erase or move the bitmap.
   Sources: [Stage 4 architecture](./OVERVIEW.md#tui-library-research) and
   [TUI decisions](./OVERVIEW.md#decisions-tui-research).
-- [ ] Add a user-facing q quality scale for Block and Sixel. Keep q90 as the default,
+- [ ] Add a user-facing JPEG q quality scale for Block only. Keep q90 as the default,
   while allowing users on lower-spec hardware to reduce quality to reach acceptable
   performance. Validate the choices with real-terminal and delivered-frame measurements
   across flat, text, photo, and motion pages. Source:

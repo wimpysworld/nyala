@@ -107,24 +107,25 @@ between the viewer goroutine and the supervisor goroutine.
 
 `screencast.go` implements the listen, decode, ack loop that `chromedp` ships no
 helper for. `startScreencast` caps the stream at the active capture size and picks
-its format from the consumer. At Stage 3, live Block used JPEG quality 80. Live Kitty
-always used PNG. Live Sixel kept the adaptive settled-PNG,
-moving-JPEG-quality-90 policy. Capture always used PNG. On each
+its format from the consumer. At the Stage 3 completion point, live Block used JPEG
+quality 80. Live Kitty always used PNG. Live Sixel used the later adaptive
+settled-PNG, moving-JPEG-quality-90 policy. Capture always used PNG. On each
 `EventScreencastFrame` the handler puts the payload in the bounded receive path and a
 worker performs any required pixel decode. The handler acks every frame on receipt,
 before decode, so a slow decoder cannot consume Chromium's in-flight credit. The live
 `rawFrameQueue` drops the oldest undecoded payload when full, and parallel workers
 publish only the newest completed sequence.
 
-**Later status (2026-07-15).** Live Block now uses JPEG quality 90, matching moving
-Sixel. At 2560x2880, q90 retains 6.39 ms median processing headroom in the matched
-headless benchmark. It improves fidelity over q80 and provides more headroom for
-higher resolutions than q95.
-The adaptive live decode-pool ceiling and the Sixel RGBA safety cutoff are
-independent policies, both currently four. `NYALA_DECODE_WORKERS` keeps its manual 1
-to 16 range. Live moving Sixel JPEG uses `jpegn` fused RGBA only when the actual
-session count is four or fewer; larger manual pools keep native YCbCr. Block native
-YCbCr, Kitty PNG, settled Sixel PNG, and capture PNG remain unchanged.
+**Later status (2026-07-17).** Live Block now uses JPEG quality 90. At 2560x2880,
+q90 retains 6.39 ms median processing headroom in the matched headless benchmark. It
+improves fidelity over q80 and provides more headroom for higher resolutions than
+q95. Kitty and Sixel now use PNG for every live frame, and capture stays PNG. This
+reverses Sixel's adaptive JPEG policy and removes its fused-JPEG RGBA worker cutoff.
+The sustained sweep improved Sixel serial p90 by 2.10% and 3.73% at the two target
+sizes, regressed 1.26% at 2560x2880, and cut terminal Sixel bytes by 38% to 50%.
+The owner accepts the torture-size loss for higher fidelity, expected terminal
+savings, and one Sixel input format. Real-terminal write, parse, draw, FPS, and
+tearing remain to be validated.
 Capture keeps the ordered `frameSlot`, because its bounded bundle must count each
 usable frame in order. A corrupt live frame is already acked and can be dropped
 without stalling the stream.
@@ -420,9 +421,9 @@ reviews it.
 - **Backend-specific screencast formats at Stage 3.** Block used JPEG quality 80
   because it needed pixels and its sub-cell downsample plus colour quantisation hid
   JPEG artefacts. Kitty always requested PNG and passed Chromium's owned base64
-  payload straight to Kitty framing, with no image decode or re-encode. Sixel kept
-  its decoded adaptive PNG/JPEG-quality-90 policy. Capture remained lossless PNG for
-  all backends.
+  payload straight to Kitty framing, with no image decode or re-encode. Sixel's later
+  adaptive policy is now superseded: current Block uses JPEG q90, while Kitty,
+  Sixel, and capture use PNG for every frame.
 - **Decoder-native frame seam.** `render.Frame.Img` is `image.Image`. JPEG stays
   `*image.YCbCr`, PNG keeps its decoder-native layout, and RGBA conversion happens
   only at a consumer that requires it. `Frame.EncodedPNG` carries the direct Kitty

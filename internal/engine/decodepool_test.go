@@ -48,9 +48,6 @@ func seqOf(img *image.RGBA) int { return int(img.RGBAAt(0, 0).R) }
 // involved: the raw frames are fed straight into the queue.
 func drivePool(t *testing.T, e *ChromiumEngine, workers int) (*rawFrameQueue, <-chan render.Frame, func()) {
 	t.Helper()
-	e.mu.Lock()
-	e.decodeWorkers = workers
-	e.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	rawQ := newRawFrameQueue(workers + 1)
 	frames := make(chan render.Frame, 256)
@@ -278,14 +275,14 @@ func TestDecodePoolByteIdenticalToSerial(t *testing.T) {
 }
 
 // TestDecodePoolKittyPassThroughAndFallback pins the Kitty worker selection. PNG
-// remains the exact CDP string even if a stale adaptive format says JPEG, while a
-// non-PNG payload uses decoded pixels and never enters the direct path.
+// remains the exact CDP string, while a non-PNG payload uses decoded pixels and
+// never enters the direct path.
 func TestDecodePoolKittyPassThroughAndFallback(t *testing.T) {
 	t.Run("PNG identity", func(t *testing.T) {
 		payload := pngPayload(t)
 		e := &ChromiumEngine{
 			backend:       "kitty",
-			screencastFmt: screencastFmt{format: page.ScreencastFormatJpeg, quality: movingScreencastQuality},
+			screencastFmt: screencastFmt{format: page.ScreencastFormatPng},
 		}
 		rawQ, frames, stop := drivePool(t, e, 1)
 		defer stop()

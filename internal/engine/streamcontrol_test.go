@@ -31,73 +31,12 @@ func newStreamControlTestEngine(t *testing.T) (*ChromiumEngine, context.Context)
 	return e, ctx
 }
 
-// TestAdaptiveFormatRejectsStaleBackendDecision pauses after the Sixel controller
-// decides to switch, completes a Kitty restart, then releases the decision. The
-// lock-owned production transition must reject JPEG after re-reading the backend.
-func TestAdaptiveFormatRejectsStaleBackendDecision(t *testing.T) {
-	e, ctx := newStreamControlTestEngine(t)
-	var mu sync.Mutex
-	var starts []page.ScreencastFormat
-	e.stopScreencastOp = func(context.Context) error { return nil }
-	e.applySizingOp = func(context.Context, browser.WindowID, int, int, float64) error { return nil }
-	e.startScreencastOp = func(_ context.Context, _, _ int, format screencastFmt) error {
-		mu.Lock()
-		starts = append(starts, format.format)
-		mu.Unlock()
-		return nil
-	}
-
-	decided := make(chan struct{})
-	release := make(chan struct{})
-	switchDone := make(chan struct{})
-	e.switchFmt = func(ctx context.Context, format page.ScreencastFormat, quality int) {
-		close(decided)
-		<-release
-		e.switchScreencastFormat(ctx, format, quality)
-		close(switchDone)
-	}
-	motion := make(chan time.Time, 8)
-	go e.runScreencastFormat(ctx, motion)
-	base := time.Unix(700, 0)
-	motion <- base
-	motion <- base.Add(50 * time.Millisecond)
-	motion <- base.Add(100 * time.Millisecond)
-	select {
-	case <-decided:
-	case <-time.After(time.Second):
-		t.Fatal("adaptive controller did not reach the switch barrier")
-	}
-
-	e.SetBackend("kitty")
-	close(release)
-	select {
-	case <-switchDone:
-	case <-time.After(time.Second):
-		t.Fatal("stale adaptive switch did not return")
-	}
-
-	mu.Lock()
-	gotStarts := slices.Clone(starts)
-	mu.Unlock()
-	if !slices.Equal(gotStarts, []page.ScreencastFormat{page.ScreencastFormatPng}) {
-		t.Fatalf("starts after Kitty restart = %v, want [png]", gotStarts)
-	}
-	e.mu.Lock()
-	gotBackend, gotFormat := e.backend, e.screencastFmt.format
-	e.mu.Unlock()
-	if gotBackend != "kitty" || gotFormat != page.ScreencastFormatPng {
-		t.Fatalf("final stream = backend %q format %q, want Kitty PNG", gotBackend, gotFormat)
-	}
-}
-
-// TestAdaptiveFormatRejectsStaleSession prevents a controller from a cancelled
-// browser session from changing the replacement session's format.
-func TestAdaptiveFormatRejectsStaleSession(t *testing.T) {
-	e, currentCtx := newStreamControlTestEngine(t)
-	staleCtx, cancelStale := context.WithCancel(t.Context())
-	t.Cleanup(cancelStale)
-	stops := 0
-	starts := 0
+// TestSixelFrameBurstAndIdleKeepPNG proves frame arrival rate no longer controls
+// Sixel's format. A rapid burst and an idle period issue no stop or start and leave
+// the active stream at PNG.
+func TestSixelFrameBurstAndIdleKeepPNG(t *testing.T) {
+	e, _ := newStreamControlTestEngine(t)
+	stops, starts := 0, 0
 	e.stopScreencastOp = func(context.Context) error {
 		stops++
 		return nil
@@ -106,19 +45,39 @@ func TestAdaptiveFormatRejectsStaleSession(t *testing.T) {
 		starts++
 		return nil
 	}
-
-	e.switchScreencastFormat(staleCtx, page.ScreencastFormatJpeg, movingScreencastQuality)
-	if stops != 0 || starts != 0 {
-		t.Fatalf("stale session issued %d stops and %d starts", stops, starts)
+	for sessionID := int64(1); sessionID <= 8; sessionID++ {
+		e.receiveScreencastFrame(&page.EventScreencastFrame{SessionID: sessionID})
 	}
+	time.Sleep(25 * time.Millisecond)
 	e.mu.Lock()
-	got := e.screencastFmt.format
+	format := e.screencastFmt.format
 	e.mu.Unlock()
-	if got != page.ScreencastFormatPng {
-		t.Fatalf("replacement session format = %q, want PNG", got)
+	if stops != 0 || starts != 0 || format != page.ScreencastFormatPng {
+		t.Fatalf("burst and idle issued stops=%d starts=%d format=%q, want no controls and PNG", stops, starts, format)
 	}
-	if err := currentCtx.Err(); err != nil {
-		t.Fatalf("replacement session was cancelled: %v", err)
+}
+
+// TestBackendRestartsUseFixedFormats proves live backend switches restart with the
+// destination policy: Block JPEG q90, then Kitty PNG and Sixel PNG.
+func TestBackendRestartsUseFixedFormats(t *testing.T) {
+	e, _ := newStreamControlTestEngine(t)
+	e.stopScreencastOp = func(context.Context) error { return nil }
+	e.applySizingOp = func(context.Context, browser.WindowID, int, int, float64) error { return nil }
+	var starts []screencastFmt
+	e.startScreencastOp = func(_ context.Context, _, _ int, format screencastFmt) error {
+		starts = append(starts, format)
+		return nil
+	}
+	for _, backend := range []string{"block", "kitty", "sixel"} {
+		e.SetBackend(backend)
+	}
+	want := []screencastFmt{
+		{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality},
+		{format: page.ScreencastFormatPng},
+		{format: page.ScreencastFormatPng},
+	}
+	if !slices.Equal(starts, want) {
+		t.Fatalf("backend restart formats = %v, want %v", starts, want)
 	}
 }
 
@@ -331,7 +290,7 @@ func TestRestartOperationFailureCancelsSession(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, ctx := newStreamControlTestEngine(t)
-			e.screencastFmt = screencastFmt{format: page.ScreencastFormatJpeg, quality: movingScreencastQuality}
+			e.screencastFmt = screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality}
 			e.stopScreencastOp = func(context.Context) error {
 				if tc.fail == "stop" {
 					return failure
@@ -368,28 +327,6 @@ func TestRestartOperationFailureCancelsSession(t *testing.T) {
 				t.Fatal("failed restart committed the target PNG format")
 			}
 		})
-	}
-}
-
-// TestAdaptiveStartFailureCancelsSession covers the format-only transition. A failed
-// JPEG start leaves no claimed JPEG stream and triggers session recovery.
-func TestAdaptiveStartFailureCancelsSession(t *testing.T) {
-	e, ctx := newStreamControlTestEngine(t)
-	e.stopScreencastOp = func(context.Context) error { return nil }
-	e.startScreencastOp = func(context.Context, int, int, screencastFmt) error {
-		return errors.New("injected adaptive start failure")
-	}
-	e.switchScreencastFormat(ctx, page.ScreencastFormatJpeg, movingScreencastQuality)
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("adaptive start failure did not cancel the active session")
-	}
-	e.mu.Lock()
-	got := e.screencastFmt.format
-	e.mu.Unlock()
-	if got == page.ScreencastFormatJpeg {
-		t.Fatal("failed adaptive transition committed JPEG")
 	}
 }
 

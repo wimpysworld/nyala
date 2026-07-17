@@ -32,9 +32,9 @@ The reference projects agree on three durable ideas: coalesce frames, reuse buff
 and avoid redundant terminal bytes. Nyala now passes each live Kitty CDP PNG straight
 to terminal framing, so the old transmit-once animation-frame plan does not apply.
 Live Sixel now uses a retained opaque Nyala encoder derived from `mattn/go-sixel`
-v0.0.12, with its adaptive 256-colour policy and dithering off. Moving q90 JPEG uses `jpegn` fused RGBA when the live
-session has at most four decode workers. The matched sequential path is now
-103.014 ms, while State processing is 88.637 ms before terminal work. Static
+v0.0.12, with its adaptive 256-colour policy and dithering off. It receives PNG for
+every live frame. The former moving-JPEG fused-RGBA path measured 103.014 ms matched
+sequential processing and 88.637 ms State processing before terminal work. Static
 fixed-255 reuse later cut warm State time by 45.8% with identical output, but a
 per-frame palette rebuild erased the gain. A later still-image matrix found a
 stateless alternative: a 64K median-cut sample cap cuts combined q90 decode plus
@@ -215,7 +215,7 @@ browsh render blocks with cell diffing**; only brow6el (Sixel + Kitty) and casty
   coalescing half.
 - **Lossless where pixels must stay exact.** Carbonyl requests PNG so JPEG ringing
   does not create phantom cell changes that defeat a frame diff. Nyala now uses PNG
-  for Kitty, settled Sixel, and every capture. Block uses JPEG quality 90 because its
+  for Kitty, Sixel, and every capture. Block uses JPEG quality 90 because its
   quantised output does not preserve source pixels for a lossless diff.
 - **Kitty specifics from brow6el:** double-buffered alternating image IDs for
   flicker-free swap, `f=24` RGB to drop alpha (~25% fewer bytes), 16 KB chunks,
@@ -247,13 +247,13 @@ graphics wins:
 
 ### Theme 7 - Screencast image format
 
-The wire format now follows the backend. Live Block requests JPEG quality 90,
-matching moving Sixel. The direct native-YCbCr path retains measured processing
+The wire format now follows the backend. Live Block requests JPEG quality 90. The
+direct native-YCbCr path retains measured processing
 headroom while improving fidelity over the former q80 default. Live Kitty always
 requests PNG and passes Chromium's owned base64 payload straight to Kitty
-`f=100,t=d,a=T` framing. Live Sixel keeps the existing adaptive policy: decoded PNG
-while settled, decoded JPEG quality 90 while moving, then PNG after settle.
-Diagnostic capture remains lossless PNG on every backend.
+`f=100,t=d,a=T` framing. Live Sixel decodes PNG for every frame. This supersedes the
+former settled-PNG/moving-JPEG state machine. Diagnostic capture remains lossless PNG
+on every backend.
 
 The frame seam no longer expands every decode to a full RGBA plane. `Frame.Img` is
 `image.Image`: JPEG stays as the decoder's `*image.YCbCr`, and PNG keeps its native
@@ -301,9 +301,10 @@ and disables dithering.
 The matched q90 State benchmark is 9.45x faster than the former
 `charmbracelet/x/ansi/sixel` path and cuts allocations by 99.993%.
 
-Live moving q90 Sixel JPEG now asks `jpegn` for fused RGBA when the actual session
-uses four decode workers or fewer. A larger manual pool keeps native YCbCr to bound
-its working set. The matched sequential path falls a further 10.43%; see the
+The former moving-q90 Sixel path asked `jpegn` for fused RGBA when the session used
+four decode workers or fewer. Its matched sequential path fell 10.43%, but the
+PNG-only production decision removed that JPEG-specific branch and worker cutoff.
+The historical result remains in the
 [four-worker policy](#bounded-sixel-rgba-decode-and-four-worker-policy-2026-07-15).
 
 This supersedes the earlier prediction that an encoder swap would be only a
@@ -339,11 +340,11 @@ landed, unmarked items are open.
    (spawn-return, screencast-start, first-frame, first-text). `NYALA_DEBUG_TIMING`
    plus the `just debug-run` recipe and the capture bundle's `load_timings`. Impact
    medium (enables the rest), effort low.
-4b. **[DONE - 67936b1]** **Add the lossless PNG screencast path.** PNG remains the
-   capture format, the settled Sixel format, and the direct Kitty format. The later
-   backend policy at that completion point kept JPEG quality 80 for Block and quality
-   90 for moving Sixel frames. The 2026-07-15 quality decision raises Block to q90.
-   See Theme 7.
+4b. **[DONE - 67936b1]** **Add the lossless PNG screencast path.** PNG is the
+   capture, Sixel, and direct Kitty format. The backend policy at that completion
+   point kept JPEG quality 80 for Block and later added moving q90 Sixel JPEG. The
+   2026-07-15 decision raised Block to q90; the 2026-07-17 decision returned all
+   Sixel frames to PNG. See Theme 7.
 
 Also landed on the load-time theme, beyond the ranked list:
 - **[DONE - 8d288d5]** Publish the overlay at first paint with near-calibrated text,
@@ -454,20 +455,16 @@ Also landed on the load-time theme, beyond the ranked list:
    `utf8.AppendRune`). `BenchmarkGridDiff` on a full-motion 120x40 truecolour grid:
    14440 -> 40 allocs/op, 230861 -> 678 B/op, ~3.3x faster; output byte-identical
    (golden track green). Impact 6, effort low.
-15. **[DONE - backend-specific] Adaptive screencast quality.** Request lossy (JPEG)
-    while the page is in motion
-    and a lossless (PNG) refinement when it settles - casty's model. The aquarium
+15. **[DONE, Sixel policy superseded] Adaptive screencast quality.** The earlier
+    policy requested lossy JPEG while the page moved and lossless PNG after settle.
+    The aquarium
     capture measured PNG at ~1.6 MB and 14-23 ms/frame on photographic full-motion
     content, where the damage-diff gives nothing; PNG stays best for typical and idle
     pages. MEASURED again (bbc, kitty, live): `in_decode_mean_ms ~34`, over the 16.6 ms
     60fps budget, so PNG decode was the ingest ceiling once the paint wall (5) cleared.
-    The final policy is consumer-specific. Block uses JPEG quality 90 without a state
-    machine. Sixel runs the SETTLED(PNG)/MOVING(JPEG-quality-90) machine, so static
-    pages stay crisp and motion avoids the full PNG cost. Kitty is excluded from the
-    state machine and always requests PNG for zero-decode direct framing. Capture
-    forces PNG on every backend, so the corpus stays byte-identical. Onset is two
-    short-gap (<200 ms) frames within 600 ms; settle is 400 ms idle. Impact 6 (motion
-    pages), effort medium. See Theme 7.
+    The current policy is simpler: Block uses JPEG quality 90, while Sixel, Kitty,
+    and capture use PNG for every frame. The Sixel state machine and its JPEG decode
+    policy were removed after the sustained PNG/JPEG sweep. See Theme 7.
 
 ### Tier 3 - larger and strategic
 
@@ -554,14 +551,15 @@ The klauspost zlib BestSpeed swap (recommendation 5) cuts that encode, measured 
 off encode-plus-write, and the encode/write pipeline (recommendation 5) hides the write
 behind the encode, measured `5.8 -> 8.5` out fps. Neither removes the wall: two co-equal
 ~115 ms limits then bounded paint, our encode CPU (zlib of the 22 MB frame) and the
-terminal ingest. Direct PNG later removed Nyala's decoded Kitty encode. The next task
+terminal ingest. Direct PNG later removed Nyala's decoded Kitty encode. The former
+JPEG-in-motion recommendation is superseded by Sixel's PNG-only decision. The next task
 is to measure the terminal's PNG decode and draw; graphics downscaling is outside the
 active roadmap.
 
-### Idea 2 - PNG/JPEG hybrid screencast
+### Idea 2 - backend-specific screencast
 
-Built for the pixel consumers. Block uses JPEG quality 90. Sixel switches to JPEG
-quality 90 in motion and back to PNG after settle. Kitty always stays PNG because it
+Built for the pixel consumers. Block uses JPEG quality 90. Sixel stays PNG for all
+motion and idle frames. Kitty also stays PNG because it
 passes the CDP payload to the terminal without a Nyala decode. The owner's measurement
 put that pass-through at about 1 ms, so a JPEG Kitty path
 is not required. Reconsider it only if terminal-side PNG decoding or drawing becomes
@@ -611,7 +609,7 @@ terminal). Our encode is the wall, not the terminal or tmux. `in_decode_mean_ms 
 is the ingest ceiling, over the 16.6 ms 60fps budget. So the two levers are, in order:
 cut the Kitty encode (recommendation 5, bulk `f=24` and buffer reuse, plus the
 klauspost zlib BestSpeed swap on the live path, measured 22% off encode-plus-write on
-a ~22 MB frame), then JPEG-in-motion for ingest (recommendation 15).
+a ~22 MB frame), then the now-superseded JPEG-in-motion experiment (recommendation 15).
 
 ### Screencast ack decouple + off-goroutine decode [DONE - 7a246f4]
 
@@ -636,8 +634,8 @@ the real ceiling and see which wall is next.
 
 1. [DONE] Idea 1 (GPU accel: `--enable-gpu` plus the flake driver path). Owner verified
    hardware WebGL and aquarium 26 -> 60 fps.
-2. [DONE] JPEG-in-motion (recommendation 15) is active for Sixel. Block stays JPEG
-   quality 90. Kitty stays direct PNG.
+2. [DONE, superseded] JPEG-in-motion was removed from Sixel after the sustained
+   PNG/JPEG sweep. Block stays JPEG quality 90. Sixel and Kitty stay PNG.
 3. NEXT: measure sustained terminal FPS and split Kitty terminal PNG decode/draw from
    Nyala framing. Then address Sixel quantisation and dirty bands. Graphics downscaling
    is outside the active roadmap.
@@ -678,14 +676,13 @@ on a high-entropy aquarium frame `in_decode` 56 -> 29 ms (the Huffman decode and
 ~9 ms fuse average and ~2 ms base64 are the non-SIMD remainder). Net: two decode
 workers now lock 60 where four were needed, so `defaultDecodeWorkers` dropped 3 -> 2.
 
-### Core-adaptive decode-worker default (2026-07-07, superseded 2026-07-15)
+### Core-adaptive decode-worker default (2026-07-07)
 
 At this date, `defaultDecodeWorkers()` returned
-`max(2, runtime.GOMAXPROCS(0)/2)`. The 2026-07-15 Sixel RGBA work superseded that
-uncapped adaptive policy. The current default is
+`max(2, runtime.GOMAXPROCS(0)/2)`. The current bounded default is
 `min(4, max(2, runtime.GOMAXPROCS(0)/2))`; it resolves to 2 on four cores and 4
 from eight cores upwards. `NYALA_DECODE_WORKERS` remains a manual 1 to 16 override.
-See the [bounded Sixel RGBA record](#bounded-sixel-rgba-decode-and-four-worker-policy-2026-07-15).
+The cap bounds live decode concurrency; Sixel's PNG format does not depend on it.
 
 ### Terminal ceiling found (2026-07-07)
 
@@ -1081,10 +1078,9 @@ same final grid.
 JPEG q90 is now the Block default. Against q80, it raises PSNR from 45.234 dB to
 49.021 dB and SSIM from 0.995468 to 0.997696; payload grows from 425,401 to 563,559
 bytes. Its 10.276 ms matched median at 2560x2880 leaves 6.39 ms median processing
-headroom. It matches moving Sixel and provides more headroom for higher resolutions
-than q95.
-Stage 4 will expose a user-facing q quality scale for Block and Sixel, with q90 as the
-default. Lower-spec hardware can use lower quality to reach acceptable performance.
+headroom and provides more headroom for higher resolutions than q95.
+Stage 4 will expose a user-facing JPEG q quality scale for Block only, with q90 as
+the default. Lower-spec hardware can use lower quality to reach acceptable performance.
 q100 is rejected as a candidate: it adds 59.76 percent payload over q95 and leaves too
 little processing headroom. These headless figures exclude terminal decode and draw time.
 
@@ -1461,9 +1457,8 @@ frames through `viewer.State.RenderStreamFrame`, including terminal-byte
 generation. Block therefore ran its q90 native-YCbCr decode hand-off, quadrant
 compose, crisp DOM-text overlay, grid diff, SGR generation, and buffered byte
 write. Kitty validated and framed the owned CDP base64 PNG directly. Sixel used
-the settled production PNG hand-off, adaptive 256-colour palette, retained
-encoder state, and full Sixel encoding. The q90 policy applies to Block here;
-Sixel had returned to its lossless settled format before its frames were retained.
+the production PNG hand-off, adaptive 256-colour palette, retained encoder state,
+and full Sixel encoding. The q90 policy applies only to Block here.
 
 Both exact device surfaces used a 10x20 pixel terminal cell: 192x54 cells for
 1920x1080 and 256x80 cells for 2560x1600. Block used the broadly supported
@@ -1802,17 +1797,21 @@ does not close the real-terminal FPS, decode, draw, byte, or tearing tasks.
 
 #### Bounded Sixel RGBA decode and four-worker policy (2026-07-15)
 
-The retained follow-up uses `jpegn.Options{ToRGBA: true}` only for live moving
-Sixel JPEG when the actual session has one to four decode workers. This Sixel RGBA
-safety cutoff is independent of the adaptive default,
-`min(4, max(2, GOMAXPROCS/2))`. `NYALA_DECODE_WORKERS` still accepts manual values
-from 1 to 16; values above 4 keep decoder-native YCbCr for Sixel.
-The engine records the actual count at session start and clears it at teardown.
-Backend switches read the active backend and count together, so Block remains
-native YCbCr and returning to Sixel restores the correct policy.
+**Superseded 2026-07-17.** Sixel now uses PNG for every CDP frame, so production no
+longer contains this JPEG-specific branch or worker cutoff. The measurement remains
+as historical evidence.
 
-Kitty direct PNG, capture PNG, settled Sixel PNG, Block composition, and the
-generic decode fallback are unchanged.
+The follow-up used `jpegn.Options{ToRGBA: true}` only for live moving
+Sixel JPEG when the actual session had one to four decode workers. This Sixel RGBA
+safety cutoff was independent of the adaptive default,
+`min(4, max(2, GOMAXPROCS/2))`. `NYALA_DECODE_WORKERS` accepted manual values from
+1 to 16; values above 4 kept decoder-native YCbCr for Sixel. The engine recorded the
+actual count at session start and cleared it at teardown. Backend switches read the
+active backend and count together, so Block remained native YCbCr and returning to
+Sixel restored the policy.
+
+Kitty direct PNG, capture PNG, settled Sixel PNG, Block composition, and the generic
+decode fallback were unchanged by that experiment.
 
 The independent matched benchmark used the fixed 2560x2880 q90 4:2:0 frame from
 baseline commit `2560db7`, with five samples per arm.
@@ -1859,6 +1858,132 @@ and SSIM 0.99989759. Retain the fused path and four-worker cap: the matched
 sequential gain is 10.43%, quality is stable, saturated supply exceeds demand, and
 the retained bound rises only 1.1%. The public fixed-palette sweep below became the
 next narrow Sixel target.
+
+##### Direct native-YCbCr Sixel follow-up (2026-07-17)
+
+A later candidate removed the fused full-frame RGBA result and sampled and mapped
+decoder-native YCbCr planes inside Nyala's opaque encoder. Focused tests matched a
+standard materialised-RGBA oracle across all six YCbCr subsampling ratios, odd
+dimensions, non-zero bounds, and padded strides. A bounded refinement cached the
+chroma conversion terms for each shared sample. This removes full-frame RGBA
+materialisation, not the YCbCr-to-RGB maths needed by palette sampling and mapping.
+No candidate code was retained.
+
+The matched gate used commit `52ac91e` as the fused-RGBA baseline. Six rotated
+sequential process pairs used `GOMAXPROCS=4`, `GOGC=100`, four warm-ups, and 30
+retained samples per arm. Timings include q90 JPEG decode and complete Sixel byte
+generation. They do not include terminal parsing or drawing.
+
+| Resolution | Fused RGBA median / p90 | Direct YCbCr median / p90 | Median change | Process-median ranges | B/op change |
+|---|---:|---:|---:|---:|---:|
+| 1920x1080 | 29.495 / 29.829 ms | 32.909 / 33.207 ms | 11.57% slower | 29.162-29.829 / 32.696-33.207 ms | 21.17 -> 8.72 MB, 58.82% lower |
+| 2560x1600, refined | 42.810 / 43.146 ms | 47.686 / 47.980 ms | 11.39% slower | 42.487-43.127 / 47.533-47.875 ms | 40.63 -> 16.06 MB, 60.49% lower |
+| 2560x2880 | 71.653 / 72.239 ms | 70.787 / 71.125 ms | 1.21% faster | 70.927-72.228 / 70.514-71.021 ms | 49.88 -> 27.74 MB, 44.39% lower |
+
+The 2560x2880 timing ranges overlap. The two normal target sizes regress by more
+than 11% with fully separated ranges. The candidate changes payload by 0.245% at
+1920x1080 and 0.069% at 2560x1600 because `jpegn` fused conversion and Go's YCbCr
+conversion can round a channel one level differently; the 2560x2880 payload is
+byte-identical. Allocation counts stay flat at the two target sizes and rise at
+2560x2880.
+
+The decision at this point retained fused RGBA for moving Sixel JPEG because direct
+YCbCr did not lower processing time at the normal target sizes. The later PNG-only
+decision supersedes both JPEG layouts. Do not add a resolution threshold or another
+scalar layout without new profile evidence.
+
+##### Sustained moving PNG versus q90 JPEG (2026-07-17)
+
+The temporary live benchmark kept one Chromium screencast active per format and
+resolution. It drove 110 predetermined full-surface translations of
+the Linux Matters page fixture. An eight-bit marker identifies every state, and
+the gate rejects a wrong marker, wrong dimensions, a repeated adjacent frame hash,
+an invalid Sixel payload, or a JPEG frame that bypasses the then-production
+fused-RGBA decode policy. Each arm discards ten warm-ups and retains 100 frames.
+
+Three fresh processes counterbalance resolution and format order with
+`GOMAXPROCS=4` and `GOGC=100`, giving 300 retained frames per arm. Each retained
+frame measures mutation-to-CDP-event delivery, `decodeLiveFrame`, one reused Sixel
+renderer, and their serial sum. Service p90 is the directly measured decode plus
+encode span. No stage p90 is reported. Projected internal FPS is `1000 / service p90`.
+The serial synthetic result does not exercise the production decode queue,
+worker goroutines, collector, latest-wins drops, or terminal parse and draw.
+Aggregate medians and p90 values pool all 300 retained frames per arm. They are not
+derived from the three process summaries; the per-process p90 table below remains
+the drift check.
+
+The counterbalanced order was:
+
+| Process | Resolution order | Format order within each resolution |
+|---|---|---|
+| 0 | 1920x1080, 2560x1600, 2560x2880 | PNG/JPEG, JPEG/PNG, PNG/JPEG |
+| 1 | 2560x1600, 2560x2880, 1920x1080 | JPEG/PNG, PNG/JPEG, JPEG/PNG |
+| 2 | 2560x2880, 1920x1080, 2560x1600 | PNG/JPEG, JPEG/PNG, PNG/JPEG |
+
+Aggregated results:
+
+| Resolution | Format | Delivery median | Decode median | Encode median | Service median / p90 | Serial synthetic median / p90 | Projected internal FPS | CDP payload median | Sixel payload median |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1920x1080 | PNG | 36.415 ms | 6.124 ms | 18.264 ms | 24.525 / 25.494 ms | 61.087 / 67.348 ms | 39.22 | 482,111 B | 391,493 B |
+| 1920x1080 | JPEG q90 | 36.996 ms | 5.352 ms | 23.500 ms | 29.074 / 30.301 ms | 65.959 / 68.793 ms | 33.00 | 271,328 B | 781,830 B |
+| 2560x1600 | PNG | 43.764 ms | 10.966 ms | 27.368 ms | 38.498 / 39.888 ms | 82.546 / 86.147 ms | 25.07 | 817,780 B | 668,119 B |
+| 2560x1600 | JPEG q90 | 42.753 ms | 8.628 ms | 34.011 ms | 42.789 / 44.434 ms | 85.772 / 89.482 ms | 22.51 | 408,004 B | 1,240,905 B |
+| 2560x2880 | PNG | 70.874 ms | 18.845 ms | 39.313 ms | 58.576 / 62.228 ms | 129.723 / 135.129 ms | 16.07 | 1,265,148 B | 1,086,704 B |
+| 2560x2880 | JPEG q90 | 68.516 ms | 13.390 ms | 46.703 ms | 60.273 / 62.658 ms | 128.906 / 133.447 ms | 15.96 | 564,824 B | 1,765,363 B |
+
+PNG cuts service p90 by 15.86% at 1920x1080 and 10.23% at 2560x1600. It is
+0.69% faster at 2560x2880, within run variation. After CDP delivery, PNG's serial
+synthetic p90 is 2.10% faster, 3.73% faster, and 1.26% slower respectively. PNG
+raises the CDP payload by 77.69%, 100.43%, and 123.99%, but cuts generated Sixel
+bytes by 49.93%, 46.16%, and 38.44%.
+
+Per-process p90 values show the run variation:
+
+| Resolution | PNG service p90 | JPEG service p90 | PNG serial p90 | JPEG serial p90 |
+|---|---|---|---|---|
+| 1920x1080 | 25.723, 25.131, 25.494 ms | 30.366, 30.687, 29.629 ms | 69.050, 65.608, 65.334 ms | 68.548, 68.830, 68.675 ms |
+| 2560x1600 | 40.449, 39.589, 39.698 ms | 45.684, 44.286, 43.830 ms | 84.210, 87.239, 83.964 ms | 88.313, 90.366, 86.950 ms |
+| 2560x2880 | 61.653, 59.315, 62.982 ms | 61.492, 61.488, 64.747 ms | 134.958, 133.861, 136.117 ms | 132.569, 132.473, 134.735 ms |
+
+The resource figures are medians of the three warm per-process allocation probes:
+
+| Resolution | Format | B/op | allocs/op |
+|---|---|---:|---:|
+| 1920x1080 | PNG | 14,344,539 | 1,600 |
+| 1920x1080 | JPEG q90 | 21,193,091 | 1,333 |
+| 2560x1600 | PNG | 26,993,932 | 1,755 |
+| 2560x1600 | JPEG q90 | 40,762,856 | 1,338 |
+| 2560x2880 | PNG | 47,586,793 | 1,720 |
+| 2560x2880 | JPEG q90 | 71,937,814 | 1,333 |
+
+PNG lowers warm B/op by about 32% to 35%, while raising allocation counts.
+Its Sixel output scores 39.69/0.99456, 39.88/0.99325, and 39.22/0.99235
+PSNR/SSIM against the PNG source. JPEG q90 scores 36.98/0.98847,
+37.37/0.98909, and 37.22/0.98930. Source JPEG quality remains at least 45.03 dB
+PSNR and 0.99522 SSIM.
+
+The initial recommendation was to keep q90 JPEG for moving Sixel until terminal
+testing. The product decision below supersedes it. The temporary harness was removed
+after the sweep rather than retain 505 lines of benchmark-only code.
+
+##### PNG-only Sixel production decision (2026-07-17)
+
+Sixel now requests PNG from CDP for every live frame. This reverses the former
+settled-PNG/moving-q90-JPEG state machine and removes its motion controller,
+Sixel-specific JPEG quality, fused-RGBA JPEG worker cutoff, and associated tests.
+Block retains q90 JPEG and native YCbCr because its separate quality and performance
+sweep supports that path. Kitty remains direct PNG. Capture remains PNG.
+
+The owner accepts PNG's 2560x2880 serial synthetic p90 regression of 1.26%, about
+0.09 projected FPS, for its higher fidelity, 38.44% smaller Sixel output at that
+size, and one Sixel input format. At 1920x1080 and 2560x1600, PNG improves serial
+p90 by 2.10% and 3.73%, about 0.31 and 0.43 projected FPS, while cutting Sixel
+output by 49.93% and 46.16%. Do not add a resolution threshold.
+
+This is a synthetic internal-rendering decision, not terminal validation. PNG raises
+the CDP payload by 78% to 124%, while the terminal receives 38% to 50% fewer Sixel
+bytes. Real-terminal write, parse, draw, FPS, and tearing measurements must confirm
+the expected transport benefit when the owner can test at a terminal.
 
 #### Sixel hot-path research and decisions (2026-07-15)
 
@@ -2265,6 +2390,46 @@ Payload sizes, hashes, and maximum repeats remain identical at both sizes. Rejec
 formatter and retain `strconv.AppendInt`; the complete-path gain does not clear run
 variance. The temporary code and tests were removed.
 
+###### PNG-fed repeat formatter recheck (2026-07-17)
+
+The rejected branch formatter was recreated without changing any other RLE work.
+PNG does not increase its scope: the formatter runs once per emitted repeat command,
+not once per source byte or pixel. A lossless frame can change the number and lengths
+of spatial runs, but PNG's smaller Sixel payload does not mean decimal formatting is a
+larger share of the full decode and encode path.
+
+The screen scaled the committed Linux Matters fixture to each size, PNG-encoded it,
+then timed production `decodeLiveFrame` plus one reused Sixel renderer. Each arm ran
+in one fresh process with five retained 700 ms benchmark samples at
+`GOMAXPROCS=4` and `GOGC=100`. The p90 is nearest-rank. All single-process sample
+ranges overlap, so the agreed gate stopped before six rotated process pairs.
+Projected FPS is `1000 / p90`.
+
+| Resolution | Baseline median / p90 | Formatter median / p90 | Baseline range | Formatter range | Median change | Projected FPS change |
+|---|---:|---:|---:|---:|---:|---:|
+| 1920x1080 | 32.770 / 33.260 ms | 32.682 / 33.192 ms | 32.370-33.260 ms | 32.117-33.192 ms | 0.27% faster | 30.07 -> 30.13 |
+| 2560x1600 | 50.990 / 51.369 ms | 50.580 / 52.245 ms | 50.554-51.369 ms | 50.510-52.245 ms | 0.80% faster | 19.47 -> 19.14 |
+| 2560x2880 | 74.880 / 75.690 ms | 74.807 / 75.837 ms | 73.965-75.690 ms | 74.379-75.837 ms | 0.10% faster | 13.21 -> 13.19 |
+
+The 1600p and 2880p p90 values regress by 1.71% and 0.19%. Median B/op and
+allocations remain equivalent within benchmark noise: 14.09 MB/1,877,
+26.64-26.76 MB/1,877-1,879, and 46.86-46.97 MB/1,865-1,867. The formatter itself
+allocates nothing.
+
+Baseline and candidate output match exactly. The three payloads contain 76,683,
+117,788, and 175,808 repeat commands and are 494,251, 754,913, and 1,129,741 bytes.
+Their SHA-256 values are respectively
+`68492d77752b28d9a341c3a7be335c65604befd9721a68bc5cb859baf9c6b13e`,
+`731092516a369c4b694c457aed329d847d2e7d8305c4f349a84041ad11accced`, and
+`7941da46af53bb877ca2bc104b90ab327cea8f7eb5fd411d22e06bc1dce7b241`.
+An exhaustive check also matched `strconv` for every count from 4 through 8192.
+
+The existing moving-frame comparison remains the format-policy evidence. PNG beats
+q90 JPEG service p90 at all three sizes there, but its serial synthetic p90 loses by
+1.26% at 2560x2880. This formatter does not move that decision: its full-path gain is
+inside run variation and two p90 values regress. Retain `strconv.AppendInt`; the
+separate PNG-only product decision governs Sixel input. Keep all temporary code removed.
+
 The supplied optimisation advice maps onto the current encoder as follows:
 
 | Advice | Current assessment |
@@ -2335,23 +2500,22 @@ module replacement. Do not vendor, use `go:linkname`, or add a Nix-only patch.
 |---|---|---|
 | Current fused Block compositor | Exact weighted region average across six ratios, one conversion per terminal sub-cell, existing persistent workers | Keep |
 | Ratio-specialised Block plane sums | The retained 4:2:0 path removes common mapping and loop work without a full RGBA surface; generic fallback preserves every other case | Retained after exactness, paired, CPU, throughput, and tail gates |
-| `jpegn` v0.4.4 `Options.ToRGBA` | MIT, cgo-free packed RGBA; matched sequential Sixel processing falls 10.43% with stable quality and a 1.1% retained-bound increase | Retained for live moving Sixel JPEG at one to four workers |
+| `jpegn` v0.4.4 `Options.ToRGBA` | MIT, cgo-free packed RGBA; historical matched sequential Sixel processing fell 10.43% with stable quality and a 1.1% retained-bound increase | Superseded; Sixel is PNG-only and the JPEG-specific branch is removed |
 | Parallel inherited 15-bit Sixel LUT | Ten-cell full encode falls 5.54% and combined q90 decode plus encode falls 6.21%; all payloads are byte-identical | Retained at up to four workers |
 | 64K median-cut sample cap | Combined q90 decode plus encode falls 30.39% against prior production; colour-category shifts are accepted because all 800 phase-swept features remain visible and structurally intact | Retained |
 | `mattn/go-sixel` fixed 255 palette | Warm State falls 45.8% with byte-identical static output; per-frame rebuild removes the gain | Superseded by the stateless 64K sample-cap decision |
 | Long-count Sixel RLE | Complete six-process benchmark cuts payload 17.17% at 1920x1080 and 21.28% at 2560x1600; timing ranges overlap; 8192 is byte-identical to 4096 at both widths; `mattn/go-sixel` pixels are identical | Retained at 8192, below tmux's native 10000 cap |
 | Rightmost Sixel plane bound | Skips 38.77% and 38.00% of plane columns; complete median falls 8.85% and 12.19% with separated ranges, identical bytes, and unchanged allocation counts | Retained |
 | Other private Sixel band changes | Active-bitset, transposed, and packed-bank variants do not beat production | Closed; defer parallel bands |
-| Current decoder plus row-parallel `draw.Draw` | Uses the existing viewer pool, preserves current pixels, and measured 0 B/op and 0 allocs/op warm | Closed while bounded fused RGBA wins end to end |
+| Current decoder plus row-parallel `draw.Draw` | Uses the existing viewer pool, preserves current pixels, and measured 0 B/op and 0 allocs/op warm | Closed; Sixel's production input is PNG |
 | Standard library `imageutil.DrawYCbCr` | Internal, full-frame, and specialised for four ratios | Use only through the public `draw.Draw` boundary |
 | Go 1.26 `archsimd` | Experimental, `GOEXPERIMENT`-gated, amd64-only | Reject for production |
 | `go-cv-simd` | Stale, BGRA-oriented, and supports fewer input formats | Reject |
 | Jive row workers | Persistent disjoint-row scalar conversion | Prior art only; Block already uses the pattern and the Sixel experiment measured it |
 
-Nyala already pins `jpegn` v0.4.4, so the retained change adds no dependency.
-Its activation boundary is a memory policy, not a decoder capability limit. A
-manual pool above four workers stays native YCbCr because fused RGBA multiplies the
-larger per-frame working set. The next Sixel work follows the cross-track order above.
+Nyala still pins `jpegn` v0.4.4 for Block's live JPEG decode. Sixel's PNG input has no
+JPEG activation boundary or worker cutoff. The next Sixel work follows the
+cross-track order above.
 
 ### Primary sources
 
@@ -2560,9 +2724,9 @@ not motion-only. That is a separate, unbuilt item.
 
 ## Open questions
 
-- RESOLVED: screencast format is backend-specific. Block uses JPEG quality 90, Kitty
-  always uses direct PNG, Sixel adapts between PNG and JPEG quality 90, and capture
-  always uses PNG. Theme 7 records the policy and measurements.
+- RESOLVED: screencast format is backend-specific. Block uses JPEG quality 90.
+  Kitty, Sixel, and capture always use PNG. Theme 7 and the PNG-only decision record
+  the policy and measurements.
 - RESOLVED for current code: a detected tmux, herdr, Zellij, or screen session uses
   the Block backend. Direct Kitty PNG is the standalone-terminal path. Graphics
   passthrough remains conditional work; do not prescribe `U=1` until placeholder
