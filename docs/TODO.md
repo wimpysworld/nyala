@@ -80,9 +80,22 @@ expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
   trade-off. Reopen only if content disappears, merges with its background, becomes
   unreadable, or loses structure. The exact-colour path remains byte-identical. The
   former 32-frame motion and temporal palette-reuse task is not required.
-- [ ] Prototype the 32767 repeat limit in a temporary upstream worktree. Validate the
-  full encoder, both decoders, payload, repeat boundaries, and an old-terminal limit
-  policy before accepting the stage-only result.
+- [x] Benchmark Sixel repeat ceilings 255, 512, 1024, 2048, 4096, 8192, and 32767.
+  Six fresh rotated processes show overlapping complete-path timing ranges, unchanged
+  allocations, and deterministic payload reductions of 17.17% at 1920x1080 and
+  21.28% at 2560x1600. Runs stop at the frame width. Ceilings from 2048 at 1920 and
+  from 4096 at 2560 collapse to byte-identical groups. `mattn/go-sixel` decodes every
+  distinct output to identical pixels. Charm x/ansi v0.11.7 is a known-negative
+  oracle because its token-boundary defect affects any DECGRI, including 255.
+  Source: [Sixel repeat-ceiling benchmark](./PERFORMANCE.md#repeat-ceiling-benchmark-2026-07-16).
+- [x] Raise the Sixel repeat ceiling from 255 to 8192. Focused tests cover literals,
+  the 255 and 8192 boundaries, multi-chunk counts, mandatory graphics bytes, band and
+  colour delimiters, odd heights, the maximum emitted count, warm allocations, and
+  pixel equality against the 255-split output through `mattn/go-sixel`. The 8192
+  ceiling supports wider displays while staying below tmux's native 10000 cap. It is
+  byte-identical to 4096 at both measured frame widths. Charm x/ansi v0.11.7 is no
+  longer a Sixel acceptance oracle. Source:
+  [Sixel repeat-ceiling benchmark](./PERFORMANCE.md#repeat-ceiling-benchmark-2026-07-16).
 - [ ] Send accepted palette or RLE patches upstream. Use a temporary published fork
   plus versioned replacement only for short-lived integration. Do not vendor.
 - [x] Close Sixel band research with no code change. Active-bitset, transposed,

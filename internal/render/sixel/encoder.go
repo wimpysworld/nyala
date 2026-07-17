@@ -18,6 +18,7 @@ import (
 const (
 	specialChNr = byte(0x6d)
 	specialChCr = byte(0x64)
+	repeatLimit = 8192
 )
 
 // opaqueEncoder is the subset of mattn/go-sixel's encoder used by Nyala.
@@ -167,8 +168,10 @@ func appendRun(dst []byte, ch byte, count int) []byte {
 		return dst
 	}
 	sixel := 63 + ch
-	for ; count > 255; count -= 255 {
-		dst = append(dst, '!', '2', '5', '5', sixel)
+	for ; count > repeatLimit; count -= repeatLimit {
+		dst = append(dst, '!')
+		dst = strconv.AppendInt(dst, int64(repeatLimit), 10)
+		dst = append(dst, sixel)
 	}
 	switch count {
 	case 1:

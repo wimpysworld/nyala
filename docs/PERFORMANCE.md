@@ -1935,9 +1935,9 @@ SSIM are better; negative dE mean is better.
 
 The deterministic rare-colour gate generates one opaque fixture at each target
 size. It covers every regular-grid sampling phase with 1 px and 2 px lines, badges,
-blocks, icons, antialias shades, and rare saturated colours. Both `go-sixel` and
-Charm decoders must accept deterministic payloads at the requested dimensions, and
-the production decoder must remain opaque. WCAG 3:1 defines feature visibility.
+blocks, icons, antialias shades, and rare saturated colours. `go-sixel` must decode
+deterministic payloads at the requested dimensions, and the result must remain opaque.
+WCAG 3:1 defines feature visibility.
 CIEDE2000 2.3 and colour-category changes are recorded as quality evidence. Only a
 feature disappearing, merging with its background, becoming unreadable, or losing
 structure rejects the policy.
@@ -1964,11 +1964,10 @@ reject it. The GPL `color-thief` candidate was excluded. `pixelize` was not adde
 because it is a quality reference without published speed evidence and would widen
 the dependency and run-time cost.
 
-Both the production `go-sixel` decoder and the independent Charm decoder accept
-every payload and return the requested dimensions. Quality and opacity use the
-production decoder. Charm's decoder does not reproduce identical pixels or opaque
-alpha at every pixel for these parameterised payloads, so it remains the independent
-protocol acceptance check, not the quality oracle. PSNR is BT.601 luma, SSIM is the
+The `go-sixel` decoder accepts every payload and returns the requested dimensions.
+Quality and opacity use that decoder. Charm x/ansi v0.11.7 is no longer a Sixel
+acceptance oracle because its DECGRI token-boundary defect can over-consume following
+data bytes, including after a legal repeat of 255. PSNR is BT.601 luma, SSIM is the
 validated 11x11 windowed luma implementation, and CIEDE2000 mean and p95 supply the
 colour check. These quality calculations run outside the timed region.
 
@@ -1976,7 +1975,163 @@ colour check. These quality calculations run outside the timed region.
 
 `go-sixel` v0.0.12 already delays each run decision, uses threshold 4, appends into
 a reused output buffer with `strconv.AppendInt`, and performs one final write. It
-splits repeat counts at 255 for compatibility, while DEC STD 070 permits 32767.
+splits repeat counts at 255 as a compatibility policy, not a Sixel grammar limit;
+DEC STD 070 permits 32767. Nyala's retained opaque copy also packs each six-row
+colour plane into one byte per x-coordinate, uses generation counters to skip absent
+colours, detects and emits runs during the plane scan, omits a trailing zero run from
+the payload, and reuses its output, plane, and presence buffers.
+
+###### Source compatibility audit (2026-07-16)
+
+This source audit records the linked snapshots and version boundaries. It replaces
+manual repeat-parser confirmation only for those sources; it does not make unsafe
+older versions compatible or confirm terminal presentation. A 32767 encoder ceiling
+also does not make Nyala emit runs of 32767 pixels: `appendRun` receives a run from
+one image row, so the largest useful count is the actual frame width, 1920 or 2560
+in the target measurements.
+
+| Implementation | Source verdict | Relevant cap or version | Nyala impact |
+|---|---|---|---|
+| [xterm](https://invisible-island.net/xterm/xterm.log.html#xterm_393) | Parses 32767; current output clips safely | Patch 371 bounded allocation; patch 393 fixed out-of-bounds wrapping; graphics width defaults to 1000 | Current xterm normally clips these target widths. Do not use patch 371 alone as the output-safety boundary. |
+| [foot](https://codeberg.org/dnkl/foot/src/branch/master/sixel.c) | Accepts and clips | Active width, default maximum 10000 | Both target widths fit the default. |
+| WezTerm [parser](https://github.com/wezterm/wezterm/blob/76b606ec597a3c0263fa60321548637451c0a547/wezterm-escape-parser/src/parser/sixel.rs) and [renderer](https://github.com/wezterm/wezterm/blob/76b606ec597a3c0263fa60321548637451c0a547/term/src/terminalstate/sixel.rs) | Accepts as `u32` | Commit `76b606ec`; full expansion subject to image allocation | Both target widths are accepted; allocation follows expanded pixels. |
+| [mlterm](https://github.com/arakiken/mlterm) | Accepts in 3.9.3 onward | 3.9.2 and several earlier releases can overrun above 512 | DA1 cannot distinguish the fixed and unsafe versions, so a default above 512 would knowingly expose old mlterm. |
+| [Contour](https://github.com/contour-terminal/contour) | Accepts and clips | Pixels beyond the canvas are discarded | Both target widths are bounded by the canvas. |
+| [Windows Terminal](https://github.com/microsoft/terminal) | Accepts | Sixel support from 1.22; parser cap 65535 | Both target widths are accepted. |
+| [Konsole](https://invent.kde.org/utilities/konsole) | Accepts and clips | Maximum width 16384 | Both target widths are accepted. |
+| tmux [native parser](https://github.com/tmux/tmux/blob/e50545f4516bebb2efb027d077895bd8ca9727a3/image-sixel.c) and [passthrough](https://github.com/tmux/tmux/blob/e50545f4516bebb2efb027d077895bd8ca9727a3/input.c) | Native parser rejects above 10000; passthrough preserves | Commit `e50545f4`; 10000 native cap | Nyala's 1920 and 2560 maximum useful runs stay below the native cap. |
+| [Zellij](https://github.com/zellij-org/zellij) | Accepts 32767 | Expands then re-encodes | Compatible, with memory cost proportional to expanded pixels. |
+| [herdr](https://github.com/ogulcancelik/herdr/blob/4a3302d19a2baa3a33e910e0088c24e780905b90/vendor/libghostty-vt/src/terminal/stream_terminal.zig#L301-L306) | Discards every Sixel DCS | Current source | No repeat ceiling can make Sixel work through herdr. |
+| [GNU Screen](https://sources.debian.org/src/screen/4.9.1-3/ansi.c/) | No usable Sixel path | `MAXSTR` is 768, leaving a 767-byte DCS payload; audited GNU commit `9d8b0ff3` | Frames are corrupted regardless of repeat ceiling. |
+| [Chafa](https://github.com/hpjansson/chafa/blob/61a9ae47415fd9c26c22e86854217b6e66c130e2/chafa/internal/chafa-sixel-renderer.c#L201-L235) | Encoder splits at 255; no Sixel image decoder | Policy unchanged since 2019 | Evidence for conservative output only, not decoder acceptance. |
+| [`mattn/go-sixel`](https://github.com/mattn/go-sixel/blob/v0.0.12/sixel.go) | Encoder splits at 255; decoder accepts 32767 | v0.0.12 | Confirms Nyala's current policy and long-count decoding, not terminal support. |
+| [libsixel](https://github.com/saitoha/libsixel/blob/v1.8.7-r2/src/tosixel.c#L150-L180) | High-level encoder is unlimited; decoder accepts through 65535; low-level API and `-R` split at 255 | Maintained v1.8.7-r2 | Direct precedent for both modern and compatibility policies. |
+| [brow6el](https://codeberg.org/janantos/brow6el) | Splits at 255 through the libsixel low-level default | Current source | Browser prior art retains the conservative policy. |
+
+The audited current Sixel-capable parsers accept counts sufficient for Nyala's real
+widths, sometimes by clipping to an implementation or canvas limit. This excludes
+herdr and GNU Screen, which provide no usable Sixel path, and does not claim xterm
+displays the full target width. Runs above 512 can crash old mlterm, and Nyala cannot
+infer the mlterm version from DA1. That is a known legacy trade-off, not evidence that
+255 is the Sixel grammar limit. Nyala now uses 8192: it covers both current frame
+widths and single runs up to 8192 without splitting and stays below tmux's native
+10000 cap.
+
+###### Repeat-ceiling benchmark (2026-07-16)
+
+This is an internal byte-generation measurement, not delivered terminal FPS. A
+temporary harness scaled the representative committed Linux Matters frame to each
+target size, encoded it as q90 JPEG, and decoded it through Nyala's `jpegn` RGBA path.
+The complete arm then ran the production-shaped palette, mapping, band, and RLE path.
+The isolated arm reused the resulting paletted frame. Six fresh rotated processes
+used four warm-ups and 30 retained samples for each distinct arm. Hashing, payload
+copies, and decoder checks stayed outside the timed regions. Median and p90 below are
+the medians of the six process statistics; the range is the six process-median range.
+Estimated internal FPS is `1000 / p90`.
+
+| Size | Ceiling | Complete median / p90 | Process median range | FPS | Allocs/op | B/op | Payload | Payload vs 255 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1920x1080 | 255 | 24.500 / 25.138 ms | 24.300-24.795 ms | 39.78 | 1,306 | 5,100,135 | 731,023 B | baseline |
+| 1920x1080 | 512 | 24.420 / 25.094 ms | 24.301-24.711 ms | 39.85 | 1,306 | 5,100,254 | 644,272 B | -11.87% |
+| 1920x1080 | 1024 | 24.290 / 24.833 ms | 24.169-24.493 ms | 40.27 | 1,306 | 5,100,399 | 615,239 B | -15.84% |
+| 1920x1080 | 2048 | 24.248 / 24.929 ms | 24.082-24.554 ms | 40.11 | 1,306 | 5,100,341 | 605,517 B | -17.17% |
+| 2560x1600 | 255 | 38.783 / 39.538 ms | 38.414-39.039 ms | 25.29 | 1,306 | 9,212,497 | 1,274,116 B | baseline |
+| 2560x1600 | 512 | 38.447 / 39.215 ms | 38.346-38.563 ms | 25.50 | 1,306 | 9,212,549 | 1,101,472 B | -13.55% |
+| 2560x1600 | 1024 | 38.339 / 39.199 ms | 38.084-38.754 ms | 25.51 | 1,306 | 9,212,570 | 1,028,324 B | -19.29% |
+| 2560x1600 | 2048 | 38.275 / 39.459 ms | 37.945-38.573 ms | 25.34 | 1,306 | 9,212,593 | 1,003,227 B | -21.26% |
+| 2560x1600 | 4096 | 38.263 / 39.312 ms | 37.999-38.468 ms | 25.44 | 1,306 | 9,212,538 | 1,002,987 B | -21.28% |
+
+The complete-path process ranges overlap baseline. Treat the median reductions of
+0.33%, 0.86%, and 1.03% at 1920x1080, and 0.87%, 1.14%, 1.31%, and 1.34% at
+2560x1600, as directional rather than proven latency gains. Allocations are unchanged.
+The deterministic payload reduction is the strong result.
+
+| Size | Ceiling | Isolated median / p90 | Process median range | FPS | Allocs/op | B/op |
+|---|---:|---:|---:|---:|---:|---:|
+| 1920x1080 | 255 | 11.168 / 11.218 ms | 11.044-11.216 ms | 89.15 | 0 | 0 |
+| 1920x1080 | 512 | 11.017 / 11.098 ms | 10.840-11.100 ms | 90.11 | 0 | <1 |
+| 1920x1080 | 1024 | 10.976 / 11.105 ms | 10.900-11.032 ms | 90.05 | 0 | <1 |
+| 1920x1080 | 2048 | 10.945 / 11.065 ms | 10.718-11.022 ms | 90.38 | 0 | <1 |
+| 2560x1600 | 255 | 21.339 / 21.517 ms | 21.299-21.372 ms | 46.47 | 0 | 0 |
+| 2560x1600 | 512 | 21.106 / 21.210 ms | 20.827-21.223 ms | 47.15 | 0 | <1 |
+| 2560x1600 | 1024 | 20.939 / 21.058 ms | 20.595-21.045 ms | 47.49 | 0 | <1 |
+| 2560x1600 | 2048 | 20.954 / 21.125 ms | 20.679-21.048 ms | 47.34 | 0 | <1 |
+| 2560x1600 | 4096 | 20.854 / 21.081 ms | 20.846-21.043 ms | 47.44 | 0 | <1 |
+
+The largest logical runs were the frame widths, 1920 and 2560. At 1920x1080,
+ceilings 2048, 4096, 8192, and 32767 produced byte-identical output. At 2560x1600,
+4096, 8192, and 32767 were byte-identical. The distinct payload hashes were:
+
+| Size | Ceiling or equivalence group | SHA-256 |
+|---|---|---|
+| 1920x1080 | 255 | `c512adfd90cd90861566ccd933d1516ae6ca0084cf96ebfb988b65d989260526` |
+| 1920x1080 | 512 | `295ae8108969bc42c48866932ccb21c6bda0a3185d6941a55cbbd7b8223d5639` |
+| 1920x1080 | 1024 | `2de24d2ccd9d002f85a2fb368a966be452cce11cc2ad2cff2ce006497f4e20b9` |
+| 1920x1080 | 2048, 4096, 8192, 32767 | `08b716a9328bdf0ecd577536f541090795579300e32b54642cb49d4c03608eda` |
+| 2560x1600 | 255 | `1396a9af384f944ae26a379f7f7fe10631fb7f11c8f47705c7cd80a0e365eb6e` |
+| 2560x1600 | 512 | `6b8ea4c7b65ecd3234b678f058ef51abc2eb8bf8face0ac3262a443f3994631d` |
+| 2560x1600 | 1024 | `eb723024a5b20d9225baffbb18cbb623040ab5ebe59e3b0cae8ea6d8184117c3` |
+| 2560x1600 | 2048 | `ef8d232c057c9aabe3da879f5d934e96fe513bc0879d83e5cc5fd142e8a29b35` |
+| 2560x1600 | 4096, 8192, 32767 | `6442cf416516a3be710fdb4b8723007987e2f5be665e97120e953111be9cd976` |
+
+`mattn/go-sixel` decoded every distinct output to pixels identical to the 255 arm.
+Charm x/ansi v0.11.7 did not. Its decoder has a token-boundary defect that can
+over-consume Sixel data bytes following any DECGRI token, including a legal repeat
+of 255. Charm was removed from Sixel benchmark acceptance checks; its result is not
+evidence that long repeats are incompatible.
+
+Nyala uses 8192. At the measured widths it produces the same bytes as 4096, so it
+inherits the exact 17.17% and 21.28% payload reductions above. It also supports single
+runs up to 8192 without splitting and remains below tmux's native 10000 per-repeat
+cap. The benchmark itself changed no production code; the later focused change
+implemented the selected ceiling.
+
+###### Pre-change internal encoder profile (2026-07-16)
+
+This is an internal byte-generation measurement, not delivered terminal FPS. A
+temporary untracked harness scaled the committed Linux Matters fixture to both target
+sizes. The pre-palettised arm isolates band construction, plane scanning, RLE,
+framing, and the final write; it is not RLE alone. Three fresh processes supplied 15
+samples per cell with `GOMAXPROCS=4` and `GOGC=100`.
+
+| Path | 1920x1080 median / p90 | 2560x1600 median / p90 | Warm allocation |
+|---|---:|---:|---:|
+| Full pre-change RGBA encode | 20.109 / 20.238 ms | 30.034 / 30.166 ms | 5.15 / 9.36 MB, 1,309 allocs |
+| Pre-palettised band and RLE | 7.295 / 7.364 ms | 13.941 / 14.002 ms | 0 B, 0 allocs |
+
+In the isolated 2560x1600 CPU profile, full-width plane scanning and run detection
+account for about 76% of encoder CPU, six-row scatter for about 14%, and `appendRun`
+for about 7%. `appendRun` is about 3% of the full RGBA profile. The full-path
+allocations belong to palette selection and indexed-image construction, not warm RLE.
+
+A counter over the same frames found 7,650 and 11,447 present colour planes. The
+current scans 14,688,000 and 29,304,320 plane columns respectively. Stopping at each
+plane's rightmost non-zero column would reduce those counts by a theoretical 39.43%
+and 38.68%, but maintaining that bound adds work to every source-pixel scatter.
+Earlier bounded-plane variants did not beat the production-shaped full encoder, so
+this count is a candidate ceiling, not a predicted speed-up. The payloads were
+514,483 and 886,917 bytes. The warm pre-palettised path confirms there is no RLE
+allocation or pooling target.
+
+The supplied optimisation advice maps onto the current encoder as follows:
+
+| Advice | Current assessment |
+|---|---|
+| Packed six-pixel columns | Already present as one six-bit byte per colour and x-coordinate; the earlier packed-bank rewrite was slower. |
+| Colour-presence filters | Already present through generation counters; only colours seen in a band are scanned. Extra filters duplicate this work. |
+| Fused generation and RLE | Run detection and emission are fused in the plane scan. Pixel scatter and plane scan remain separate; merging them needs a broad layout rewrite and is closed. |
+| Specialised emission | Threshold-4 literals, retained output, direct appends, and one final write already exist. The decimal table remains a low-ceiling final experiment. |
+| Trailing blank omission | Trailing zero runs are not emitted, but their columns are scanned. A rightmost bound is the only bounded follow-up. |
+| Branch reduction | The run-change branch is visible inside the dominant scan, but no separate exact candidate avoids the surrounding work. |
+| Buffer ownership and pooling | The renderer owns and reuses all RLE scratch; the isolated warm path is zero-allocation. |
+| Band parallelism | Prior production-shaped variants did not win; keep it closed. |
+| SIMD | Reject for this compatibility path unless a future profile and portable upstream implementation change the case. |
+
+Generic RLE libraries do not model Sixel delimiters and repeat syntax. Transparency
+has already been removed from Nyala's opaque path. Temporal or motion state, another
+packed-bank design, a broad fusion rewrite, extra pooling, and a huge benchmark
+matrix are not required unless a future profile changes the decision. Chafa is
+LGPLv3+ prior art only; no Chafa code is copied.
 
 The temporary exact-payload harness processed 36.5 million band bytes across 22,003
 planes. These are stage-only results and do not measure a complete candidate path.
@@ -1988,13 +2143,16 @@ planes. These are stage-only results and do not measure a complete candidate pat
 | 255 split, decimal table | 5.1% faster | Byte identical to current |
 
 The 1.582 ms stage saving is an arithmetic ceiling of about 1.55% against the local
-102.227 ms full baseline, not a measured full-path gain. One harness decoded exact
-pixels and boundaries through both decoders. Another scratch validation failed
-because its terminator was malformed. Cross-decoder compatibility therefore remains
-unconfirmed until a full fork test. Counts above 255 can also affect old
-VT240-class terminals. Prototype 32767 in a temporary upstream worktree, test the
-full encoder and both decoders, and retain an old-limit policy before proposing an
-upstream patch.
+102.227 ms full baseline, not a measured full-path gain. The complete benchmark above
+supersedes that estimate. The focused production change raises only the repeat ceiling
+from 255 to 8192. Tests cover repeat transitions, multi-chunk counts, mandatory data
+bytes, delimiters, odd heights, decoded pixels, and warm allocations. `mattn/go-sixel`
+is the decoded-pixel oracle. Charm x/ansi v0.11.7 is not an RLE correctness oracle
+because its token-boundary defect also affects 255 repeats.
+
+The encoder can emit a harmless redundant `$` immediately after an inter-band `-`.
+Removing it is a separate optional byte-level micro-experiment, not a performance
+priority and not part of the steps above.
 
 ##### Band track
 
@@ -2013,11 +2171,10 @@ parallel bands.
 
 ##### Cross-track decision
 
-Keep adaptive 256 with the stateless 64K sample cap as production policy. Next
-validate long-count RLE in a temporary upstream worktree. The band
-track has no candidate to combine. Send only accepted wins upstream. If short-lived integration
-needs a fork, publish a versioned fork and use a temporary module replacement. Do
-not vendor, use `go:linkname`, or add a Nix-only patch.
+Keep adaptive 256 with the stateless 64K sample cap and the 8192 repeat ceiling. The
+band track has no candidate to combine. Send only accepted wins upstream.
+If short-lived integration needs a fork, publish a versioned fork and use a temporary
+module replacement. Do not vendor, use `go:linkname`, or add a Nix-only patch.
 
 ### Option assessment
 
@@ -2029,7 +2186,7 @@ not vendor, use `go:linkname`, or add a Nix-only patch.
 | Parallel inherited 15-bit Sixel LUT | Ten-cell full encode falls 5.54% and combined q90 decode plus encode falls 6.21%; all payloads are byte-identical | Retained at up to four workers |
 | 64K median-cut sample cap | Combined q90 decode plus encode falls 30.39% against prior production; colour-category shifts are accepted because all 800 phase-swept features remain visible and structurally intact | Retained |
 | `mattn/go-sixel` fixed 255 palette | Warm State falls 45.8% with byte-identical static output; per-frame rebuild removes the gain | Superseded by the stateless 64K sample-cap decision |
-| Long-count Sixel RLE | Stage-only harness saves 6.4% and cuts payload 18.9%; complete-path gain and compatibility are unconfirmed | Test 32767 in a temporary upstream worktree |
+| Long-count Sixel RLE | Complete six-process benchmark cuts payload 17.17% at 1920x1080 and 21.28% at 2560x1600; timing ranges overlap; 8192 is byte-identical to 4096 at both widths; `mattn/go-sixel` pixels are identical | Retained at 8192, below tmux's native 10000 cap |
 | Private Sixel band changes | Production-shaped variants do not beat the current 17.24 ms full encoder | Closed with no change; defer parallel bands |
 | Current decoder plus row-parallel `draw.Draw` | Uses the existing viewer pool, preserves current pixels, and measured 0 B/op and 0 allocs/op warm | Closed while bounded fused RGBA wins end to end |
 | Standard library `imageutil.DrawYCbCr` | Internal, full-frame, and specialised for four ratios | Use only through the public `draw.Draw` boundary |

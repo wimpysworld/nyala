@@ -3,6 +3,7 @@ package sixel
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -76,6 +77,117 @@ func TestRenderEmitsFramedDCSPayload(t *testing.T) {
 	if !strings.ContainsRune(body, '#') {
 		t.Errorf("body has no colour introducer %q", '#')
 	}
+}
+
+func TestAppendRunRepeatBoundaries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		count int
+		want  string
+	}{
+		{count: 0, want: ""},
+		{count: 1, want: "@"},
+		{count: 2, want: "@@"},
+		{count: 3, want: "@@@"},
+		{count: 4, want: "!4@"},
+		{count: 254, want: "!254@"},
+		{count: 255, want: "!255@"},
+		{count: 256, want: "!256@"},
+		{count: repeatLimit - 1, want: "!8191@"},
+		{count: repeatLimit, want: "!8192@"},
+		{count: repeatLimit + 1, want: "!8192@@"},
+		{count: repeatLimit * 2, want: "!8192@!8192@"},
+		{count: repeatLimit*2 + 3, want: "!8192@!8192@@@@"},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprint(tt.count), func(t *testing.T) {
+			got := appendRun(nil, 1, tt.count)
+			if string(got) != tt.want {
+				t.Fatalf("appendRun count %d = %q, want %q", tt.count, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLongRunsPreserveBandsAndPixels(t *testing.T) {
+	t.Parallel()
+	const width, height = repeatLimit + 9, 7
+	palette := color.Palette{color.RGBA{R: 0xff, A: 0xff}}
+	src := image.NewPaletted(image.Rect(0, 0, width, height), palette)
+	var payload bytes.Buffer
+	if err := newOpaqueEncoder(&payload).encode(src); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if want := "#0!8192~!9~-$#0!8192@!9@"; !bytes.Contains(payload.Bytes(), []byte(want)) {
+		t.Fatalf("payload does not preserve the expected run, band, and colour delimiters: want fragment %q", want)
+	}
+	for _, count := range sixelRepeatCounts(payload.Bytes()) {
+		if count > repeatLimit {
+			t.Fatalf("emitted repeat %d exceeds limit %d", count, repeatLimit)
+		}
+	}
+	var decodedImage image.Image
+	if err := gosixel.NewDecoder(bytes.NewReader(payload.Bytes())).Decode(&decodedImage); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	decoded := image.NewRGBA(src.Bounds())
+	draw.Draw(decoded, decoded.Bounds(), decodedImage, decodedImage.Bounds().Min, draw.Src)
+	var baselinePayload bytes.Buffer
+	baseline := gosixel.NewEncoder(&baselinePayload)
+	baseline.Colors = 256
+	if err := baseline.Encode(src); err != nil {
+		t.Fatalf("encode 255 baseline: %v", err)
+	}
+	var baselineImage image.Image
+	if err := gosixel.NewDecoder(bytes.NewReader(baselinePayload.Bytes())).Decode(&baselineImage); err != nil {
+		t.Fatalf("decode 255 baseline: %v", err)
+	}
+	baselineRGBA := image.NewRGBA(src.Bounds())
+	draw.Draw(baselineRGBA, baselineRGBA.Bounds(), baselineImage, baselineImage.Bounds().Min, draw.Src)
+	if !bytes.Equal(decoded.Pix, baselineRGBA.Pix) {
+		t.Fatal("decoded pixels differ from the 255-split baseline")
+	}
+	want := image.NewRGBA(src.Bounds())
+	draw.Draw(want, want.Bounds(), src, src.Bounds().Min, draw.Src)
+	if !bytes.Equal(decoded.Pix, want.Pix) {
+		t.Fatal("decoded pixels differ from the source")
+	}
+}
+
+func TestLongRunWarmEncodeDoesNotAllocate(t *testing.T) {
+	palette := color.Palette{color.Black}
+	src := image.NewPaletted(image.Rect(0, 0, repeatLimit+9, 7), palette)
+	enc := newOpaqueEncoder(io.Discard)
+	if err := enc.encode(src); err != nil {
+		t.Fatal(err)
+	}
+	var encodeErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		if encodeErr == nil {
+			encodeErr = enc.encode(src)
+		}
+	})
+	if encodeErr != nil {
+		t.Fatal(encodeErr)
+	}
+	if allocs != 0 {
+		t.Fatalf("warm long-run encode allocs = %.0f, want 0", allocs)
+	}
+}
+
+func sixelRepeatCounts(payload []byte) []int {
+	var counts []int
+	for i := 0; i < len(payload); i++ {
+		if payload[i] != '!' {
+			continue
+		}
+		count := 0
+		for i++; i < len(payload) && payload[i] >= '0' && payload[i] <= '9'; i++ {
+			count = count*10 + int(payload[i]-'0')
+		}
+		counts = append(counts, count)
+	}
+	return counts
 }
 
 func TestRenderNilImageEmitsEmptyFramedPayload(t *testing.T) {
@@ -233,16 +345,14 @@ func BenchmarkOpaqueEncoderComparison(b *testing.B) {
 	if err := newOpaqueEncoder(&candidate).encode(img); err != nil {
 		b.Fatal(err)
 	}
-	if !bytes.Equal(candidate.Bytes(), baseline.Bytes()) {
-		b.Fatal("opaque payload differs from go-sixel v0.0.12")
-	}
-	payloadBytes := baseline.Len()
+	baselineBytes := baseline.Len()
+	candidateBytes := candidate.Len()
 
 	b.Run("upstream-alpha", func(b *testing.B) {
 		encoder := gosixel.NewEncoder(io.Discard)
 		encoder.Colors = 256
 		b.ReportAllocs()
-		b.ReportMetric(float64(payloadBytes), "payload-B")
+		b.ReportMetric(float64(baselineBytes), "payload-B")
 		for range b.N {
 			if err := encoder.Encode(img); err != nil {
 				b.Fatal(err)
@@ -252,7 +362,7 @@ func BenchmarkOpaqueEncoderComparison(b *testing.B) {
 	b.Run("nyala-opaque", func(b *testing.B) {
 		encoder := newOpaqueEncoder(io.Discard)
 		b.ReportAllocs()
-		b.ReportMetric(float64(payloadBytes), "payload-B")
+		b.ReportMetric(float64(candidateBytes), "payload-B")
 		for range b.N {
 			if err := encoder.encode(img); err != nil {
 				b.Fatal(err)
