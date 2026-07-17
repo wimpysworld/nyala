@@ -19,18 +19,25 @@ const (
 	specialChNr = byte(0x6d)
 	specialChCr = byte(0x64)
 	repeatLimit = 8192
+
+	parallelBandWorkThreshold = 39_000_000
 )
+
+type bandScratch struct {
+	out    []byte
+	bitset []byte
+	seen   []uint16
+	right  []int
+	gen    uint16
+}
 
 // opaqueEncoder is the subset of mattn/go-sixel's encoder used by Nyala.
 // CDP frames are composited and opaque, so it omits alpha handling.
 type opaqueEncoder struct {
 	w io.Writer
 
-	outScratch    []byte
-	bitsetScratch []byte
-	seenScratch   []uint16
-	rightScratch  []int
-	seenGen       uint16
+	outScratch []byte
+	band       []bandScratch
 }
 
 func newOpaqueEncoder(w io.Writer) *opaqueEncoder { return &opaqueEncoder{w: w} }
@@ -41,7 +48,6 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 	if width == 0 || height == 0 {
 		return nil
 	}
-	srcBounds := img.Bounds()
 	var paletted *image.Paletted
 	switch p := img.(type) {
 	case *image.Paletted:
@@ -74,37 +80,117 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 		out = appendColourRegister(out, n, r*100/0xffff, g*100/0xffff, b*100/0xffff)
 	}
 
+	out = e.appendBands(out, paletted)
+	out = append(out, 0x1b, 0x5c)
+	e.outScratch = out[:0]
+	_, err := e.w.Write(out)
+	return err
+}
+
+func (e *opaqueEncoder) appendBands(dst []byte, paletted *image.Paletted) []byte {
+	bounds := paletted.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	bandCount := (height + 5) / 6
+	workers := sixelWorkerCount()
+	if !parallelBands(len(paletted.Palette), width, bandCount, workers) ||
+		!parallelBands(presentColourCount(paletted), width, bandCount, workers) {
+		e.growBandScratch(1)
+		return appendBandRange(dst, paletted, &e.band[0], 0, bandCount)
+	}
+	return e.appendBandsParallel(dst, paletted, workers)
+}
+
+func (e *opaqueEncoder) appendBandsParallel(dst []byte, paletted *image.Paletted, workers int) []byte {
+	height := paletted.Bounds().Dy()
+	bandCount := (height + 5) / 6
+	completeBands := height / 6
+	workers = min(workers, completeBands)
+	e.growBandScratch(workers)
+	var wg sync.WaitGroup
+	for worker := range workers {
+		lo, hi := completeBands*worker/workers, completeBands*(worker+1)/workers
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			scratch := &e.band[worker]
+			scratch.out = appendBandRange(scratch.out[:0], paletted, scratch, lo, hi)
+		}()
+	}
+	wg.Wait()
+	for worker := range workers {
+		dst = append(dst, e.band[worker].out...)
+	}
+	if completeBands < bandCount {
+		dst = appendBandRange(dst, paletted, &e.band[0], completeBands, bandCount)
+	}
+	return dst
+}
+
+func (e *opaqueEncoder) growBandScratch(count int) {
+	if cap(e.band) < count {
+		e.band = append(e.band[:cap(e.band)], make([]bandScratch, count-cap(e.band))...)
+	}
+	e.band = e.band[:count]
+}
+
+func parallelBands(presentColours, width, bandCount, workers int) bool {
+	return workers > 1 && bandCount >= 120 && presentColours*width*bandCount >= parallelBandWorkThreshold
+}
+
+func presentColourCount(paletted *image.Paletted) int {
+	var present [256]bool
+	count := 0
+	bounds := paletted.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		offset := paletted.PixOffset(bounds.Min.X, y)
+		for _, pix := range paletted.Pix[offset : offset+bounds.Dx()] {
+			if !present[pix] {
+				present[pix] = true
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func appendBandRange(dst []byte, paletted *image.Paletted, scratch *bandScratch, first, last int) []byte {
+	srcBounds := paletted.Bounds()
+	width := srcBounds.Dx()
+	paletteSize := len(paletted.Palette)
 	bufSize := width * paletteSize
-	buf := e.bitsetScratch
+	buf := scratch.bitset
 	if cap(buf) < bufSize {
 		buf = make([]byte, bufSize)
 	} else {
 		buf = buf[:bufSize]
 		clear(buf)
 	}
-	seen := e.seenScratch
+	seen := scratch.seen
 	if cap(seen) < paletteSize {
 		seen = make([]uint16, paletteSize)
 	} else {
 		seen = seen[:paletteSize]
 	}
-	right := e.rightScratch
+	right := scratch.right
 	if cap(right) < paletteSize {
 		right = make([]int, paletteSize)
 	} else {
 		right = right[:paletteSize]
 		clear(right)
 	}
-	ch0 := specialChNr
-	for z := range (height + 5) / 6 {
-		e.seenGen++
-		if e.seenGen == 0 {
+	ch0 := specialChCr
+	if first == 0 {
+		ch0 = specialChNr
+	}
+	for z := first; z < last; z++ {
+		scratch.gen++
+		if scratch.gen == 0 {
 			clear(seen)
-			e.seenGen = 1
+			scratch.gen = 1
 		}
-		gen := e.seenGen
+		gen := scratch.gen
 		if z > 0 {
-			out = append(out, '-')
+			dst = append(dst, '-')
 		}
 		for p := range 6 {
 			y := z*6 + p
@@ -128,16 +214,16 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 				continue
 			}
 			if ch0 == specialChCr {
-				out = append(out, '$')
+				dst = append(dst, '$')
 			}
-			out = appendColourSelect(out, n)
+			dst = appendColourSelect(dst, n)
 			count := 0
 			base := width * n
 			for x := range right[n] {
 				ch := buf[base+x]
 				buf[base+x] = 0
 				if ch0 < 0x40 && ch != ch0 {
-					out = appendRun(out, ch0, count)
+					dst = appendRun(dst, ch0, count)
 					count = 0
 				}
 				ch0 = ch
@@ -145,18 +231,15 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 			}
 			right[n] = 0
 			if ch0 != 0 {
-				out = appendRun(out, ch0, count)
+				dst = appendRun(dst, ch0, count)
 			}
 			ch0 = specialChCr
 		}
 	}
-	out = append(out, 0x1b, 0x5c)
-	e.outScratch = out[:0]
-	e.bitsetScratch = buf
-	e.seenScratch = seen
-	e.rightScratch = right
-	_, err := e.w.Write(out)
-	return err
+	scratch.bitset = buf
+	scratch.seen = seen
+	scratch.right = right
+	return dst
 }
 
 func appendColourRegister(dst []byte, n int, r, g, b uint32) []byte {
@@ -242,7 +325,7 @@ func newPaletteLUT(palette color.Palette) []uint8 {
 		pr[i], pg[i], pb[i] = int32(r>>8), int32(g>>8), int32(b>>8)
 	}
 	lut := make([]uint8, 1<<15)
-	workers := min(4, runtime.GOMAXPROCS(0))
+	workers := sixelWorkerCount()
 	var wg sync.WaitGroup
 	for worker := range workers {
 		lo, hi := len(lut)*worker/workers, len(lut)*(worker+1)/workers
@@ -267,6 +350,8 @@ func newPaletteLUT(palette color.Palette) []uint8 {
 	wg.Wait()
 	return lut
 }
+
+func sixelWorkerCount() int { return min(4, runtime.GOMAXPROCS(0)) }
 
 func mapPaletted(dst *image.Paletted, src *image.RGBA, lut []uint8) {
 	bounds := src.Bounds()

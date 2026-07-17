@@ -2,6 +2,7 @@ package sixel
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"image"
@@ -11,6 +12,7 @@ import (
 	"image/png"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -441,6 +443,165 @@ func TestOpaqueEncoderMatchesGoSixel(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSixelWorkerCount(t *testing.T) {
+	oldProcs := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(oldProcs) })
+	if got := sixelWorkerCount(); got != 1 {
+		t.Fatalf("sixelWorkerCount() = %d, want 1", got)
+	}
+	runtime.GOMAXPROCS(8)
+	if got := sixelWorkerCount(); got != 4 {
+		t.Fatalf("sixelWorkerCount() = %d, want capped count 4", got)
+	}
+}
+
+func TestParallelBandActivationBoundaries(t *testing.T) {
+	tests := []struct {
+		name                           string
+		colours, width, bands, workers int
+		want                           bool
+	}{
+		{name: "one-worker", colours: 256, width: 1280, bands: 120, workers: 1},
+		{name: "below-band-threshold", colours: 256, width: 4096, bands: 119, workers: 4},
+		{name: "below-work-threshold", colours: 255, width: 1274, bands: 120, workers: 4},
+		{name: "at-work-threshold", colours: 250, width: 1300, bands: 120, workers: 4, want: true},
+		{name: "above-thresholds", colours: 256, width: 1280, bands: 120, workers: 4, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := parallelBands(test.colours, test.width, test.bands, test.workers); got != test.want {
+				t.Fatalf("parallelBands(%d, %d, %d, %d) = %t, want %t", test.colours, test.width, test.bands, test.workers, got, test.want)
+			}
+		})
+	}
+}
+
+func TestParallelBandsMatchSerial(t *testing.T) {
+	tests := []struct {
+		name   string
+		bounds image.Rectangle
+	}{
+		{name: "complete-bands", bounds: image.Rect(0, 0, 97, 18)},
+		{name: "partial-final-band", bounds: image.Rect(0, 0, 97, 19)},
+		{name: "non-zero-bounds-and-stride", bounds: image.Rect(11, 7, 108, 26)},
+		{name: "repeat-ceiling", bounds: image.Rect(3, 5, repeatLimit+12, 24)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			img := bandTestImage(test.bounds)
+			bands := (test.bounds.Dy() + 5) / 6
+			serial := appendBandRange(nil, img, &bandScratch{}, 0, bands)
+			serialHash := sha256.Sum256(serial)
+			for _, workers := range []int{1, 4} {
+				enc := newOpaqueEncoder(io.Discard)
+				got := enc.appendBandsParallel(nil, img, workers)
+				if gotHash := sha256.Sum256(got); gotHash != serialHash {
+					t.Fatalf("workers=%d payload SHA-256 = %x, want %x", workers, gotHash, serialHash)
+				}
+				again := enc.appendBandsParallel(nil, img, workers)
+				if !bytes.Equal(again, serial) {
+					t.Fatalf("workers=%d repeated payload differs", workers)
+				}
+			}
+
+			payload := bandTestPayload(img, serial)
+			var decoded image.Image
+			if err := gosixel.NewDecoder(bytes.NewReader(payload)).Decode(&decoded); err != nil {
+				t.Fatalf("decode parallel-equivalent payload: %v", err)
+			}
+			for y := range test.bounds.Dy() {
+				for x := range test.bounds.Dx() {
+					want := color.RGBAModel.Convert(img.At(test.bounds.Min.X+x, test.bounds.Min.Y+y)).(color.RGBA)
+					got := color.RGBAModel.Convert(decoded.At(x, y)).(color.RGBA)
+					if got != want {
+						t.Fatalf("decoded pixel (%d,%d) = %#v, want %#v", x, y, got, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestParallelBandsRetainWorkerScratch(t *testing.T) {
+	img := bandTestImage(image.Rect(0, 0, 160, 25))
+	enc := newOpaqueEncoder(io.Discard)
+	want := append([]byte(nil), enc.appendBandsParallel(nil, img, 4)...)
+	type addresses struct {
+		out, bitset *byte
+		seen        *uint16
+		right       *int
+	}
+	before := make([]addresses, len(enc.band))
+	for i := range enc.band {
+		before[i] = addresses{&enc.band[i].out[0], &enc.band[i].bitset[0], &enc.band[i].seen[0], &enc.band[i].right[0]}
+	}
+	got := enc.appendBandsParallel(nil, img, 4)
+	if !bytes.Equal(got, want) {
+		t.Fatal("reused worker payload differs")
+	}
+	for i := range enc.band {
+		after := addresses{&enc.band[i].out[0], &enc.band[i].bitset[0], &enc.band[i].seen[0], &enc.band[i].right[0]}
+		if after != before[i] {
+			t.Fatalf("worker %d replaced retained scratch", i)
+		}
+	}
+}
+
+func TestParallelBandsProductionPathMatchesSerial(t *testing.T) {
+	img := bandBenchmarkImage(1280, 720, 256, 17)
+	serial := appendBandRange(nil, img, &bandScratch{}, 0, 120)
+	enc := newOpaqueEncoder(io.Discard)
+	got := enc.appendBands(nil, img)
+	if !bytes.Equal(got, serial) {
+		t.Fatalf("production parallel payload SHA-256 = %x, want serial %x", sha256.Sum256(got), sha256.Sum256(serial))
+	}
+	if len(enc.band) != sixelWorkerCount() {
+		t.Fatalf("production worker batches = %d, want %d", len(enc.band), sixelWorkerCount())
+	}
+}
+
+func TestParallelBandsReturnWriterError(t *testing.T) {
+	img := bandBenchmarkImage(1280, 720, 256, 17)
+	if err := newOpaqueEncoder(errorWriter{}).encode(img); !errors.Is(err, errTestWriter) {
+		t.Fatalf("parallel encode error = %v, want %v", err, errTestWriter)
+	}
+}
+
+func bandTestImage(bounds image.Rectangle) *image.Paletted {
+	palette := color.Palette{
+		color.RGBA{R: 0xff, A: 0xff},
+		color.RGBA{G: 0xff, A: 0xff},
+		color.RGBA{B: 0xff, A: 0xff},
+		color.RGBA{R: 0xff, G: 0xff, A: 0xff},
+		color.RGBA{R: 0xff, B: 0xff, A: 0xff},
+		color.RGBA{G: 0xff, B: 0xff, A: 0xff},
+		color.RGBA{R: 0x33, G: 0x66, B: 0x99, A: 0xff},
+		color.RGBA{R: 0x99, G: 0x66, B: 0x33, A: 0xff},
+		color.RGBA{A: 0xff}, // Deliberately absent.
+	}
+	storage := image.NewPaletted(bounds.Inset(-3), palette)
+	img := storage.SubImage(bounds).(*image.Paletted)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			idx := uint8((x*7 + y*11 + x*y) % (len(palette) - 1)) //nolint:gosec // The palette bounds the value.
+			img.SetColorIndex(x, y, idx)
+		}
+	}
+	return img
+}
+
+func bandTestPayload(img *image.Paletted, bands []byte) []byte {
+	bounds := img.Bounds()
+	payload := append([]byte(nil), "\033P0;0;8q\"1;1;"...)
+	payload = fmt.Appendf(payload, "%d;%d", bounds.Dx(), bounds.Dy())
+	for n, colour := range img.Palette {
+		r, g, b, _ := colour.RGBA()
+		payload = appendColourRegister(payload, n, r*100/0xffff, g*100/0xffff, b*100/0xffff)
+	}
+	payload = append(payload, bands...)
+	return append(payload, 0x1b, 0x5c)
 }
 
 func BenchmarkOpaqueEncoderComparison(b *testing.B) {

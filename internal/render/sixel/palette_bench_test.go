@@ -9,6 +9,7 @@ import (
 	"image/draw"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"math"
 	"os"
 	"runtime"
@@ -430,6 +431,132 @@ func paletteDurationStats(values []time.Duration) (time.Duration, time.Duration)
 }
 
 func durationMS(value time.Duration) float64 { return float64(value) / float64(time.Millisecond) }
+
+func BenchmarkBandEmission(b *testing.B) {
+	fixtures := []struct {
+		name             string
+		width, height    int
+		colours, pattern int
+	}{
+		{name: "photo-1920x1080", width: 1920, height: 1080, colours: 256, pattern: 17},
+		{name: "flat-1280x720", width: 1280, height: 720, colours: 4, pattern: 97},
+		{name: "web-1280x720", width: 1280, height: 720, colours: 16, pattern: 43},
+	}
+	for _, fixture := range fixtures {
+		img := bandBenchmarkImage(fixture.width, fixture.height, fixture.colours, fixture.pattern)
+		var pngData bytes.Buffer
+		if err := png.Encode(&pngData, img); err != nil {
+			b.Fatal(err)
+		}
+		for _, arm := range []struct {
+			name     string
+			parallel bool
+		}{{name: "serial"}, {name: "candidate", parallel: true}} {
+			b.Run(fixture.name+"/"+arm.name+"/emission", func(b *testing.B) {
+				enc := newOpaqueEncoder(io.Discard)
+				var payload []byte
+				for range paletteBenchWarmups {
+					payload = benchmarkBandBody(enc, img, arm.parallel)
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				runBandBenchmark(b, func() { _ = benchmarkBandBody(enc, img, arm.parallel) })
+				b.ReportMetric(float64(len(payload)), "payload-B")
+			})
+			b.Run(fixture.name+"/"+arm.name+"/complete", func(b *testing.B) {
+				enc := newOpaqueEncoder(io.Discard)
+				var payload []byte
+				for range paletteBenchWarmups {
+					payload = benchmarkPalettedEncode(enc, img, arm.parallel)
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				runBandBenchmark(b, func() { _ = benchmarkPalettedEncode(enc, img, arm.parallel) })
+				b.ReportMetric(float64(len(payload)), "payload-B")
+			})
+			b.Run(fixture.name+"/"+arm.name+"/png-decode-encode", func(b *testing.B) {
+				enc := newOpaqueEncoder(io.Discard)
+				var payload []byte
+				for range paletteBenchWarmups {
+					decoded, err := png.Decode(bytes.NewReader(pngData.Bytes()))
+					if err != nil {
+						b.Fatal(err)
+					}
+					payload = benchmarkPalettedEncode(enc, decoded.(*image.Paletted), arm.parallel)
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				runBandBenchmark(b, func() {
+					decoded, err := png.Decode(bytes.NewReader(pngData.Bytes()))
+					if err != nil {
+						b.Fatal(err)
+					}
+					_ = benchmarkPalettedEncode(enc, decoded.(*image.Paletted), arm.parallel)
+				})
+				b.ReportMetric(float64(len(payload)), "payload-B")
+			})
+		}
+	}
+}
+
+func runBandBenchmark(b *testing.B, fn func()) {
+	times := make([]time.Duration, b.N)
+	for i := range b.N {
+		start := time.Now()
+		fn()
+		times[i] = time.Since(start)
+	}
+	b.StopTimer()
+	_, p90 := paletteDurationStats(times)
+	b.ReportMetric(float64(p90), "p90-ns")
+}
+
+func benchmarkBandBody(enc *opaqueEncoder, img *image.Paletted, parallel bool) []byte {
+	out := enc.outScratch[:0]
+	if parallel {
+		out = enc.appendBands(out, img)
+	} else {
+		enc.growBandScratch(1)
+		out = appendBandRange(out, img, &enc.band[0], 0, (img.Bounds().Dy()+5)/6)
+	}
+	enc.outScratch = out[:0]
+	return out
+}
+
+func benchmarkPalettedEncode(enc *opaqueEncoder, img *image.Paletted, parallel bool) []byte {
+	bounds := img.Bounds()
+	out := enc.outScratch[:0]
+	out = append(out, "\033P0;0;8q\"1;1;"...)
+	out = fmt.Appendf(out, "%d;%d", bounds.Dx(), bounds.Dy())
+	for n, colour := range img.Palette {
+		r, g, blue, _ := colour.RGBA()
+		out = appendColourRegister(out, n, r*100/0xffff, g*100/0xffff, blue*100/0xffff)
+	}
+	if parallel {
+		out = enc.appendBands(out, img)
+	} else {
+		enc.growBandScratch(1)
+		out = appendBandRange(out, img, &enc.band[0], 0, (bounds.Dy()+5)/6)
+	}
+	out = append(out, 0x1b, 0x5c)
+	enc.outScratch = out[:0]
+	return out
+}
+
+func bandBenchmarkImage(width, height, colours, pattern int) *image.Paletted {
+	palette := make(color.Palette, colours)
+	for i := range palette {
+		palette[i] = color.RGBA{R: uint8(i), G: uint8(i * 37), B: uint8(i * 73), A: 0xff} //nolint:gosec // Overflow creates the fixture palette.
+	}
+	img := image.NewPaletted(image.Rect(0, 0, width, height), palette)
+	for y := range height {
+		offset := img.PixOffset(0, y)
+		for x := range width {
+			img.Pix[offset+x] = uint8((x*pattern + y*31 + x*y) % colours) //nolint:gosec // Modulo bounds the palette index.
+		}
+	}
+	return img
+}
 
 func envInt(name string) int {
 	var value int
