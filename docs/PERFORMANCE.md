@@ -2104,14 +2104,35 @@ account for about 76% of encoder CPU, six-row scatter for about 14%, and `append
 for about 7%. `appendRun` is about 3% of the full RGBA profile. The full-path
 allocations belong to palette selection and indexed-image construction, not warm RLE.
 
-A counter over the same frames found 7,650 and 11,447 present colour planes. The
-current scans 14,688,000 and 29,304,320 plane columns respectively. Stopping at each
-plane's rightmost non-zero column would reduce those counts by a theoretical 39.43%
-and 38.68%, but maintaining that bound adds work to every source-pixel scatter.
-Earlier bounded-plane variants did not beat the production-shaped full encoder, so
-this count is a candidate ceiling, not a predicted speed-up. The payloads were
-514,483 and 886,917 bytes. The warm pre-palettised path confirms there is no RLE
-allocation or pooling target.
+###### Rightmost nonblank plane bound (2026-07-17)
+
+One focused post-8192 retry records each present colour plane's rightmost nonblank
+column during the existing six-row scatter, then scans only through that column. It
+adds one retained 256-entry integer scratch slice. It does not add a left bound,
+filter, packed layout, parallelism, SIMD, or temporal state.
+
+The comparison used the representative q90 frames and exact commit `18bba495` as the
+baseline. Six fresh rotated process pairs used four warm-ups and 30 retained samples
+per arm with `GOMAXPROCS=4` and `GOGC=100`. Median and p90 are medians of the six
+process results. Ranges are the six process-median ranges.
+
+| Size and path | Baseline median / p90 | Bound median / p90 | Baseline range | Bound range | Median gain | Bound allocs/op and B/op |
+|---|---:|---:|---:|---:|---:|---:|
+| 1920x1080 complete | 24.527 / 25.410 ms | 22.356 / 23.173 ms | 23.975-24.718 ms | 22.047-23.183 ms | 8.85% | 1,306; 5,100,485 B |
+| 1920x1080 isolated | 10.745 / 10.763 ms | 8.448 / 8.572 ms | 10.576-10.851 ms | 8.396-8.494 ms | 21.38% | 0; effectively 0 B |
+| 2560x1600 complete | 38.556 / 39.410 ms | 33.857 / 35.079 ms | 37.801-39.278 ms | 33.360-34.245 ms | 12.19% | 1,306; 9,212,917 B |
+| 2560x1600 isolated | 20.515 / 21.007 ms | 16.061 / 16.617 ms | 20.014-20.804 ms | 15.963-16.456 ms | 21.71% | 0; 0 B |
+
+Both complete-path ranges separate from baseline. The p90 gains are 8.81% and
+10.99%. The bound skips 7,053,850 of 18,195,840 plane columns (38.7663%) at
+1920x1080 and 13,669,605 of 35,970,560 (38.0022%) at 2560x1600. Warm allocation
+counts are unchanged; the small full-path B/op variation against 5,100,371 and
+9,212,692 baseline bytes is measurement noise within the palette path. Payloads,
+hashes, and maximum repeats remain exactly 605,517 bytes,
+`08b716a9328bdf0ecd577536f541090795579300e32b54642cb49d4c03608eda`, and 1920;
+and 1,002,987 bytes,
+`6442cf416516a3be710fdb4b8723007987e2f5be665e97120e953111be9cd976`, and 2560.
+Retain the bound.
 
 The supplied optimisation advice maps onto the current encoder as follows:
 
@@ -2121,7 +2142,7 @@ The supplied optimisation advice maps onto the current encoder as follows:
 | Colour-presence filters | Already present through generation counters; only colours seen in a band are scanned. Extra filters duplicate this work. |
 | Fused generation and RLE | Run detection and emission are fused in the plane scan. Pixel scatter and plane scan remain separate; merging them needs a broad layout rewrite and is closed. |
 | Specialised emission | Threshold-4 literals, retained output, direct appends, and one final write already exist. The decimal table remains a low-ceiling final experiment. |
-| Trailing blank omission | Trailing zero runs are not emitted, but their columns are scanned. A rightmost bound is the only bounded follow-up. |
+| Trailing blank omission | Trailing zero runs are not emitted. The retained rightmost bound now skips their scan columns with byte-identical output. |
 | Branch reduction | The run-change branch is visible inside the dominant scan, but no separate exact candidate avoids the surrounding work. |
 | Buffer ownership and pooling | The renderer owns and reuses all RLE scratch; the isolated warm path is zero-allocation. |
 | Band parallelism | Prior production-shaped variants did not win; keep it closed. |
@@ -2156,13 +2177,14 @@ priority and not part of the steps above.
 
 ##### Band track
 
-The current builder already uses one-pass scatter, row masks, generation counters,
-sparse clearing, and reused buffers. The production-shaped full encoder with
+The current builder uses one-pass scatter, row masks, generation counters, sparse
+clearing, reused buffers, and the retained rightmost nonblank bound. The earlier
+production-shaped full encoder with
 Plan9-palettised input measured 17.24 ms, zero allocations, and a 1,009,015-byte
 payload. Active-bitset and transposed variants were slower. Packed banks cut scratch
-96.7% but made band plus RLE 31% slower than the instrumented baseline. Bounded
-planes looked faster only in an inflated dual-mode harness and did not beat the
-17.24 ms full encoder.
+96.7% but made band plus RLE 31% slower than the instrumented baseline. Earlier broad
+bounded-plane variants looked faster only in an inflated dual-mode harness. The
+single post-8192 rightmost bound above clears the production-shaped retention gate.
 
 Every band variant produced identical bytes and decoded through both decoders across
 canonical, solid, sparse, dense, noisy, transparency, subimage and stride, width
@@ -2187,7 +2209,8 @@ module replacement. Do not vendor, use `go:linkname`, or add a Nix-only patch.
 | 64K median-cut sample cap | Combined q90 decode plus encode falls 30.39% against prior production; colour-category shifts are accepted because all 800 phase-swept features remain visible and structurally intact | Retained |
 | `mattn/go-sixel` fixed 255 palette | Warm State falls 45.8% with byte-identical static output; per-frame rebuild removes the gain | Superseded by the stateless 64K sample-cap decision |
 | Long-count Sixel RLE | Complete six-process benchmark cuts payload 17.17% at 1920x1080 and 21.28% at 2560x1600; timing ranges overlap; 8192 is byte-identical to 4096 at both widths; `mattn/go-sixel` pixels are identical | Retained at 8192, below tmux's native 10000 cap |
-| Private Sixel band changes | Production-shaped variants do not beat the current 17.24 ms full encoder | Closed with no change; defer parallel bands |
+| Rightmost Sixel plane bound | Skips 38.77% and 38.00% of plane columns; complete median falls 8.85% and 12.19% with separated ranges, identical bytes, and unchanged allocation counts | Retained |
+| Other private Sixel band changes | Active-bitset, transposed, and packed-bank variants do not beat production | Closed; defer parallel bands |
 | Current decoder plus row-parallel `draw.Draw` | Uses the existing viewer pool, preserves current pixels, and measured 0 B/op and 0 allocs/op warm | Closed while bounded fused RGBA wins end to end |
 | Standard library `imageutil.DrawYCbCr` | Internal, full-frame, and specialised for four ratios | Use only through the public `draw.Draw` boundary |
 | Go 1.26 `archsimd` | Experimental, `GOEXPERIMENT`-gated, amd64-only | Reject for production |

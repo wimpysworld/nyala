@@ -29,6 +29,7 @@ type opaqueEncoder struct {
 	outScratch    []byte
 	bitsetScratch []byte
 	seenScratch   []uint16
+	rightScratch  []int
 	seenGen       uint16
 }
 
@@ -87,6 +88,13 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 	} else {
 		seen = seen[:paletteSize]
 	}
+	right := e.rightScratch
+	if cap(right) < paletteSize {
+		right = make([]int, paletteSize)
+	} else {
+		right = right[:paletteSize]
+		clear(right)
+	}
 	ch0 := specialChNr
 	for z := range (height + 5) / 6 {
 		e.seenGen++
@@ -110,6 +118,9 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 				idx := int(pix)
 				seen[idx] = gen
 				buf[width*idx+x] |= rowMask
+				if x >= right[idx] {
+					right[idx] = x + 1
+				}
 			}
 		}
 		for n := range paletteSize {
@@ -122,7 +133,7 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 			out = appendColourSelect(out, n)
 			count := 0
 			base := width * n
-			for x := range width {
+			for x := range right[n] {
 				ch := buf[base+x]
 				buf[base+x] = 0
 				if ch0 < 0x40 && ch != ch0 {
@@ -132,6 +143,7 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 				ch0 = ch
 				count++
 			}
+			right[n] = 0
 			if ch0 != 0 {
 				out = appendRun(out, ch0, count)
 			}
@@ -142,6 +154,7 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 	e.outScratch = out[:0]
 	e.bitsetScratch = buf
 	e.seenScratch = seen
+	e.rightScratch = right
 	_, err := e.w.Write(out)
 	return err
 }
