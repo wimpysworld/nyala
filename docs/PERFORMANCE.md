@@ -2560,10 +2560,55 @@ warm allocation gates fail. Leave the correct candidate present for user review.
 Do not call it accepted until the adaptive 1920x1080 photo, 2560x1600 cases,
 production PNG-decode-plus-encode, and live terminals pass.
 
+##### Combined mapping plus band candidate (2026-07-17)
+
+The user requested the four-worker RGB555 mapper on top of the committed band
+candidate and waived automatic reversion. The implementation reuses
+`sixelWorkerCount()` unchanged. The exact-colour scan remains serial. Only an
+adaptive image at or above 500,000 pixels splits mapping into disjoint row ranges.
+LUT construction waits before mapping, mapping waits before emission, and the
+parallel stages never overlap.
+
+Six fresh paired processes rotated arm and fixture order with `GOMAXPROCS=4`,
+`GOGC=100`, four warm-ups, and 30 retained samples. The photo is the scaled
+1920x1080 Linux Matters fixture and takes the adaptive path. The 1280x720 flat and
+web fixtures take the exact-colour path and screen small-frame overhead. Values
+below are medians of the six process p90 values.
+
+| Fixture and path | Band-only | Combined | Change |
+|---|---:|---:|---:|
+| 1920x1080 photo isolated mapping | 2.107 ms | 0.711 ms | 66.25%, 1.396 ms faster |
+| 1920x1080 photo full encode | 17.382 ms | 15.592 ms | 10.30%, 1.790 ms faster |
+| 1920x1080 photo PNG decode plus encode | 31.472 ms | 29.457 ms | 6.40%, 2.015 ms faster |
+| 1280x720 flat full encode | 6.000 ms | 5.969 ms | 0.51% faster |
+| 1280x720 flat PNG decode plus encode | 8.601 ms | 8.568 ms | 0.38% faster |
+| 1280x720 web full encode | 6.976 ms | 6.893 ms | 1.19% faster |
+| 1280x720 web PNG decode plus encode | 9.946 ms | 9.974 ms | 0.28% slower |
+
+The earlier pre-band four-worker saving of 0.843 ms persists and measures 1.790 ms
+in this combined screen. The result passes the former 5% percentage gate but saves
+less than the former 2 ms full-encode gate. Isolated mapping moves from zero
+allocations to five and about 336 B/op. Full photo encode remains at 1,306
+allocations; median B/op differs by about 0.2 KiB, within measurement noise. CPU
+profiles measured 99.9% for serial mapping and 352.5% for the combined mapper.
+
+All three fixture payload sizes and SHA-256 values match between arms: 411,048 B
+and `74b1b0400bf1e69f40df4f65007463570078556e8afc3f002b1106c662e53e48`
+for photo, 1,244 B and
+`ec43ec817ff15e79396b33f47e9d5e426e2233809c8864de927c41201b30224c` for
+flat, and 49,187 B and
+`adda562534e381a5bd38efa908ed389ba0361639419ab40a670950c8a77a154a` for web.
+Focused tests preserve indexes, deterministic bytes, decoded pixels, non-zero
+bounds, unusual stride, threshold edges, and worker counts 1 and 4. Keep the
+candidate pending user review. Live Chromium delivery, first contentful paint,
+and terminal results are deferred because this run has no supported automated
+Sixel terminal path.
+
 ##### Cross-track decision
 
-Keep adaptive 256 with the stateless 64K sample cap and the 8192 repeat ceiling. The
-band track has no candidate to combine. Send only accepted wins upstream.
+Keep adaptive 256 with the stateless 64K sample cap and the 8192 repeat ceiling.
+The combined mapping and band candidate remains pending user review. Send only
+accepted wins upstream.
 If short-lived integration needs a fork, publish a versioned fork and use a temporary
 module replacement. Do not vendor, use `go:linkname`, or add a Nix-only patch.
 
