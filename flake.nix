@@ -37,7 +37,7 @@
           version = "0.0.0";
           src = nixpkgs.lib.cleanSource ./.;
           subPackages = [ "cmd/nyala" ];
-          vendorHash = "sha256-vKVHg4ngEvGkKq5seaw+HWPCxVUt212eUIppkAIAvRo=";
+          vendorHash = "sha256-Uk1ykifeSr2rvm5m2uuiHZKE30EvSnXdxefwhwom8qc=";
           # The shipped binary is static and cgo-free.
           env.CGO_ENABLED = "0";
           nativeBuildInputs = [
