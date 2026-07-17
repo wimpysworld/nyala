@@ -2134,6 +2134,28 @@ and 1,002,987 bytes,
 `6442cf416516a3be710fdb4b8723007987e2f5be665e97120e953111be9cd976`, and 2560.
 Retain the bound.
 
+###### Repeat decimal formatter rejection (2026-07-17)
+
+One direct branch-based formatter for positive repeat counts 4 through 8192 replaced
+only the hot-path `strconv.AppendInt` call. An exhaustive test matched `strconv` for
+every value. The benchmark used the same q90 frames, exact commit `a943eac` as the
+baseline, and six fresh rotated process pairs with four warm-ups and 30 retained
+samples per arm at `GOMAXPROCS=4` and `GOGC=100`.
+
+| Size and path | Baseline median / p90 | Formatter median / p90 | Baseline range | Formatter range | Median change |
+|---|---:|---:|---:|---:|---:|
+| 1920x1080 complete | 22.132 / 22.553 ms | 21.855 / 22.661 ms | 21.871-22.322 ms | 21.622-22.067 ms | 1.25% faster |
+| 1920x1080 isolated | 8.404 / 8.516 ms | 8.139 / 8.242 ms | 8.364-8.462 ms | 8.014-8.224 ms | 3.16% faster |
+| 2560x1600 complete | 33.517 / 34.405 ms | 33.142 / 33.782 ms | 33.110-34.039 ms | 32.580-33.300 ms | 1.12% faster |
+| 2560x1600 isolated | 15.900 / 16.107 ms | 15.489 / 15.664 ms | 15.829-16.059 ms | 15.308-15.706 ms | 2.59% faster |
+
+The formatter micro-path falls from a 7.188 ns median to 3.716 ns, 48.30%. Both
+isolated ranges separate, but both complete-path ranges overlap baseline; 1080p p90
+also regresses 0.48%. Allocation counts remain 1,306 complete and zero isolated.
+Payload sizes, hashes, and maximum repeats remain identical at both sizes. Reject the
+formatter and retain `strconv.AppendInt`; the complete-path gain does not clear run
+variance. The temporary code and tests were removed.
+
 The supplied optimisation advice maps onto the current encoder as follows:
 
 | Advice | Current assessment |
@@ -2141,7 +2163,7 @@ The supplied optimisation advice maps onto the current encoder as follows:
 | Packed six-pixel columns | Already present as one six-bit byte per colour and x-coordinate; the earlier packed-bank rewrite was slower. |
 | Colour-presence filters | Already present through generation counters; only colours seen in a band are scanned. Extra filters duplicate this work. |
 | Fused generation and RLE | Run detection and emission are fused in the plane scan. Pixel scatter and plane scan remain separate; merging them needs a broad layout rewrite and is closed. |
-| Specialised emission | Threshold-4 literals, retained output, direct appends, and one final write already exist. The decimal table remains a low-ceiling final experiment. |
+| Specialised emission | Threshold-4 literals, retained output, direct appends, and one final write already exist. A direct decimal formatter improved its micro-path but failed the complete-path range gate, so retain `strconv.AppendInt`. |
 | Trailing blank omission | Trailing zero runs are not emitted. The retained rightmost bound now skips their scan columns with byte-identical output. |
 | Branch reduction | The run-change branch is visible inside the dominant scan, but no separate exact candidate avoids the surrounding work. |
 | Buffer ownership and pooling | The renderer owns and reuses all RLE scratch; the isolated warm path is zero-allocation. |
