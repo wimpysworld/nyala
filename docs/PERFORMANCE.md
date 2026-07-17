@@ -2430,6 +2430,47 @@ q90 JPEG service p90 at all three sizes there, but its serial synthetic p90 lose
 inside run variation and two p90 values regress. Retain `strconv.AppendInt`; the
 separate PNG-only product decision governs Sixel input. Keep all temporary code removed.
 
+###### Bounded indexed-pixel mapping rejection (2026-07-17)
+
+A temporary candidate extracted the inherited `min(4, GOMAXPROCS)` Sixel budget
+and used it to split adaptive RGB555 mapping into disjoint row ranges at 500,000
+pixels. The exact-colour scan, palette selection, LUT construction, mapping, and
+band emission remained sequential stages. Boundary trials from 500,000 through
+1,000,000 pixels supported the lowest cut-off. At 500,000 pixels, isolated mapping
+fell from 0.530-0.540 ms serial to 0.155-0.186 ms with four workers.
+
+The initial screen used six fresh rotated processes and 30 retained iterations per
+arm on the 1920x1080 Linux Matters photo with `GOMAXPROCS=4` and `GOGC=100`.
+
+| Path | Serial process aggregate | Four-worker process aggregate | Worst-process change | Allocation change |
+|---|---:|---:|---:|---:|
+| Isolated mapping | 2.100 / 2.109 ms | 0.648 / 0.754 ms | 64.27% faster | 0 to 5-6 allocs/op |
+| Full encode | 19.918 / 20.278 ms | 18.546 / 19.434 ms | 4.16%, 0.843 ms faster | 1,309-1,310 to 1,314-1,315 allocs/op |
+| PNG decode plus encode | 33.321 / 34.108 ms | 31.896 / 32.890 ms | 3.57%, 1.218 ms faster | 2,529 to 2,533-2,535 allocs/op |
+
+Focused tests matched serial and parallel palette indexes, repeated output,
+payload SHA-256, and decoded pixels across unusual bounds, non-zero origins,
+strides, threshold boundaries, and worker counts 1 and 4. The race test passed.
+The worst full-encode process aggregate misses both required gates, at least 5%
+and at least 2 ms. Reject this cap.
+
+The user-authorised six-worker retry changed only the shared Sixel cap and ran the
+same serial and row-split mapper at `GOMAXPROCS=6`. Six fresh rotated process pairs
+used four warm-ups and 30 retained samples per arm. The table reports the median
+of the six process medians and p90 values.
+
+| Path | Serial median / p90 | Six-worker median / p90 | P90 change | Allocation change |
+|---|---:|---:|---:|---:|
+| Isolated mapping | 2.110 / 2.148 ms | 0.376 / 0.470 ms | 78.12% faster | 0 to 7 allocs/op |
+| Full encode | 20.281 / 20.795 ms | 18.656 / 19.573 ms | 5.88%, 1.222 ms faster | 1,306 to 1,313 allocs/op |
+| PNG decode plus encode | 36.138 / 36.998 ms | 34.299 / 35.331 ms | 4.51%, 1.667 ms faster | 2,726 to 2,733 allocs/op |
+
+Six workers pass the 5% full-encode p90 gate but miss the required 2 ms saving.
+The complete PNG path does not regress. Reject the retry and remove its temporary
+code and harness. Live Chrome delivery, first-contentful-paint, and contention
+checks stop here because the full-encode gate failed. Keep the production mapper
+serial and leave the inherited four-worker LUT policy unchanged.
+
 The supplied optimisation advice maps onto the current encoder as follows:
 
 | Advice | Current assessment |
@@ -2486,6 +2527,38 @@ Every band variant produced identical bytes and decoded through both decoders ac
 canonical, solid, sparse, dense, noisy, transparency, subimage and stride, width
 override, and odd-height inputs. Close this track with no code or fork. Defer
 parallel bands.
+
+##### User-requested parallel-band candidate (2026-07-17)
+
+The user overrode the later plan's 25% reprofile blocker and automatic revert rule.
+A new candidate therefore supersedes the closed implementation decision for review,
+but it is not accepted. It shares the inherited
+`min(4, runtime.GOMAXPROCS(0))` LUT budget, activates at 120 bands and 39,000,000
+present-colour-width-band units, splits complete bands into contiguous batches,
+retains isolated worker scratch and output, joins in order, and emits any partial
+last band serially.
+
+Six fresh rotated processes used `GOMAXPROCS=4`, `GOGC=100`, four setup warm-ups,
+and 30 retained samples per arm. This bounded screen used synthetic paletted
+fixtures, so it does not replace the required adaptive-photo and production PNG
+matrix.
+
+| Fixture and path | Serial median / p90 | Candidate median / p90 | P90 change | Allocation change |
+|---|---:|---:|---:|---:|
+| 1920x1080 photo emission | 62.037 / 62.779 ms | 18.276 / 18.919 ms | 69.86%, 43.860 ms faster | 0 to 5 allocs/op, about 537 B/op |
+| 1920x1080 complete paletted encode | 61.942 / 62.747 ms | 18.464 / 19.836 ms | 68.39%, 42.911 ms faster | 2 to 7 allocs/op |
+| 1920x1080 PNG decode plus paletted encode | 63.577 / 64.387 ms | 19.952 / 20.872 ms | 67.58%, 43.515 ms faster | 298 to 303 allocs/op |
+| 1280x720 flat complete | 1.892 / 1.848 ms | 1.878 / 1.887 ms | 2.11% slower | unchanged at 2 allocs/op |
+| 1280x720 web complete | 4.687 / 5.196 ms | 4.155 / 4.754 ms | 8.51% faster | unchanged at 2 allocs/op |
+
+The photo CPU profiles sampled 2.31 CPU seconds over 0.653 seconds, 353.7% CPU,
+against 2.07 CPU seconds over 2.07 seconds for serial. Exact bytes, SHA-256 values,
+and decoded pixels match across the focused correctness matrix. Complete payloads
+match at 9,893,259 bytes for photo, 615,787 bytes for flat, and 1,930,251 bytes for
+web. The flat p90 and
+warm allocation gates fail. Leave the correct candidate present for user review.
+Do not call it accepted until the adaptive 1920x1080 photo, 2560x1600 cases,
+production PNG-decode-plus-encode, and live terminals pass.
 
 ##### Cross-track decision
 
