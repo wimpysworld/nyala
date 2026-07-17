@@ -105,6 +105,12 @@ expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
   38.0022% of plane columns with identical payloads, hashes, decoded pixels, repeat
   maxima, and allocation counts. Source:
   [Sixel rightmost bound](./PERFORMANCE.md#rightmost-nonblank-plane-bound-2026-07-17).
+- [x] Reject a specialised Sixel repeat decimal formatter. It cuts the formatter
+  micro-path by 48.30% and isolated encode by 3.16% and 2.59%, but complete median
+  gains are only 1.25% and 1.12%; both complete-path process ranges overlap baseline,
+  and 1080p p90 regresses 0.48%. Output and allocations remain unchanged. Retain
+  `strconv.AppendInt`. Source:
+  [Sixel decimal formatter rejection](./PERFORMANCE.md#repeat-decimal-formatter-rejection-2026-07-17).
 - [x] Close the other Sixel band research with no code change. Active-bitset,
   transposed, and packed-bank variants did not beat the production-shaped full
   encoder. Defer parallel bands. Source:
