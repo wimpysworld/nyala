@@ -85,9 +85,8 @@ func decodeBase64Pooled(data string) (raw []byte, release func(), err error) {
 }
 
 // screencastQuality is recorded in capture metadata and encodes the JPEG decode
-// test fixture. Live wire formats follow the backend policy: Block uses JPEG q90,
-// moving Sixel uses JPEG q90 and settles to PNG, and Kitty uses PNG. Capture stays
-// PNG for byte-exact bundles, so this value does not select its wire format.
+// test fixture. Live Block uses JPEG q90. Kitty and Sixel use PNG, as does capture
+// for byte-exact bundles, so this value does not select their wire format.
 const screencastQuality = 90
 
 // blockScreencastQuality is the JPEG quality the block backend uses for its live
@@ -95,11 +94,6 @@ const screencastQuality = 90
 // live Block path within its processing budget. Capture stays PNG, so this value
 // does not affect corpus output.
 const blockScreencastQuality = 90
-
-// movingScreencastQuality is the JPEG quality the adaptive live Sixel screencast uses
-// when the page is moving. Kitty stays PNG so it can pass each CDP payload straight
-// to the terminal. Capture stays PNG for a byte-exact corpus.
-const movingScreencastQuality = 90
 
 // frameChannelBuffer is the buffer size of the emitted-frame channel. A small
 // buffer stops a transient restartStream stall from parking the frame loop on the
@@ -206,48 +200,28 @@ func imageToRGBA(img image.Image) *image.RGBA {
 }
 
 // decodeJPEGFast decodes one live-frame image, preferring the SIMD jpegn decoder
-// and falling back to decodeFrameImage on the same bytes. toRGBA selects jpegn's
-// fused RGBA output for the bounded Sixel pool; false keeps native *image.YCbCr for
-// Block and other pixel consumers. Any non-nil jpegn error falls back, including
-// jpegn.ErrUnsupported and non-JPEG input. Each call gets its own reader and options,
-// so parallel workers share no decode state.
-func decodeJPEGFast(raw []byte, toRGBA bool) (image.Image, error) {
-	if toRGBA {
-		if img, err := jpegn.Decode(bytes.NewReader(raw), &jpegn.Options{ToRGBA: true}); err == nil {
-			return img, nil
-		}
-	} else if img, err := jpegn.Decode(bytes.NewReader(raw)); err == nil {
+// and falling back to decodeFrameImage on the same bytes. JPEG remains native
+// *image.YCbCr for Block and other pixel consumers. Any non-nil jpegn error falls
+// back, including jpegn.ErrUnsupported and non-JPEG input. Each call gets its own
+// reader, so parallel workers share no decode state.
+func decodeJPEGFast(raw []byte) (image.Image, error) {
+	if img, err := jpegn.Decode(bytes.NewReader(raw)); err == nil {
 		return img, nil
 	}
 	return decodeFrameImage(raw)
 }
 
-// maxSixelRGBAWorkers is the session-worker safety limit for jpegn's fused RGBA
-// output. It is independent of the adaptive decode-pool ceiling.
-const maxSixelRGBAWorkers = 4
-
-// sixelJPEGToRGBA reports whether this session can use jpegn's fused RGBA output.
-// It reads the current backend and recorded session worker count together, so a
-// backend switch takes effect on the next decode. A manual pool above the Sixel RGBA
-// safety limit keeps native YCbCr and avoids multiplying RGBA's larger working set.
-func (e *ChromiumEngine) sixelJPEGToRGBA() bool {
-	e.mu.Lock()
-	enabled := !e.captureOn && e.backend == "sixel" && e.decodeWorkers >= 1 && e.decodeWorkers <= maxSixelRGBAWorkers
-	e.mu.Unlock()
-	return enabled
-}
-
 // decodeLiveFrame is the live decode-pool's pixel decode. It keeps the decoder's
-// native image layout except when a bounded live Sixel pool selects fused JPEG RGBA.
-// Block averages native JPEG YCbCr planes directly while composing its final grid.
-// Capture does not call this path and remains lossless PNG.
+// native image layout. Block averages native JPEG YCbCr planes directly while
+// composing its final grid. Sixel decodes PNG; Kitty passes its PNG through without
+// calling this method. Capture does not call this path and remains lossless PNG.
 func (e *ChromiumEngine) decodeLiveFrame(data string) (image.Image, error) {
 	raw, release, err := decodeBase64Pooled(data)
 	if err != nil {
 		return nil, fmt.Errorf("engine: base64-decode frame: %w", err)
 	}
 	defer release()
-	img, err := decodeJPEGFast(raw, e.sixelJPEGToRGBA())
+	img, err := decodeJPEGFast(raw)
 	if err != nil {
 		return nil, fmt.Errorf("engine: decode frame image: %w", err)
 	}

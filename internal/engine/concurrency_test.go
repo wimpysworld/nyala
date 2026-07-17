@@ -8,7 +8,7 @@ import (
 // TestEngineFieldsRaceFree drives the viewer-facing methods that read and write
 // the session and geometry fields (Resize, SetBackend, SendKey, SendMouse,
 // SetCellPx) concurrently with a goroutine that churns the same fields under the
-// engine mutex, including the Sixel RGBA activation state. It keeps ctx and
+// engine mutex. It keeps ctx and
 // slot nil so no chromedp I/O fires, so the test stays browser-free; run under
 // -race it asserts the mutex guards every shared field. A regression that dropped
 // a lock would trip the race detector here.
@@ -31,7 +31,6 @@ func TestEngineFieldsRaceFree(t *testing.T) {
 			} else {
 				e.SetBackend("sixel")
 			}
-			_ = e.sixelJPEGToRGBA()
 			e.SendKey(Key{Code: "ArrowDown"})
 			e.SendMouse(MouseEvent{DeltaY: 40})
 			e.SetCellPx(8+i%4, 16+i%4)
@@ -48,7 +47,6 @@ func TestEngineFieldsRaceFree(t *testing.T) {
 			e.captureW, e.captureH = 640+i, 480+i
 			e.scrollX, e.scrollY = i, i*2
 			e.cols, e.rows = 100, 40
-			e.decodeWorkers = 1 + i%5
 			e.slot = nil
 			e.ctx = nil
 			e.mu.Unlock()

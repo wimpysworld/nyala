@@ -77,26 +77,26 @@ second text or geometry channel is not planned for Stage 4. See `docs/STAGE-3.md
 
 `render.Frame.Img` is an `image.Image`, not a forced full-frame RGBA plane. Live
 JPEG normally crosses the engine/render seam as the decoder's `*image.YCbCr`.
-Block always keeps that native layout. Live moving Sixel JPEG uses `jpegn` fused
-RGBA when the actual session has at most four decode workers; a larger manual pool
-keeps native YCbCr. PNG keeps the decoder's native layout on Block, Sixel, capture,
+Block keeps that native layout. Sixel requests PNG for every frame and preserves the
+PNG decoder's native concrete pixel type into the encoder; this can be RGBA or NRGBA,
+so the encoder retains both fast paths. PNG also keeps its native layout on capture
 and fallback paths. Every live Kitty stream requests PNG and carries the owned CDP base64 string in
 `Frame.EncodedPNG`; the Kitty consumer rechunks it as `f=100,t=d,a=T` without base64
 decode, PNG decode, pixel packing, zlib, or base64 encode. A frame queued across a
 backend switch decodes that retained PNG at the new pixel consumer, so switching and
 resize remain safe.
 
-The live format policy follows the consumer. Block requests JPEG quality 90, matching
-moving Sixel. It improves fidelity over the former q80 default while the matched
+The live format policy follows the consumer. Block requests JPEG quality 90. It
+improves fidelity over the former q80 default while the matched
 2560x2880 headless benchmark retains 6.39 ms median processing headroom and provides
 more headroom for higher resolutions than q95. Kitty always requests PNG for the
-direct path.
-Sixel keeps its decoded adaptive stream: PNG while settled, JPEG quality 90 while
-moving, then PNG again after settle. The adaptive worker default and the Sixel RGBA
-safety cutoff are independent policies, both currently four. `NYALA_DECODE_WORKERS`
-still accepts 1 to 16, with Sixel values above four keeping native YCbCr. Diagnostic
-capture still requests and decodes PNG for every backend, so its bundle contract and
-quality gates do not change.
+direct path. Sixel also requests PNG for every frame. This reverses the former
+settled-PNG/moving-JPEG policy: the sustained sweep improved serial p90 at 1920x1080
+and 2560x1600, regressed 1.26% at 2560x2880, and cut Sixel output by 38% to 50%.
+The owner accepts that torture-size processing loss for higher fidelity, smaller
+terminal payloads, and one Sixel input format. Diagnostic capture still requests and
+decodes PNG for every backend, so its bundle contract and quality gates do not
+change. Real-terminal write, parse, draw, FPS, and tearing remain to be validated.
 
 - **Engine #1: `ChromiumEngine` (chromedp).** Frames via `Page.startScreencast`;
   text layer via CDP DOM queries, placed by the snapshot's scroll and folded into
@@ -219,7 +219,7 @@ chromedp.ListenTarget(ctx, func(ev interface{}) {
 | Engine driver | `chromedp` | De-facto CDP client, pure Go, no external deps |
 | TUI runtime + chrome | Bubble Tea v2 + Bubbles v2 + Lipgloss v2 (`charm.land/*`) | Event loop, address bar, status line, layout; GA 2026-02-24. Do NOT route the bitmap viewport through its cell renderer |
 | Animation (optional) | Harmonica | Smooth chrome scroll/load polish; defer until chrome exists |
-| Frame decode | `gen2brain/jpegn`, `woozymasta/png`, native `image.Image` plus bounded Sixel RGBA | Block keeps native YCbCr; live moving Sixel JPEG fuses RGBA at one to four workers; Kitty carries CDP PNG directly |
+| Frame decode | `gen2brain/jpegn`, `woozymasta/png`, native `image.Image` | Block keeps native JPEG YCbCr; Sixel decodes PNG; Kitty carries CDP PNG directly |
 | Resize/composite | `golang.org/x/image/draw` | In-place scale into a reused RGBA buffer |
 | Half-block fallback | Custom compositor (port Carbonyl quad maths; reference `charmbracelet/x/mosaic`) | The permanent floor for KMSCON. Combined cell grid (bitmap + optional grapheme); quadrant (2x2) default, half-block (`U+2584`) floor; text overwrites cells. `rivo/uniseg` + `mattn/go-runewidth` for glyph width |
 | Sixel encode | Nyala encoder derived from `mattn/go-sixel` v0.0.12 | Retained pure-Go opaque encoder; adaptive 256-colour palette; dithering off; inherited 15-bit palette LUT built across at most four workers |

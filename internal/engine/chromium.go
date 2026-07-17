@@ -26,7 +26,7 @@ type ChromiumEngine struct {
 	// and the supervisor goroutine (startSession, teardownSession, launch,
 	// rebuild): ctx, cancel, slot, acks, text, frame, captureW, captureH, cols, rows, scrollX,
 	// scrollY, scrollYTarget, backend, blockScheme, cellW, cellH, layoutWidth, windowID,
-	// inputFailures, fontForcingID, decodeWorkers. Lock, copy the fields into locals or write
+	// inputFailures and fontForcingID. Lock, copy the fields into locals or write
 	// the updates, unlock, then run the chromedp I/O on the locals. Never hold mu
 	// across a chromedp.Run or a channel send, or it deadlocks with the supervisor.
 	mu sync.Mutex
@@ -100,23 +100,13 @@ type ChromiumEngine struct {
 	// failing transition without deadlocking.
 	screencastCtl sync.Mutex
 	// screencastFmt is the last successfully started screencast format and JPEG
-	// quality, guarded by e.mu. Block runs live JPEG, Kitty runs live
-	// PNG, Sixel keeps its adaptive PNG-settled/JPEG-moving policy, and capture forces
-	// PNG; initialScreencastFormat picks it from the backend and capture flag.
+	// quality, guarded by e.mu. Block runs live JPEG; Kitty, Sixel, and capture use
+	// PNG. initialScreencastFormat picks it from the backend and capture flag.
 	screencastFmt screencastFmt
 	// screencastStarted distinguishes a published frame sink from a successful
 	// StartScreencast, guarded by e.mu. A resize or backend change in that publication
 	// window updates the held state but leaves the single initial start to apply it.
 	screencastStarted bool
-	// motion carries per-frame arrival instants from the listener goroutine to the
-	// adaptive Sixel format controller, which reads the frame-arrival rate as the
-	// page's motion signal. It is created and the controller started only on the live
-	// path, since a backend cycle can enter Sixel later. Under capture it stays nil so
-	// pokeMotion is a no-op and the format never switches. Buffered and
-	// latest-wins-drop, so the listener never blocks. Reset per session by
-	// teardownSession.
-	motion chan time.Time
-
 	// Frame plumbing.
 	frames chan render.Frame // emitted frames, created once and closed only on Close
 	slot   *frameSlot        // capture-path latest-wins single-frame backpressure slot
@@ -126,11 +116,6 @@ type ChromiumEngine struct {
 	// this nil. Either being non-nil means the session is streaming (see streaming).
 	// Reset per session by teardownSession.
 	rawQ *rawFrameQueue
-	// decodeWorkers records the worker count selected for this session. Live Sixel uses
-	// RGBA JPEG decode only at or below maxSixelRGBAWorkers, which bounds its larger
-	// decoded-frame working set. Capture records its ordered count of one but never uses
-	// the live decoder. Guarded by mu and reset by teardownSession.
-	decodeWorkers int
 	// acks carries screencast frame SessionID values from the listener goroutine
 	// to the ack-pump goroutine, which runs page.ScreencastFrameAck off the event
 	// goroutine. Running the ack inside the ListenTarget callback is the chromedp
@@ -173,12 +158,6 @@ type ChromiumEngine struct {
 	// production, where consumers keep decoder-native pixels or direct Kitty PNG.
 	decode func(string) (*image.RGBA, error)
 
-	// switchFmt performs one adaptive Sixel screencast format switch. It defaults to
-	// switchScreencastFormat (stop then start with the new format); the format-controller
-	// unit test swaps in a fake that records the switch and updates e.screencastFmt, so
-	// the state machine is exercised without a browser. It is nil in production, where
-	// runScreencastFormat falls back to switchScreencastFormat.
-	switchFmt func(context.Context, page.ScreencastFormat, int)
 	// The screencast operation hooks are nil in production. Stream-control tests replace
 	// them with deterministic barriers and failures without launching Chromium.
 	stopScreencastOp  func(context.Context) error
