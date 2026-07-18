@@ -192,6 +192,7 @@ func appendBandRange(dst []byte, paletted *image.Paletted, scratch *bandScratch,
 		gen := scratch.gen
 		if z > 0 {
 			dst = append(dst, '-')
+			ch0 = specialChNr
 		}
 		for p := range 6 {
 			y := z*6 + p
