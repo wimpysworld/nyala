@@ -32,6 +32,17 @@ Kitty is the reason to run Nyala on a capable terminal: every live Kitty stream 
 
 A measurement harness scores each render for quality, cost, and legibility. Run it with `just diagnostics`.
 
+## Development
+
+Enter the pinned environment with `nix develop`. `just test` runs the routine,
+pure-Go unit suite. `just sixel-interop` runs the tagged Sixel compatibility gate:
+it sends Nyala's complete production DCS output through both go-sixel and
+libsixel's `sixel2png`, then compares dimensions and pixels. The flake exposes the
+same gate for every supported system. Libsixel is a test tool only and is not in
+Nyala's package or runtime closure. This proves independent decoder agreement,
+not display in a physical terminal; terminal parsing, passthrough, anchoring,
+colour handling, and repaint behaviour still need terminal checks.
+
 ## Install
 
 **Homebrew**

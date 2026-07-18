@@ -98,6 +98,7 @@
                 govulncheck
                 ineffassign
                 just
+                libsixel
                 pkg-config
                 poppler-utils
               ])
@@ -147,9 +148,26 @@
         }
       );
 
-      checks = forAllSystems (system: {
-        nyala = self.packages.${system}.nyala;
-      });
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = pkgsFor system;
+          sixelInterop = (localPackage system).overrideAttrs (old: {
+            pname = "nyala-sixel-interop";
+            doCheck = true;
+            nativeCheckInputs = (old.nativeCheckInputs or [ ]) ++ [ pkgs.libsixel ];
+            checkPhase = ''
+              runHook preCheck
+              go test -run '^TestLibsixelRoundTrip$' -tags sixelinterop -count=1 ./internal/render/sixel/
+              runHook postCheck
+            '';
+          });
+        in
+        {
+          nyala = self.packages.${system}.nyala;
+          sixel-interop = sixelInterop;
+        }
+      );
 
       formatter = forAllSystems (system: (pkgsFor system).nixfmt);
     };

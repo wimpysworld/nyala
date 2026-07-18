@@ -18,6 +18,28 @@ cases, and its 1920x1080 flat and web payloads are 76.3% and 30.3% smaller. Thes
 results support bounded experiments, not a Chafa transplant or a general speed
 claim.
 
+## Independent decoder gate
+
+`just sixel-interop` is the offline compatibility gate for the retained encoder.
+The `sixelinterop`-tagged Go test renders complete production DCS streams, decodes
+each stream with both `capture.DecodeSixel` (go-sixel) and libsixel 1.10.5's
+`sixel2png`, and checks framing, raster dimensions, decoded bounds, pixels, and
+adaptive-image PSNR and SSIM. Its eight cases cover flat and page-like content,
+photo-like content at the 500,000-pixel mapping threshold, odd height, sparse
+planes, palette register 255, RLE at 3/4 and 8192/8193, and the committed page PNG
+through the production parallel mapping and band thresholds. Exact primary-colour
+palettes compare exactly. Adaptive decoder output allows at most two levels per
+RGB channel for different integer expansion of Sixel's 0..100 colour registers.
+
+The flake exposes this as `checks.<system>.sixel-interop` on every supported
+platform. `nix flake check` and `just check` run the gate for the current system.
+Libsixel is present only in the development shell and that check's native inputs.
+It is absent from Nyala's package inputs and runtime closure. The gate proves that
+an independent decoder
+accepts and reconstructs Nyala's stream. It does not prove physical-terminal DCS
+parsing, multiplexer passthrough, image anchoring, terminal colour conversion,
+repaint behaviour, throughput, or visible tearing; those remain terminal-only.
+
 ## Shared invariants
 
 - Preserve the opaque, dither-free, adaptive palette path, the 64K median-cut

@@ -345,6 +345,16 @@ check:
 diagnostics:
     @go test -v -tags diagnostics -count=1 ./internal/harness/
 
+# Cross-check the production Sixel encoder with libsixel's independent decoder
+sixel-interop:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v sixel2png >/dev/null 2>&1; then
+        printf '%s\n' 'sixel2png not found; enter the Nix dev shell with nix develop' >&2
+        exit 1
+    fi
+    go test -v -run '^TestLibsixelRoundTrip$' -tags sixelinterop -count=1 ./internal/render/sixel/
+
 # Regenerate golden archives via the golden track writer
 update-golden:
     @UPDATE_GOLDEN=1 go test -run 'TestGoldenTrack|TestOverlayGoldenTrack' -tags diagnostics -count=1 ./internal/harness/
