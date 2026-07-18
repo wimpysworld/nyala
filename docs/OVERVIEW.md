@@ -79,8 +79,8 @@ second text or geometry channel is not planned for Stage 4. See `docs/STAGE-3.md
 JPEG normally crosses the engine/render seam as the decoder's `*image.YCbCr`.
 Block keeps that native layout. Sixel requests PNG for every frame and preserves the
 PNG decoder's native concrete pixel type into the encoder; this can be RGBA or NRGBA,
-so the encoder retains both fast paths. PNG also keeps its native layout on capture
-and fallback paths. Every live Kitty stream requests PNG and carries the owned CDP base64 string in
+so the encoder retains both fast paths. PNG also keeps its native layout on decoded
+fallback paths. Every live Kitty stream requests PNG and carries the owned CDP base64 string in
 `Frame.EncodedPNG`; the Kitty consumer rechunks it as `f=100,t=d,a=T` without base64
 decode, PNG decode, pixel packing, zlib, or base64 encode. A frame queued across a
 backend switch decodes that retained PNG at the new pixel consumer, so switching and
@@ -94,9 +94,8 @@ direct path. Sixel also requests PNG for every frame. This reverses the former
 settled-PNG/moving-JPEG policy: the sustained sweep improved serial p90 at 1920x1080
 and 2560x1600, regressed 1.26% at 2560x2880, and cut Sixel output by 38% to 50%.
 The owner accepts that torture-size processing loss for higher fidelity, smaller
-terminal payloads, and one Sixel input format. Diagnostic capture still requests and
-decodes PNG for every backend, so its bundle contract and quality gates do not
-change. Real-terminal write, parse, draw, FPS, and tearing remain to be validated.
+terminal payloads, and one Sixel input format. Real-terminal write, parse, draw, FPS,
+and tearing remain to be validated.
 
 - **Engine #1: `ChromiumEngine` (chromedp).** Frames via `Page.startScreencast`;
   text layer via CDP DOM queries, placed by the snapshot's scroll and folded into
@@ -129,6 +128,43 @@ The block backend ships three schemes (quadrant, half-block, sextant), selected 
 `--blocks` flag and, on the interactive path, a terminal-identity allow-list. See
 [`BLOCK-MODES.md`](./BLOCK-MODES.md) for the flag surface, the detector, the sextant
 character set, and the sampling model.
+
+### Correctness architecture
+
+`just diagnostics` is the single correctness workflow. It runs the browser-free
+quality harness, the independent Block, Kitty, and Sixel protocol gates, then the
+Chromium-fed fixture matrix. The focused `block-interop`, `kitty-interop`,
+`sixel-interop`, and `cdp-interop` recipes select the same tests for development; they
+do not define separate workflows or artefact formats. Missing Chromium or `sixel2png`
+is a failed prerequisite for a leg that requires it. Baseline and golden refreshes
+remain explicit maintenance operations.
+
+Diagnostics drive the normal engine and viewer seams. They do not expose a recorder,
+arbitrary-page bundle, capture environment, or capture-only render path. CDP tests opt
+in to `render.Frame.Diagnostics`, a sidecar carrying screencast geometry and font
+calibration evidence; it stays nil in production. A second normal-engine Block pass
+retains source glyph ink for paint measurement because the production transparent-text
+pass hides that ink by design. Tests identify painted, text-bearing frames with bounded
+waits instead of adding diagnostic latches to the engine.
+
+Block checks use `viewer.State.ComposeBlockFrame`, the same composed grid consumed by
+production terminal writing, and compare it with independently decoded terminal cells.
+Do not add a second compositor or a rasterised Block PNG oracle. Browser-free image and
+OCR checks may rasterise grids through `internal/cellraster`.
+`internal/renderdecode` owns correctness-only Kitty and Sixel decoders, while the
+protocol gates retain independent terminal or libsixel oracles. Placement, paint, and
+scroll checks pass in-memory frames and fixture thresholds directly to
+`internal/metrics`; serialised bundles are not an internal API.
+
+Fixture-bound JSON and image evidence goes under gitignored
+`testdata/diagnostics/`. Paint measurement errors fail, while known architectural
+breaches stay explicit `expected_failure` entries in
+`testdata/corpus/paint-baseline.json` until a separate approved fix changes their
+state. Placement and settled-scroll checks remain hard gates. Diagnostics do not claim
+physical-terminal font, glyph-width, passthrough, colour-profile, anchoring, repaint,
+or sustained-FPS coverage. Use live terminal runs and `just fps` for those properties.
+Use `just debug-run` and Chromium DevTools for one-off page investigation, then turn a
+lasting defect into a sanitised local fixture.
 
 ### Known constraints / risks
 
