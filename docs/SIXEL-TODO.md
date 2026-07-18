@@ -47,7 +47,8 @@ repaint behaviour, throughput, or visible tearing; those remain terminal-only.
   palette order, and byte-identical payload.
 - Preserve the present byte-plane layout, right-edge bounds, generation counters,
   RLE grammar and 8192 repeat ceiling, band and colour separators, DCS framing, and
-  decoded pixels.
+  decoded pixels. The accepted omission of `$` immediately after inter-band `-`
+  is the sole payload-grammar change.
 - Keep `Renderer.Render` serial under its mutex. Parallel stages must finish before
   the next stage starts and before the single ordered writer call.
 - Use the existing Sixel budget from `newPaletteLUT` in
@@ -368,6 +369,21 @@ had phone-only access. This blocks the terminal FPS, write p90, CPU, drops, gap,
 tearing, and first-contentful-paint observations, but not the requested non-live
 decision. Both accepted layers stay enabled pending later physical-terminal
 evidence.
+
+## Payload grammar clean-up
+
+**Status (2026-07-18): Accepted; non-damage optimisation backlog closed.** The
+encoder no longer emits `$` immediately after inter-band `-`. Sixel `-` advances
+to the next six-row band and returns the active position to the left edge, so the
+following carriage return was redundant. Later colour-plane carriage returns are
+unchanged.
+
+Production-shaped 1280x720, 1920x1080, and 2560x1600 payload checks save 119,
+179, and 266 bytes respectively, one byte for every band boundary. Reconstructed
+legacy payloads and the retained payloads decode to exactly equal pixels. Focused
+tests pin the byte saving, command structure, decoded bounds, and decoded pixels.
+The independent go-sixel and libsixel interop gate accepts the retained streams.
+Only the separate damage-aware decision below remains deferred.
 
 ## Deferred damage-aware Sixel decision
 

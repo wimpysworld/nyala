@@ -137,7 +137,7 @@ func TestLongRunsPreserveBandsAndPixels(t *testing.T) {
 	if err := newOpaqueEncoder(&payload).encode(src); err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	if want := "#0!8192~!9~-$#0!8192@!9@"; !bytes.Contains(payload.Bytes(), []byte(want)) {
+	if want := "#0!8192~!9~-#0!8192@!9@"; !bytes.Contains(payload.Bytes(), []byte(want)) {
 		t.Fatalf("payload does not preserve the expected run, band, and colour delimiters: want fragment %q", want)
 	}
 	for _, count := range sixelRepeatCounts(payload.Bytes()) {
@@ -282,7 +282,7 @@ func assertRightBoundMatchesFullScan(t *testing.T, enc *opaqueEncoder, src *imag
 	if err := fullScan.Encode(src); err != nil {
 		t.Fatalf("full-scan encode: %v", err)
 	}
-	if !bytes.Equal(got.Bytes(), want.Bytes()) {
+	if !bytes.Equal(got.Bytes(), omitRedundantBandCR(want.Bytes())) {
 		t.Fatalf("bounded output differs from full scan: got %d bytes, want %d", got.Len(), want.Len())
 	}
 	var decoded image.Image
@@ -296,6 +296,10 @@ func assertRightBoundMatchesFullScan(t *testing.T, enc *opaqueEncoder, src *imag
 	if !bytes.Equal(gotRGBA.Pix, wantRGBA.Pix) {
 		t.Fatal("bounded output decodes to different pixels")
 	}
+}
+
+func omitRedundantBandCR(payload []byte) []byte {
+	return bytes.ReplaceAll(payload, []byte("-$#"), []byte("-#"))
 }
 
 func sixelRepeatCounts(payload []byte) []int {
@@ -438,7 +442,7 @@ func TestOpaqueEncoderMatchesGoSixel(t *testing.T) {
 			if err := newOpaqueEncoder(&got).encode(img); err != nil {
 				t.Fatalf("opaque encode(): %v", err)
 			}
-			if !bytes.Equal(got.Bytes(), want.Bytes()) {
+			if !bytes.Equal(got.Bytes(), omitRedundantBandCR(want.Bytes())) {
 				t.Fatalf("opaque payload differs from go-sixel v0.0.12: got %d bytes, want %d", got.Len(), want.Len())
 			}
 		})
@@ -697,6 +701,54 @@ func TestParallelBandsProductionPathMatchesSerial(t *testing.T) {
 	}
 	if len(enc.band) != sixelWorkerCount() {
 		t.Fatalf("production worker batches = %d, want %d", len(enc.band), sixelWorkerCount())
+	}
+}
+
+func TestBandAdvanceOmitsRedundantCarriageReturn(t *testing.T) {
+	tests := []struct {
+		name          string
+		width, height int
+	}{
+		{name: "720p", width: 1280, height: 720},
+		{name: "1080p", width: 1920, height: 1080},
+		{name: "1600p", width: 2560, height: 1600},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			palette := color.Palette{color.RGBA{A: 0xff}}
+			img := image.NewPaletted(image.Rect(0, 0, test.width, test.height), palette)
+			candidate := bandTestPayload(img, newOpaqueEncoder(io.Discard).appendBands(nil, img))
+			if bytes.Contains(candidate, []byte("-$")) {
+				t.Fatal("band advance retains a redundant carriage return")
+			}
+
+			legacy := bytes.ReplaceAll(candidate, []byte("-#"), []byte("-$#"))
+			bandBoundaries := (test.height+5)/6 - 1
+			if saving := len(legacy) - len(candidate); saving != bandBoundaries {
+				t.Fatalf("payload saving = %d bytes, want %d", saving, bandBoundaries)
+			}
+			if got := bytes.Count(candidate, []byte("-#")); got != bandBoundaries {
+				t.Fatalf("band advances = %d, want %d", got, bandBoundaries)
+			}
+
+			var legacyDecoded, candidateDecoded image.Image
+			if err := gosixel.NewDecoder(bytes.NewReader(legacy)).Decode(&legacyDecoded); err != nil {
+				t.Fatalf("decode legacy payload: %v", err)
+			}
+			if err := gosixel.NewDecoder(bytes.NewReader(candidate)).Decode(&candidateDecoded); err != nil {
+				t.Fatalf("decode candidate payload: %v", err)
+			}
+			if legacyDecoded.Bounds() != candidateDecoded.Bounds() {
+				t.Fatalf("decoded bounds = %v, want %v", candidateDecoded.Bounds(), legacyDecoded.Bounds())
+			}
+			for y := range test.height {
+				for x := range test.width {
+					if legacyDecoded.At(x, y) != candidateDecoded.At(x, y) {
+						t.Fatalf("decoded pixel (%d,%d) differs", x, y)
+					}
+				}
+			}
+		})
 	}
 }
 
