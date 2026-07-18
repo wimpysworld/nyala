@@ -60,12 +60,12 @@ auto-rasterised `block-render.png` per frame, so the two compare directly at
 960x640.
 
 ```
-just capture=1 run file:///abs/path/testdata/corpus/layout-01-dense-prose/index.html backend=block
+just record file:///abs/path/testdata/corpus/layout-01-dense-prose/index.html frames=1 backend=block
 ```
 
-Use `capture=1`. The capture driver waits for the page to paint, then a text-ready
+Use `frames=1`. The recorder waits for the page to paint, then a text-ready
 latch holds the first counted frame until the text layer is folded on, so
-`capture=1` lands the painted, text-bearing frame deterministically. A static file page emits few screencast
+`frames=1` lands the painted, text-bearing frame deterministically. A static file page emits few screencast
 frames then idles; the gate keeps the blank pre-paint frame out, so `n>1` is no
 longer needed. To re-render an existing bundle, run `just rasterise <frame-dir>`.
 

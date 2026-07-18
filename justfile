@@ -128,6 +128,73 @@ run url="https://wimpys.world" *flags: build
         SHELL=/bin/sh script -qec "$wrapped" /dev/null
     fi
 
+# Record a bounded diagnostic bundle through the supported run wrapper
+[positional-arguments]
+record url="https://wimpys.world" *flags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    url="$1"
+    frames="1"
+    shift
+    forwarded=()
+    backend=""
+    scroll=""
+    settle=""
+    cell=""
+    raw_flags=("$@")
+    for ((i = 0; i < ${#raw_flags[@]}; i++)); do
+        arg="${raw_flags[$i]}"
+        case "$arg" in
+            capture=*)
+                printf '%s\n' 'record: capture= is not accepted; use frames=' >&2
+                exit 2
+                ;;
+            frames=*) frames="${arg#frames=}" ;;
+            backend=*) backend="${arg#backend=}" ;;
+            scroll=*) scroll="${arg#scroll=}" ;;
+            settle=*) settle="${arg#settle=}" ;;
+            cell=*) cell="${arg#cell=}" ;;
+            --backend=*) backend="${arg#--backend=}" ;;
+            --backend)
+                if ((i + 1 >= ${#raw_flags[@]})); then
+                    printf '%s\n' 'record: --backend needs a value' >&2
+                    exit 2
+                fi
+                i=$((i + 1))
+                backend="${raw_flags[$i]}"
+                ;;
+            *) forwarded+=("$arg") ;;
+        esac
+    done
+
+    if [[ ! "$frames" =~ ^[1-9][0-9]*$ ]]; then
+        printf 'record: frames must be a positive integer, got %q\n' "$frames" >&2
+        exit 2
+    fi
+    if [ -n "$scroll" ] && [[ ! "$scroll" =~ ^(0|[1-9][0-9]*)$ ]]; then
+        printf 'record: scroll must be a non-negative integer, got %q\n' "$scroll" >&2
+        exit 2
+    fi
+    if [ -n "$settle" ] && [[ ! "$settle" =~ ^[01]$ ]]; then
+        printf 'record: settle must be 0 or 1, got %q\n' "$settle" >&2
+        exit 2
+    fi
+    if [ -n "$backend" ] && [[ ! "$backend" =~ ^(auto|block|kitty|sixel)$ ]]; then
+        printf 'record: backend must be auto, block, kitty, or sixel, got %q\n' "$backend" >&2
+        exit 2
+    fi
+    if [ -n "$cell" ] && [[ ! "$cell" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]]; then
+        printf 'record: cell must be positive WxH pixels, got %q\n' "$cell" >&2
+        exit 2
+    fi
+
+    [ -n "$backend" ] && forwarded+=("backend=$backend")
+    [ -n "$scroll" ] && forwarded+=("scroll=$scroll")
+    [ -n "$settle" ] && forwarded+=("settle=$settle")
+    [ -n "$cell" ] && forwarded+=("cell=$cell")
+    just capture="$frames" run "$url" "${forwarded[@]}"
+
 # Run Nyala with load-path timing. Interactive tty streams and writes the stderr
 # timing to NYALA_TIMING_FILE (default nyala-timings.log); headless runs the bounded
 # capture path and print its performance.json load_timings, so it works with no tty.
@@ -135,6 +202,15 @@ run url="https://wimpys.world" *flags: build
 debug-run url="https://wimpys.world" *flags:
     #!/usr/bin/env bash
     set -euo pipefail
+
+    for arg in "$@"; do
+        case "$arg" in
+            capture=*)
+                printf '%s\n' 'debug-run: capture= is not accepted; the recipe owns its bounded recording' >&2
+                exit 2
+                ;;
+        esac
+    done
 
     if [ -t 0 ] && [ -t 1 ]; then
         # Interactive tty: NYALA_DEBUG_TIMING makes the engine print one stderr line
@@ -155,7 +231,7 @@ debug-run url="https://wimpys.world" *flags:
     # after its timings print; it can hold page content, so it is not kept.
     log="$(mktemp)"
     rc=0
-    just capture=1 run "$@" >"$log" 2>&1 || rc=$?
+    just record "$@" frames=1 >"$log" 2>&1 || rc=$?
     # The capture prints "capture bundle: <path>" on the pty, glued to the frame
     # escape stream and ending in a carriage return, so match just the path token.
     bundle="$(grep -aoE 'capture bundle: [^[:space:]]+' "$log" | tail -n1 || true)"
@@ -209,7 +285,7 @@ corpus:
         local cols="$1" rows="$2" dir="$3" cell="$4"
         local out; out="$(mktemp)"
         local cellflag=(); [ -n "$cell" ] && cellflag=("cell=$cell")
-        COLUMNS="$cols" LINES="$rows" just capture=1 run "file://${dir}index.html" backend=block "${cellflag[@]}" > "$out" 2>&1
+        COLUMNS="$cols" LINES="$rows" just record "file://${dir}index.html" frames=1 backend=block "${cellflag[@]}" > "$out" 2>&1
         local status=$?
         if [ "$status" -ne 0 ]; then
             tail -n 20 "$out" >&2
@@ -309,7 +385,7 @@ corpus:
     if [ -d "$lm" ]; then
         printf '== layout-13-linuxmatters [158x86 cell 16x33 scroll=600] ==\n'
         out="$(mktemp)"
-        COLUMNS=158 LINES=86 just capture=3 scroll=600 run "file://${lm}index.html" backend=block cell=16x33 > "$out" 2>&1
+        COLUMNS=158 LINES=86 just record "file://${lm}index.html" frames=3 scroll=600 backend=block cell=16x33 > "$out" 2>&1
         status=$?
         if [ "$status" -ne 0 ]; then
             tail -n 20 "$out"
@@ -362,6 +438,16 @@ block-interop:
 # Cross-check the production Kitty viewer stream with an independent terminal model
 kitty-interop:
     @go test -v -run '^TestKittyTerminalRoundTrip$' -tags kittyinterop -count=1 ./internal/viewer/
+
+# Drive local pages from Chromium through every terminal protocol and independent decoder
+cdp-interop:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v sixel2png >/dev/null 2>&1; then
+        printf '%s\n' 'sixel2png not found; enter the Nix dev shell with nix develop' >&2
+        exit 1
+    fi
+    FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" go test -v -run '^TestCDPInteropMatrix$' -tags cdpinterop -count=1 ./internal/viewer/
 
 # Regenerate golden archives via the golden track writer
 update-golden:

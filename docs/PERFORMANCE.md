@@ -586,8 +586,8 @@ gates a rolling usable-fps badge the Stream path draws as a save/restore overlay
 the grid, so it never touches the golden-gated block bytes; unset, production pays one
 nil check.
 
-Baseline, before any GPU work: `just capture=3 run https://webglsamples.org/aquarium/
-aquarium.html backend=block` measured **5.9 sustained fps** (3 usable frames over
+Baseline, before any GPU work: `just record https://webglsamples.org/aquarium/
+aquarium.html frames=3 backend=block` measured **5.9 sustained fps** (3 usable frames over
 338 ms), software SwiftShader GL. This is the number idea 1 must beat.
 
 ### Live FPS instrument [DONE - 9002348, cc7878a, 8a87773]
