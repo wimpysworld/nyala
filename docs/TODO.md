@@ -7,10 +7,11 @@ and research documents.
 
 ## 1. Validate the Stage 3 browser
 
-- [ ] Run the sustained real-terminal performance matrix on KMSCON, Kitty, WezTerm,
-  and representative Sixel terminals. Record input FPS, output FPS, frame bytes,
+- [ ] Run the sustained real-terminal performance matrix on KMSCON, Kitty, and
+  WezTerm. Record input FPS, output FPS, frame bytes,
   Nyala encode/write time, terminal decode/draw time, and visible tearing. The Kitty
-  target is 16.67 ms per frame. The capture harness cannot close this task. Sources:
+  target is 16.67 ms per frame. `just sixel-interop` is the accepted terminal-testing
+  proxy for Sixel, so no physical Sixel terminal run remains. Sources:
   [Stage 3 post-build validation](./STAGE-3.md#status-summary),
   [live FPS instrument](./PERFORMANCE.md#live-fps-instrument-done---9002348-cc7878a-8a87773), and
   [Overview risks](./OVERVIEW.md#known-constraints--risks).
@@ -30,185 +31,10 @@ and research documents.
   repeated replacement, and image cleanup on the exact Kitty, WezTerm, and Ghostty
   releases supported by Nyala. Source:
   [TUI decisions](./OVERVIEW.md#decisions-tui-research).
-- [x] Defer production Sixel dirty-tile emission pending validated Chrome/CDP damage
-  metadata. The user-visible hypothesis is
-  that sparse updates, such as a caret, typing, or a small animation, can reduce Sixel
-  encode time, terminal bytes, and redraw latency. Scroll, video, WebGL, and other
-  full-motion pages are expected to fall back to monolithic frames. This is a
-  hypothesis, not a performance promise: brow6el publishes no benchmark evidence for
-  its tiled mode. Production partial emission requires validated per-frame Chrome/CDP
-  damage metadata and the real-terminal gate below. Without it, Nyala keeps full-frame
-  Sixel output; decoded full-frame comparison is not the production fallback.
-
-  - **Production prerequisite.** `Page.screencastFrame` in stock Chrome has no damage
-    field. A usable contract must attach the rectangle atomically to the exact encoded
-    screencast image, use encoded-image pixel coordinates, and conservatively cover all
-    changes since the previous captured frame. It must define full-frame and
-    absent/unknown semantics, carry a monotonic capture counter, and accumulate damage
-    across browser-rate-limited, skipped, and Nyala-dropped frames. A sequence gap,
-    first frame, size, scale, source or session change, lifecycle or navigation
-    transition, capture restart, resize, backend switch, recovery, or terminal write
-    failure forces a full frame and resets lineage. These signals never suppress a
-    delivered frame. Add a measured periodic full refresh only as protection against
-    stale terminal state.
-  - **Offline diff oracle and benchmark.** Reclassify Nyala-side exact comparison as an
-    offline oracle for validating browser damage and measuring the opportunity. Replay
-    recorded decoded frames, time exact comparison separately, select and encode
-    changed tiles, record output bytes, reconstruct them against the monolithic result,
-    and derive the changed-area break-even. Compare the frame last accepted by the
-    replay, not every recorded intermediate frame. Align tile edges horizontally to
-    terminal cells and vertically to both terminal cells and six-pixel Sixel bands;
-    start near 250 px as a tunable benchmark parameter. This spike must not alter the
-    live pipeline or solve writer commit semantics.
-  - **Comparison cost bounds, not measurements.** One retained 2560x1600 RGBA frame is
-    16.38 MB. Comparing current and retained pixels reads up to 32.77 MB per frame, an
-    arithmetic upper bound of 1.97 GB/s at 60 FPS. At 1920x1080 the read is 16.59 MB per
-    frame, or 1.00 GB/s at 60 FPS. These figures establish the need to measure exact
-    comparison separately; they do not show that scanning is slow. Sparse updates have
-    theoretical room to repay a scan, while full-motion frames have none. Any
-    area-linear saving derived from changed area is an optimistic bound until full
-    encode, write, and terminal behaviour are measured.
-  - **Why metadata gates production.** A client diff retains a large heap object and
-    adds GC pressure; copying it costs bandwidth, while borrowing it complicates image
-    lifetime and ownership. Hash-only tracking adds collision risk, and exact tiles
-    still carry palette, seam, stale-pixel, replacement, and alignment complexity. The
-    comparison base must be the last successfully written frame. Nyala's latest-wins
-    admission and encode/write overlap therefore need transactional commit and lineage,
-    damage union across dropped frames, and recovery after a write failure. Browser
-    metadata avoids the full client scan, but production integration must still solve
-    that output lineage and recovery contract.
-  - **Rejected stock-CDP damage sources.** Do not use `LayerTree.layerPainted`, tracing
-    or invalidation events, DOM observers, `HeadlessExperimental.beginFrame`, or
-    clipped screenshots as a production damage source. They have incomplete
-    compositor coverage, no reliable correlation with each screencast frame, false
-    negatives, or no damage rectangle; a clipped screenshot still needs another
-    complete source to choose its clip. They may remain diagnostics, never a gate that
-    narrows or suppresses output.
-  - **Chrome 150 evidence.** In the five-second probe, CSS transform produced 145
-    screencast frames, 144 changed frames, and no `layerPainted` event; CSS paint
-    animation produced 143/143/0, scroll 107/107/0, and canvas 94/5/0 respectively.
-    Five seconds of tracing produced 183 frames and 46,067 events in 8,549,421 JSON
-    bytes, about 1.71 MB/s before parsing. It contained only six `Paint` events, while
-    compositor events carried no usable damage. These measurements reject LayerTree
-    and tracing as completeness gates, not as diagnostic tools.
-  - **Browser-assisted metadata spike.** After the offline oracle exists, prototype the
-    browser contract. Chromium already computes conservative Viz
-    damage, accumulates damage across rate-limited or skipped captures, maps it through
-    scaling and letterboxing, and stores it in
-    `VideoFrameMetadata::capture_update_rect`. Mojo and `DevToolsVideoConsumer`
-    preserve it, but `PageHandler` drops it before the public Page event. Prototype an
-    optional `damageRect` in `Page.ScreencastFrameMetadata`, copied from that exact
-    captured frame. Define it in encoded-image pixel coordinates as a conservative
-    bounding rectangle of changes since the prior captured frame; a full-frame rect is
-    valid, and absence means unknown or full. Add and evaluate a monotonic capture
-    counter for gap detection; do not misuse the screencast `sessionId` acknowledgement
-    token as a sequence number. Validate every rectangle against the offline exact-diff
-    oracle before it may narrow any work.
-  - **Production metadata integration.** A validated rectangle does not remove Chrome's
-    full-surface PNG encode, base64 transfer, or Nyala's full PNG decode. It can skip
-    comparison outside the rectangle, encoding of unchanged Sixel tiles, and their
-    terminal bytes. Carry
-    the rectangle atomically with its payload and sequence through `rawFrame`, live
-    `seqRawFrame`, decoded `pendingFrame`, coalescing, and `render.Frame`. Union damage
-    when coalescing drops frames, and commit the lineage only after the ordered terminal
-    write succeeds. Expand it to terminal-cell and six-row Sixel boundaries before tile
-    selection. Keep every full-refresh rule from the prerequisite contract.
-  - **Conditional patch-image follow-up.** Consider clipped patch bytes only after the
-    metadata spike measures the remaining browser encode, transfer, and decode cost.
-    A protocol needs patch coordinates and bytes, full-frame dimensions, a monotonic
-    counter, a full/reset marker, and defined resize, scale, source, and session reset
-    rules. Chromium currently captures and copies the complete surface; its source
-    states that partial result selection is not implemented.
-  - **Deployment and upstream boundary.** Production Nyala must keep working with the
-    user's stock external Chromium. A custom Chromium build is an evidence spike and a
-    possible upstream CDP contribution, not a new runtime dependency. If validated
-    metadata is unavailable or an upstream proposal is rejected, keep full-frame Sixel
-    output.
-  - **Task sequence.** Proceed in this order: offline exact-diff oracle and benchmark;
-    Chromium/CDP metadata prototype validated against that oracle; positioned Sixel
-    validation on real terminals; then production integration. Consider patch-image
-    transport only after the metadata path measures the remaining browser encode,
-    transfer, and Nyala decode cost.
-  - **Keep Nyala's current pipeline.** Retain `sixel.Renderer`'s encoder, scratch, and
-    output buffers. Preserve `drainFrames` and the stream session's latest-wins
-    admission, two-buffer encode/write overlap, and single writer. Batch all cursor
-    moves and tile payloads into the existing single DEC-2026 synchronised update
-    and one ordered terminal write. Do not copy brow6el's per-tile allocation and
-    dither reconstruction, `fwrite`/`fflush` calls, synchronous CEF paint blocking, or
-    direct CEF/BGRA engine design.
-  - **Implementation seams.** Keep the full PNG materialisation in
-    `internal/engine/frame.go` (`ChromiumEngine.decodeLiveFrame`) and the screencast
-    publication path. Build the exact-diff oracle beside the focused Sixel benchmarks,
-    using `internal/render/sixel/sixel.go` and `encoder.go` (`sixel.Renderer`,
-    `opaqueEncoder`) without entering the live path. A later validated metadata path
-    carries its rect and lineage through the engine and `render.Frame`, then puts
-    partial encoding in the Sixel renderer. Assemble cursor positioning and every tile
-    in `internal/viewer/viewer.go` (`State.RenderStreamFrame`) and
-    `internal/viewer/stream.go` (`streamSession.assemble`, `drainFrames`,
-    `streamWriter`) without adding terminal writes inside the encoder. Extend the
-    existing `fpsMeter` in `internal/viewer/stream.go`, the writer measurements in
-    `internal/viewer/stream_writer.go`, the retired diagnostics recorder, and the
-    focused Sixel benchmarks and harness.
-  - **Correctness decisions before coding.** Decide from measurements whether tiles
-    use independent palettes or one shared frame palette; test colour seams and the
-    cost of rebuilding or sharing that palette. Define terminal replacement semantics
-    for an opaque tile so blank pixels erase old content rather than leave stale
-    pixels. Specify cursor anchoring, transparency, overlapping damage, odd image
-    dimensions, partial edge tiles, cell and six-row boundaries, first-frame state,
-    and recovery after an encode or write error. A tile sequence must reconstruct the
-    same visible RGBA frame as the monolithic path.
-  - **Measured baseline.** The review's current 2560x1600 encoder benchmark records a
-    29.06 ms median, 754,913 output bytes, about 9.28 MB/op, and 1,310 allocs/op. At the
-    same size Nyala's recorded PNG decode median is 10.966 ms and production PNG decode
-    plus Sixel encode p90 is 39.888 ms. The recorded 1920x1080 decode-plus-encode p90 is
-    25.494 ms. Keep these as measured context, not as evidence that brow6el's approach
-    or client scanning will improve Nyala.
-  - **Validation.** First validate any browser damage rectangle against decoded
-    full-frame differences across CSS transforms, scrolling, canvas, video, WebGL,
-    caret updates, filters and child surfaces, source and size changes, and Chromium
-    upgrades. A false negative is a correctness failure; browser metadata may narrow
-    work only after this gate passes. The oracle must also prove that every changed
-    pixel lies inside the conservative browser rectangle. Replay identical recorded
-    frame sequences for caret and typing, small animation, scroll, and full-motion
-    content through monolithic and tiled arms. Record changed-tile coverage, full-frame
-    scan, PNG decode, Sixel encode and terminal write time, terminal bytes, writer calls,
-    delivered FPS, frame age, dropped frames, and worst frame gap. Decode and
-    reconstruct the tile stream, then
-    compare it with the monolithic result. Run real-terminal tests on foot, WezTerm,
-    xterm, and mlterm, including palette quality on a photo-heavy fixture and mode 2026
-    behaviour. Check for colour seams, tearing, blank tiles, and stale pixels.
-  - **Acceptance.** Integrate production partial emission only when validated browser
-    metadata and the positioned real-terminal matrix show a clear human-visible
-    improvement or a delivered-FPS or p90 improvement, with no correctness defect and
-    no material regression on full-motion frames. Choose tile size, refresh cadence,
-    and the monolithic changed-area threshold from the measurements. Do not invent a
-    numeric gate before that evidence exists. Disable or drop tiled emission if the
-    real-terminal matrix does not validate it. Reconsider client exact comparison as a
-    production fallback only if the offline spike and the same real-terminal matrix
-    demonstrate that gain without a material full-motion regression.
-
-  brow6el is prior art for the geometry and refresh cases, not a design to port:
-  [tile sizing and alignment](https://codeberg.org/janantos/brow6el/src/commit/771c650e49136de9dd2c4a686d521191bc2e7edd/src/sixel_renderer.cpp#L31-L61),
-  [dirty-tile selection and previous-frame comparison](https://codeberg.org/janantos/brow6el/src/commit/771c650e49136de9dd2c4a686d521191bc2e7edd/src/sixel_renderer.cpp#L74-L167),
-  [per-tile allocation, dither, and writes to reject](https://codeberg.org/janantos/brow6el/src/commit/771c650e49136de9dd2c4a686d521191bc2e7edd/src/sixel_renderer.cpp#L241-L301),
-  and [CEF dirty rectangles plus forced initial refreshes](https://codeberg.org/janantos/brow6el/src/commit/771c650e49136de9dd2c4a686d521191bc2e7edd/src/browser_client.cpp#L202-L260).
-  Chromium sources: [DamageTracker](https://chromium.googlesource.com/chromium/src/+/60a9ea0ae553cc01a8f560433e1d1a0602adde13/cc/trees/damage_tracker.cc#32),
-  [SurfaceAggregator](https://chromium.googlesource.com/chromium/src/+/60a9ea0ae553cc01a8f560433e1d1a0602adde13/components/viz/service/display/surface_aggregator.cc#1719),
-  [capture and accumulated damage](https://chromium.googlesource.com/chromium/src/+/60a9ea0ae553cc01a8f560433e1d1a0602adde13/components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc#705),
-  [full-surface copy limitation](https://chromium.googlesource.com/chromium/src/+/60a9ea0ae553cc01a8f560433e1d1a0602adde13/components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc#1015),
-  [Mojo metadata](https://chromium.googlesource.com/chromium/src/+/60a9ea0ae553cc01a8f560433e1d1a0602adde13/services/viz/privileged/mojom/compositing/frame_sink_video_capture.mojom#45),
-  [DevToolsVideoConsumer](https://chromium.googlesource.com/chromium/src/+/60a9ea0ae553cc01a8f560433e1d1a0602adde13/content/browser/devtools/devtools_video_consumer.cc#141),
-  [PageHandler](https://chromium.googlesource.com/chromium/src/+/60a9ea0ae553cc01a8f560433e1d1a0602adde13/content/browser/devtools/protocol/page_handler.cc#1578),
-  [Page protocol](https://chromium.googlesource.com/chromium/src/+/60a9ea0ae553cc01a8f560433e1d1a0602adde13/third_party/blink/public/devtools_protocol/domains/Page.pdl#1163),
-  [LayerTree implementation](https://chromium.googlesource.com/chromium/src/+/60a9ea0ae553cc01a8f560433e1d1a0602adde13/third_party/blink/renderer/core/inspector/inspector_layer_tree_agent.cc#285),
-  and [Headless handler](https://chromium.googlesource.com/chromium/src/+/60a9ea0ae553cc01a8f560433e1d1a0602adde13/headless/lib/browser/protocol/headless_handler.cc).
-  Sources: [TUI decisions](./OVERVIEW.md#decisions-tui-research),
-  [Performance damage tracking](./PERFORMANCE.md#theme-5---what-the-reference-projects-teach),
-  [Performance recommendation 10](./PERFORMANCE.md#top-recommendations-ranked-by-impact-vs-effort),
-  and [production Sixel measurements](./PERFORMANCE.md#sustained-moving-png-versus-q90-jpeg-2026-07-17).
-
-CEF is not required because CDP performance has already exceeded the owner's
-expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
+- [x] Keep damage tracking, dirty-tile output, and partial Sixel updates out of
+  scope. This is an explicit owner decision, not deferred work. Do not add an
+  offline damage oracle, Chrome/CDP damage prototype, client-side frame diff, or
+  partial-update transport. Reopen only by an explicit owner decision.
 
 ## 2. Improve graphics transport where measurements justify it
 
@@ -220,7 +46,8 @@ expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
   by 18.43%. Exactness, race, allocation, build, test, and lint gates pass with the
   fixed 16-worker benchmark pool. Source:
   [Colour conversion research](./PERFORMANCE.md#colour-conversion-research-2026-07-15).
-- [x] Adopt the retained encoder derived from `mattn/go-sixel` v0.0.12 with an adaptive
+- [x] Adopt the deterministic retained encoder derived from `mattn/go-sixel` v0.0.12
+  with an adaptive
   256-colour palette and dithering off. The matched q90 State median falls from
   960.437 to 101.670 ms (89.41%, 9.45x), allocations fall 99.993%, and payload
   falls 18.47%. The five-image quality set chooses 256 over 192 colours; the owner
@@ -233,7 +60,9 @@ expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
   unchanged. Parallel construction of the inherited 15-bit palette LUT then cuts
   the ten-cell matrix mean full encode by 5.54% and combined q90 decode plus encode
   by 6.21%, with byte-identical payloads across all fixtures.
-  Source: [Sixel encoder adoption](./PERFORMANCE.md#sixel-encoder-adoption-2026-07-15).
+  Commit `e8418bc`, with the owned opaque encoder in `415fbc6` and palette work in
+  `cea0684`. Source:
+  [Sixel encoder adoption](./PERFORMANCE.md#sixel-encoder-adoption-2026-07-15).
 - [x] Supersede bounded `jpegn.Options{ToRGBA:true}` for live Sixel JPEG. Its
   historical matched sequential result fell from 115.005 to 103.014 ms (10.43%),
   but Sixel now requests PNG for every frame, so the JPEG-only branch, worker cutoff,
@@ -281,16 +110,17 @@ expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
   pixel equality against the 255-split output through `mattn/go-sixel`. The 8192
   ceiling supports wider displays while staying below tmux's native 10000 cap. It is
   byte-identical to 4096 at both measured frame widths. Charm x/ansi v0.11.7 is no
-  longer a Sixel acceptance oracle. Source:
+  longer a Sixel acceptance oracle. Commit `68ef64c`. Source:
   [Sixel repeat-ceiling benchmark](./PERFORMANCE.md#repeat-ceiling-benchmark-2026-07-16).
 - [ ] Send accepted palette or RLE patches upstream. Use a temporary published fork
-  plus versioned replacement only for short-lived integration. Do not vendor.
+  plus versioned replacement only for short-lived integration. Do not vendor. This
+  contribution task does not reopen Nyala's encoder optimisation.
 - [x] Retain one rightmost-nonblank bound per present Sixel colour plane. Against
   commit `18bba495`, six fresh rotated process pairs cut complete median encode time
   by 8.85% at 1920x1080 and 12.19% at 2560x1600, with both process-median ranges
   separated. The isolated path falls 21.38% and 21.71%. It skips 38.7663% and
   38.0022% of plane columns with identical payloads, hashes, decoded pixels, repeat
-  maxima, and allocation counts. Source:
+  maxima, and allocation counts. Commit `c02fd7f`. Source:
   [Sixel rightmost bound](./PERFORMANCE.md#rightmost-nonblank-plane-bound-2026-07-17).
 - [x] Reject a specialised Sixel repeat decimal formatter. It cuts the formatter
   micro-path by 48.30% and isolated encode by 3.16% and 2.59%, but complete median
@@ -300,12 +130,44 @@ expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
   median gains are 0.10-0.80%, every range overlaps, and two of three p90 values
   regress. Source:
   [Sixel decimal formatter rejection](./PERFORMANCE.md#repeat-decimal-formatter-rejection-2026-07-17).
-- [x] Close the other Sixel band research with no code change. Active-bitset,
-  transposed, and packed-bank variants did not beat the production-shaped full
-  encoder. Parallel indexed-pixel mapping and conditional bounded parallel bands now
-  have one canonical ordered backlog in [Sixel optimisation backlog](./SIXEL-TODO.md).
-  Source:
-  [Sixel hot-path research](./PERFORMANCE.md#sixel-hot-path-research-and-decisions-2026-07-15).
+- [x] Retain bounded parallel six-row band emission (`7148f61`) and RGB555 indexed
+  mapping for images of at least 500,000 pixels (`249e8c3`). Both use
+  `sixelWorkerCount() = min(4, GOMAXPROCS)` in sequence with LUT construction. They
+  never overlap, nest pools, add a second budget, or change runtime configuration.
+  Mapping keeps the exact-colour scan serial. Band workers own scratch, join complete
+  bands in source order, and leave a partial final band serial. Four-arm validation
+  (`9b5b9a3`) compared serial, mapping-only, bands-only, and combined paths across
+  flat, web, and photo fixtures at 1280x720, 1920x1080, and 2560x1600. The combined
+  path cut full-encode p90 by 15.78% to 50.19% and PNG-decode-plus-encode p90 by
+  8.88% to 29.81%, with identical payloads, hashes, and decoded pixels.
+- [x] Keep `just sixel-interop` as the Sixel terminal-testing proxy. Commit `04d1703`
+  sends complete production DCS streams through both go-sixel and libsixel, then
+  checks framing, dimensions, bounds, pixels, and adaptive-image quality. Exact
+  primary colours must match. Adaptive colour-register expansion may differ by at
+  most two levels per RGB channel. The focused flake check and `just check` run this
+  gate; libsixel remains a development and test dependency, not a runtime dependency.
+- [x] Omit the redundant `$` after each inter-band `-` (`5ae5ff3`). Sixel `-` already
+  returns to the left edge of the next six-row band. The change saves one byte per
+  boundary, preserves later colour-plane carriage returns, and reconstructs pixels
+  identical to the former stream through both accepted decoders.
+- [x] Close Nyala's Sixel encoder optimisation. Preserve RGBA input, the opaque
+  dither-free adaptive palette, the 64K sample cap, RGB555 lookup, exact-colour fast
+  path, palette order, byte-plane layout, right-edge bounds, 8192 repeat ceiling,
+  DCS framing, and ordered single write. Any future candidate must use six fresh processes
+  with rotated arm order, four warm-ups, at least 30 retained samples per arm,
+  `GOMAXPROCS=4`, and `GOGC=100`. Report stage spans, full-encode and complete
+  PNG-decode-plus-encode p90, B/op, allocs/op, payload bytes and SHA-256, and decoded
+  pixel equality outside timed regions. Reopen only for a reproducible production
+  regression, an independent interop failure, a new platform constraint, or an
+  explicit owner decision. Sources:
+  [Sixel hot-path research](./PERFORMANCE.md#sixel-hot-path-research-and-decisions-2026-07-15)
+  and [option assessment](./PERFORMANCE.md#option-assessment).
+- [x] Keep rejected Sixel experiments closed. Active-bitset, transposed, packed-bank,
+  and other private band layouts did not beat the production encoder. Do not revive
+  PNN, PCA, hash-based palette transplants, lower sampling budgets, fixed or temporal
+  palettes, 64-column banks, SWAR rewrites, dithering, transparency work, cgo/native
+  integration, wholesale emitter replacement, the 255 repeat ceiling, or a specialised
+  decimal formatter without the reopening evidence above.
 - [ ] Add graphics support through tmux, Zellij, and herdr. Keep the present block-only
   fallback until each path passes capability, placement, resize, scroll, and cleanup
   tests. Kitty needs protocol-supported placement plus passthrough wrapping. Its
@@ -318,8 +180,8 @@ expectations. Do not reopen CEF for a limit in Nyala's renderer or the terminal.
 - [ ] Add partial Kitty emission only if the terminal matrix shows full-frame decode,
   draw, write, or byte cost over budget. Design from the direct CDP PNG wire format.
   Do not revive the obsolete decoded-full-frame plus Kitty `a=f` plan without a
-  supported protocol path and an end-to-end win. Sixel partial emission belongs to
-  the canonical Sixel task above. Sources: [Stage 3 deferred scope](./STAGE-3.md#objective-and-scope)
+  supported protocol path and an end-to-end win. Sources:
+  [Stage 3 deferred scope](./STAGE-3.md#objective-and-scope)
   and [Performance recommendation 10](./PERFORMANCE.md#top-recommendations-ranked-by-impact-vs-effort).
 - [x] Do not add a JPEG Kitty fallback. The owner's measurement put
   direct PNG pass-through at about 1 ms, so a JPEG fallback has no current value.
