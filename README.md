@@ -53,6 +53,15 @@ Nyala's package or runtime closure. This proves independent decoder agreement,
 not display in a physical terminal; terminal parsing, passthrough, anchoring,
 colour handling, and repaint behaviour still need terminal checks.
 
+`just kitty-interop` sends successive PNG and RGB frames through the production
+viewer and Kitty encoder, then reads the APC byte stream with an independent
+offline terminal model. It checks control fields, 4096-byte chunk ordering and
+continuation, base64 reconstruction, PNG and zlib decoding, dimensions, exact
+pixels, double-buffer image IDs, and replacement deletes. It needs no physical
+terminal or extra decoder. A live terminal is still needed to check APC parsing
+and passthrough in that terminal, image anchoring, alpha blending, and repaint
+timing.
+
 ## Install
 
 **Homebrew**

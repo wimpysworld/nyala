@@ -359,6 +359,10 @@ sixel-interop:
 block-interop:
     @go test -v -run '^TestBlockTerminalRoundTrip$' -tags blockinterop -count=1 ./internal/viewer/
 
+# Cross-check the production Kitty viewer stream with an independent terminal model
+kitty-interop:
+    @go test -v -run '^TestKittyTerminalRoundTrip$' -tags kittyinterop -count=1 ./internal/viewer/
+
 # Regenerate golden archives via the golden track writer
 update-golden:
     @UPDATE_GOLDEN=1 go test -run 'TestGoldenTrack|TestOverlayGoldenTrack' -tags diagnostics -count=1 ./internal/harness/
