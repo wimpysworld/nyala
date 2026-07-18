@@ -19,6 +19,9 @@ import (
 // numbers.
 func TestCalibration(t *testing.T) {
 	cal := sharedCalibration(t)
+	if cal.SixelPSNRNoiseFloor != 0 {
+		t.Fatalf("sixel PSNR noise floor = %v, want 0 (render not deterministic)", cal.SixelPSNRNoiseFloor)
+	}
 
 	update := updateCalibration()
 	ok, wrote, err := CompareCalibration(calibrationPath(), cal, update)

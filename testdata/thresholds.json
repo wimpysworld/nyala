@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "source": "task 7.5 calibration (testdata/calibration.json); global bands above the zero block noise floor, fractions of the observed corpus ranges; sixel PSNR override above the measured sixelPsnrNoiseFloor",
+  "source": "task 7.5 calibration (testdata/calibration.json); global bands above the zero block and sixel noise floors, fractions of the observed corpus ranges",
   "metrics": {
     "bytesPerFrame": {
       "band": 0.05,
@@ -25,14 +25,6 @@
     "ssim": {
       "band": 0.02,
       "higherIsBetter": true
-    }
-  },
-  "modes": {
-    "sixel": {
-      "psnr": {
-        "band": 1.5,
-        "higherIsBetter": true
-      }
     }
   }
 }

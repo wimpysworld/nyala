@@ -18,19 +18,6 @@
 // scores, the histDivergence range from the same scores, and the bytesPerFrame
 // range from the per-card frame byte cost across the deterministic backends, so
 // every global band traces to data.
-//
-// The sixel backend needs one per-mode override. Its lossy encoder is
-// non-deterministic, so its PSNR jitters between identical renders. The
-// calibration measures that jitter as the sixel PSNR noise floor
-// (sixelPsnrNoiseFloor, the standard deviation of sixel PSNR, about 0.2 dB on
-// the worst card). A regenerate-then-verify run draws two independent sixel
-// PSNRs, whose difference has a standard deviation of about sqrt(2) times that,
-// roughly 0.30 dB, and an observed worst-case gap near 1.2 dB. The Modes map
-// bands sixel PSNR at 1.5 dB: above that observed gap and about six times the
-// difference standard deviation, so ordinary encoder jitter never breaches,
-// while a real sixel regression past the gate's 1.5 dB still trips it. The band
-// stays small against the 14..17 dB PSNR corpus range. Block and kitty PSNR keep
-// the tight global 0.5 dB band.
 package harness
 
 import (
@@ -68,8 +55,7 @@ type Thresholds struct {
 	Metrics map[string]MetricThreshold `json:"metrics"`
 	// Modes holds per-mode band overrides keyed by render mode then metric name.
 	// A mode and metric present here replaces the global band for that one mode,
-	// so a backend with a wider intrinsic-noise floor (the lossy sixel encoder)
-	// can keep a looser band while the deterministic backends stay tight. A
+	// so a backend with a wider intrinsic-noise floor can keep a looser band. A
 	// mode or metric absent here falls back to the global Metrics band.
 	Modes map[string]map[string]MetricThreshold `json:"modes,omitempty"`
 }
@@ -153,24 +139,12 @@ func (t Thresholds) thresholdFor(mode string, metric metricName) (MetricThreshol
 // ranges in testdata/calibration.json (SSIM 0.539..0.621, MS-SSIM 0.556..0.568,
 // PSNR 14.09..16.77 dB, dEMean 4.81..10.16): 0.02 on the 0..1 similarity indices,
 // 0.5 dB on PSNR, 0.5 dE on the colour mean, 0.05 on the histDivergence range,
-// and a relative 5% on the frame byte cost range. Block and kitty are
-// deterministic, so they stay on these tight global bands.
-//
-// The sixel backend is the one exception. Its lossy encoder produces a
-// run-to-run non-deterministic payload, so its PSNR jitters between identical
-// renders. The calibration measures this sixel PSNR jitter directly (the
-// sixelPsnrNoiseFloor field, the standard deviation of sixel PSNR, about 0.2 dB
-// on the worst card), so the global 0.5 dB PSNR band would flag ordinary sixel
-// jitter as a regression: a regenerate-then-verify run draws two independent
-// sixel PSNRs whose gap was observed near 1.2 dB. The Modes override gives sixel
-// PSNR a 1.5 dB band: above that observed gap and about six times the two-sample
-// difference standard deviation, and still small against the 14..17 dB PSNR
-// corpus range, so a real sixel regression trips it. Block and kitty PSNR keep
-// the 0.5 dB global band.
+// and a relative 5% on the frame byte cost range. Block, kitty, and sixel are
+// deterministic, so they use these tight global bands.
 func DefaultThresholds() Thresholds {
 	return Thresholds{
 		SchemaVersion: SchemaVersion,
-		Source:        "task 7.5 calibration (testdata/calibration.json); global bands above the zero block noise floor, fractions of the observed corpus ranges; sixel PSNR override above the measured sixelPsnrNoiseFloor",
+		Source:        "task 7.5 calibration (testdata/calibration.json); global bands above the zero block and sixel noise floors, fractions of the observed corpus ranges",
 		Metrics: map[string]MetricThreshold{
 			string(ssimMetric):           {Band: 0.02, HigherIsBetter: true},
 			string(msssimMetric):         {Band: 0.02, HigherIsBetter: true},
@@ -178,15 +152,6 @@ func DefaultThresholds() Thresholds {
 			string(deltaE2000MeanMetric): {Band: 0.5, HigherIsBetter: false},
 			string(histDivergenceMetric): {Band: 0.05, HigherIsBetter: false},
 			string(bytesPerFrameMetric):  {Band: 0.05, HigherIsBetter: false},
-		},
-		Modes: map[string]map[string]MetricThreshold{
-			// Sixel PSNR sits well above the measured sixelPsnrNoiseFloor (about
-			// 0.2 dB standard deviation) from the lossy encoder, covering the
-			// two-sample regenerate-then-verify gap; block and kitty PSNR keep the
-			// tight global band.
-			string(ModeSixel): {
-				string(psnrMetric): {Band: 1.5, HigherIsBetter: true},
-			},
 		},
 	}
 }
