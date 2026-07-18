@@ -46,10 +46,10 @@ stateless alternative: a 64K median-cut sample cap cuts combined q90 decode plus
 encode by 30.39% against the prior parallel-LUT production path. A deterministic
 phase sweep records colour-category shifts, but
 every feature remains visible and structurally intact, so the performance win is
-retained. Parallel construction
-of the unchanged 15-bit LUT cuts the same path by 6.21% with byte-identical output.
-Band research closed with no change; long-count RLE needs a full-fork compatibility
-test.
+retained. Parallel construction of the unchanged 15-bit LUT cuts the same path by
+6.21% with byte-identical output. The later combined RGB555 mapping and bounded band
+emitter cut production-shaped full-encode p90 by 28.22% to 49.63% and are retained.
+Long-count RLE is retained with an 8192 repeat ceiling.
 Partial Kitty transport remains conditional on terminal measurements and a supported
 protocol path; see
 [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
@@ -2530,14 +2530,15 @@ single post-8192 rightmost bound above clears the production-shaped retention ga
 
 Every band variant produced identical bytes and decoded through both decoders across
 canonical, solid, sparse, dense, noisy, transparency, subimage and stride, width
-override, and odd-height inputs. Close this track with no code or fork. Defer
-parallel bands.
+override, and odd-height inputs. Close this track with no code or fork. Parallel
+bands were deferred at this stage; the user-requested candidate below later
+superseded this decision.
 
 ##### User-requested parallel-band candidate (2026-07-17)
 
 The user overrode the later plan's 25% reprofile blocker and automatic revert rule.
-A new candidate therefore supersedes the closed implementation decision for review,
-but it is not accepted. It shares the inherited
+A new candidate therefore superseded the closed implementation decision for review.
+It shares the inherited
 `min(4, runtime.GOMAXPROCS(0))` LUT budget, activates at 120 bands and 39,000,000
 present-colour-width-band units, splits complete bands into contiguous batches,
 retains isolated worker scratch and output, joins in order, and emits any partial
@@ -2560,10 +2561,10 @@ The photo CPU profiles sampled 2.31 CPU seconds over 0.653 seconds, 353.7% CPU,
 against 2.07 CPU seconds over 2.07 seconds for serial. Exact bytes, SHA-256 values,
 and decoded pixels match across the focused correctness matrix. Complete payloads
 match at 9,893,259 bytes for photo, 615,787 bytes for flat, and 1,930,251 bytes for
-web. The flat p90 and
-warm allocation gates fail. Leave the correct candidate present for user review.
-Do not call it accepted until the adaptive 1920x1080 photo, 2560x1600 cases,
-production PNG-decode-plus-encode, and live terminals pass.
+web. The flat p90 and warm allocation gates failed. This first screen did not accept
+the candidate. The broader production-shaped sweep below supplied the missing
+adaptive 1920x1080, 2560x1600, 2560x2880, PNG-decode-plus-encode, and interop
+evidence.
 
 ##### Combined mapping plus band candidate (2026-07-17)
 
@@ -2604,16 +2605,58 @@ for photo, 1,244 B and
 flat, and 49,187 B and
 `adda562534e381a5bd38efa908ed389ba0361639419ab40a670950c8a77a154a` for web.
 Focused tests preserve indexes, deterministic bytes, decoded pixels, non-zero
-bounds, unusual stride, threshold edges, and worker counts 1 and 4. Keep the
-candidate pending user review. Live Chromium delivery, first contentful paint,
-and terminal results are deferred because this run has no supported automated
-Sixel terminal path.
+bounds, unusual stride, threshold edges, and worker counts 1 and 4. The following
+production-shaped sweep accepted the combined path.
+
+##### Capture-removal and combined Sixel sweep (2026-07-18)
+
+Six fresh processes rotated arm order with four warm-ups and 30 retained samples per
+arm at `GOMAXPROCS=4` and `GOGC=100`. Values are medians of process p90s on a Ryzen AI
+MAX+ 395 with Go 1.26.5 and Chromium 150.0.7871.114. Block and Kitty compare current
+`8cdf973a` with the capture baseline `fae43acc`. Their starred measurements use the
+production `State` seam with alternating committed-photo frames. Sixel compares the
+current retained serial arm with the combined mapper and band path, using controlled
+PNG decode and the production encoder. Commit `fae43acc` already contained the
+parallel Sixel work, so it is not the Sixel CPU baseline.
+
+| Backend and path | Size | Baseline or serial p90 | Current or combined p90 | Change |
+|---|---:|---:|---:|---:|
+| Block State* | 1920x1080 | 1.1025 ms | 1.1015 ms | -0.09% |
+| Block State* | 2560x1600 | 2.0045 ms | 1.9525 ms | -2.59% |
+| Block State*, production-shaped fallback | 2560x2880 | 3.7560 ms | 3.7230 ms | -0.88% |
+| Kitty State* | 1920x1080 | 0.0080 ms | 0.0080 ms | unchanged |
+| Kitty State* | 2560x1600 | 0.0130 ms | 0.0130 ms | unchanged |
+| Kitty State*, production-shaped fallback | 2560x2880 | 0.0730 ms | 0.0730 ms | unchanged |
+| Sixel full encode | 1920x1080 | 20.2710 ms | 14.5515 ms | -28.22% |
+| Sixel full encode | 2560x1600 | 29.8815 ms | 19.0115 ms | -36.38% |
+| Sixel full encode | 2560x2880 | 42.9870 ms | 21.6535 ms | -49.63% |
+| Sixel PNG decode plus encode | 1920x1080 | 33.8495 ms | 27.7895 ms | -17.90% |
+| Sixel PNG decode plus encode | 2560x1600 | 54.7920 ms | 43.3995 ms | -20.79% |
+| Sixel PNG decode plus encode | 2560x2880 | 85.8895 ms | 64.2290 ms | -25.22% |
+
+The Block process ranges overlap, so the sweep establishes no regression but does
+not claim an improvement. Kitty keeps identical payload and allocation classes at
+10 allocations; Block remains at zero allocations. Capture removal therefore did
+not regress either production seam.
+
+| Sixel stage | 1920x1080 serial to combined | 2560x1600 serial to combined | 2560x2880 serial to combined |
+|---|---:|---:|---:|
+| Indexed-pixel mapping | 2.3740 to 0.8830 ms | 4.4140 to 1.6805 ms | 7.9710 to 2.4965 ms |
+| Band emission | 7.2775 to 2.9230 ms | 13.7990 to 5.6890 ms | 23.6100 to 8.0745 ms |
+
+Sixel allocations move from 1,045 to 1,047. B/op rises by 589, 608, and 603 bytes,
+under 0.02% at each size. Serial and combined payloads are identical at 410,869,
+658,457, and 1,135,208 bytes, and decode to identical pixels. Omitting the redundant
+inter-band separator saves 179, 266, and 479 bytes. `just sixel-interop` passed, so
+the combined mapper and bounded band emitter are accepted. Live CDP at 2560x2880
+timed out while awaiting a settled PNG for Kitty and Sixel; this does not alter the
+controlled CPU or protocol conclusions. Raw sweep logs remain local, ephemeral
+diagnostic output under `testdata/diagnostics/performance-20260718`.
 
 ##### Cross-track decision
 
 Keep adaptive 256 with the stateless 64K sample cap and the 8192 repeat ceiling.
-The combined mapping and band candidate remains pending user review. Send only
-accepted wins upstream.
+Retain the accepted combined mapping and band path. Send only accepted wins upstream.
 If short-lived integration needs a fork, publish a versioned fork and use a temporary
 module replacement. Do not vendor, use `go:linkname`, or add a Nix-only patch.
 
@@ -2629,7 +2672,8 @@ module replacement. Do not vendor, use `go:linkname`, or add a Nix-only patch.
 | `mattn/go-sixel` fixed 255 palette | Warm State falls 45.8% with byte-identical static output; per-frame rebuild removes the gain | Superseded by the stateless 64K sample-cap decision |
 | Long-count Sixel RLE | Complete six-process benchmark cuts payload 17.17% at 1920x1080 and 21.28% at 2560x1600; timing ranges overlap; 8192 is byte-identical to 4096 at both widths; `mattn/go-sixel` pixels are identical | Retained at 8192, below tmux's native 10000 cap |
 | Rightmost Sixel plane bound | Skips 38.77% and 38.00% of plane columns; complete median falls 8.85% and 12.19% with separated ranges, identical bytes, and unchanged allocation counts | Retained |
-| Other private Sixel band changes | Active-bitset, transposed, and packed-bank variants do not beat production | Closed; defer parallel bands |
+| Bounded parallel Sixel bands and RGB555 mapping | Full-encode p90 falls 28.22% to 49.63% and PNG decode plus encode falls 17.90% to 25.22%; bytes and decoded pixels are identical | Retained at up to four workers |
+| Other private Sixel band changes | Active-bitset, transposed, and packed-bank variants do not beat production | Closed |
 | Current decoder plus row-parallel `draw.Draw` | Uses the existing viewer pool, preserves current pixels, and measured 0 B/op and 0 allocs/op warm | Closed; Sixel's production input is PNG |
 | Standard library `imageutil.DrawYCbCr` | Internal, full-frame, and specialised for four ratios | Use only through the public `draw.Draw` boundary |
 | Go 1.26 `archsimd` | Experimental, `GOEXPERIMENT`-gated, amd64-only | Reject for production |

@@ -38,6 +38,11 @@ and research documents.
 
 ## 2. Improve graphics transport where measurements justify it
 
+- [x] Confirm that diagnostics capture removal did not regress Block or Kitty.
+  Six fresh rotated processes at the three target sizes found overlapping Block
+  ranges and unchanged Kitty p90. Block remains allocation-free; Kitty remains at
+  10 allocations with unchanged payload and allocation classes. Source:
+  [2026-07-18 backend sweep](./PERFORMANCE.md#capture-removal-and-combined-sixel-sweep-2026-07-18).
 - [x] Retain the ratio-specialised Block scalar fast path. The 4:2:0 chroma path and
   common eight-pixel luma span are specialised, with the generic fallback preserved.
   Fifteen interleaved q90 pairs improve median end-to-end time from 10.202621 to
@@ -139,7 +144,12 @@ and research documents.
   (`9b5b9a3`) compared serial, mapping-only, bands-only, and combined paths across
   flat, web, and photo fixtures at 1280x720, 1920x1080, and 2560x1600. The combined
   path cut full-encode p90 by 15.78% to 50.19% and PNG-decode-plus-encode p90 by
-  8.88% to 29.81%, with identical payloads, hashes, and decoded pixels.
+  8.88% to 29.81%, with identical payloads, hashes, and decoded pixels. The final
+  production-shaped sweep cut full-encode p90 by 28.22% to 49.63% and complete
+  PNG-decode-plus-encode p90 by 17.90% to 25.22% at the three target sizes. Payloads
+  and decoded pixels remain identical; the two extra allocations and less than 0.02%
+  B/op increase are accepted. `just sixel-interop` passed. Source:
+  [2026-07-18 backend sweep](./PERFORMANCE.md#capture-removal-and-combined-sixel-sweep-2026-07-18).
 - [x] Keep `just sixel-interop` as the Sixel terminal-testing proxy. Commit `04d1703`
   sends complete production DCS streams through both go-sixel and libsixel, then
   checks framing, dimensions, bounds, pixels, and adaptive-image quality. Exact
