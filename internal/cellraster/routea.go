@@ -1,4 +1,4 @@
-// Package capture turns a rendered backend's output back into an image so the
+// Package cellraster turns a Block grid back into an image so correctness
 // metrics can score it. Route A is the block backend's path: it rasterises the
 // owned cell grid (glyph, foreground, background per cell) to an *image.RGBA,
 // emulating a fixed-cell terminal.
@@ -7,7 +7,7 @@
 // cell size. The output is deterministic: the same grid rasterises to a
 // byte-identical *image.RGBA across runs, and PNG writes are timestamp-free, so
 // golden frames stay stable. Channel order is RGBA throughout.
-package capture
+package cellraster
 
 import (
 	"fmt"

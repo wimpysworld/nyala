@@ -1,89 +1,79 @@
 # Nyala
 
-A browser for the terminal: a TTY web browser driving headless Chromium via the Chrome DevTools Protocol. Stages 0 through 3 are built: an image-based rendering proof of concept with three swappable backends and a measurement harness (Stage 0), capability and colour detection (Stage 1), the crisp text overlay on the block path (Stage 2), and the live browser integration (Stage 3). `nyala <url>` now launches headless Chromium, streams the screencast, and renders the live page with the crisp text overlay. See `docs/OVERVIEW.md` for the target architecture and `docs/STAGE-0.md`, `docs/STAGE-1.md`, `docs/STAGE-2.md`, and `docs/STAGE-3.md` for each completed stage's contract, decisions, and measurement. The Stage 3 post-build spikes (sustained FPS, sync tolerance) are pending validation.
+Nyala is a terminal web browser that drives headless Chromium over CDP and
+renders through Block, Kitty, or Sixel backends. The Go module is
+`github.com/wimpysworld/nyala` and requires Go 1.26.
 
 ## Project structure
 
-- `cmd/nyala` - entrypoint; kong CLI wiring. `app.CLI` holds the flags.
-- `internal/render` - the `Frame`/`Renderer` seam, with backends in `block`, `sixel`, `kitty`, and glyph loading in `font`. `render.Frame` carries `FrameStats` for engine-phase capture timing; it is nil off the capture path, so production stays zero-cost.
-- `internal/engine` - the `Engine` seam and `ChromiumEngine`: launches headless Chromium, streams the screencast, extracts the DOM text layer over CDP, and emits synced `render.Frame` values. On the block backend it forces the page onto the cell grid before capture: a document-creation script (`stylesheet.go`) injects the embedded FiraCode Nerd Font Mono as a base64 `@font-face` and forces every element to the monospace family, a seed `font-size` of `cellW/advanceRatio`, `line-height` `cellH`, no kerning, no ligatures, `text-align: left`, and `-webkit-text-fill-color: transparent` so the page paints no glyph ink into the screencast bitmap: the bitmap carries backgrounds, images, and borders only, and the crisp overlay is the sole text layer with no painted ghost to sit against, following browsh's separate-layers model; a follow-on rule restores `-webkit-text-fill-color: currentColor` on `::before`, `::after`, and `::marker`, so CSS-generated content and list markers, which the text walk does not capture, still paint as block graphics rather than vanishing; a one-shot runtime calibration (`calibrate.go`) then measures an offscreen probe after `document.fonts.ready` and corrects the size once, so ASCII glyphs land at `cellW` px. On the block backend the page lays out at `min(cols*cellW, --layout-width)` CSS pixels via a continuous device scale `Z = max(1, cols*cellW / --layout-width)`, so a wide terminal reflows to the target width. The forcing, calibration, and box-to-cell mapping run on the fractional CSS cell `cellW/Z`. The graphics backends (Sixel, Kitty) stay at device scale 1 and draw the bitmap alone, so they take no forcing and no calibration and render the page with its own fonts and layout. `syncFontForcing` (`forcing.go`) reconciles the forcing to the active backend on the snapshot goroutine: a Tab from block to a graphics backend removes the registered script and the live style so the page reflows to its natural layout, and a Tab back re-registers, re-injects, and recalibrates. Capture and corpus force the block backend, so their forcing is unchanged. The snapshot goroutine clocks off the `firstContentfulPaint` lifecycle event, not per frame; the decoded text layer is sticky and re-emitted on update, so a static page shows text, and re-snapshots fire on navigation, resize, a debounced scroll-offset change, and a debounced `networkAlmostIdle` reflow. Each published snapshot is tagged with the DOM scroll offset it was decoded at, and `composeFrame` (`screencast.go`) compensates the compose-time skew: when the bitmap's own scroll (its screencast metadata) differs from the tagged snapshot scroll, it shifts a copy of the runs onto the bitmap's scroll (rows by the CSS-pixel delta over the CSS cell, box bounds by the delta) so the overlay stays glued to the page while the two scrolls differ, never mutating the shared stored slice; a zero delta returns the runs untouched, the production fast path. The decode requests computed `color`, `visibility`, `opacity`, `clip`, `clip-path`, and `position` plus the blended text opacities, and drops hidden boxes before they compose. A box with `visibility:hidden` or `collapse`, an effective opacity (own times ancestor-blended) below 0.05, clip-offscreen (an absolute or fixed box whose computed `clip` rect collapses to a zero or inverted area, or whose `clip-path` is `inset(50%)`, the screen-reader-only pattern), or a height below a quarter cell emits no run. Absent style data reads as visible. The in-page walk snaps each run's row with `Math.round(top/cellH)` from the CSS line-box top, no inset and no bitmap scan, matching browsh: the forced `line-height` makes the divisor equal the painted line pitch, so a browser-laid line at `N*cellH` snaps to row `N` with no residue. The box-to-cell mapping (`mapBoxToCells` in `snapshot.go`) round-snaps both axes and trims all trailing whitespace the soft-wrap layout adds (a space or a newline). It then clips the run to the nearer of the box's own snapped right edge (`round((px+bw)/cellW)`) and the grid's right edge. The box width is a pure clip bound and never sizes the advance. The origin snap sets position, per-grapheme whole-cell stepping sets advance, and a wrongly scaled `cellW` can only clip the run short, never push it wide. Live and capture share this path, so text lands the same way in both. It also reads the conventional proxy environment variables and drives Chromium's proxy (see the runtime note below). `capture_record.go` records whitelisted CDP events (no image bytes, proxy credentials stripped from `cdp-session.json`) for the capture bundle.
-- `internal/capture` - rasterises a frame and decodes terminal output back to pixels, and writes the bounded-capture bundle.
-- `internal/metrics` - image and performance measures over a frame. `PaintDisplacement` (`paintdisplace.go`) reads the source paint and reports per-run horizontal and vertical glyph displacement in cells, the overlay column and row against the painted ink, the paint-referenced placement gate.
-- `internal/ocr` - the pure-Go nearest-glyph matcher and its CER/WER scoring; the Stage 2 diagnostics gate calls `ocr.NewMatcher` and `ocr.CER`.
-- `internal/harness` - the diagnostics sweep, golden archives, and thresholds.
-- `internal/viewer` - drives the terminal: the `stream.go` push consumer that draws engine frames, the `Capture` driver (sibling to `Stream`, no key reader, mirrors terminal bytes to `terminal-stream.raw` via `io.MultiWriter`), plus capability detection and backend cycling.
-- `docs/OVERVIEW.md` - architecture and design decisions.
-- `docs/STAGE-0.md`, `docs/STAGE-1.md`, `docs/STAGE-2.md`, `docs/STAGE-3.md` - durable records of the completed Stage 0, Stage 1, Stage 2, and Stage 3 work.
+- `cmd/nyala` contains the entrypoint and kong CLI wiring.
+- `internal/engine` launches Chromium, streams screencasts, extracts the DOM
+  text layer, and emits synced `render.Frame` values.
+- `internal/render` owns the frame seam and the Block, Kitty, and Sixel backends.
+- `internal/cellraster` rasterises Block grids for browser-free quality tests.
+- `internal/renderdecode` decodes Kitty and Sixel output for correctness tests.
+- `internal/metrics` owns image, placement, paint, scroll, and fixture-gate metrics.
+- `internal/harness` owns the browser-free diagnostics harness and golden data.
+- `internal/viewer` owns terminal capability detection, backend cycling, stream
+  rendering, and the shared production Block compose seam.
+- `testdata/corpus` contains the self-contained CDP correctness fixtures.
 
-Module path is `github.com/wimpysworld/nyala`. Go 1.26.
+Read `docs/OVERVIEW.md` for architecture and `docs/STAGE-0.md` through
+`docs/STAGE-3.md` for historical stage decisions.
 
 ## Setup
 
-Tools are pinned by the Nix flake. Enter the dev shell with `nix develop`, or let direnv load it via `.envrc` (`use flake`). `just` is the task runner; prefer its recipes over ad-hoc `go` commands. Run `just` to list them.
+Use the pinned Nix development shell through `nix develop` or direnv. Prefer
+`just` recipes over ad-hoc commands. Run `just` to list them.
+
+Chromium is a runtime dependency. The binary resolves it through `--browser`,
+then `NYALA_BROWSER`, `CHROME_PATH`, and `PATH`.
 
 ## Build and test
 
-### Launching nyala
+- `just run <url>` builds and launches Nyala. Do not run `./nyala` directly or
+  hand-roll PTY, terminal geometry, or sandbox flags.
+- `just debug-run <url>` prints interactive load milestones through
+  `NYALA_DEBUG_TIMING=1`. It requires a TTY.
+- `just test` runs the fast unit-test gate.
+- `just diagnostics` is the single correctness workflow. It runs the
+  browser-free harness, independent Block, Kitty, and Sixel protocol checks,
+  and Chromium-fed corpus placement, paint, and scroll checks. Evidence goes to
+  gitignored `testdata/diagnostics/`.
+- `just block-interop`, `just kitty-interop`, `just sixel-interop`, and
+  `just cdp-interop` are focused development selectors, not replacement gates.
+- `just live` runs the live Chromium integration tests.
+- `just update-golden` regenerates committed bitmap and overlay goldens.
+- `just fmt` formats with the configured gofumpt formatter.
+- `just build`, `just test`, and `just lint` must pass after code changes.
+- `just check` runs the full local pre-commit gate.
 
-`just run` and `just corpus` are the only supported way to run nyala. Use them for every run, above all when you capture metrics or data. Never hand-roll: do not run `./nyala` directly, and do not hand-roll `script`, `stty`, sandbox flags, or `NYALA_CAPTURE`.
+Do not add a bounded recorder, diagnostic bundle API, capture environment
+switch, or capture-only render path. Diagnostics must drive normal engine and
+viewer seams. Keep `NYALA_CELL_PX` as the diagnostic geometry override and keep
+`NYALA_DEBUG_TIMING` and `NYALA_FPS_TIMING` as live timing controls.
 
-The recipe owns the launch, and a bare run misses every step below:
+Run Chromium-backed diagnostics only through the supported `just` recipes.
+Never set `FENCE_SANDBOX` by hand.
 
-- It allocates a pty with `script` when no TTY is present, so the viewer and capture work headless. Without it a headless run has no terminal.
-- It fixes a deterministic grid with `stty rows`/`cols` from `LINES`/`COLUMNS` (default 40x120). Without it the grid varies, so capture data is not comparable across runs.
-- It sets Chromium's no-sandbox flag only from `FENCE_SANDBOX`; `fence` exposes that variable itself, so never set it by hand.
-- It gates the capture lifecycle through `NYALA_CAPTURE` (see below). Hand-rolling the variable skips the recipe's wrapping and yields a broken bundle.
+## Rendering rules
 
-Behind a synthetic pty only the block backend works, because graphics probes get no reply, so a hand-rolled run silently falls back to block. A hand-rolled run yields broken or non-comparable capture data.
-
-Recipes:
-
-- `just run https://wimpys.world` - build `./nyala`, then run it against a URL.
-- `just debug-run https://wimpys.world` - the way we collect load-timing debug data. It forwards the same `url` and flags as `just run` and branches on the terminal. On an interactive tty it wraps `just run` with `NYALA_DEBUG_TIMING=1`, so the engine prints one stderr line per load milestone (process spawned, screencast started, first frame emitted, first text published) with the elapsed ms since launch; the recipe redirects nyala's stderr to `nyala-timings.log` (override with `NYALA_TIMING_FILE`) so the TUI stays clean, then prints the milestone lines on quit. With no tty (an agent, CI, or a fenced run) the interactive viewer cannot self-exit and `script` binds stderr to the pty, so the recipe runs the bounded capture path instead, prints that bundle's `performance.json` `load_timings`, and deletes the throwaway bundle. So `just debug-run` yields load timings both interactively and headless. `NYALA_DEBUG_TIMING` is zero-cost when unset; the capture path records `load_timings` regardless.
-- `just record https://wimpys.world frames=1` - run the bounded recorder through the supported wrapper, which writes a one-frame bundle whose frame is the painted, text-bearing page (see `NYALA_CAPTURE` below for the lifecycle and `n>1`). The recipe accepts `backend=block` to force the renderer and `cell=WxH` (such as `cell=16x33`) to export the diagnostic `NYALA_CELL_PX` override. `capture=` on `just run` remains compatible for internal callers.
-- `just corpus` - capture every `testdata/corpus` fixture on the block backend in one sweep (each via `just record ... frames=1 backend=block`), each as its own bundle, for comparing each fixture's `screenshot.png` against its `block-render.png`. It sweeps each of the twelve fixtures at three legs, 120x40, 240x48 (the wide leg exports `COLUMNS=240 LINES=48`), and 158x86 at cell 16x33 (a non-1:2 real-terminal geometry, pinned so a headless pty reproduces the device quantisation), and names the leg in any failure. After each capture it gates the fixture with `placement-score -gate -thresholds <fixture.json>` against the bundle frame, reading the recorded `cell_px`: mean right-edge error under 0.5 cells, max under 1.0, drifted-box count 0, same-row collisions 0, off-grid boxes 0. Seven fixtures carry committed `placement_gate` overrides in `fixture.json`. `layout-02` and `layout-03` cover their shaped-script runs plus the wide-leg collisions, and `layout-07` and `layout-08` cover trailing-whitespace max and drifted artefacts. `layout-10` carries a tightened mean of 0.25, `layout-11` a tightened regression guard (mean 0.25, max 0.6) against linear-in-x advance drift, and `layout-12` a regression guard (mean 0.4, max 0.6) for a transparent brand-hue badge, whose glyphs the page hides and the crisp overlay redraws, landing on its round-snapped column. It continues past a failed capture or a gate breach and exits nonzero if any fixture fails.
-
-### Recipes
-
-- `just build` - build the `nyala` binary.
-- `just rasterise <terminal-model.json | frame-dir>` - rasterise a captured block grid to `block-render.png` beside it, for comparing against the frame's source `screenshot.png`. A block capture writes this PNG automatically; this recipe re-renders an existing bundle on demand.
-- `just placement-score <terminal-model.json | frame-dir>` - score text placement from a captured `text-map.json`: horizontal right-edge error, vertical row error, same-row cell collisions, and off-grid box count.
-- `just test` - run the fast unit tests, the routine gate. It runs no corpus sweep, no calibration, and no rasteriser-driven full-corpus measurement, so the harness package finishes in seconds.
-- `just diagnostics` - run the heavy quality gate (`go test -tags diagnostics ./internal/harness/`) over the five committed fixtures (`linuxmatters.png` plus the four `testpage-*` pages) at a fixed 120x40 grid; the calibration runs over the four test pages only. It runs one corpus sweep and one calibration, shared across the tagged tests, writes its report JSON/CSV, summary, and artefact PNGs to `testdata/diagnostics/` (gitignored), gates against the committed baseline and thresholds, and runs the calibration, golden, and overlay-grade tracks. The overlay grade hard-gates the overlaid-grid golden and the matcher `CER == 0`, gates the WCAG low-contrast text-cell count against `baseline.json`. It takes minutes, so run it deliberately, not on every change.
-- `just live` - run the live-browser integration test (`go test -tags live ./internal/engine/`). It launches a real Chromium, so it stays off `just test` and off CI; run it deliberately in the dev shell.
-- `just update-golden` - rerun `TestGoldenTrack` and `TestOverlayGoldenTrack` with `UPDATE_GOLDEN=1` to regenerate the committed bitmap and overlay golden archives.
-- `just overlay` - regenerate the overlay artefact PNGs into `testdata/diagnostics/` (gitignored) for eyeballing, mirroring `just update-golden`.
-- `just genruns` - regenerate the committed `testdata/overlay/*.runs` fixtures.
-- `just kmscon-testcard` - print the KMSCON quadrant test card to the TTY for the owner to eyeball inter-row bleed; manual and owner-verified, off CI.
-- `just lint` - go vet, gocyclo, ineffassign, golangci-lint, actionlint.
-- `just fmt` - format with golangci-lint's configured gofumpt formatter; `just fmt-check` checks the same formatter.
-- `just tidy` - `go mod tidy`; `just tidy-check` verifies go.mod/go.sum are clean.
-- `just coverage` - tests with a coverage report.
-- `just vuln` - govulncheck.
-- `just release-check`, `just release-snapshot` - GoReleaser config check and local snapshot.
-- `just check` - full local gate (tidy-check, fmt-check, lint, test, build, release-check, `nix flake check`, vuln).
-
-The `nyala` binary opens the positional `<url>`. A bare host gains an `https://` scheme; `http`, `https`, and `file` are accepted, others are rejected. Its flags are `--browser` (path to the Chromium executable to drive), `--color` (auto, truecolor, 256, none; default auto), `--backend` (auto, block, kitty, sixel; default auto), `--layout-width` (target CSS layout width for the block backend, default `1280`, a value of zero or below is rejected), `--blocks` (auto, sextant, quadrant, half; default auto), `--disable-frame-rate-limit` (disable Chromium's browser frame-rate limit), and `--version`. `--blocks` selects the block glyph mode: `quadrant` (2x2) and `half` (half-block) map to the existing schemes, and `sextant` renders 2x3 sextant blocks (Unicode U+1FB00-1FB3B), raising vertical resolution. On the interactive path, `auto` and `sextant` both resolve through the terminal allow-list read from environment variables (`viewer.SextantSupported`): sextant when the terminal is known to self-draw sextants, otherwise quadrant, so `auto` picks sextant on a supported terminal and quadrant elsewhere, and `sextant` requests it but degrades to quadrant on an unsupported terminal. On the capture path (deterministic, no detection) `auto` is always quadrant and explicit `sextant`/`half` are honoured literally, so headless capture never depends on the runner's terminal. `--backend=auto` keeps the detection behaviour below; a named backend forces one renderer and fails fast if the terminal cannot run it (validated after detection, before navigation). The viewer auto-detects terminal capability (Kitty, then Sixel, then Block) and Tab cycles the supported backends. The diagnostics sweep runs via `just diagnostics`; the golden archives regenerate via `just update-golden`.
-
-`NYALA_CAPTURE=n` is the bounded-capture switch behind `just record`. Unset or `0` is off. `1` writes a one-frame bundle. A positive `n` captures and draws `n` usable frames (a delivered `render.Frame` with a non-nil bitmap), writes one `nyala-capture-*` temp directory bundle, prints its path, then exits; Tab cycling is off in capture mode. A usable frame is gated to the painted, text-bearing page: the driver waits for the first contentful paint, then a `textReady` latch holds the first counted frame until the engine publishes its first DOM snapshot and re-emits the held bitmap with the runs folded on. The publish trails paint by the calibration pass, so the latch is what keeps the first counted frame from landing text-free. The latch is capture-only; production pays only the nil checks. A completeness gate then skips the first counted frame while its bitmap is blank (nearly no ink against the corner background), because a large surface composites progressively and the latch frame can still be mostly background. The first-draw idle timer bounds that wait and writes a partial bundle on timeout; the gate is first-frame-only and capture-only. So `frames=1` is the deterministic public path to the painted, text-bearing frame, and `n>1` is no longer needed to skip a blank pre-paint frame. `NYALA_CAPTURE_SCROLL=<css px>` is the capture scroll hook, a positive integer, active only when capture is on and ignored otherwise. After the `n` frames draw it injects a vertical scroll of that many CSS pixels through the engine's wheel transport (the same chain a user wheel or scroll key takes), waits for the debounced scroll re-snapshot, then draws one more usable frame that reflects the scrolled state, so the bundle's last frame is the scrolled one. The requested scroll lands in `manifest.json` as `requested_scroll_px` and in `report.md`. The recipe wires it as `scroll=<css px>` beside `frames=` and `backend=`, for example `just record <url> frames=1 scroll=600 backend=block`; the scroll rides only with capture. `NYALA_CAPTURE_SCROLL_SETTLE` gates the hook's settle wait and defaults on: with it unset the hook waits for the engine's settle snapshot (the overlay at the resting scroll), and set to `0` the hook skips that wait and draws the first frame whose scroll offset advanced, the pre-settle state the compose-time scroll compensation keeps glued to the scrolled bitmap. The recipe wires it as `settle=0` beside `scroll=`. The hook is capture-only; production pays at most nil checks. A full capture exits 0; a partial bundle exits nonzero (first-draw timeout, per-frame idle timeout, scroll re-snapshot timeout, forced-backend rejection, or frame channel close). `performance.json` carries `layout_scale` when the block layout scale exceeds 1 (absent means 1), and `placement-score` divides `cell_px` by it. It also carries a session-level `load_timings` object with `process_spawned_ms`, `screencast_started_ms`, `first_frame_ms`, and `first_text_ms`, each the elapsed milliseconds since launch to that load-path milestone; a zero span means that milestone did not fire (a partial bundle whose page never published text). The engine records the spans only on the capture path (or when `NYALA_DEBUG_TIMING` prints its stderr trace); production live records nothing. The bundle is a set of plain files: root `manifest.json`, `report.md`, `performance.json`, `terminal-stream.raw`, `cdp-session.json`, and `cdp-events.ndjson`. Each frame directory (`frames/frame-NNNNNN/`) holds `screenshot.png`, `text.txt`, `cdp-payload.json`, `text-map.json`, `terminal-model.json`, and `block-render.png` (the last two exist on the block backend only; `block-render.png` is the model rasterised to a PNG beside it; Kitty and Sixel omit both and the manifest notes a graphics backend has no cell grid). Each `text-map.json` run carries `Col,Row,Text,FG`, the `X,Y,W,H` box bounds in CSS pixels, and `CellW`, the CSS-pixel cell width the run was snapped with. The bundle can hold sensitive page content, so share it only after review.
-
-Chromium is a runtime dependency. The Nix dev shell adds it Linux-gated, and the wrapped binary sets `CHROME_PATH` to it. The binary discovers the executable via `--browser`, then `NYALA_BROWSER`, then `CHROME_PATH`, then a `PATH` lookup.
-
-Proxy config is environment-only; there is no proxy flag. At construction the engine reads the proxy environment variables once and applies them to the Chromium launch. It sets `--proxy-server` (credential-free) from the first set of `HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY`, `http_proxy`, `ALL_PROXY`, `all_proxy`, and sets `--proxy-bypass-list` from `NO_PROXY` then `no_proxy`. When the proxy URL carries credentials, the engine answers the proxy auth challenge over CDP (the Fetch domain), keeping credentials out of Chromium's process arguments. A malformed proxy URL fails loudly at launch, naming the source variable.
-
-When you change code, `just build`, `just test`, and `just lint` must pass; this is the routine pre-commit gate. `just diagnostics` is the heavier quality gate, run deliberately rather than on every change. `just check` runs the full local gate before considering any change done.
+- Keep pixels in RGBA byte order throughout rendering and metrics code.
+- Block uses JPEG screencast frames in production. Kitty and Sixel use PNG.
+- Block diagnostics must use `viewer.State.ComposeBlockFrame`, the same compose
+  result consumed by production terminal writing. Do not add a second compositor.
+- The crisp text overlay is first-writer-wins. A wide grapheme's trailing cell
+  carries background only; terminal writers emit nothing for that cell.
+- Keep `internal/ocr` pure Go and cgo-free.
+- Use epsilon comparisons for floating-point image metrics. amd64 and arm64 can
+  differ below 1e-12 because arm64 contracts operations to FMA.
+- Regenerate bitmap and overlay golden archives on amd64 only. Their tests skip
+  on other architectures.
 
 ## Code style
 
-Format with golangci-lint's configured gofumpt formatter through `just fmt`; verify it with `just fmt-check`. Lint config lives in `.golangci.yaml`; revive runs with the `exported` rule, so add a doc comment to every exported symbol you add.
-
-## Gotchas
-
-- RGBA byte order everywhere in the render and metrics pipeline. The decoders and image maths assume RGBA, never BGRA. Do not swap channels.
-- `internal/ocr` is pure Go and cgo-free. It holds the nearest-glyph matcher and its CER/WER scoring; the Stage 2 diagnostics gate calls `ocr.NewMatcher` and `ocr.CER`. Test it with `go test ./internal/ocr/`.
-- The heavy quality tests (corpus sweep, calibration, golden track) carry the `//go:build diagnostics` tag, so they leave the default `go test ./...` run. Run them via `just diagnostics`; regenerate the golden archives via `just update-golden`. The shared sweep and calibration run once each per tagged run, so adding a tagged test that reuses them adds no extra rasteriser pass.
-- The crisp text overlay lives in the block `Grid`: `block.Cell` carries `Text` and `Wide`, and `block.Compose` folds `Frame.Text` on. All three consumers prefer `Cell.Text` over `Cell.Glyph`, so the overlay travels through one grid. They differ on the `Wide` trailing cell. The two terminal consumers (`block.Renderer.Render` and the viewer `writeGrid`) emit nothing for it, because the lead cell's width-2 grapheme already fills both terminal columns; a space would add a third column and misalign the row. The Route A `capture.Rasteriser` fills the trailing cell's background only, with no glyph and no space, because each raster cell is a fixed pixel tile. The overlay is first-writer-wins: a claimed cell (overlay `Text` or a `Wide` trailing cell) is never overwritten, so an earlier run keeps the cell (paint-order z-ordering stays deferred). An overlaid or boundary cell recomposes its background from the source columns the run's box does not cover, down to a half-cell floor (the quadrant grid is two source columns per cell). On the live stream path the block frame composes onto the full `cols x rows` grid with no aspect-fit letterbox: the engine sizes the block bitmap to exactly `cols*cellW` by `rows*cellH` device pixels, so the bitmap maps one-to-one onto the grid and shares the overlay's whole-cell scale; the graphics backends draw the engine-sized full grid from the top-left with identity placement and no overlay. The overlay goldens (`testdata/golden/overlay/*.txtar`) regenerate on amd64 only, like the bitmap goldens, since the whole-cell bg-average rounds differently on arm64; `TestOverlayGoldenTrack` skips off amd64.
-- The image maths is 64-bit floating point and rounds differently across architectures (arm64 contracts to FMA, x86-64 does not). Two consequences for tests, which CI runs on `linux/amd64` and `linux/arm64`. First, never assert exact equality on metric output: identical inputs leave a sub-1e-12 residue on arm64, so compare against an epsilon (see `internal/metrics/colour_test.go`). Second, the committed golden archives are an amd64 byte snapshot; the downscale and block compose diverge by a few bytes on arm64, so `TestGoldenTrack` skips when `runtime.GOARCH != "amd64"`. Regenerate the goldens on amd64 only.
+Use British English in documentation. Add a doc comment to every exported
+symbol. Preserve unrelated worktree changes.
 
 ## Commit conventions
 

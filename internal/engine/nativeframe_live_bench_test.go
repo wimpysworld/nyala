@@ -15,10 +15,10 @@ import (
 	xsixel "github.com/charmbracelet/x/ansi/sixel"
 	emmb64 "github.com/emmansun/base64"
 	"github.com/klauspost/compress/zlib"
-	"github.com/wimpysworld/nyala/internal/capture"
 	"github.com/wimpysworld/nyala/internal/render"
 	renderkitty "github.com/wimpysworld/nyala/internal/render/kitty"
 	rendersixel "github.com/wimpysworld/nyala/internal/render/sixel"
+	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
 
 const (
@@ -465,11 +465,11 @@ func validateNativeFrameOutputs(tb testing.TB, payloads []screencastBenchPayload
 		if payload.name != "png" && !bytes.Equal(currentKitty.Bytes(), proposedKitty.Bytes()) {
 			tb.Fatalf("%s Kitty output differs, want exact bytes", payload.name)
 		}
-		currentKittyImg, err := capture.DecodeKitty(currentKitty.Bytes())
+		currentKittyImg, err := renderdecode.DecodeKitty(currentKitty.Bytes())
 		if err != nil {
 			tb.Fatalf("%s decode current Kitty output: %v", payload.name, err)
 		}
-		proposedKittyImg, err := capture.DecodeKitty(proposedKitty.Bytes())
+		proposedKittyImg, err := renderdecode.DecodeKitty(proposedKitty.Bytes())
 		if err != nil {
 			tb.Fatalf("%s decode proposed Kitty output: %v", payload.name, err)
 		}

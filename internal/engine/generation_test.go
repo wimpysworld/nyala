@@ -45,7 +45,7 @@ func TestComposeFramePairsPublishedGeneration(t *testing.T) {
 	e := &ChromiumEngine{backend: "block", cols: 120, rows: 40, cellW: 8, cellH: 16, layoutWidth: 1280}
 	ts := &textSync{}
 	want := []render.GlyphRun{{Col: 0, Row: 0, Text: "hi", X: 0, Y: 0}}
-	ts.store(want, 0, 0, 5)
+	ts.store(want, 0, 5)
 
 	var lastComposed []render.GlyphRun
 	img := image.NewRGBA(image.Rect(0, 0, 8, 16))
@@ -57,7 +57,7 @@ func TestComposeFramePairsPublishedGeneration(t *testing.T) {
 
 	// The error hold expired to nil: the compose draws the bitmap alone, so the
 	// staleness bound wins over any compose-level hold.
-	ts.store(nil, 0, 0, 5)
+	ts.store(nil, 0, 5)
 	second := e.composeFrame(pendingFrame{img: img, meta: meta}, ts, &lastComposed)
 	if len(second.Text) != 0 {
 		t.Fatalf("nil-run-set compose = %v, want bitmap-only", second.Text)
@@ -76,7 +76,7 @@ func TestComposeFrameShiftsOnScrollMismatch(t *testing.T) {
 		{Col: 0, Row: 15, Text: "keep", X: 0, Y: 15 * 16},
 		{Col: 0, Row: 0, Text: "gone", X: 0, Y: 0},
 	}
-	ts.store(runs, 0, 0, 3)
+	ts.store(runs, 0, 3)
 
 	var lastComposed []render.GlyphRun
 	meta := &page.ScreencastFrameMetadata{ScrollOffsetY: 160}

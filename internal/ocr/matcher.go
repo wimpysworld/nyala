@@ -6,7 +6,7 @@ import (
 
 	"github.com/rivo/uniseg"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
@@ -68,7 +68,7 @@ var (
 // luma, and stores the bit template. The templates render through the same face
 // path the rasteriser
 // draws cells with, so a matched cell compares against a like-for-like glyph.
-func NewMatcher(rast *capture.Rasteriser, runTexts []string) *Matcher {
+func NewMatcher(rast *cellraster.Rasteriser, runTexts []string) *Matcher {
 	seen := make(map[string]bool)
 	var texts []string
 	add := func(s string) {
@@ -154,12 +154,12 @@ func (m *Matcher) Recover(img *image.RGBA, g block.Grid) string {
 // fresh *image.RGBA in cell-local coordinates. Pixels outside img read as
 // transparent zero, matching an empty cell.
 func cropCell(img *image.RGBA, col, row int) *image.RGBA {
-	out := image.NewRGBA(image.Rect(0, 0, capture.CellPxW, capture.CellPxH))
-	x0 := col * capture.CellPxW
-	y0 := row * capture.CellPxH
+	out := image.NewRGBA(image.Rect(0, 0, cellraster.CellPxW, cellraster.CellPxH))
+	x0 := col * cellraster.CellPxW
+	y0 := row * cellraster.CellPxH
 	b := img.Bounds()
-	for dy := range capture.CellPxH {
-		for dx := range capture.CellPxW {
+	for dy := range cellraster.CellPxH {
+		for dx := range cellraster.CellPxW {
 			p := image.Point{X: x0 + dx, Y: y0 + dy}
 			if p.In(b) {
 				out.SetRGBA(dx, dy, img.RGBAAt(p.X, p.Y))

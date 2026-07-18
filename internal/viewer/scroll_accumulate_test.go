@@ -9,7 +9,7 @@ import (
 // forwarded through SendKey, so a keySender test can assert a burst accumulates
 // instead of collapsing to the last key.
 type recordingEngine struct {
-	*fakeCaptureEngine
+	*fakeEngine
 	got chan string
 }
 
@@ -30,7 +30,7 @@ func scrollStep(code string) int {
 
 func newRecordingSender(t *testing.T, buf int) (*keySender, *recordingEngine) {
 	t.Helper()
-	eng := &recordingEngine{fakeCaptureEngine: &fakeCaptureEngine{}, got: make(chan string, buf)}
+	eng := &recordingEngine{fakeEngine: &fakeEngine{}, got: make(chan string, buf)}
 	ks := newKeySender(eng)
 	t.Cleanup(ks.close)
 	return ks, eng

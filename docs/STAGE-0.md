@@ -2,6 +2,11 @@
 
 Stage 0 is built, committed, and verified. It proves three swappable rendering backends sit behind one `Renderer` seam, that a static PNG renders through each, and that objective measurement plus OCR legibility tracking gate the result. A no-graphics terminal shows the bitmap as quadrant blocks; a graphics terminal shows the same frame via Sixel or Kitty, with no code change above the seam. There is no browser yet; the input is a static PNG that the engine replaces in Stage 3. This document is the durable record of the completed work.
 
+Retirement note: the reusable Route A raster and protocol decoders described here
+now live in `internal/cellraster` and `internal/renderdecode`. The former
+`internal/capture` bundle and its commands were retired by the diagnostics
+consolidation. Use `just diagnostics` for the current correctness workflow.
+
 ## Status summary
 
 Stage 0 is code-complete and committed at `1340b1b` (HEAD). The OCR calibration and the Nix `vendorHash` update are committed, not pending.

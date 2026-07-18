@@ -15,10 +15,10 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/wimpysworld/nyala/internal/capture"
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/sixel"
+	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
 
 // decoderChannelTolerance covers only the different integer rounding used when
@@ -57,7 +57,7 @@ func TestLibsixelRoundTrip(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := renderPayload(t, tc.img)
 			assertCompletePayload(t, payload, tc.img.Bounds().Dx(), tc.img.Bounds().Dy())
-			goDecoded, err := capture.DecodeSixel(payload)
+			goDecoded, err := renderdecode.DecodeSixel(payload)
 			if err != nil {
 				t.Fatalf("go-sixel decode: %v", err)
 			}

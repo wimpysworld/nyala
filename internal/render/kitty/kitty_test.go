@@ -10,8 +10,8 @@ import (
 
 	"github.com/charmbracelet/x/ansi/kitty"
 
-	"github.com/wimpysworld/nyala/internal/capture"
 	"github.com/wimpysworld/nyala/internal/render"
+	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
 
 // Compile-time assertion that Renderer satisfies render.Renderer.
@@ -191,7 +191,7 @@ func TestRenderRoundTripsThroughDecode(t *testing.T) {
 			if err := r.Render(tc.f, &buf); err != nil {
 				t.Fatalf("Render() = %v", err)
 			}
-			got, err := capture.DecodeKitty(buf.Bytes())
+			got, err := renderdecode.DecodeKitty(buf.Bytes())
 			if err != nil {
 				t.Fatalf("DecodeKitty() = %v", err)
 			}

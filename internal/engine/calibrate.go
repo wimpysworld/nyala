@@ -12,7 +12,7 @@ import (
 )
 
 // fontCalibrationTimeout bounds one calibration pass. The forced-face load plus a
-// probe measurement and a single re-inject must complete inside this deadline; on
+// probe measurements and correction reinjections must complete inside this deadline; on
 // expiry the seed size stands and the session proceeds, so a wedged browser
 // degrades placement rather than the session. It mirrors inputDispatchTimeout.
 const fontCalibrationTimeout = 2 * time.Second
@@ -22,6 +22,11 @@ const fontCalibrationTimeout = 2 * time.Second
 // page content; N is large enough that the box-width residue per glyph averages
 // out below sub-pixel noise.
 const calibrationProbeN = 20
+
+// calibrationPasses applies one correction, then measures the corrected face
+// once more. The second pass makes calibration independent of the transient
+// first probe and idempotent when a reflow triggers another calibration.
+const calibrationPasses = 2
 
 // buildCalibrationProbeScript returns the JS that appends an offscreen element of
 // N repeated ASCII glyphs styled by the injected rules, reads its rendered box
@@ -64,10 +69,10 @@ func buildReinjectScript(sizePx float64) string {
 // calibrateFonts corrects the seed font-size on the current document so N forced
 // glyphs land on N cells. It awaits our own forced face at the seed size, measures an offscreen
 // probe box through Runtime.evaluate, computes the corrected size with the pure
-// calibratedFontSize, and re-injects it by rewriting the injected <style>. The
+// calibratedFontSize, re-injects it, then repeats once against the corrected
+// face so later calibration calls are idempotent. The
 // whole pass runs under fontCalibrationTimeout; on timeout or any error the seed
-// stands, a capture event records the miss when the recorder is active, and it
-// returns so the caller proceeds to publish. Calibration failure degrades
+// stands and the caller proceeds to publish. Calibration failure degrades
 // placement, never the session. It runs on the snapshot goroutine, so program
 // order is the ordering contract; it holds no lock across the chromedp.Run.
 func (e *ChromiumEngine) calibrateFonts(ctx context.Context) {
@@ -78,30 +83,46 @@ func (e *ChromiumEngine) calibrateFonts(ctx context.Context) {
 	cellW, _ := e.snapshotCellPx()
 	e.mu.Unlock()
 	seed := cellW / advanceRatio
+	calibrationOK := false
+	calibratedSize := seed
+	defer func() {
+		if !e.diagnosticFrameMeta {
+			return
+		}
+		e.mu.Lock()
+		e.diagnosticCalibrationSerial++
+		e.diagnosticCalibrationSucceeded = calibrationOK
+		e.diagnosticCalibratedFontSize = calibratedSize
+		e.mu.Unlock()
+	}()
 
 	runCtx, cancel := context.WithTimeout(ctx, fontCalibrationTimeout)
 	defer cancel()
+	if err := evaluateVoid(runCtx, "seed-size reinject", buildReinjectScript(seed), false); err != nil {
+		return
+	}
 
 	// Await only our own face at the seed size, not document.fonts.ready. The page's
 	// own in-flight web fonts do not affect the forced-face probe, so waiting on the
 	// whole set adds their load latency to the calibration base for no gain.
 	loadFace := fmt.Sprintf(`document.fonts.load('%gpx "%s"')`, seed, fontFamily)
 	if err := evaluateVoid(runCtx, "font readiness await", loadFace, true); err != nil {
-		e.recordCalibration()
 		return
 	}
 
-	measured, err := evaluateFloat(runCtx, buildCalibrationProbeScript(calibrationProbeN))
-	if err != nil || measured <= 0 {
-		e.recordCalibration()
-		return
+	current := seed
+	for range calibrationPasses {
+		measured, err := evaluateFloat(runCtx, buildCalibrationProbeScript(calibrationProbeN))
+		if err != nil || measured <= 0 {
+			return
+		}
+		current = calibratedFontSize(current, calibrationProbeN, cellW, measured)
+		if err := evaluateVoid(runCtx, "corrected-size reinject", buildReinjectScript(current), false); err != nil {
+			return
+		}
 	}
-
-	corrected := calibratedFontSize(seed, calibrationProbeN, cellW, measured)
-	if err := evaluateVoid(runCtx, "corrected-size reinject", buildReinjectScript(corrected), false); err != nil {
-		e.recordCalibration()
-		return
-	}
+	calibrationOK = true
+	calibratedSize = current
 }
 
 // evaluateVoid runs a JS expression for its side effect and discards the result.
@@ -147,22 +168,4 @@ func evaluateFloat(ctx context.Context, expr string) (float64, error) {
 		return nil
 	}))
 	return value, err
-}
-
-// recordCalibration records one font-calibration capture event when the recorder
-// is active, so a calibration miss is observable in the bundle. Production leaves
-// the recorder nil, so the call pays only a nil check.
-func (e *ChromiumEngine) recordCalibration() {
-	if e.recorder != nil {
-		e.recorder.Record(captureEvent{Type: captureEventFontCalibration})
-	}
-}
-
-// recordLayoutShift records one layout-shift capture event when the recorder is
-// active, so a reflow that re-decoded the text layer is observable in the bundle.
-// Production leaves the recorder nil, so the call pays only a nil check.
-func (e *ChromiumEngine) recordLayoutShift() {
-	if e.recorder != nil {
-		e.recorder.Record(captureEvent{Type: captureEventLayoutShift})
-	}
 }

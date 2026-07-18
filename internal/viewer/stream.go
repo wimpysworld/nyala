@@ -28,21 +28,6 @@ import (
 // forwards scroll keys by their code and wheel deltas in CSS pixels, and the
 // engine owns the offset.
 type Engine interface {
-	// EnableCapture turns on engine-phase capture for this run and wires the
-	// bundle's cdp-events.ndjson sink into the engine before Navigate. The caller
-	// passes the open ndjson writer; the returned CaptureSession exposes the
-	// cdp-session.json bytes the engine assembles during navigation, read after
-	// Navigate returns. Stream never calls it, so the interactive path pays no
-	// capture cost. The adapter constructs the engine recorder, so the viewer
-	// never imports the engine package.
-	EnableCapture(ndjson io.Writer) CaptureSession
-	// SetCaptureSettleHold gates the engine's initial-layout settle hold on the
-	// capture first-publish latch. The capture driver calls it with hold=true only for
-	// a single-frame capture (n == 1), so the one bundled frame waits for the layout to
-	// settle; a multi-frame capture passes false so the load-period frames it counts
-	// are not drained by the wait. Stream never calls it, so the interactive path holds
-	// nothing.
-	SetCaptureSettleHold(hold bool)
 	// SetBackend names the active backend (block, sixel, kitty) so the engine
 	// sizes the capture: sub-cell for block, cell-pixel for the graphics
 	// backends. When streaming it restarts the stream at the new size.
@@ -70,44 +55,10 @@ type Engine interface {
 	// offset.
 	SendKey(code string)
 	// SendScroll scrolls the page down by dy CSS pixels through the engine's wheel
-	// transport. The capture scroll hook calls it; the interactive path does not.
+	// transport. Diagnostic tests use it to exercise scroll synchronisation.
 	SendScroll(dy int)
 	// Close tears down the engine and the browser process.
 	Close() error
-}
-
-// CaptureSession exposes the cdp-session.json bytes the engine assembles during
-// navigation. The capture driver obtains it from Engine.EnableCapture and reads
-// SessionJSON after Navigate returns to write cdp-session.json into the bundle.
-// It is the one viewer-side seam onto the engine recorder, so the viewer never
-// imports the engine package.
-type CaptureSession interface {
-	// SessionJSON returns the assembled cdp-session.json bytes, or nil before
-	// navigation fills them.
-	SessionJSON() []byte
-	// Painted returns a channel the engine closes on the first contentful paint
-	// (or load fallback). The capture driver waits on it before counting usable
-	// frames, so a blank pre-paint frame is never one of the n. A nil channel reads
-	// as never closed, so the driver's paint deadline bounds the wait.
-	Painted() <-chan struct{}
-	// TextReady returns a channel the engine closes on the first overlay publish.
-	// The capture driver waits on it after paint, so the first counted frame carries
-	// its decoded text runs rather than the pre-publish nil. A nil channel reads as
-	// never closed, so the driver's deadline bounds the wait.
-	TextReady() <-chan struct{}
-	// ScrollSettle returns a channel the engine pokes after the settle snapshot
-	// publishes the text at the resting scroll position. The capture scroll hook
-	// drains it before injecting the scroll, then waits for a fresh poke so it draws
-	// the scrolled frame with the settled overlay rather than the stale pre-scroll
-	// text. A nil channel reads as never poked, so the hook's idle timer bounds the
-	// wait.
-	ScrollSettle() <-chan struct{}
-	// LoadTimings returns a snapshot of the four load-path milestone spans the engine
-	// recorded during launch (process spawn, screencast start, first frame, first
-	// text), each the elapsed milliseconds since launch. The capture driver reads it at
-	// finalise and writes it into performance.json's load_timings; a zero field means
-	// that milestone did not fire.
-	LoadTimings() render.LoadTimings
 }
 
 // Stream runs the interactive viewer on tty, drawing the live frames eng pushes,
@@ -282,18 +233,14 @@ func (c *control) submit(fn func(Engine)) {
 	c.worker.submit(fn)
 }
 
-// setupViewer performs the shared viewer setup both Stream and the capture
-// driver need: it checks tty is a terminal, reads the grid size, puts the
+// setupViewer performs Stream's terminal setup: it checks tty is a terminal, reads the grid size, puts the
 // terminal into raw mode, builds the State, runs backend and colour detection,
 // and hands the resolved backend, cell px, and layout width to the engine before
 // Navigate so the engine sizes its screencast capture and block device scale. It
-// returns the tty fd, the State, and
-// a restore closure the caller must defer to leave raw mode. It does not enter
-// the full-screen mode or write the loading cue, because the capture driver must
-// not mirror those bytes into its terminal-stream capture. scheme is the resolved
+// returns the tty fd, the State, and a restore closure the caller must defer to
+// leave raw mode. Scheme is the resolved
 // block glyph scheme; it sets the scheme on the State and hands its engine name to
-// the engine before Navigate. The caller resolves it: Stream via resolveScheme
-// with detection, Capture via resolveCaptureScheme without.
+// the engine before Navigate. The caller resolves it through detection.
 func setupViewer(eng Engine, tty *os.File, colourFlag string, scheme block.Scheme, layoutWidth int) (fd uintptr, st *State, restore func(), err error) {
 	fd = tty.Fd()
 	if !cterm.IsTerminal(fd) {
@@ -313,8 +260,8 @@ func setupViewer(eng Engine, tty *os.File, colourFlag string, scheme block.Schem
 	// and each drawn frame updates ImgW/ImgH before Fit and the block compose.
 	state := NewState(cols, rows, 1, 1)
 	// Set the resolved block glyph scheme, overriding the NewState quadrant default
-	// for this run. The caller resolves the --blocks mode; auto keeps quadrant on the
-	// capture path, so capture and corpus are unchanged.
+	// for this run. The caller resolves the --blocks mode; auto keeps quadrant as
+	// the production and corpus default.
 	state.Scheme = scheme
 
 	// Detection runs in raw mode but before the full-screen switch and the key
@@ -554,8 +501,8 @@ func startupQuit(ev keyEvent) bool {
 // 2026 close. Assembling the whole unit into one owned buffer keeps the atomic
 // present (the terminal never shows a torn partial frame) while the producer
 // encodes the next frame in parallel with the current frame's write. The bytes and
-// their order match the old serial draw exactly, so the block golden track and the
-// capture stream are unchanged; only the goroutine that writes them differs.
+// their order match the old serial draw exactly, so the block golden track is
+// unchanged; only the goroutine that writes the bytes differs.
 //
 // The first frame emits the full clearScreen (via framePrefix) to wipe the loading
 // cue; steady frames emit cursorHome only. It returns the encode time, the
@@ -1163,22 +1110,6 @@ func resolveScheme(blocks string, env []string) block.Scheme {
 			return block.SchemeSextant
 		}
 		return block.SchemeQuadrant
-	default:
-		return block.SchemeQuadrant
-	}
-}
-
-// resolveCaptureScheme maps the --blocks mode to a block.Scheme for the capture
-// path, which is deterministic and runs no terminal detection. "sextant" forces
-// sextant; "half" selects half-block; everything else, including "auto" and the
-// empty string, resolves to quadrant, so the default capture and corpus sweeps
-// are unchanged.
-func resolveCaptureScheme(blocks string) block.Scheme {
-	switch blocks {
-	case "sextant":
-		return block.SchemeSextant
-	case "half":
-		return block.SchemeHalfBlock
 	default:
 		return block.SchemeQuadrant
 	}

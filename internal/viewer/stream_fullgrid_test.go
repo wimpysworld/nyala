@@ -60,12 +60,14 @@ func TestRenderBlockComposesFullGridNoLetterbox(t *testing.T) {
 			st := NewState(c.cols, c.rows, src.Bounds().Dx(), src.Bounds().Dy())
 			st.Backend = BackendBlock
 
-			var sink block.Grid
-			st.SetCaptureGrid(&sink)
+			sink := st.ComposeBlockFrame(render.Frame{Img: src})
 
 			var buf bytes.Buffer
 			if err := st.RenderStreamFrame(render.Frame{Img: src}, &buf); err != nil {
 				t.Fatalf("RenderStreamFrame: %v", err)
+			}
+			if sink == nil {
+				t.Fatal("ComposeBlockFrame returned nil")
 			}
 			if sink.Cols != c.cols || sink.Rows != c.rows {
 				t.Fatalf("grid = %dx%d, want %dx%d", sink.Cols, sink.Rows, c.cols, c.rows)

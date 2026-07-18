@@ -17,17 +17,10 @@ const wheelLineStepPx = 40
 // runs under this deadline; on expiry the key is dropped and the failure counted.
 const inputDispatchTimeout = 2 * time.Second
 
-// inputDispatchFailureThreshold is how many consecutive dispatch failures mark a
-// persistent fault worth surfacing. One transient failure is dropped silently; a
-// run of failures past this records one capture event so a wedged browser is
-// observable in the bundle without spamming the stream.
-const inputDispatchFailureThreshold = 5
-
 // dispatchInput runs one input action under a bounded context so a wedged browser
-// drops the keystroke instead of parking the caller goroutine. On a persistent
-// run of failures it records one capture event (under capture) so the wedge is
-// observable; a single transient failure is dropped silently. It never holds e.mu
-// across the chromedp.Run.
+// drops the keystroke instead of parking the caller goroutine. It records the
+// consecutive failure count for debug inspection and never holds e.mu across
+// chromedp.Run.
 func (e *ChromiumEngine) dispatchInput(ctx context.Context, action chromedp.Action) {
 	if ctx == nil {
 		return
@@ -41,11 +34,7 @@ func (e *ChromiumEngine) dispatchInput(ctx context.Context, action chromedp.Acti
 	} else {
 		e.inputFailures = 0
 	}
-	failures := e.inputFailures
 	e.mu.Unlock()
-	if err != nil && failures == inputDispatchFailureThreshold && e.recorder != nil {
-		e.recorder.Record(captureEvent{Type: captureEventInputDispatchFailed})
-	}
 }
 
 // scrollKeyDelta maps a scroll key to a wheel delta in CSS pixels. It returns

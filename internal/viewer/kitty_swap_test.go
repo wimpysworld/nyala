@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wimpysworld/nyala/internal/capture"
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
+	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
 
 // kittyCommands splits a kitty render's bytes into its APC command option
@@ -308,11 +308,11 @@ func TestNativeJPEGGraphicsOutputMatchesRGBAPath(t *testing.T) {
 			}
 			continue
 		}
-		nativeImg, err := capture.DecodeSixel(native.Bytes())
+		nativeImg, err := renderdecode.DecodeSixel(native.Bytes())
 		if err != nil {
 			t.Fatalf("decode native Sixel: %v", err)
 		}
-		priorImg, err := capture.DecodeSixel(prior.Bytes())
+		priorImg, err := renderdecode.DecodeSixel(prior.Bytes())
 		if err != nil {
 			t.Fatalf("decode prior Sixel: %v", err)
 		}

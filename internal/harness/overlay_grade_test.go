@@ -10,7 +10,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/ocr"
 	"github.com/wimpysworld/nyala/internal/render"
@@ -42,7 +42,7 @@ func writeOverlayArtefact(t *testing.T, page string, img *image.RGBA) {
 		t.Fatalf("create %s: %v", path, err)
 	}
 	defer f.Close()
-	if err := capture.EncodePNG(f, img); err != nil {
+	if err := cellraster.EncodePNG(f, img); err != nil {
 		t.Fatalf("EncodePNG %s: %v", path, err)
 	}
 	t.Logf("overlay artefact: wrote %s", path)

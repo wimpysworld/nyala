@@ -18,8 +18,7 @@ type SGRFunc func(dst []byte, c color.RGBA) []byte
 // background SGR, so Emit writes only the cells that changed since the previous
 // frame. It is the live paint path's flicker fix: a full grid rewrite per frame
 // is replaced by a cell diff with CUP and SGR coalescing. The zero value is a
-// fresh differ that full-repaints its first frame. The capture path may reuse it
-// once that path unifies.
+// fresh differ that full-repaints its first frame.
 type GridDiff struct {
 	prev    Grid       // last drawn grid; empty Cells means no previous frame
 	lastFG  []byte     // last emitted foreground SGR this frame, empty until set

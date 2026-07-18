@@ -307,8 +307,7 @@ is reversible.
   autoplay until a user gesture and Nyala has no input yet, so audible media would never
   start (muted autoplay is already allowed). The route needs no plumbing: Chromium reaches
   the host sound server through the inherited env, which chromedp passes from parent to
-  child. Audio auto-enables on the live path only, gated by
-  `enableAudio := !e.captureOn && audioAvailable()`; capture stays silent and deterministic.
+  child. Audio auto-enables when `audioAvailable()` reports a host output.
   `audioAvailable()` is platform-split (build-tagged files beside `audio.go`): a set
   `PULSE_SERVER` marks a sink on any OS; otherwise Linux probes the host sockets
   (`$XDG_RUNTIME_DIR/pulse/native` or `$XDG_RUNTIME_DIR/pipewire-0`, connecting via

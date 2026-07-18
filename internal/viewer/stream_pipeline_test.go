@@ -77,18 +77,16 @@ type pipeEngine struct {
 	frames chan render.Frame
 }
 
-func (e *pipeEngine) EnableCapture(io.Writer) CaptureSession { return nil }
-func (e *pipeEngine) SetCaptureSettleHold(bool)              {}
-func (e *pipeEngine) SetBackend(string)                      {}
-func (e *pipeEngine) SetScheme(string)                       {}
-func (e *pipeEngine) SetCellPx(int, int)                     {}
-func (e *pipeEngine) SetLayoutWidth(int)                     {}
-func (e *pipeEngine) Resize(int, int)                        {}
-func (e *pipeEngine) Navigate(string) error                  { return nil }
-func (e *pipeEngine) Frames() <-chan render.Frame            { return e.frames }
-func (e *pipeEngine) SendKey(string)                         {}
-func (e *pipeEngine) SendScroll(int)                         {}
-func (e *pipeEngine) Close() error                           { return nil }
+func (e *pipeEngine) SetBackend(string)           {}
+func (e *pipeEngine) SetScheme(string)            {}
+func (e *pipeEngine) SetCellPx(int, int)          {}
+func (e *pipeEngine) SetLayoutWidth(int)          {}
+func (e *pipeEngine) Resize(int, int)             {}
+func (e *pipeEngine) Navigate(string) error       { return nil }
+func (e *pipeEngine) Frames() <-chan render.Frame { return e.frames }
+func (e *pipeEngine) SendKey(string)              {}
+func (e *pipeEngine) SendScroll(int)              {}
+func (e *pipeEngine) Close() error                { return nil }
 
 // TestStreamWriterOrdersItemsUnderSlowTTY drives the two-buffer ping-pong against a
 // slow in-memory tty and asserts the writer emits every frame in submission order

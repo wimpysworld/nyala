@@ -35,7 +35,7 @@ import (
 
 	colorful "github.com/lucasb-eyer/go-colorful"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
@@ -282,7 +282,7 @@ func srcPixel(img *image.RGBA, x, y int) (r, g, b uint8) {
 // render in the same pixel geometry. The cols and rows are the render grid; the
 // source should already be sized so each cell maps to a 2x4 block (for example
 // cols*2 by rows*4). Channel order is RGBA.
-func IdealRender(rast *capture.Rasteriser, src *image.RGBA, cols, rows int) *image.RGBA {
+func IdealRender(rast *cellraster.Rasteriser, src *image.RGBA, cols, rows int) *image.RGBA {
 	return rast.Rasterise(IdealGrid(src, cols, rows))
 }
 
@@ -347,7 +347,7 @@ type Scores struct {
 // render all share the render's dimensions. cols and rows are the block grid;
 // the source must be sized so each cell maps to a 2x4 block. Channel order is
 // RGBA.
-func Score(rast *capture.Rasteriser, render, src *image.RGBA, cols, rows int) Scores {
+func Score(rast *cellraster.Rasteriser, render, src *image.RGBA, cols, rows int) Scores {
 	b := render.Bounds()
 	w, h := b.Dx(), b.Dy()
 	input := Downscale(src, w, h)

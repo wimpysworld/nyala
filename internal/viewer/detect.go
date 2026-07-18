@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/sys/unix"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 )
 
 // probeResult is the outcome of the startup terminal handshake: which graphics
@@ -56,7 +56,7 @@ func queryBytes() []byte {
 // deadline passes, then parses the buffer with the pure functions below. On any
 // I/O error it returns a zero result, so detection fails closed to block only.
 func probeTerminal(tty *os.File, cols, rows int) probeResult {
-	res := probeResult{cellPx: cellPx{W: capture.CellPxW, H: capture.CellPxH}}
+	res := probeResult{cellPx: cellPx{W: cellraster.CellPxW, H: cellraster.CellPxH}}
 
 	if _, err := tty.Write(queryBytes()); err != nil {
 		return res

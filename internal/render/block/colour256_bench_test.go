@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/harness"
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
@@ -84,7 +84,7 @@ func TestColour256Benchmark(t *testing.T) {
 	for _, mapper := range mappers {
 		aggregates[mapper.name] = &colour256Aggregate{psnrWorst: math.Inf(1), ssimWorst: math.Inf(1)}
 	}
-	rasteriser, err := capture.NewRasteriser()
+	rasteriser, err := cellraster.NewRasteriser()
 	if err != nil {
 		t.Fatal(err)
 	}

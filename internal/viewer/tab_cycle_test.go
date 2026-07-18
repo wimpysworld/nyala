@@ -25,9 +25,6 @@ type tabCycleEngine struct {
 	names []string
 }
 
-func (e *tabCycleEngine) EnableCapture(io.Writer) CaptureSession { return nil }
-func (e *tabCycleEngine) SetCaptureSettleHold(bool)              {}
-
 func (e *tabCycleEngine) SetBackend(name string) {
 	e.mu.Lock()
 	e.names = append(e.names, name)

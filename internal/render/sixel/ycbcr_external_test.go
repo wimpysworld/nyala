@@ -7,10 +7,10 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/wimpysworld/nyala/internal/capture"
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/sixel"
+	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
 
 func TestRenderYCbCrMatchesMaterialisedRGBA(t *testing.T) {
@@ -90,7 +90,7 @@ func renderAndDecode(t *testing.T, bitmap image.Image) ([]byte, *image.RGBA) {
 	if err := renderer.Render(render.Frame{Img: bitmap}, &payload); err != nil {
 		t.Fatalf("Render(): %v", err)
 	}
-	decoded, err := capture.DecodeSixel(payload.Bytes())
+	decoded, err := renderdecode.DecodeSixel(payload.Bytes())
 	if err != nil {
 		t.Fatalf("DecodeSixel(): %v", err)
 	}

@@ -288,10 +288,10 @@ remain pending.
 - **Parallel**: No
 - **Blocked By**: Every implemented dependency must pass its own gate
 - **Scope**: The accepted changes from tasks 1.1 and 3.1, existing focused Sixel
-  benchmarks, live FPS instrumentation, capture performance records, and this
+  benchmarks, live FPS instrumentation, diagnostic evidence, and this
   decision record.
-- **Reuse**: Use the shared benchmark protocol, `just run`, `just record <url> frames=1`,
-  `just debug-run`, the current Sixel capture metrics, and the existing fast and
+- **Reuse**: Use the shared benchmark protocol, `just run`, `just diagnostics`,
+  `just debug-run`, current Sixel metrics, and the existing fast and
   compatibility terminal test process. Do not add runtime configuration.
 - **Success Criteria**: Test flat, web, and photo fixtures at 1280x720, 1920x1080,
   and 2560x1600. Run six fresh rotated process pairs, four warm-ups, and at least 30

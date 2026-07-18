@@ -38,12 +38,13 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 	"github.com/wimpysworld/nyala/internal/render/kitty"
 	"github.com/wimpysworld/nyala/internal/render/sixel"
+	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
 
 // Mode identifies one render backend the sweep runs. It is a string-kinded type
@@ -152,7 +153,7 @@ type GateConfig struct {
 // and the written file paths. A non-empty Breaches slice means the run regressed;
 // the caller exits non-zero on it. The gate config carries the baseline, the
 // thresholds, and the progress callback; each documents its own nil meaning.
-func RunSweep(rast *capture.Rasteriser, cfg SweepConfig, inputs []SweepInput, gc GateConfig) (SweepResult, error) {
+func RunSweep(rast *cellraster.Rasteriser, cfg SweepConfig, inputs []SweepInput, gc GateConfig) (SweepResult, error) {
 	if err := os.MkdirAll(cfg.OutDir, 0o755); err != nil {
 		return SweepResult{}, err
 	}
@@ -190,7 +191,7 @@ func RunSweep(rast *capture.Rasteriser, cfg SweepConfig, inputs []SweepInput, gc
 // runOne renders one (page, mode), captures it back to an image, scores quality
 // and cost, emits the artefacts, and builds the report record. Pass is left
 // false; the gate sets it.
-func runOne(rast *capture.Rasteriser, cfg SweepConfig, in SweepInput, mode Mode) (Report, error) {
+func runOne(rast *cellraster.Rasteriser, cfg SweepConfig, in SweepInput, mode Mode) (Report, error) {
 	pxW, pxH := cfg.PixelSize()
 	reference := metrics.Downscale(in.Src, pxW, pxH)
 
@@ -255,7 +256,7 @@ func runOne(rast *capture.Rasteriser, cfg SweepConfig, in SweepInput, mode Mode)
 // Route A, and measures the block render's compose and encode cost. It returns
 // the render image, the owned grid, the ideal grid for the quant-error map, and
 // the captured cost.
-func captureBlock(rast *capture.Rasteriser, cfg SweepConfig, src *image.RGBA) (*image.RGBA, *block.Grid, *block.Grid, metrics.FramePerf, error) {
+func captureBlock(rast *cellraster.Rasteriser, cfg SweepConfig, src *image.RGBA) (*image.RGBA, *block.Grid, *block.Grid, metrics.FramePerf, error) {
 	cw0, ch0 := cfg.ComposeSize()
 	composeSrc := metrics.Downscale(src, cw0, ch0)
 	br := block.Renderer{Cols: cfg.Cols, Rows: cfg.Rows}
@@ -299,7 +300,7 @@ var graphicsBackends = []graphicsBackend{
 			var r sixel.Renderer
 			return r.Render(render.Frame{Img: img}, w)
 		},
-		decode: capture.DecodeSixel,
+		decode: renderdecode.DecodeSixel,
 	},
 	{
 		mode: ModeKitty,
@@ -307,7 +308,7 @@ var graphicsBackends = []graphicsBackend{
 			var r kitty.Renderer
 			return r.Render(render.Frame{Img: img}, w)
 		},
-		decode: capture.DecodeKitty,
+		decode: renderdecode.DecodeKitty,
 	},
 }
 
@@ -356,7 +357,7 @@ func (g graphicsBackend) roundTrip(img *image.RGBA) (*image.RGBA, error) {
 // for sixel and kitty, which own no grid, it is derived from the decoded pixels
 // over the ladder region. OCR scores come from the build-tagged hook: null in the
 // default cgo-free build, measured under the "ocr" tag.
-func scoreQuality(mode Mode, renderImg, reference *image.RGBA, grid *block.Grid, rast *capture.Rasteriser) Quality {
+func scoreQuality(mode Mode, renderImg, reference *image.RGBA, grid *block.Grid, rast *cellraster.Rasteriser) Quality {
 	abs := metrics.ScorePair(renderImg, reference)
 	q := Quality{
 		MSSSIM:         f64v(abs.MSSSIM),

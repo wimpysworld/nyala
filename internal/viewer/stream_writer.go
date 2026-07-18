@@ -6,6 +6,14 @@ import (
 	"time"
 )
 
+func msSince(start time.Time) float64 {
+	d := time.Since(start)
+	if d < 0 {
+		return 0
+	}
+	return float64(d) / float64(time.Millisecond)
+}
+
 // writeItem is one unit the writer goroutine emits to the terminal in order. A
 // frame item carries a pooled buffer (buf) the producer assembled plus its encode
 // time; the writer returns the buffer on free after the write. A control item

@@ -6,11 +6,11 @@ package harness
 import (
 	"image"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 )
 
 // ocrScores returns null OCR scores. The rasteriser, the mode, and the captured
 // render are unused. Channel order is RGBA.
-func ocrScores(_ *capture.Rasteriser, _ Mode, _ *image.RGBA) (cer, wer *float64, minLegiblePx *int) {
+func ocrScores(_ *cellraster.Rasteriser, _ Mode, _ *image.RGBA) (cer, wer *float64, minLegiblePx *int) {
 	return nil, nil, nil
 }

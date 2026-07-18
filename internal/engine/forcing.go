@@ -61,7 +61,10 @@ func (e *ChromiumEngine) fontForcingActive() bool {
 // since the script is registered for later documents; the live style just lands on
 // the next document. It returns the active state after the attempt.
 func (e *ChromiumEngine) enableFontForcing(ctx context.Context, cellW, cellH float64) (enabled bool) {
-	script := buildStylesheetScript(font.FiraCodeTTF(), cellW, cellH)
+	e.mu.Lock()
+	paintText := e.diagnosticTextPaint
+	e.mu.Unlock()
+	script := buildStylesheetScriptWithPaint(font.FiraCodeTTF(), cellW, cellH, paintText)
 	var id page.ScriptIdentifier
 	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {
 		var err error

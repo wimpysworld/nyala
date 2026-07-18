@@ -1,5 +1,9 @@
 # Stage 3 - Live screencast and DOM text
 
+> Historical note: the bounded recorder, its environment switches, and its
+> bundle-facing commands described below were retired by the diagnostics
+> consolidation. Use `just diagnostics` for current correctness validation.
+
 Stage 3 turns Nyala into a web-first binary. `nyala <url>` launches a managed
 headless Chromium, streams a live screencast over the Chrome DevTools Protocol,
 extracts the page text layer from the DOM, folds crisp Unicode text onto each

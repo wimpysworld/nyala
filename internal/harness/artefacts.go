@@ -34,7 +34,7 @@ import (
 	vgdraw "gonum.org/v1/plot/vg/draw"
 	"gonum.org/v1/plot/vg/vgimg"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
@@ -396,7 +396,7 @@ func writePNG(path string, img image.Image) error {
 	if err != nil {
 		return err
 	}
-	if err := capture.EncodePNG(f, img); err != nil {
+	if err := cellraster.EncodePNG(f, img); err != nil {
 		f.Close()
 		return err
 	}

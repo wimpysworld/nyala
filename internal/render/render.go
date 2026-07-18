@@ -81,8 +81,7 @@ type GlyphRun struct {
 	// BG is the DOM effective background colour resolved for the run's box, in
 	// RGBA order. A zero-alpha BG means "no opaque background resolved". The block
 	// overlay no longer reads it (the bitmap carries the real background with no
-	// painted text ink), but the walk resolves it and the capture text-map records
-	// it for inspection.
+	// painted text ink), but diagnostics retain it for inspection.
 	BG color.RGBA
 	X  float64 // box left, CSS pixels, on-screen (scroll subtracted)
 	Y  float64 // box top, CSS pixels, on-screen (scroll subtracted)
@@ -95,55 +94,17 @@ type GlyphRun struct {
 	// DisplayWidth so the compose boundary recompose reads it instead of
 	// re-segmenting the run every frame. It is zero when unset (a hand-built run),
 	// in which case the compose path falls back to measuring Text. It is excluded
-	// from the serialised text-map so the capture bundle shape is unchanged.
+	// from serialised diagnostic runs because it is derived data.
 	DisplayCells int `json:"-"`
-}
-
-// FrameStats holds the engine-phase timings and sizes captured while building
-// one Frame. The engine fills it only when capture is enabled; it is nil on the
-// production path. Timings are wall-clock durations in milliseconds and are
-// never negative. Viewer draw-phase timing lives on a separate viewer-owned
-// struct, not here.
-type FrameStats struct {
-	// ScreencastPayloadBytes is the byte size of the screencast frame payload
-	// the engine decoded for this Frame.
-	ScreencastPayloadBytes int64
-	// ScreencastDecodeMS is the time spent decoding the screencast frame image,
-	// in milliseconds.
-	ScreencastDecodeMS float64
-	// DOMSnapshotMS is the time spent capturing the DOM text snapshot, in
-	// milliseconds.
-	DOMSnapshotMS float64
-	// LayoutScale is the block-only layout scale Z for this frame, capture path
-	// only. It is max(1, cols*cellW / layoutWidth) on a block grid wider than the
-	// target layout width, and 1 otherwise.
-	LayoutScale float64
-}
-
-// LoadTimings holds the four load-path milestone elapsed times, in milliseconds
-// since launch, that the engine records for the capture bundle. The engine records
-// them only when capture (or the NYALA_DEBUG_TIMING switch) is on; the production
-// live path records nothing. A field is zero when its milestone did not fire, for
-// example a partial capture whose page never published text. Like FrameStats, it is
-// a plain value the capture package maps to its own JSON shape.
-type LoadTimings struct {
-	// ProcessSpawnedMS is the elapsed time to the Chromium process spawn.
-	ProcessSpawnedMS float64
-	// ScreencastStartedMS is the elapsed time to the screencast start.
-	ScreencastStartedMS float64
-	// FirstFrameMS is the elapsed time to the first emitted frame.
-	FirstFrameMS float64
-	// FirstTextMS is the elapsed time to the first published text overlay.
-	FirstTextMS float64
 }
 
 // IngestStats is the session ingest summary the NYALA_FPS_TIMING quit line
 // reports: the screencast ingest frame count and rate statistics, plus the worker
 // decode budget. The engine computes it from the true per-frame arrival times
-// (recorded before the coalescing slot drops any) and the per-frame worker decode
+// (recorded before the live queue drops any) and the per-frame worker decode
 // times, so under the decoupled receiver/worker model the gap-based extremes are
 // meaningful. The viewer reads it over the ingestReporter seam without importing the
-// engine, so it lives here beside LoadTimings. Every field is zero when the switch
+// engine, so it lives in the render seam. Every field is zero when the switch
 // is off or the session recorded no frame.
 type IngestStats struct {
 	// Frames is the count of delivered screencast frames over the session.
@@ -164,12 +125,12 @@ type IngestStats struct {
 	DecodeMaxMS float64
 }
 
-// ScreencastMeta is the neutral screencast frame metadata the capture bundle
-// records: the scroll offset, page scale, and device size of the frame, with no
-// image bytes. It mirrors the fields of the CDP page.ScreencastFrameMetadata
+// ScreencastMeta is neutral screencast frame metadata: the scroll offset, page
+// scale, and device size of the frame, with no image bytes. It mirrors the
+// fields of the CDP page.ScreencastFrameMetadata
 // without importing the chromedp type, so the render seam stays free of any
-// chromedp dependency. The engine fills it only under capture; it is nil on the
-// production path.
+// chromedp dependency. The engine attaches it to decoded frames so diagnostics
+// can check scroll synchronisation.
 type ScreencastMeta struct {
 	// OffsetTop is the top offset in device-independent pixels.
 	OffsetTop float64
@@ -187,17 +148,36 @@ type ScreencastMeta struct {
 	Timestamp float64
 }
 
+// FrameDiagnostics holds data requested by diagnostics but unused by normal
+// rendering. Frame.Diagnostics stays nil on the production path.
+type FrameDiagnostics struct {
+	// Meta is the CDP screencast metadata paired with the frame.
+	Meta ScreencastMeta
+	// CalibrationSerial counts completed diagnostic font-calibration attempts.
+	CalibrationSerial int64
+	// CalibrationSucceeded reports whether the latest attempt measured and
+	// applied a corrected font size.
+	CalibrationSucceeded bool
+	// CalibratedFontSize is the corrected CSS-pixel font size, or the seed size
+	// when the latest calibration attempt failed.
+	CalibratedFontSize float64
+}
+
 // Frame is one viewport image plus its text overlay. Img keeps the decoder's
 // native image layout, so a JPEG can cross the engine/render seam as YCbCr and a
 // PNG can keep the layout its decoder produced. EncodedPNG holds an owned CDP
 // base64 PNG payload on the live Kitty path; that path leaves Img nil and
 // sends the payload to Kitty unchanged. Other paths leave EncodedPNG empty.
 type Frame struct {
-	Img        image.Image     // decoder-native viewport pixels, nil for direct Kitty PNG
-	EncodedPNG string          // owned base64 PNG payload for direct live Kitty transmission
-	Text       []GlyphRun      // text overlay runs, empty when the page has none
-	Stats      *FrameStats     // engine-phase timings, nil off the capture path
-	Meta       *ScreencastMeta // screencast frame metadata, nil off the capture path
+	Img         image.Image       // decoder-native viewport pixels, nil for direct Kitty PNG
+	EncodedPNG  string            // owned base64 PNG payload for direct live Kitty transmission
+	Text        []GlyphRun        // text overlay runs, empty when the page has none
+	Diagnostics *FrameDiagnostics // diagnostic data, nil on the production path
+
+	// layoutSlot preserves the baseline 72-byte frame header on 64-bit targets.
+	// It keeps the shared publication layout stable without adding work or an
+	// allocation.
+	_ uintptr
 }
 
 // HasImage reports whether the frame carries decoded pixels or a direct encoded
