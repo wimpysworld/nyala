@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 
@@ -70,7 +71,9 @@ type paletteBenchMeasurement struct {
 	bytesAlloc  uint64
 	payload     []byte
 	selectMS    float64
+	lutMS       float64
 	mapMS       float64
+	emissionMS  float64
 }
 
 type paletteBenchAggregate struct {
@@ -86,8 +89,99 @@ type paletteBenchAggregate struct {
 	mappingMS    float64
 }
 
-// TestCombinedMappingBenchmark is the opt-in paired screen for serial mapping
-// plus parallel bands against the combined parallel-mapping and band path.
+type combinedBenchArm struct {
+	name             string
+	parallelMapping  bool
+	parallelEmission bool
+}
+
+type combinedBenchStages struct {
+	palette  time.Duration
+	lut      time.Duration
+	mapping  time.Duration
+	emission time.Duration
+}
+
+type combinedBenchStageSamples struct {
+	palette  []time.Duration
+	lut      []time.Duration
+	mapping  []time.Duration
+	emission []time.Duration
+}
+
+var combinedBenchArms = []combinedBenchArm{
+	{name: "serial"},
+	{name: "mapping-only", parallelMapping: true},
+	{name: "bands-only", parallelEmission: true},
+	{name: "combined", parallelMapping: true, parallelEmission: true},
+}
+
+var combinedBenchSizes = []paletteBenchSize{
+	{w: 1280, h: 720},
+	{w: 1920, h: 1080},
+	{w: 2560, h: 1600},
+}
+
+func TestCombinedBenchArmSelection(t *testing.T) {
+	want := map[string]struct {
+		mapping  bool
+		emission bool
+	}{
+		"serial":       {},
+		"mapping-only": {mapping: true},
+		"bands-only":   {emission: true},
+		"combined":     {mapping: true, emission: true},
+	}
+	for run := range 6 {
+		seen := make(map[string]bool, len(combinedBenchArms))
+		for _, arm := range rotateCombinedArms(combinedBenchArms, run) {
+			expect, ok := want[arm.name]
+			if !ok {
+				t.Fatalf("run %d selected unknown arm %q", run, arm.name)
+			}
+			if seen[arm.name] {
+				t.Fatalf("run %d selected arm %q twice", run, arm.name)
+			}
+			seen[arm.name] = true
+			if arm.parallelMapping != expect.mapping || arm.parallelEmission != expect.emission {
+				t.Fatalf("arm %q = mapping %t, emission %t; want mapping %t, emission %t", arm.name, arm.parallelMapping, arm.parallelEmission, expect.mapping, expect.emission)
+			}
+		}
+		if len(seen) != len(want) {
+			t.Fatalf("run %d selected %d arms, want %d", run, len(seen), len(want))
+		}
+	}
+}
+
+func TestCombinedBenchArmsMatch(t *testing.T) {
+	oldProcs := runtime.GOMAXPROCS(4)
+	t.Cleanup(func() { runtime.GOMAXPROCS(oldProcs) })
+	src := combinedBenchWeb(1280, 720)
+	var referencePayload []byte
+	var referenceDecoded *image.RGBA
+	for _, arm := range combinedBenchArms {
+		var out bytes.Buffer
+		if _, err := encodeCombinedBench(newOpaqueEncoder(&out), src, arm); err != nil {
+			t.Fatalf("%s encode: %v", arm.name, err)
+		}
+		payload := out.Bytes()
+		decoded := validatePalettePayload(t, payload, src.Bounds())
+		if referencePayload == nil {
+			referencePayload = append([]byte(nil), payload...)
+			referenceDecoded = decoded
+			continue
+		}
+		if !bytes.Equal(payload, referencePayload) {
+			t.Fatalf("%s payload SHA-256 = %x, want %x", arm.name, sha256.Sum256(payload), sha256.Sum256(referencePayload))
+		}
+		if !bytes.Equal(decoded.Pix, referenceDecoded.Pix) {
+			t.Fatalf("%s decoded pixels differ", arm.name)
+		}
+	}
+}
+
+// TestCombinedMappingBenchmark is the opt-in interaction screen for serial,
+// mapping-only, bands-only, and combined execution through the adaptive PNG path.
 func TestCombinedMappingBenchmark(t *testing.T) {
 	if os.Getenv(combinedBenchEnv) != "1" {
 		t.Skip("set " + combinedBenchEnv + "=1")
@@ -99,66 +193,78 @@ func TestCombinedMappingBenchmark(t *testing.T) {
 		debug.SetGCPercent(oldGC)
 	})
 	run := envInt(combinedBenchRunEnv)
-	fixtures := []struct {
-		name string
-		src  *image.RGBA
-	}{
-		{name: "photo-1920x1080", src: loadPaletteBenchFrame(t, "../../../testdata/linuxmatters.png", paletteBenchSize{w: 1920, h: 1080})},
-		{name: "flat-1280x720", src: combinedBenchFlat(1280, 720)},
-		{name: "web-1280x720", src: combinedBenchWeb(1280, 720)},
-	}
-	if run%2 != 0 {
-		fixtures[0], fixtures[2] = fixtures[2], fixtures[0]
-	}
-	arms := []struct {
-		name     string
-		parallel bool
-	}{{name: "band-only"}, {name: "combined", parallel: true}}
-	if run%2 != 0 {
-		arms[0], arms[1] = arms[1], arms[0]
-	}
+	fixtures := []string{"flat", "web", "photo"}
+	fixtures = rotateCombinedFixtures(fixtures, run)
+	arms := rotateCombinedArms(combinedBenchArms, run)
 	for _, fixture := range fixtures {
-		pngData := encodeCombinedBenchPNG(t, fixture.src)
-		for _, arm := range arms {
-			m := measureCombinedBenchArm(t, fixture.src, pngData, arm.parallel)
-			t.Logf("COMBINED run=%d fixture=%s arm=%s full-mean-ms=%.3f full-p90-ms=%.3f png-mean-ms=%.3f png-p90-ms=%.3f map-mean-ms=%.3f map-p90-ms=%.3f allocs=%.0f B/op=%d payload-B=%d sha256=%x",
-				run, fixture.name, arm.name, m.meanMS, m.p90MS, m.decodeMS, m.decodeP90MS,
-				m.selectMS, m.mapMS, m.allocs, m.bytesAlloc, len(m.payload), sha256.Sum256(m.payload))
+		for _, size := range combinedBenchSizes {
+			src := combinedBenchFixture(t, fixture, size)
+			pngData := encodeCombinedBenchPNG(t, src)
+			var referencePayload []byte
+			var referenceDecoded *image.RGBA
+			for _, arm := range arms {
+				m := measureCombinedBenchArm(t, src, pngData, arm)
+				decoded := validatePalettePayload(t, m.payload, src.Bounds())
+				if referencePayload == nil {
+					referencePayload = append([]byte(nil), m.payload...)
+					referenceDecoded = decoded
+				} else {
+					if !bytes.Equal(m.payload, referencePayload) {
+						t.Fatalf("%s %dx%d %s payload SHA-256 = %x, want %x", fixture, size.w, size.h, arm.name, sha256.Sum256(m.payload), sha256.Sum256(referencePayload))
+					}
+					if !bytes.Equal(decoded.Pix, referenceDecoded.Pix) {
+						t.Fatalf("%s %dx%d %s decoded pixels differ", fixture, size.w, size.h, arm.name)
+					}
+				}
+				t.Logf("INTERACTION run=%d fixture=%s size=%dx%d arm=%s full-mean-ms=%.3f full-p90-ms=%.3f png-mean-ms=%.3f png-p90-ms=%.3f palette-p90-ms=%.3f lut-p90-ms=%.3f mapping-p90-ms=%.3f emission-p90-ms=%.3f allocs=%.0f B/op=%d payload-B=%d sha256=%x decoded-equal=true",
+					run, fixture, size.w, size.h, arm.name, m.meanMS, m.p90MS, m.decodeMS, m.decodeP90MS,
+					m.selectMS, m.lutMS, m.mapMS, m.emissionMS, m.allocs, m.bytesAlloc, len(m.payload), sha256.Sum256(m.payload))
+			}
 		}
 	}
 }
 
-func measureCombinedBenchArm(t *testing.T, src *image.RGBA, pngData []byte, parallel bool) paletteBenchMeasurement {
+func measureCombinedBenchArm(t *testing.T, src *image.RGBA, pngData []byte, arm combinedBenchArm) paletteBenchMeasurement {
 	t.Helper()
 	enc := newOpaqueEncoder(io.Discard)
 	for range paletteBenchWarmups {
-		if err := encodeCombinedBench(enc, src, parallel); err != nil {
+		if _, err := encodeCombinedBench(enc, src, arm); err != nil {
 			t.Fatal(err)
 		}
 	}
 	full := make([]time.Duration, combinedBenchSamples)
 	pngPath := make([]time.Duration, combinedBenchSamples)
+	stages := combinedBenchStageSamples{
+		palette:  make([]time.Duration, combinedBenchSamples),
+		lut:      make([]time.Duration, combinedBenchSamples),
+		mapping:  make([]time.Duration, combinedBenchSamples),
+		emission: make([]time.Duration, combinedBenchSamples),
+	}
 	for i := range combinedBenchSamples {
 		start := time.Now()
-		if err := encodeCombinedBench(enc, src, parallel); err != nil {
+		span, err := encodeCombinedBench(enc, src, arm)
+		if err != nil {
 			t.Fatal(err)
 		}
 		full[i] = time.Since(start)
+		stages.palette[i] = span.palette
+		stages.lut[i] = span.lut
+		stages.mapping[i] = span.mapping
+		stages.emission[i] = span.emission
 		start = time.Now()
 		decoded, err := png.Decode(bytes.NewReader(pngData))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := encodeCombinedBench(enc, decoded, parallel); err != nil {
+		if _, err := encodeCombinedBench(enc, decoded, arm); err != nil {
 			t.Fatal(err)
 		}
 		pngPath[i] = time.Since(start)
 	}
-	mapMean, mapP90 := combinedBenchMapping(t, src, parallel)
 	var allocErr error
 	allocs := testing.AllocsPerRun(3, func() {
 		if allocErr == nil {
-			allocErr = encodeCombinedBench(enc, src, parallel)
+			_, allocErr = encodeCombinedBench(enc, src, arm)
 		}
 	})
 	if allocErr != nil {
@@ -169,73 +275,75 @@ func measureCombinedBenchArm(t *testing.T, src *image.RGBA, pngData []byte, para
 	runtime.ReadMemStats(&mem)
 	before := mem.TotalAlloc
 	for range 3 {
-		if err := encodeCombinedBench(enc, src, parallel); err != nil {
+		if _, err := encodeCombinedBench(enc, src, arm); err != nil {
 			t.Fatal(err)
 		}
 	}
 	runtime.ReadMemStats(&mem)
 	var out bytes.Buffer
-	if err := encodeCombinedBench(newOpaqueEncoder(&out), src, parallel); err != nil {
+	if _, err := encodeCombinedBench(newOpaqueEncoder(&out), src, arm); err != nil {
 		t.Fatal(err)
 	}
 	mean, p90 := paletteDurationStats(full)
 	pngMean, pngP90 := paletteDurationStats(pngPath)
+	_, paletteP90 := paletteDurationStats(stages.palette)
+	_, lutP90 := paletteDurationStats(stages.lut)
+	_, mappingP90 := paletteDurationStats(stages.mapping)
+	_, emissionP90 := paletteDurationStats(stages.emission)
 	return paletteBenchMeasurement{
 		meanMS: durationMS(mean), p90MS: durationMS(p90),
 		decodeMS: durationMS(pngMean), decodeP90MS: durationMS(pngP90),
 		allocs: allocs, bytesAlloc: (mem.TotalAlloc - before) / 3, payload: out.Bytes(),
-		selectMS: durationMS(mapMean), mapMS: durationMS(mapP90),
+		selectMS: durationMS(paletteP90), lutMS: durationMS(lutP90),
+		mapMS: durationMS(mappingP90), emissionMS: durationMS(emissionP90),
 	}
 }
 
-func encodeCombinedBench(enc *opaqueEncoder, img image.Image, parallel bool) error {
+func encodeCombinedBench(enc *opaqueEncoder, img image.Image, arm combinedBenchArm) (combinedBenchStages, error) {
 	const colours = 255
-	var paletted *image.Paletted
-	switch src := img.(type) {
-	case *image.Paletted:
-		if len(src.Palette) <= colours+1 {
-			paletted = src
-		}
-	case *image.NRGBA:
-		paletted = palettedFromNRGBA(src, colours)
-	case *image.RGBA:
-		paletted = palettedFromRGBA(src, colours)
-	}
-	if paletted == nil {
-		rgba := toRGBA(img)
-		palette := samplePalette(rgba, colours)
-		paletted = image.NewPaletted(rgba.Bounds(), palette)
-		lut := newPaletteLUT(palette)
-		if parallel {
-			mapPaletted(paletted, rgba, lut)
-		} else {
-			bounds := rgba.Bounds()
-			mapPalettedRows(paletted, rgba, lut, bounds.Min.Y, bounds.Max.Y)
-		}
-	}
-	return enc.encode(paletted)
-}
-
-func combinedBenchMapping(t *testing.T, src *image.RGBA, parallel bool) (time.Duration, time.Duration) {
-	t.Helper()
-	if palettedFromRGBA(src, paletteColours) != nil {
-		return 0, 0
-	}
-	palette := samplePalette(src, paletteColours)
+	var stages combinedBenchStages
+	rgba := toRGBA(img)
+	start := time.Now()
+	palette := samplePalette(rgba, colours)
+	stages.palette = time.Since(start)
+	paletted := image.NewPaletted(rgba.Bounds(), palette)
+	start = time.Now()
 	lut := newPaletteLUT(palette)
-	dst := image.NewPaletted(src.Bounds(), palette)
-	times := make([]time.Duration, combinedBenchSamples)
-	for i := range combinedBenchSamples {
-		start := time.Now()
-		if parallel {
-			mapPaletted(dst, src, lut)
-		} else {
-			bounds := src.Bounds()
-			mapPalettedRows(dst, src, lut, bounds.Min.Y, bounds.Max.Y)
-		}
-		times[i] = time.Since(start)
+	stages.lut = time.Since(start)
+	start = time.Now()
+	if arm.parallelMapping {
+		mapPaletted(paletted, rgba, lut)
+	} else {
+		bounds := rgba.Bounds()
+		mapPalettedRows(paletted, rgba, lut, bounds.Min.Y, bounds.Max.Y)
 	}
-	return paletteDurationStats(times)
+	stages.mapping = time.Since(start)
+
+	bounds := paletted.Bounds()
+	out := enc.outScratch[:0]
+	if outCap := bounds.Dx()*bounds.Dy()/2 + len(palette)*16 + 64; cap(out) < outCap {
+		out = make([]byte, 0, outCap)
+	}
+	out = append(out, "\033P0;0;8q\"1;1;"...)
+	out = strconv.AppendInt(out, int64(bounds.Dx()), 10)
+	out = append(out, ';')
+	out = strconv.AppendInt(out, int64(bounds.Dy()), 10)
+	for n, colour := range palette {
+		r, g, b, _ := colour.RGBA()
+		out = appendColourRegister(out, n, r*100/0xffff, g*100/0xffff, b*100/0xffff)
+	}
+	start = time.Now()
+	if arm.parallelEmission {
+		out = enc.appendBandsParallel(out, paletted, sixelWorkerCount())
+	} else {
+		enc.growBandScratch(1)
+		out = appendBandRange(out, paletted, &enc.band[0], 0, (bounds.Dy()+5)/6)
+	}
+	stages.emission = time.Since(start)
+	out = append(out, 0x1b, 0x5c)
+	enc.outScratch = out[:0]
+	_, err := enc.w.Write(out)
+	return stages, err
 }
 
 func encodeCombinedBenchPNG(t *testing.T, src *image.RGBA) []byte {
@@ -249,7 +357,14 @@ func encodeCombinedBenchPNG(t *testing.T, src *image.RGBA) []byte {
 
 func combinedBenchFlat(width, height int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	draw.Draw(img, img.Bounds(), &image.Uniform{C: color.RGBA{R: 0x20, G: 0x30, B: 0x40, A: 0xff}}, image.Point{}, draw.Src)
+	for y := range height {
+		for x := range width {
+			r := uint8(x & 0x1f)       //nolint:gosec // Bounded variation keeps this visually flat but adaptive.
+			g := uint8(y & 0x1f)       //nolint:gosec // Bounded variation keeps this visually flat but adaptive.
+			b := uint8((x + y) & 0x07) //nolint:gosec // Bounded variation keeps this visually flat but adaptive.
+			img.SetRGBA(x, y, color.RGBA{R: 0x20 + r, G: 0x30 + g, B: 0x40 + b, A: 0xff})
+		}
+	}
 	return img
 }
 
@@ -258,10 +373,43 @@ func combinedBenchWeb(width, height int) *image.RGBA {
 	palette := mappingTestPalette()[:16]
 	for y := range height {
 		for x := range width {
-			img.Set(x, y, palette[(x/32+y/18)%len(palette)])
+			base := color.RGBAModel.Convert(palette[(x/32+y/18)%len(palette)]).(color.RGBA)
+			variation := uint8((x*3 + y*5) & 0x1f) //nolint:gosec // Bounded texture forces the adaptive web path.
+			img.SetRGBA(x, y, color.RGBA{R: base.R + variation, G: base.G + variation/2, B: base.B + variation/3, A: 0xff})
 		}
 	}
 	return img
+}
+
+func combinedBenchFixture(t *testing.T, name string, size paletteBenchSize) *image.RGBA {
+	t.Helper()
+	switch name {
+	case "flat":
+		return combinedBenchFlat(size.w, size.h)
+	case "web":
+		return combinedBenchWeb(size.w, size.h)
+	case "photo":
+		return loadPaletteBenchFrame(t, "../../../testdata/linuxmatters.png", size)
+	default:
+		t.Fatalf("unknown combined benchmark fixture %q", name)
+		return nil
+	}
+}
+
+func rotateCombinedArms(values []combinedBenchArm, run int) []combinedBenchArm {
+	out := append([]combinedBenchArm(nil), values...)
+	shift := run % len(out)
+	out = append(out[shift:], out[:shift]...)
+	if run/len(out)%2 == 1 {
+		sort.SliceStable(out, func(i, j int) bool { return i > j })
+	}
+	return out
+}
+
+func rotateCombinedFixtures(values []string, run int) []string {
+	out := append([]string(nil), values...)
+	shift := run % len(out)
+	return append(out[shift:], out[:shift]...)
 }
 
 func BenchmarkRGB555Mapping(b *testing.B) {
