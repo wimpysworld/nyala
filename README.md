@@ -62,6 +62,14 @@ terminal or extra decoder. A live terminal is still needed to check APC parsing
 and passthrough in that terminal, image anchoring, alpha blending, and repaint
 timing.
 
+`just cdp-interop` is the browser-fed compatibility gate. It loads representative
+local HTML fixtures in Chromium, waits for settled production frames, sends them
+through Block, Kitty, and Sixel, and checks independently decoded terminal output.
+It retains correctness-only PNG and JSON evidence under
+`testdata/diagnostics/cdp-interop/`. The synthetic interop gates remain the faster
+protocol-edge checks. This gate has no timing assertions and does not replace
+arbitrary-URL `just record` bundles or physical-terminal checks.
+
 ## Install
 
 **Homebrew**
@@ -111,14 +119,20 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 | `--color` | `auto` | Viewer colour mode: `auto`, `truecolor`, `256`, or `none`. |
 | `--version` | | Print the version and exit. |
 
-### Capture mode
+### Record mode
 
-`NYALA_CAPTURE=n` records a run to disk for diagnosis. This is diagnostic capture, not benchmarking.
+`just record` records a bounded run to disk for diagnosis. It is distinct from
+`just diagnostics`, the heavy quality gate, and it is not a benchmark.
 
 ```bash
-NYALA_CAPTURE=30 nyala example.com
+just record example.com frames=30
 ```
 
-Unset or `0` is off. `1` writes a first-frame bundle. A positive `n` draws `n` usable frames, writes one `nyala-capture-*` directory, prints its path, then exits. A full capture exits 0; a partial run (a timeout, a forced backend the terminal cannot run, or the engine closing early) writes what it has and exits non-zero. Pair it with `--backend` to pin the renderer under test.
+The recipe accepts `backend=auto|block|kitty|sixel`, a non-negative
+`scroll=<CSS pixels>`, `settle=0|1`, and a positive `cell=WxH`. It forwards
+through `just run`, including its TTY and sandbox handling. The existing
+`capture=` run argument and `NYALA_CAPTURE*` variables remain compatible.
+
+`frames=1` writes a first-frame bundle. A larger value draws that many usable frames, writes one `nyala-capture-*` directory, prints its path, then exits. A full recording exits 0; a partial run (a timeout, a forced backend the terminal cannot run, or the engine closing early) writes what it has and exits non-zero. Use `backend=` to pin the renderer under test.
 
 The bundle holds the rendered viewport image, the text overlay, the terminal byte stream, per-frame timings, and the recorded CDP session and events. It can contain page pixels, page text, URLs, and proxy details, so review it before you share it.
