@@ -131,7 +131,8 @@ justify retaining either optimisation.
 - **Complexity**: M
 - **Flags**: ⚠️ High-risk, 🔍 Needs review
 
-**Status (2026-07-17): Rejected.** A temporary candidate extracted the existing
+**Status (2026-07-18): Accepted after stacked interaction validation.** The
+four-worker candidate extracted the existing
 four-worker budget and split adaptive indexed mapping into disjoint row ranges at
 500,000 pixels. Serial and parallel indexes, payload SHA-256 values, repeated
 payloads, and decoded pixels matched across threshold boundaries, unusual bounds,
@@ -152,9 +153,11 @@ and missed the unchanged 2 ms gate. PNG-decode-plus-encode p90 fell from 36.998 
 to 35.331 ms. Active mapping added seven temporary-worker allocations. The code
 and temporary tests were removed after each rejection. Live Chrome delivery,
 first-contentful-paint, and contention checks did not run because the full-encode
-gate had already failed. Tasks 2.1 through 4.1 remain blocked.
+gate had already failed. These results remain as the record of the original
+isolated rejection. The user later accepted mapping after the stacked task 4.1
+matrix showed a repeatable complete-path win in every workload and size.
 
-**Combined candidate status (2026-07-17): Implemented, pending user review.** At
+**Combined candidate status (2026-07-18): Accepted.** At
 the user's request, the rejected four-worker mapper has been restored on top of
 the committed parallel-band candidate without changing either shared worker cap.
 The exact-colour scan stays serial. Adaptive mapping activates at 500,000 pixels,
@@ -177,10 +180,12 @@ The earlier 0.843 ms mapping saving persists after band parallelism and measures
 inside the 1% small-frame gate. Payload bytes and SHA-256 values match for every
 fixture. Focused tests also match mapped indexes, repeated payloads, and decoded
 pixels across the threshold edges, workers 1 and 4, and unusual bounds and stride.
-Keep this correct candidate in the working tree for review even though it misses
-the old 2 ms full-encode gate. Live Chromium delivery, first contentful paint, and
-terminal effects remain deferred because no supported automated Sixel terminal is
-available in this run.
+The task 4.1 interaction matrix supersedes this preliminary screen. It showed
+15.78% to 50.19% lower full-encode p90 for the combined arm than the serial
+map-and-emission control, with identical payloads and decoded pixels. The mapping
+layer is accepted as part of the stack. Live Chromium delivery, first contentful
+paint, and terminal effects remain deferred because no supported automated Sixel
+terminal was available.
 
 ## Phase 2: Reprofile gate
 
@@ -239,10 +244,9 @@ available in this run.
 - **Complexity**: M
 - **Flags**: ⚠️ High-risk, 🔍 Needs review, 🧠 Context-intensive
 
-**Status (2026-07-17): Implemented, under user review.** The user explicitly
+**Status (2026-07-18): Accepted.** The user explicitly
 waived task 2.1's 25% reprofile blocker and the plan's automatic revert rule. The
-candidate remains in the working tree even though the first controlled screen
-does not settle every retention gate.
+task 4.1 interaction matrix settles the non-live retention decision.
 
 The implementation names the inherited budget as `sixelWorkerCount()`, still
 `min(4, runtime.GOMAXPROCS(0))`, and reuses it for LUT construction and band
@@ -272,10 +276,10 @@ decoded pixels match; complete output is 9,893,259 bytes in both arms. Tests cov
 odd and partial heights, absent colours,
 8192-repeat boundaries, non-zero origins and stride, threshold edges, workers 1
 and 4, ordered joining, repeated output, retained scratch, writer errors, and the
-race detector. The flat p90 and allocation results miss plan gates. Keep the
-candidate under review as authorised; do not mark it accepted. The 1920x1080
-adaptive photo, 2560x1600 matrix, production PNG path, and live-terminal checks
-remain pending.
+race detector. The first flat p90 and allocation results missed plan gates. The
+later full adaptive matrix showed a lower complete-path p90 for bands-only and
+combined at every workload and size, so the user accepted the bounded band layer.
+Physical terminal checks remain pending.
 
 ## Phase 4: Stacked live validation
 
@@ -305,6 +309,65 @@ remain pending.
   gate fails. Do not retain complexity supported only by a microbenchmark.
 - **Complexity**: M
 - **Flags**: ⚠️ High-risk, 🔍 Needs review
+
+**Status (2026-07-18): Non-live validation passed; both layers retained.** The
+opt-in harness now selects serial map plus emission, mapping-only, bands-only, and
+combined arms without changing production defaults. Palette selection and the
+RGB555 LUT stay on the production adaptive path in every arm; the arm control
+changes only indexed mapping and band emission. All parallel stages use
+`sixelWorkerCount() = min(4, GOMAXPROCS)` in sequence. There is no second worker
+count, overlapping stage, nested parallelism, or runtime control.
+
+Six fresh rotated processes used four warm-ups, 30 retained samples per arm,
+`GOMAXPROCS=4`, and `GOGC=100`. Median process p90 values were:
+
+| Fixture | Size | Serial full | Mapping-only full | Bands-only full | Combined full | Serial PNG + encode | Combined PNG + encode |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Flat | 1280x720 | 9.968 ms | 9.241 ms | 8.986 ms | 8.364 ms | 16.319 ms | 14.870 ms |
+| Flat | 1920x1080 | 19.115 ms | 17.654 ms | 17.139 ms | 15.268 ms | 33.496 ms | 29.527 ms |
+| Flat | 2560x1600 | 16.655 ms | 13.306 ms | 12.114 ms | 8.867 ms | 44.450 ms | 36.952 ms |
+| Web | 1280x720 | 24.218 ms | 23.451 ms | 19.160 ms | 18.331 ms | 29.964 ms | 24.148 ms |
+| Web | 1920x1080 | 40.127 ms | 38.925 ms | 27.145 ms | 25.916 ms | 52.992 ms | 38.877 ms |
+| Web | 2560x1600 | 44.383 ms | 41.567 ms | 25.415 ms | 22.108 ms | 69.350 ms | 48.680 ms |
+| Photo | 1280x720 | 15.245 ms | 14.537 ms | 13.758 ms | 12.840 ms | 21.682 ms | 19.199 ms |
+| Photo | 1920x1080 | 20.093 ms | 18.675 ms | 16.173 ms | 14.582 ms | 33.499 ms | 28.062 ms |
+| Photo | 2560x1600 | 30.192 ms | 27.005 ms | 22.183 ms | 18.989 ms | 56.269 ms | 45.172 ms |
+
+The combined arm lowers full-encode p90 by 15.78% to 50.19% and PNG-decode-plus-
+encode p90 by 8.88% to 29.81% against the serial map-and-emission control. The
+interaction varies slightly by workload: it compounds the independent p90 savings
+on four cells, is additive within 2% on four cells, and interferes by 0.105 ms on
+1280x720 flat. It never loses either independent win and remains faster than every
+other arm in every cell.
+
+On the representative 1920x1080 photo, median stage p90 spans were 8.057 ms
+palette selection, 2.745 ms LUT construction, 2.262 ms serial or 0.890 ms parallel
+mapping, and 7.204 ms serial or 3.018 ms parallel emission. The serial and
+mapping-only arms used 1,045 allocations; bands-only and combined used 1,047.
+Combined added about 608 B/op at this cell. Across the matrix, band parallelism
+added two warm allocations, while mapping added about 299 to 410 B/op.
+
+Every arm produced the same payload bytes and SHA-256 per fixture-size cell, and
+the `mattn/go-sixel` oracle reconstructed identical pixels. Payloads ranged from
+204,469 to 4,162,693 bytes. Focused tests cover arm selection, all four arm
+combinations, payload identity, and decoded-pixel identity. The raw process logs
+are generated under gitignored `testdata/diagnostics/sixel-task-4.1/`. Reproduce
+the experiment with:
+
+```sh
+for run in 0 1 2 3 4 5; do
+  GOMAXPROCS=4 GOGC=100 NYALA_COMBINED_BENCH=1 \
+    NYALA_COMBINED_BENCH_RUN=$run \
+    go test -run '^TestCombinedMappingBenchmark$' -count=1 -v \
+    ./internal/render/sixel
+done
+```
+
+No physical fast or compatibility Sixel terminal was available because the user
+had phone-only access. This blocks the terminal FPS, write p90, CPU, drops, gap,
+tearing, and first-contentful-paint observations, but not the requested non-live
+decision. Both accepted layers stay enabled pending later physical-terminal
+evidence.
 
 ## Deferred damage-aware Sixel decision
 
