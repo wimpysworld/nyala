@@ -355,6 +355,10 @@ sixel-interop:
     fi
     go test -v -run '^TestLibsixelRoundTrip$' -tags sixelinterop -count=1 ./internal/render/sixel/
 
+# Cross-check the production Block terminal stream with an independent VT model
+block-interop:
+    @go test -v -run '^TestBlockTerminalRoundTrip$' -tags blockinterop -count=1 ./internal/viewer/
+
 # Regenerate golden archives via the golden track writer
 update-golden:
     @UPDATE_GOLDEN=1 go test -run 'TestGoldenTrack|TestOverlayGoldenTrack' -tags diagnostics -count=1 ./internal/harness/

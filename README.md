@@ -35,7 +35,17 @@ A measurement harness scores each render for quality, cost, and legibility. Run 
 ## Development
 
 Enter the pinned environment with `nix develop`. `just test` runs the routine,
-pure-Go unit suite. `just sixel-interop` runs the tagged Sixel compatibility gate:
+pure-Go unit suite. `just block-interop` sends two frames through the production
+Block compose and live cell-diff encoder, decodes the CUP, SGR, and UTF-8 byte
+stream with an independent VT emulator, and compares its final cell model and
+Route A PNG with the composed grid. The existing `just rasterise <frame-dir>`
+command exposes the same terminal-model-to-PNG path for captured Block frames.
+This offline gate checks Nyala's byte stream and repaint state without a TTY. It
+does not check a terminal's font choice, glyph metrics, ambiguous-width policy,
+colour profile, or inter-row bleed; `just kmscon-testcard` and live terminal runs
+cover those terminal-only properties.
+
+`just sixel-interop` runs the tagged Sixel compatibility gate:
 it sends Nyala's complete production DCS output through both go-sixel and
 libsixel's `sixel2png`, then compares dimensions and pixels. The flake exposes the
 same gate for every supported system. Libsixel is a test tool only and is not in
