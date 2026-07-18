@@ -2,10 +2,8 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 
-	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
@@ -23,7 +21,7 @@ import (
 // read from the engine, never from a dead context, so a rebuild resumes where the
 // crash left off.
 func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
-	timer := newLoadTimer(e.loadSpans)
+	timer := newLoadTimer()
 	if err = e.launch(e.browserFlag); err != nil {
 		return nil, err
 	}
@@ -40,30 +38,17 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	crashed = make(chan struct{})
 	e.watchCrash(crashed)
 	e.watchPaint()
-	// The frame sink differs by path. Capture keeps the ordered single-frame slot and
-	// its single decode worker (runFrameLoop), so the corpus stays complete and in
-	// order. The live path feeds a bounded, drop-oldest queue to a small pool of decode
+	// Feed a bounded, drop-oldest queue to a small pool of decode
 	// workers, so several frames decode in parallel and the block-backend frame rate is
 	// no longer capped by a single ~28 ms decode. A collector re-serialises the pool by
 	// arrival sequence, so the live screen stays monotonic.
-	live := !e.captureOn
-	var slot *frameSlot
-	var rawQ *rawFrameQueue
-	workers := 1
-	if live {
-		workers = decodeWorkerCount()
-		// Bound the queue to one buffered frame per worker plus one in flight, so the
-		// pool stays fed while memory stays bounded; a full queue drops the oldest
-		// undecoded frame.
-		rawQ = newRawFrameQueue(workers + 1)
-	} else {
-		slot = newFrameSlot()
-	}
+	workers := decodeWorkerCount()
+	rawQ := newRawFrameQueue(workers + 1)
 	// acks is the buffered ack channel the ack pump drains. It is created before
 	// startScreencast so the listener's first enqueue lands, and the pump runs off
 	// the event goroutine to avoid the chromedp #920 deadlock. The buffer is sized
 	// to a few in-flight frames so a transient pump stall never blocks the listener
-	// or the slot's displaced-frame ack.
+	// or frame acknowledgement.
 	acks := make(chan int64, ackBufferDepth)
 	ts := &textSync{}
 	// reSnap, reflow, and scroll clock the snapshot goroutine off the page, not off
@@ -81,7 +66,6 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// Capacity 1 latest-wins, so a burst of publishes coalesces to one re-emit.
 	reEmit := make(chan struct{}, 1)
 	e.mu.Lock()
-	e.slot = slot
 	e.rawQ = rawQ
 	e.acks = acks
 	e.text = ts
@@ -97,7 +81,7 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// first startScreencast. restartStream re-issues startScreencast on the same
 	// context, so registering here (not in startScreencast) keeps a backend switch
 	// or resize from leaking a second listener.
-	e.registerScreencastListener(ctx, slot, rawQ)
+	e.registerScreencastListener(ctx, rawQ)
 	// Reset the stuck-state watchdog for this session, so a rebuild does not read the
 	// previous session's receive timestamp or SessionID as a live stall.
 	e.recvNano.Store(0)
@@ -111,7 +95,7 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	go e.ackPump(ctx, acks)
 	go e.runScreencastWatchdog(ctx)
 	go e.runTextSync(ctx, ts, reSnap, reflow, scroll, reEmit)
-	if live {
+	{
 		// Live: a pool of decode workers feeds one collector that re-serialises them by
 		// arrival sequence and owns the compose, the held-frame re-emit, the scroll
 		// tracking, and the frame send. The decoded channel is buffered to the worker
@@ -127,17 +111,6 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 		go func() {
 			defer close(publisherDone)
 			e.runDecodeCollector(ctx, decoded, frames, ts, scroll, reEmit)
-		}()
-	} else {
-		// Capture: the single ordered decode worker, unchanged, so the corpus stays
-		// complete and in order.
-		publisherDone := make(chan struct{})
-		e.mu.Lock()
-		e.framePublisherDone = publisherDone
-		e.mu.Unlock()
-		go func() {
-			defer close(publisherDone)
-			e.runFrameLoop(ctx, slot, frames, ts, scroll, reEmit)
 		}()
 	}
 
@@ -171,15 +144,7 @@ type scrollRestore struct {
 // navigate errorText renders the browser's own error page rather than tearing the
 // session down (Decision 1), so the supervisor never rebuilds on a failed URL.
 func (e *ChromiumEngine) navigateAsync(ctx context.Context, url string, restore scrollRestore) {
-	err := chromedp.Run(ctx, chromedp.Navigate(url))
-	if e.recorder != nil {
-		result := "ok"
-		if err != nil {
-			result = err.Error()
-		}
-		e.recorder.Record(captureEvent{Type: captureEventNavigate, URL: url, Result: result})
-		e.fillSession(ctx, url, result)
-	}
+	_ = chromedp.Run(ctx, chromedp.Navigate(url))
 	// Restore the held scroll offset only after the load signal, so the document
 	// exists before the wheel lands. This sequences navigate then scroll-restore on
 	// one ordered path and closes the navigate-vs-scroll race.
@@ -189,73 +154,6 @@ func (e *ChromiumEngine) navigateAsync(ctx context.Context, url string, restore 
 			WithDeltaY(float64(restore.y))
 		_ = chromedp.Run(ctx, wheel)
 	}
-	// Backstop the paint latch on navigate-return, whether the page loaded or the
-	// browser rendered an error page, so a page that never fires firstContentfulPaint
-	// still closes it. paintedOnce makes this a no-op once watchPaint has fired, and
-	// markPainted is a no-op off the capture path.
-	e.markPainted()
-}
-
-// fillSession assembles the cdp-session.json bytes from held engine state and
-// stores them on the recorder when it is an exported *Recorder, so the viewer
-// reads them after Navigate. It runs only on the capture path. It reads the
-// capture and surface size under mu, then builds and marshals outside the lock, so
-// it never holds mu across the assemble. The launch flags derive from proxyFlags,
-// which carries only the credential-free Server, so the proxy user and password
-// never reach the file. The browser version (Browser.getVersion) and target id
-// (the live chromedp target) are queried from the live ctx, which exists here on
-// the navigate path; a query error leaves the field empty rather than failing the
-// bundle.
-func (e *ChromiumEngine) fillSession(ctx context.Context, navURL, navResult string) {
-	rec, ok := e.recorder.(*Recorder)
-	if !ok {
-		return
-	}
-	e.mu.Lock()
-	capW, capH := e.captureW, e.captureH
-	maxW, maxH := e.screencastCap(e.cols, e.rows)
-	scale := e.layoutScale()
-	e.mu.Unlock()
-	version := browserVersion(ctx)
-	targetID := liveTargetID(ctx)
-	session := buildCDPSession(version, e.browserFlag, targetID, navURL, navResult, capW, capH, maxW, maxH, rec.droppedCount(), scale, e.proxy)
-	data, err := json.MarshalIndent(session, "", "  ")
-	if err != nil {
-		return
-	}
-	rec.setSession(data)
-}
-
-// browserVersion returns the product version string Browser.getVersion reports,
-// or "" on any error. It runs through chromedp.Run so the action gets the target
-// executor context.
-func browserVersion(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	var product string
-	err := chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {
-		_, p, _, _, _, gerr := browser.GetVersion().Do(runCtx)
-		product = p
-		return gerr
-	}))
-	if err != nil {
-		return ""
-	}
-	return product
-}
-
-// liveTargetID returns the CDP target id of the driven page from the live
-// chromedp context, or "" when no target is attached.
-func liveTargetID(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	c := chromedp.FromContext(ctx)
-	if c == nil || c.Target == nil {
-		return ""
-	}
-	return c.Target.TargetID.String()
 }
 
 // finishStartup marks the supervisor as live after startup has a session. If
@@ -308,9 +206,6 @@ func (e *ChromiumEngine) watchCrash(crashed chan struct{}) {
 	chromedp.ListenTarget(ctx, func(ev any) {
 		if _, ok := ev.(*target.EventTargetCrashed); ok {
 			once.Do(func() {
-				if e.recorder != nil {
-					e.recorder.Record(captureEvent{Type: captureEventTargetCrashed})
-				}
 				close(crashed)
 			})
 		}
@@ -323,10 +218,8 @@ func (e *ChromiumEngine) watchCrash(crashed chan struct{}) {
 // On a "firstContentfulPaint" lifecycle event it fires markPainted, the primary
 // paint-gate fire source the snapshot goroutine reads as its first-snapshot clock,
 // but only when the event's frame is the main frame; a subframe (iframe) painting
-// first must not close the latch early. On that same main-frame paint, off the
-// capture path, it also pokes the reflow channel so the crisp overlay decodes as
-// soon as the page paints rather than waiting on networkAlmostIdle; capture keeps
-// the painted latch and takes no poke. On "networkAlmostIdle" it pokes the reflow
+// first must not close the latch early. On that same main-frame paint it pokes the
+// reflow channel so the crisp overlay decodes promptly. On "networkAlmostIdle" it pokes the reflow
 // channel for a debounced late re-snapshot, catching a reflow that lands without
 // navigation or resize (web fonts loading, async content). On a Runtime.bindingCalled
 // for the layout-shift binding it pokes the same reflow channel, so a layout shift
@@ -361,25 +254,13 @@ func (e *ChromiumEngine) watchPaint() {
 			switch t.Name {
 			case "firstContentfulPaint":
 				if mainFrame != "" && t.FrameID == mainFrame {
-					e.markPainted()
-					// Production has no other snapshot trigger at first paint: the painted
-					// latch is capture-only and the first publishSnapshot raced navigation
-					// before the page painted, so on a heavy page text would otherwise wait
-					// on networkAlmostIdle, seconds away. Poke the same debounced reflow the
-					// networkAlmostIdle and layout-shift arms use, so the crisp overlay
-					// decodes as soon as the page paints. Capture drives its first snapshot
-					// off the painted latch and the textReady settle hold, so gating on
-					// captureOn leaves capture's settle timing unchanged.
-					if !e.captureOn {
-						e.pokeReflow()
-					}
+					e.pokeReflow()
 				}
 			case "networkAlmostIdle":
 				e.pokeReflow()
 			}
 		case *runtime.EventBindingCalled:
 			if isLayoutShiftBinding(t.Name) {
-				e.recordLayoutShift()
 				e.pokeReflow()
 			}
 		}
@@ -414,22 +295,19 @@ func (e *ChromiumEngine) pokeReflow() {
 }
 
 // teardownSession tears down the live session without closing the frames
-// channel, so it is safe on both a crash rebuild and Close. It drains the capture
-// slot (releasing the frame loop parked on it; the held raw frame is already acked)
-// then cancels the context, which stops the screencast, force-kills the managed
+// channel, so it is safe on both a crash rebuild and Close. It cancels the context,
+// which stops the screencast, force-kills the managed
 // Chromium, and releases the publisher's send select. It then waits for the session's
 // sole frame publisher and drains frames buffered before cancellation won its selects.
-// This prevents an old-session frame surviving recovery and prevents the capture frame
-// loop racing the supervisor's final channel close. Live decode workers need no join
+// This prevents an old-session frame surviving recovery. Decode workers need no join
 // because their decoded channel is session-local and only the joined collector can
 // reach frames. It clears the per-session fields so a stale context is never reused.
 func (e *ChromiumEngine) teardownSession() {
 	e.mu.Lock()
-	slot := e.slot
 	cancel := e.cancel
 	publisherDone := e.framePublisherDone
 	frames := e.frames
-	e.ctx, e.cancel, e.slot, e.acks, e.text = nil, nil, nil, nil, nil
+	e.ctx, e.cancel, e.acks, e.text = nil, nil, nil, nil
 	e.rawQ = nil
 	e.reSnap, e.reflow, e.scroll, e.reEmit = nil, nil, nil, nil
 	e.framePublisherDone = nil
@@ -439,9 +317,6 @@ func (e *ChromiumEngine) teardownSession() {
 	e.fontForcingID = ""
 	e.layoutShiftID = ""
 	e.mu.Unlock()
-	if slot != nil {
-		slot.drain()
-	}
 	if cancel != nil {
 		cancel()
 	}

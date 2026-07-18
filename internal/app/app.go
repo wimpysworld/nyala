@@ -6,7 +6,6 @@ package app
 
 import (
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"strings"
@@ -37,8 +36,7 @@ type CLI struct {
 	// Blocks selects the block glyph mode: auto, sextant, quadrant, or half. On the
 	// interactive path auto and sextant render sextant when the terminal supports it
 	// and degrade to quadrant otherwise; quadrant forces quadrant; half renders
-	// half-block. The capture path is deterministic: sextant forces sextant, half
-	// forces half-block, and everything else (including auto) forces quadrant.
+	// half-block.
 	Blocks string `help:"Block glyph mode: auto, sextant, quadrant, or half." name:"blocks" default:"auto" enum:"auto,sextant,quadrant,half"`
 
 	// Browser is the path to the Chromium executable to drive. Empty falls back
@@ -71,41 +69,23 @@ func (c CLI) Validate() error {
 
 // Run dispatches a parsed CLI on the given tty. It prepends https:// when the
 // URL has no scheme, accepts http, https, and file, and rejects any other
-// scheme with a clear error. It reads NYALA_CAPTURE, NYALA_CAPTURE_SCROLL, and
-// NYALA_CAPTURE_SCROLL_SETTLE: a
-// parse error returns before any viewer call. With capture disabled it runs the
-// interactive viewer.Stream; with capture enabled it runs the bounded
-// viewer.Capture, passing the requested scroll through. Both pass the --backend
-// mode and the --blocks glyph mode through; the viewer resolves --blocks to a
-// glyph scheme, detecting sextant support on the interactive path and staying
-// deterministic on the capture path. It constructs the Chromium engine from the
-// validated URL and the --browser flag.
+// scheme with a clear error. It runs the interactive viewer and constructs the
+// Chromium engine from the validated URL and the --browser flag.
 func Run(cli CLI, tty *os.File) error {
 	target, err := normaliseURL(cli.URL)
-	if err != nil {
-		return err
-	}
-	captureValue, captureSet := os.LookupEnv("NYALA_CAPTURE")
-	scrollValue, scrollSet := os.LookupEnv("NYALA_CAPTURE_SCROLL")
-	settleValue, settleSet := os.LookupEnv("NYALA_CAPTURE_SCROLL_SETTLE")
-	capture, err := ParseCaptureEnv(captureValue, captureSet, scrollValue, scrollSet, settleValue, settleSet)
 	if err != nil {
 		return err
 	}
 	chromium := engine.New(cli.Browser)
 	chromium.SetDisableFrameRateLimit(cli.DisableFrameRateLimit)
 	eng := engineAdapter{chromium}
-	if capture.Enabled {
-		return viewer.Capture(eng, target, tty, cli.Color, cli.Backend, cli.Blocks, cli.LayoutWidth, capture.N, capture.ScrollPx, capture.ScrollSettle)
-	}
 	return viewer.Stream(eng, target, tty, cli.Color, cli.Backend, cli.Blocks, cli.LayoutWidth)
 }
 
 // engineAdapter wraps a ChromiumEngine to satisfy viewer.Engine. The viewer
 // declares the methods it needs with terminal-neutral parameters, so it never
 // imports the engine package; the adapter maps the viewer's string key code to
-// the engine's Key and its capture recorder to the viewer's CaptureSession. The
-// other methods pass straight through.
+// the engine's Key. The other methods pass straight through.
 type engineAdapter struct{ *engine.ChromiumEngine }
 
 // SendKey maps a viewer key code to an engine Key. The engine routes scroll-key
@@ -114,21 +94,9 @@ func (a engineAdapter) SendKey(code string) {
 	a.ChromiumEngine.SendKey(engine.Key{Code: code})
 }
 
-// SendScroll passes the capture scroll hook's vertical scroll straight to the
-// engine's wheel transport.
+// SendScroll passes diagnostic scroll requests to the engine's wheel transport.
 func (a engineAdapter) SendScroll(dy int) {
 	a.ChromiumEngine.SendScroll(dy)
-}
-
-// EnableCapture constructs the engine capture recorder over the bundle's
-// cdp-events.ndjson sink, enables engine capture before Navigate, and returns the
-// recorder as a viewer.CaptureSession. The recorder is the single seam for the
-// engine-to-capture coupling; constructing it here keeps the viewer free of the
-// engine import.
-func (a engineAdapter) EnableCapture(ndjson io.Writer) viewer.CaptureSession {
-	rec := engine.NewCaptureRecorder(ndjson)
-	a.ChromiumEngine.EnableCapture(rec)
-	return rec
 }
 
 // normaliseURL prepends https:// when raw carries no scheme, then accepts only

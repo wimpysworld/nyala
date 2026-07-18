@@ -3,7 +3,14 @@ package render
 import (
 	"io"
 	"testing"
+	"unsafe"
 )
+
+func TestFrameHeaderMatchesBaselineSize(t *testing.T) {
+	if got, want := unsafe.Sizeof(Frame{}), uintptr(72); got != want {
+		t.Fatalf("Frame size = %d bytes, want baseline %d", got, want)
+	}
+}
 
 // stubRenderer is a trivial Renderer used to assert the interface seam.
 type stubRenderer struct{}
@@ -22,15 +29,6 @@ func TestStubRendererSatisfiesRenderer(t *testing.T) {
 	}
 	if err := r.Render(Frame{}, io.Discard); err != nil {
 		t.Fatalf("Render() = %v, want nil", err)
-	}
-}
-
-// TestZeroFrameStatsNil asserts the zero Frame carries no stats, so the
-// production path stays free of capture timing.
-func TestZeroFrameStatsNil(t *testing.T) {
-	var f Frame
-	if f.Stats != nil {
-		t.Fatalf("zero Frame.Stats = %v, want nil", f.Stats)
 	}
 }
 

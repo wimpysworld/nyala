@@ -31,7 +31,7 @@ import (
 	woozypng "github.com/woozymasta/png"
 	"golang.org/x/sys/unix"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
@@ -89,18 +89,10 @@ type State struct {
 	Enabled []Backend    // backends in the Tab cycle, block first
 	cellPx               // terminal cell pixel size for graphics scaling
 
-	// captureGrid is the capture-only grid sink. It defaults nil. The capture
-	// driver sets it before a block draw so renderBlock writes the composed
-	// letterbox grid here as well as to the terminal, yielding both the drawn
-	// bytes and the serialised grid from one compose with no drift. Off the
-	// capture path it stays nil and renderBlock writes nothing to it.
-	captureGrid *block.Grid
-
 	// diff is the live-path cell differ. It defaults nil. The interactive stream
 	// session sets it so renderBlock emits only the cells that changed since the
-	// previous frame, with CUP and SGR coalescing. When nil (the capture path and
-	// the static-image path) renderBlock writes the full grid via writeGrid, so
-	// those paths keep their byte output. The viewer live path is not golden-
+	// previous frame, with CUP and SGR coalescing. When nil, the static-image path
+	// writes the full grid via writeGrid, so it keeps its byte output. The viewer live path is not golden-
 	// pinned, so the diffed output may differ from a full rewrite while the
 	// rendered result matches.
 	diff *block.GridDiff
@@ -108,8 +100,8 @@ type State struct {
 	// scratch holds the reusable per-frame buffers for the live diff path: the
 	// downscale destination, the compose grid, and the buffered tty writer. It is
 	// used only when diff is set, which is the single-goroutine interactive draw
-	// path, so the buffers never alias across goroutines. Off the diff path (capture
-	// and static image) it stays untouched and those paths keep their
+	// path, so the buffers never alias across goroutines. Off the diff path it stays
+	// untouched and the static-image path keeps its
 	// fresh-allocation byte output.
 	scratch frameScratch
 
@@ -157,8 +149,7 @@ type frameScratch struct {
 	// persistent worker set. It is built once, lazily on the first diff draw, and
 	// reused every frame, so the hot path spawns no goroutine. The live diff path is
 	// single-goroutine, so the one pool is driven from one caller and never overlaps
-	// calls. It stays nil off the diff path (capture and static image), which keep
-	// the serial downscale and compose.
+	// calls. It stays nil off the diff path, which keeps the serial downscale and compose.
 	pool *rowband.Pool
 
 	// downscale and compose are the pool-driving band drivers, each holding one band
@@ -218,15 +209,6 @@ func (s *State) SetDiff(d *block.GridDiff) {
 	s.diff = d
 }
 
-// SetCaptureGrid sets the capture-only grid sink. The capture driver passes a
-// pointer to a block.Grid before each block draw; renderBlock fills it with the
-// composed letterbox grid it draws, so the serialised grid never drifts from the
-// drawn bytes. Pass nil to clear it. It is a no-op for the graphics backends,
-// which compose no cell grid.
-func (s *State) SetCaptureGrid(g *block.Grid) {
-	s.captureGrid = g
-}
-
 // NewState builds the initial state: block as the safe pre-detection backend, the
 // quadrant scheme, truecolour, sized to a cols x rows terminal showing an imgW x
 // imgH image. The cycle holds every backend highest-fidelity first and the cell
@@ -242,7 +224,7 @@ func NewState(cols, rows, imgW, imgH int) State {
 		ImgW:    imgW,
 		ImgH:    imgH,
 		Enabled: []Backend{BackendKitty, BackendSixel, BackendBlock},
-		cellPx:  cellPx{W: capture.CellPxW, H: capture.CellPxH},
+		cellPx:  cellPx{W: cellraster.CellPxW, H: cellraster.CellPxH},
 	}
 }
 
@@ -470,45 +452,11 @@ func (s *State) graphicsFit() block.Fit {
 // bitmap through the identity graphicsFit, so they fill the whole grid with no
 // letterbox either; the 1:2 FitImage stays out of both paths.
 func (s *State) renderBlock(src image.Image, text []render.GlyphRun, w io.Writer) error {
-	br := block.Renderer{Cols: s.Cols, Rows: s.Rows, Scheme: s.Scheme}
-	pxW, pxH := schemePixels(s.Scheme, s.Cols, s.Rows)
-	if pxW <= 0 || pxH <= 0 {
+	grid := s.ComposeBlockFrame(render.Frame{Img: src, Text: text})
+	if grid == nil {
 		return nil
 	}
-
-	// The live diff path is single-goroutine, so it reuses the per-frame buffers:
-	// the downscale destination, the compose grid, and the buffered tty writer. The
-	// capture and static-image paths (diff nil) keep the fresh-allocation path so
-	// their byte output stays identical.
 	if s.diff != nil {
-		if s.scratch.pool == nil {
-			s.scratch.pool = rowband.New()
-			s.scratch.downscale = metrics.NewParallelDownscale()
-			s.scratch.compose = block.NewParallelCompose()
-		}
-		frame := render.Frame{Img: src, Text: text}
-		var grid *block.Grid
-		_, nativeYCbCr := src.(*image.YCbCr)
-		srcW, srcH := src.Bounds().Dx(), src.Bounds().Dy()
-		downscaleYCbCr := nativeYCbCr && pxW <= srcW && pxH <= srcH && (pxW < srcW || pxH < srcH)
-		if downscaleYCbCr {
-			// Live Block JPEG frames stay in the decoder's native YCbCr planes. The
-			// Block compositor averages each source region straight into its final
-			// sub-cell colours, avoiding the intermediate downsampled RGBA image.
-			grid = s.scratch.compose.ComposeYCbCrInto(&br, &s.scratch.out, frame, s.scratch.pool)
-		} else {
-			// PNG, RGBA, and non-downscale inputs keep the established reusable
-			// downscale path. Capture uses the separate diff-nil path below.
-			sub := s.scratch.downscale.DownscaleInto(s.scratch.downscaleDst(pxW, pxH), src, s.scratch.pool)
-			frame.Img = sub
-			grid = s.scratch.compose.ComposeInto(&br, &s.scratch.out, frame, s.scratch.pool)
-		}
-		if s.captureGrid != nil {
-			// Copy the cells, never alias: the live scratch grid is reused next frame,
-			// so the capture sink must own an independent backing array to serialise.
-			s.captureGrid.Cols, s.captureGrid.Rows = grid.Cols, grid.Rows
-			s.captureGrid.Cells = append(s.captureGrid.Cells[:0], grid.Cells...)
-		}
 		bw := s.scratch.writer(w, frameBufferSize(s.Cols, s.Rows))
 		var err error
 		if s.Colour == ColourTrue {
@@ -521,13 +469,38 @@ func (s *State) renderBlock(src image.Image, text []render.GlyphRun, w io.Writer
 		}
 		return bw.Flush()
 	}
+	return writeGrid(*grid, s.Colour, w)
+}
 
-	sub := metrics.Downscale(src, pxW, pxH)
-	grid := br.Compose(render.Frame{Img: sub, Text: text})
-	if s.captureGrid != nil {
-		*s.captureGrid = grid
+// ComposeBlockFrame returns the exact Block grid consumed by the terminal
+// writer. The live path reuses State scratch storage, so callers that retain the
+// result across another compose must copy it.
+func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
+	if frame.Img == nil {
+		return nil
 	}
-	return writeGrid(grid, s.Colour, w)
+	br := block.Renderer{Cols: s.Cols, Rows: s.Rows, Scheme: s.Scheme}
+	pxW, pxH := schemePixels(s.Scheme, s.Cols, s.Rows)
+	if pxW <= 0 || pxH <= 0 {
+		return nil
+	}
+	if s.diff == nil {
+		sub := metrics.Downscale(frame.Img, pxW, pxH)
+		grid := br.Compose(render.Frame{Img: sub, Text: frame.Text})
+		return &grid
+	}
+	if s.scratch.pool == nil {
+		s.scratch.pool = rowband.New()
+		s.scratch.downscale = metrics.NewParallelDownscale()
+		s.scratch.compose = block.NewParallelCompose()
+	}
+	_, nativeYCbCr := frame.Img.(*image.YCbCr)
+	srcW, srcH := frame.Img.Bounds().Dx(), frame.Img.Bounds().Dy()
+	if nativeYCbCr && pxW <= srcW && pxH <= srcH && (pxW < srcW || pxH < srcH) {
+		return s.scratch.compose.ComposeYCbCrInto(&br, &s.scratch.out, frame, s.scratch.pool)
+	}
+	frame.Img = s.scratch.downscale.DownscaleInto(s.scratch.downscaleDst(pxW, pxH), frame.Img, s.scratch.pool)
+	return s.scratch.compose.ComposeInto(&br, &s.scratch.out, frame, s.scratch.pool)
 }
 
 // encodeGraphics positions the cursor at the fit offset and encodes img with the
@@ -775,21 +748,19 @@ const (
 	bg256Prefix = "\x1b[48;5;"
 )
 
-// framePrefix returns the cursor escape the steady and capture draw paths emit
+// framePrefix returns the cursor escape the steady draw path emits
 // before a frame's render bytes, and seeds the differ for the first draw. The
 // first draw returns the full clearScreen and resets diff so it full-repaints
 // against the blank screen; every later draw returns cursorHome only, so the
 // render overwrites each cell in place with no per-frame full clear. diff may be
-// nil (the graphics backends carry none), in which case no seed runs. Both the
-// live stream draw and the capture draw call it, so the only allowed difference
-// between a live and a captured draw is which writer the bytes land on.
+// nil (the graphics backends carry none), in which case no seed runs.
 func framePrefix(firstDrawn bool, diff *block.GridDiff) string {
 	if firstDrawn {
 		return cursorHome
 	}
 	if diff != nil {
-		// The first draw clears the loading cue (live) or the prior terminal state
-		// (capture), so the differ must full-repaint against the blank screen, not a
+		// The first draw clears the loading cue or prior terminal state, so the
+		// differ must full-repaint against the blank screen, not a
 		// retained grid.
 		diff.Reset()
 	}

@@ -4,7 +4,6 @@ package engine
 
 import (
 	"image"
-	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -139,13 +138,10 @@ func distinctColours(img image.Image, cap int) int {
 	return len(seen)
 }
 
-// TestLiveCaptureWaitsForLoadThenPaintedFrame proves the capture load gate yields
-// a painted frame, not a blank pre-paint one. It serves a local page with a solid
-// coloured block, enables capture, waits on the engine load latch, then reads a
-// frame and asserts the bitmap has more than one distinct colour. Deterministic
-// and hermetic: no network, a httptest server. Run it with the live tag and the
-// no-sandbox env.
-func TestLiveCaptureWaitsForLoadThenPaintedFrame(t *testing.T) {
+// TestLiveEventuallyEmitsPaintedFrame proves the normal engine stream reaches a
+// painted frame rather than stopping at a blank pre-paint frame. It is hermetic:
+// the page comes from a local test server.
+func TestLiveEventuallyEmitsPaintedFrame(t *testing.T) {
 	if _, err := resolveExecutable(""); err != nil {
 		t.Skipf("no Chromium for the live test: %v", err)
 	}
@@ -164,8 +160,6 @@ func TestLiveCaptureWaitsForLoadThenPaintedFrame(t *testing.T) {
 	defer srv.Close()
 
 	e := New("")
-	rec := NewCaptureRecorder(io.Discard)
-	e.EnableCapture(rec)
 	e.SetCellPx(8, 16)
 	e.Resize(80, 24)
 	if err := e.Navigate(srv.URL); err != nil {
@@ -173,14 +167,7 @@ func TestLiveCaptureWaitsForLoadThenPaintedFrame(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = e.Close() })
 
-	// Wait for the painted latch, mirroring the capture driver.
-	select {
-	case <-rec.Painted():
-	case <-time.After(20 * time.Second):
-		t.Fatal("painted latch never closed within the deadline")
-	}
-
-	// Read a frame at or after paint and assert it is painted (more than one colour).
+	// Read until the normal stream reaches a painted frame.
 	deadline := time.NewTimer(20 * time.Second)
 	defer deadline.Stop()
 	for {

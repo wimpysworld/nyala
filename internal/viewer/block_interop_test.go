@@ -9,15 +9,14 @@ import (
 	"testing"
 
 	"github.com/wimpysworld/nyala/internal/blockinterop"
-	"github.com/wimpysworld/nyala/internal/capture"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
 // TestBlockTerminalRoundTrip sends two frames through the production live Block
 // compose and cell-diff encoder, decodes the resulting CUP/SGR/UTF-8 stream with
-// an independent VT emulator, then compares both the visible terminal model and
-// the Route A PNG readback with the composed final grid.
+// an independent VT emulator, then compares the visible terminal model with the
+// exact grid consumed by the production writer.
 func TestBlockTerminalRoundTrip(t *testing.T) {
 	const cols, rows = 12, 5
 	state := NewState(cols, rows, cols*2, rows*4)
@@ -26,10 +25,11 @@ func TestBlockTerminalRoundTrip(t *testing.T) {
 	state.SetDiff(&block.GridDiff{})
 
 	var expected block.Grid
-	state.SetCaptureGrid(&expected)
 	var stream bytes.Buffer
 	for frameNumber := range 2 {
 		frame := blockInteropFrame(cols, rows, frameNumber)
+		grid := state.ComposeBlockFrame(frame)
+		expected = block.Grid{Cols: grid.Cols, Rows: grid.Rows, Cells: append([]block.Cell(nil), grid.Cells...)}
 		if err := state.RenderStreamFrame(frame, &stream); err != nil {
 			t.Fatalf("RenderStreamFrame %d: %v", frameNumber, err)
 		}
@@ -40,16 +40,6 @@ func TestBlockTerminalRoundTrip(t *testing.T) {
 		t.Fatalf("blockinterop.Decode: %v", err)
 	}
 	assertVisibleGridEqual(t, decoded, expected)
-
-	rasteriser, err := capture.NewRasteriser()
-	if err != nil {
-		t.Fatalf("NewRasteriser: %v", err)
-	}
-	gotPNG := rasteriser.Rasterise(decoded)
-	wantPNG := rasteriser.Rasterise(expected)
-	if !gotPNG.Bounds().Eq(wantPNG.Bounds()) || !bytes.Equal(gotPNG.Pix, wantPNG.Pix) {
-		t.Fatal("VT-decoded Block stream raster differs from the composed-grid raster")
-	}
 }
 
 func blockInteropFrame(cols, rows, frameNumber int) render.Frame {

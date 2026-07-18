@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 	"github.com/wimpysworld/nyala/internal/render/kitty"
@@ -140,28 +140,6 @@ func TestResolveScheme(t *testing.T) {
 				t.Errorf("schemeEngineName(%d) = %q, want %q", c.scheme, got, c.engName)
 			}
 		})
-	}
-}
-
-// TestResolveCaptureScheme asserts the deterministic capture --blocks resolution,
-// which runs no terminal detection: sextant forces sextant, half forces
-// half-block, and everything else, including auto, forces quadrant so the default
-// capture and corpus sweeps are unchanged.
-func TestResolveCaptureScheme(t *testing.T) {
-	cases := []struct {
-		blocks string
-		scheme block.Scheme
-	}{
-		{"sextant", block.SchemeSextant},
-		{"half", block.SchemeHalfBlock},
-		{"quadrant", block.SchemeQuadrant},
-		{"auto", block.SchemeQuadrant},
-		{"", block.SchemeQuadrant},
-	}
-	for _, c := range cases {
-		if got := resolveCaptureScheme(c.blocks); got != c.scheme {
-			t.Errorf("resolveCaptureScheme(%q) = %d, want %d", c.blocks, got, c.scheme)
-		}
 	}
 }
 
@@ -891,8 +869,8 @@ func TestWriteGridMonoNoSGR(t *testing.T) {
 // capture.CellPxW (8) / capture.CellPxH (16). NewState seeds these, and a temp
 // file tty has no winsize and no handshake reply, so the chain rests on them.
 func TestCellPxDefaultWhenGeometryAbsent(t *testing.T) {
-	if capture.CellPxW != 8 || capture.CellPxH != 16 {
-		t.Fatalf("capture default = %dx%d, want 8x16 (pinned Route A raster in docs/STAGE-0.md)", capture.CellPxW, capture.CellPxH)
+	if cellraster.CellPxW != 8 || cellraster.CellPxH != 16 {
+		t.Fatalf("raster default = %dx%d, want 8x16 (pinned Route A raster in docs/STAGE-0.md)", cellraster.CellPxW, cellraster.CellPxH)
 	}
 	st := NewState(80, 24, 64, 64)
 	if st.W != 8 || st.H != 16 {
@@ -1038,10 +1016,6 @@ func (e streamTestEngine) SetBackend(name string) {
 
 func (e streamTestEngine) SetScheme(string) {}
 
-func (e streamTestEngine) EnableCapture(io.Writer) CaptureSession { return nil }
-
-func (e streamTestEngine) SetCaptureSettleHold(bool) {}
-
 func (e streamTestEngine) SetCellPx(int, int) {}
 
 func (e streamTestEngine) SetLayoutWidth(int) {}
@@ -1113,7 +1087,7 @@ func benchStreamRuns(rows int) []render.GlyphRun {
 // run to run.
 func benchStreamFrame() render.Frame {
 	return render.Frame{
-		Img:  benchStreamImage(120*capture.CellPxW, 40*capture.CellPxH),
+		Img:  benchStreamImage(120*cellraster.CellPxW, 40*cellraster.CellPxH),
 		Text: benchStreamRuns(40),
 	}
 }
@@ -1126,7 +1100,7 @@ func benchStreamFrame() render.Frame {
 // terminal bytes but still composes the grid. b.ReportAllocs reports allocs/op
 // and B/op. P2-8 must lower the unchanged-frame allocs/op against this baseline.
 func BenchmarkRenderStreamFrameUnchanged(b *testing.B) {
-	s := NewState(120, 40, 120*capture.CellPxW, 40*capture.CellPxH)
+	s := NewState(120, 40, 120*cellraster.CellPxW, 40*cellraster.CellPxH)
 	s.SetEnabled([]Backend{BackendBlock})
 	var d block.GridDiff
 	s.SetDiff(&d)
@@ -1152,7 +1126,7 @@ func BenchmarkRenderStreamFrameUnchanged(b *testing.B) {
 // a first-frame full repaint against a blank screen. It is not the P2-8 gate; it
 // frames the cost of the worst case beside the steady-state baseline.
 func BenchmarkRenderStreamFrameChanged(b *testing.B) {
-	s := NewState(120, 40, 120*capture.CellPxW, 40*capture.CellPxH)
+	s := NewState(120, 40, 120*cellraster.CellPxW, 40*cellraster.CellPxH)
 	s.SetEnabled([]Backend{BackendBlock})
 	var d block.GridDiff
 	s.SetDiff(&d)

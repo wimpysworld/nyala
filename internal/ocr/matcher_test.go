@@ -4,15 +4,15 @@ import (
 	"image/color"
 	"testing"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
 // newTestRasteriser builds a Route A rasteriser or fails the test.
-func newTestRasteriser(t *testing.T) *capture.Rasteriser {
+func newTestRasteriser(t *testing.T) *cellraster.Rasteriser {
 	t.Helper()
-	r, err := capture.NewRasteriser()
+	r, err := cellraster.NewRasteriser()
 	if err != nil {
 		t.Fatalf("NewRasteriser: %v", err)
 	}

@@ -8,7 +8,7 @@ import (
 
 	colorful "github.com/lucasb-eyer/go-colorful"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 )
 
 // solidImage returns a w x h opaque RGBA image filled with one colour.
@@ -40,9 +40,9 @@ func halfSplitImage(cols, rows int) *image.RGBA {
 	return img
 }
 
-func newTestRasteriser(t *testing.T) *capture.Rasteriser {
+func newTestRasteriser(t *testing.T) *cellraster.Rasteriser {
 	t.Helper()
-	r, err := capture.NewRasteriser()
+	r, err := cellraster.NewRasteriser()
 	if err != nil {
 		t.Fatalf("NewRasteriser: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestIdealRenderDimensions(t *testing.T) {
 	cols, rows := 4, 3
 	src := halfSplitImage(cols, rows)
 	ideal := IdealRender(rast, src, cols, rows)
-	wantW, wantH := cols*capture.CellPxW, rows*capture.CellPxH
+	wantW, wantH := cols*cellraster.CellPxW, rows*cellraster.CellPxH
 	if ideal.Bounds().Dx() != wantW || ideal.Bounds().Dy() != wantH {
 		t.Fatalf("ideal render %dx%d, want %dx%d",
 			ideal.Bounds().Dx(), ideal.Bounds().Dy(), wantW, wantH)

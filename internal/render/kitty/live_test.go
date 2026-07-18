@@ -12,7 +12,7 @@ import (
 
 	xkitty "github.com/charmbracelet/x/ansi/kitty"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
 
 // TestLiveEncoderRoundTrips checks the LiveEncoder payload decodes back to the
@@ -167,7 +167,7 @@ func TestLiveEncoderPNGPassThrough(t *testing.T) {
 	if joined.String() != data {
 		t.Fatal("chunked PNG payload differs from the supplied base64 bytes")
 	}
-	decoded, err := capture.DecodeKitty(out.Bytes())
+	decoded, err := renderdecode.DecodeKitty(out.Bytes())
 	if err != nil {
 		t.Fatalf("decode direct PNG Kitty output: %v", err)
 	}

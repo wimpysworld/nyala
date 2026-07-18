@@ -14,6 +14,7 @@ import (
 	"image/draw"
 	"image/png"
 	"io"
+	"math"
 	"net/url"
 	"os"
 	"os/exec"
@@ -23,25 +24,32 @@ import (
 	"time"
 
 	"github.com/wimpysworld/nyala/internal/blockinterop"
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/engine"
 	"github.com/wimpysworld/nyala/internal/kittyinterop"
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
+	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
 
 const (
-	cdpInteropCols        = 120
-	cdpInteropRows        = 40
-	cdpInteropCellW       = 8
-	cdpInteropCellH       = 16
-	cdpInteropLayoutWidth = 1280
-	cdpInteropIdle        = 600 * time.Millisecond
-	cdpInteropDeadline    = 30 * time.Second
-	cdpInteropSixelDelta  = 2
-	cdpInteropPSNRFloor   = 24.0
-	cdpInteropSSIMFloor   = 0.90
+	cdpInteropCols              = 120
+	cdpInteropRows              = 40
+	cdpInteropCellW             = 8
+	cdpInteropCellH             = 16
+	cdpInteropLayoutWidth       = 1280
+	cdpInteropIdle              = 600 * time.Millisecond
+	cdpInteropDeadline          = 30 * time.Second
+	cdpInteropSixelDelta        = 2
+	cdpInteropPSNRFloor         = 24.0
+	cdpInteropSSIMFloor         = 0.90
+	cdpCorpusAttempts           = 2
+	cdpCalibrationSettle        = 2 * time.Second
+	cdpScrollRunTolerance       = 2
+	cdpScrollApprovedPreRuns    = 47
+	cdpScrollApprovedPreBody    = 47
+	cdpScrollApprovedSettleBody = 43
 )
 
 type cdpInteropCase struct {
@@ -76,6 +84,91 @@ type cdpInteropResult struct {
 	GridDiffActive        bool     `json:"grid_diff_active,omitempty"`
 	SuccessiveFrames      int      `json:"successive_frames,omitempty"`
 	CJKWideCellValid      bool     `json:"cjk_wide_cell_valid,omitempty"`
+}
+
+type cdpGeometry struct {
+	name         string
+	cols, rows   int
+	cellW, cellH int
+}
+
+type cdpCorpusResult struct {
+	Fixture       string                     `json:"fixture"`
+	Geometry      string                     `json:"geometry"`
+	Cols          int                        `json:"cols"`
+	Rows          int                        `json:"rows"`
+	CellPx        [2]int                     `json:"cell_px"`
+	LayoutScale   float64                    `json:"layout_scale"`
+	SourceWidth   int                        `json:"source_width"`
+	SourceHeight  int                        `json:"source_height"`
+	PaintWidth    int                        `json:"paint_width"`
+	PaintHeight   int                        `json:"paint_height"`
+	Placement     metrics.PlacementStats     `json:"placement"`
+	PlacementGate metrics.PlacementGate      `json:"placement_gate"`
+	Paint         metrics.PaintDisplaceStats `json:"paint_displacement"`
+	PaintGate     metrics.PaintGate          `json:"paint_gate"`
+	PaintState    string                     `json:"paint_state"`
+	PaintBaseline cdpPaintBaselineCase       `json:"paint_baseline"`
+	Diagnostics   *render.FrameDiagnostics   `json:"frame_diagnostics,omitempty"`
+	Error         string                     `json:"error,omitempty"`
+}
+
+type cdpPaintBaseline struct {
+	SchemaVersion int                             `json:"schema_version"`
+	Cases         map[string]cdpPaintBaselineCase `json:"cases"`
+}
+
+type cdpPaintBaselineCase struct {
+	State              string  `json:"state"`
+	MinMeasured        int     `json:"min_measured"`
+	MaxSkippedFraction float64 `json:"max_skipped_fraction"`
+	MaxMeanAbsH        float64 `json:"max_mean_abs_h"`
+	MaxMaxAbsH         float64 `json:"max_max_abs_h"`
+	MaxMeanAbsV        float64 `json:"max_mean_abs_v"`
+	MaxMaxAbsV         float64 `json:"max_max_abs_v"`
+}
+
+type cdpScrollResult struct {
+	Fixture       string                   `json:"fixture"`
+	Geometry      string                   `json:"geometry"`
+	PreSettle     metrics.ScrollDanceStats `json:"pre_settle"`
+	Settled       metrics.ScrollDanceStats `json:"settled"`
+	Gate          metrics.ScrollGate       `json:"gate"`
+	ScrollOffsets []float64                `json:"scroll_offsets"`
+	Error         string                   `json:"error,omitempty"`
+}
+
+var cdpCorpusGeometries = []cdpGeometry{
+	{name: "120x40-8x16", cols: 120, rows: 40, cellW: 8, cellH: 16},
+	{name: "240x48-8x16", cols: 240, rows: 48, cellW: 8, cellH: 16},
+	{name: "158x86-16x33", cols: 158, rows: 86, cellW: 16, cellH: 33},
+}
+
+func TestCDPPaintBaselineDirectional(t *testing.T) {
+	baseline := cdpPaintBaselineCase{
+		State: "expected_failure", MinMeasured: 8, MaxSkippedFraction: 0.4,
+		MaxMeanAbsH: 1, MaxMaxAbsH: 2, MaxMeanAbsV: 1, MaxMaxAbsV: 2,
+	}
+	improved := metrics.PaintDisplaceStats{Measured: 9, SkippedFraction: 0.3, MeanAbsH: 0.5, MaxAbsH: 1, MeanAbsV: 0.5, MaxAbsV: 1}
+	if err := checkCDPPaintBaseline("expected_failure", improved, baseline); err != nil {
+		t.Fatalf("directional improvement failed: %v", err)
+	}
+	breaches := []metrics.PaintDisplaceStats{
+		{Measured: 7},
+		{Measured: 8, SkippedFraction: 0.5},
+		{Measured: 8, MeanAbsH: 1.1},
+		{Measured: 8, MaxAbsH: 2.1},
+		{Measured: 8, MeanAbsV: 1.1},
+		{Measured: 8, MaxAbsV: 2.1},
+	}
+	for i, stats := range breaches {
+		if err := checkCDPPaintBaseline("expected_failure", stats, baseline); err == nil {
+			t.Errorf("breach %d passed", i)
+		}
+	}
+	if err := checkCDPPaintBaseline("pass", improved, baseline); err == nil {
+		t.Error("state change passed without baseline approval")
+	}
 }
 
 // TestCDPInteropMatrix drives local pages from Chromium through each production
@@ -123,6 +216,386 @@ func TestCDPInteropMatrix(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCDPCorpusCorrectness runs every local corpus fixture through the normal
+// Block engine path at the three committed geometries and scores the in-memory
+// text runs without a capture bundle.
+func TestCDPCorpusCorrectness(t *testing.T) {
+	corpusRoot := filepath.Join("..", "..", "testdata", "diagnostics", "cdp-corpus")
+	if err := os.MkdirAll(corpusRoot, 0o755); err != nil {
+		t.Fatalf("create corpus diagnostics: %v", err)
+	}
+	paintBaseline, err := loadCDPPaintBaseline(filepath.Join("..", "..", "testdata", "corpus", "paint-baseline.json"))
+	if err != nil {
+		t.Fatalf("load paint baseline: %v", err)
+	}
+	fixtures, err := filepath.Glob(filepath.Join("..", "..", "testdata", "corpus", "layout-*"))
+	if err != nil || len(fixtures) == 0 {
+		t.Fatalf("discover corpus fixtures: %v (%d found)", err, len(fixtures))
+	}
+	for _, fixtureDir := range fixtures {
+		fixture := filepath.Base(fixtureDir)
+		gates, err := metrics.LoadFixtureGates(filepath.Join(fixtureDir, "fixture.json"))
+		if err != nil {
+			t.Fatalf("load %s thresholds: %v", fixture, err)
+		}
+		for _, geom := range cdpCorpusGeometries {
+			t.Run(fixture+"/"+geom.name, func(t *testing.T) {
+				baselineKey := fixture + "/" + geom.name
+				paintCase, ok := paintBaseline.Cases[baselineKey]
+				if !ok {
+					t.Fatalf("paint baseline has no case %q", baselineKey)
+				}
+				caseDir := filepath.Join("..", "..", "testdata", "diagnostics", "cdp-corpus", fixture, geom.name)
+				if err := prepareCDPInteropDir(caseDir); err != nil {
+					t.Fatal(err)
+				}
+				frame, placementErr := settledCorpusFrame(fixture, geom, false)
+				result := cdpCorpusResult{Fixture: fixture, Geometry: geom.name, Cols: geom.cols, Rows: geom.rows, CellPx: [2]int{geom.cellW, geom.cellH}, PlacementGate: gates.Placement, PaintGate: gates.Paint, PaintBaseline: paintCase}
+				result.LayoutScale = max(1, float64(geom.cols*geom.cellW)/cdpInteropLayoutWidth)
+				result.Diagnostics = frame.Diagnostics
+				if placementErr == nil {
+					var source *image.RGBA
+					source, _, placementErr = materialiseCDPInteropFrame(frame)
+					if placementErr == nil {
+						result.SourceWidth, result.SourceHeight = source.Bounds().Dx(), source.Bounds().Dy()
+						placementErr = writeCDPInteropPNG(filepath.Join(caseDir, "source-cdp.png"), source)
+					}
+					if placementErr == nil {
+						boxes, _ := metricRuns(frame.Text)
+						cssW, cssH := float64(geom.cellW)/result.LayoutScale, float64(geom.cellH)/result.LayoutScale
+						result.Placement = metrics.Placement(boxes, cssW, cssH, geom.cols, geom.rows)
+						placementErr = metrics.CheckPlacementGate(result.Placement, gates.Placement)
+					}
+				}
+				paintFrame, paintErr := settledCorpusFrame(fixture, geom, true)
+				if paintErr == nil {
+					var paintSource *image.RGBA
+					paintSource, _, paintErr = materialiseCDPInteropFrame(paintFrame)
+					if paintErr == nil {
+						paintErr = writeCDPInteropPNG(filepath.Join(caseDir, "source-paint-cdp.png"), paintSource)
+					}
+					if paintErr == nil {
+						result.PaintWidth, result.PaintHeight = paintSource.Bounds().Dx(), paintSource.Bounds().Dy()
+						_, paintRuns := metricRuns(paintFrame.Text)
+						result.Paint = metrics.PaintDisplacement(paintSource, paintRuns, geom.cellW, geom.cellH)
+						if result.Paint.Measured == 0 {
+							paintErr = errors.New("measured zero runs")
+						}
+						switch {
+						case metrics.CheckPaintGate(result.Paint, gates.Paint) != nil:
+							result.PaintState = "expected_failure"
+						default:
+							result.PaintState = "pass"
+						}
+						if baselineErr := checkCDPPaintBaseline(result.PaintState, result.Paint, paintCase); baselineErr != nil {
+							paintErr = baselineErr
+						}
+					}
+				}
+				if paintErr != nil {
+					paintErr = fmt.Errorf("source-paint pass: %w", paintErr)
+				}
+				err = errors.Join(placementErr, paintErr)
+				if err != nil {
+					result.Error = err.Error()
+				}
+				if werr := writeJSON(filepath.Join(caseDir, "result.json"), result); werr != nil {
+					t.Errorf("write result: %v", werr)
+				}
+				if err != nil {
+					t.Error(err)
+				}
+			})
+		}
+	}
+	if got, want := len(paintBaseline.Cases), len(fixtures)*len(cdpCorpusGeometries); got != want {
+		t.Errorf("paint baseline cases = %d, want %d", got, want)
+	}
+	t.Run("layout-13-linuxmatters/scroll", func(t *testing.T) {
+		geom := cdpCorpusGeometries[2]
+		gates, err := metrics.LoadFixtureGates(filepath.Join("..", "..", "testdata", "corpus", "layout-13-linuxmatters", "fixture.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, runErr := runCorpusScroll("layout-13-linuxmatters", geom, gates.Scroll)
+		caseDir := filepath.Join("..", "..", "testdata", "diagnostics", "cdp-corpus", "layout-13-linuxmatters", "scroll")
+		if err := prepareCDPInteropDir(caseDir); err != nil {
+			t.Fatal(err)
+		}
+		if runErr != nil {
+			result.Error = runErr.Error()
+		}
+		if err := writeJSON(filepath.Join(caseDir, "result.json"), result); err != nil {
+			t.Fatal(err)
+		}
+		if runErr != nil {
+			t.Error(runErr)
+		}
+	})
+}
+
+func loadCDPPaintBaseline(path string) (cdpPaintBaseline, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cdpPaintBaseline{}, err
+	}
+	var baseline cdpPaintBaseline
+	if err := json.Unmarshal(data, &baseline); err != nil {
+		return cdpPaintBaseline{}, err
+	}
+	if baseline.SchemaVersion != 1 {
+		return cdpPaintBaseline{}, fmt.Errorf("schema version %d, want 1", baseline.SchemaVersion)
+	}
+	return baseline, nil
+}
+
+func checkCDPPaintBaseline(state string, stats metrics.PaintDisplaceStats, baseline cdpPaintBaselineCase) error {
+	const epsilon = 1e-12
+	switch {
+	case state != baseline.State:
+		return fmt.Errorf("paint state %q, approved %q", state, baseline.State)
+	case stats.Measured < baseline.MinMeasured:
+		return fmt.Errorf("paint measured coverage %d < approved minimum %d", stats.Measured, baseline.MinMeasured)
+	case stats.SkippedFraction > baseline.MaxSkippedFraction+epsilon:
+		return fmt.Errorf("paint skipped fraction %.6f > approved maximum %.6f", stats.SkippedFraction, baseline.MaxSkippedFraction)
+	case stats.MeanAbsH > baseline.MaxMeanAbsH+epsilon:
+		return fmt.Errorf("paint mean abs h %.6f > approved maximum %.6f", stats.MeanAbsH, baseline.MaxMeanAbsH)
+	case stats.MaxAbsH > baseline.MaxMaxAbsH+epsilon:
+		return fmt.Errorf("paint max abs h %.6f > approved maximum %.6f", stats.MaxAbsH, baseline.MaxMaxAbsH)
+	case stats.MeanAbsV > baseline.MaxMeanAbsV+epsilon:
+		return fmt.Errorf("paint mean abs v %.6f > approved maximum %.6f", stats.MeanAbsV, baseline.MaxMeanAbsV)
+	case stats.MaxAbsV > baseline.MaxMaxAbsV+epsilon:
+		return fmt.Errorf("paint max abs v %.6f > approved maximum %.6f", stats.MaxAbsV, baseline.MaxMaxAbsV)
+	}
+	return nil
+}
+
+func settledCorpusFrame(fixture string, geom cdpGeometry, paintText bool) (render.Frame, error) {
+	var lastErr error
+	for range cdpCorpusAttempts {
+		e, err := startCorpusEngine(fixture, geom, paintText)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		frame, err := waitCorpusFrame(e.Frames(), geom, 0, false, true)
+		_ = e.Close()
+		if err == nil {
+			return frame, nil
+		}
+		lastErr = err
+	}
+	return render.Frame{}, lastErr
+}
+
+func startCorpusEngine(fixture string, geom cdpGeometry, paintText bool) (*engine.ChromiumEngine, error) {
+	path, err := filepath.Abs(filepath.Join("..", "..", "testdata", "corpus", fixture, "index.html"))
+	if err != nil {
+		return nil, err
+	}
+	e := engine.New("")
+	e.SetDiagnosticFrameMeta(true)
+	e.SetCellPx(geom.cellW, geom.cellH)
+	e.SetLayoutWidth(cdpInteropLayoutWidth)
+	e.SetScheme("quadrant")
+	e.SetBackend("block")
+	e.SetDiagnosticTextPaint(paintText)
+	e.Resize(geom.cols, geom.rows)
+	if err := e.Navigate((&url.URL{Scheme: "file", Path: path}).String()); err != nil {
+		_ = e.Close()
+		return nil, err
+	}
+	return e, nil
+}
+
+func waitCorpusFrame(frames <-chan render.Frame, geom cdpGeometry, afterScroll float64, first, requireCalibration bool) (render.Frame, error) {
+	deadline := time.NewTimer(cdpInteropDeadline)
+	defer deadline.Stop()
+	idle := time.NewTimer(cdpInteropIdle)
+	defer idle.Stop()
+	var latest render.Frame
+	var geometryHash uint64
+	geometryStable := false
+	calibration := time.NewTimer(cdpCalibrationSettle)
+	if !requireCalibration {
+		if !calibration.Stop() {
+			<-calibration.C
+		}
+	}
+	defer calibration.Stop()
+	calibrationComplete := !requireCalibration
+	for {
+		select {
+		case frame, ok := <-frames:
+			if !ok {
+				return render.Frame{}, errors.New("engine frame channel closed")
+			}
+			if !validCorpusFrame(frame, geom) || (afterScroll > 0 && (frame.Diagnostics == nil || frame.Diagnostics.Meta.ScrollOffsetY <= afterScroll)) {
+				continue
+			}
+			if first {
+				return frame, nil
+			}
+			latest = frame
+			if frame.Diagnostics != nil && frame.Diagnostics.CalibrationSerial > 0 && frame.Diagnostics.CalibrationSucceeded {
+				calibrationComplete = true
+			}
+			geometry := corpusTextGeometryHash(frame.Text)
+			if geometry != geometryHash {
+				geometryHash = geometry
+				geometryStable = false
+				if !idle.Stop() {
+					select {
+					case <-idle.C:
+					default:
+					}
+				}
+				idle.Reset(cdpInteropIdle)
+			}
+		case <-idle.C:
+			geometryStable = latest.HasImage()
+			if geometryStable && calibrationComplete {
+				return latest, nil
+			}
+			idle.Reset(cdpInteropIdle)
+		case <-calibration.C:
+			if !calibrationComplete {
+				return render.Frame{}, fmt.Errorf("timed out waiting for calibrated %s text geometry", geom.name)
+			}
+			if geometryStable && latest.HasImage() {
+				return latest, nil
+			}
+		case <-deadline.C:
+			return render.Frame{}, fmt.Errorf("timed out waiting for %s frame", geom.name)
+		}
+	}
+}
+
+func corpusTextGeometryHash(runs []render.GlyphRun) uint64 {
+	h := fnv.New64a()
+	for _, run := range runs {
+		_, _ = fmt.Fprintf(h, "%s\x00%d,%d,%.6f,%.6f,%.6f,%.6f;", run.Text, run.Col, run.Row, run.X, run.Y, run.W, run.H)
+	}
+	return h.Sum64()
+}
+
+func validCorpusFrame(frame render.Frame, geom cdpGeometry) bool {
+	if frame.Img == nil || len(frame.Text) == 0 || frame.Diagnostics == nil {
+		return false
+	}
+	wantW, wantH := corpusPaintedSurface(geom)
+	bounds := frame.Img.Bounds()
+	return croppedDimension(bounds.Dx(), wantW) && croppedDimension(bounds.Dy(), wantH)
+}
+
+func corpusPaintedSurface(geom cdpGeometry) (int, int) {
+	surfaceW, surfaceH := geom.cols*geom.cellW, geom.rows*geom.cellH
+	z := max(1, float64(surfaceW)/cdpInteropLayoutWidth)
+	cssW := int(math.Round(float64(surfaceW) / z))
+	cssH := int(math.Floor(float64(surfaceH) / z))
+	return int(math.Round(float64(cssW) * z)), int(math.Round(float64(cssH) * z))
+}
+
+// croppedDimension accepts the production painted size and Chromium's documented
+// one-device-pixel edge crop, but no arbitrary resize.
+func croppedDimension(got, want int) bool {
+	return got == want || got == want-1
+}
+
+func metricRuns(runs []render.GlyphRun) ([]metrics.PlacementBox, []metrics.PaintRun) {
+	boxes := make([]metrics.PlacementBox, len(runs))
+	paint := make([]metrics.PaintRun, len(runs))
+	for i, run := range runs {
+		boxes[i] = metrics.PlacementBox{X: run.X, Y: run.Y, W: run.W, H: run.H, Col: run.Col, Row: run.Row, Text: run.Text}
+		paint[i] = metrics.PaintRun{Text: run.Text, Col: run.Col, Row: run.Row, FG: metrics.PaintColour{R: run.FG.R, G: run.FG.G, B: run.FG.B}, X: run.X, Y: run.Y, W: run.W, H: run.H, CellW: run.CellW}
+	}
+	return boxes, paint
+}
+
+func scrollRuns(runs []render.GlyphRun) []metrics.ScrollRun {
+	out := make([]metrics.ScrollRun, len(runs))
+	for i, run := range runs {
+		out[i] = metrics.ScrollRun{Text: run.Text, Col: run.Col, Row: run.Row, X: run.X, Y: run.Y}
+	}
+	return out
+}
+
+func runCorpusScroll(fixture string, geom cdpGeometry, gate metrics.ScrollGate) (cdpScrollResult, error) {
+	var result cdpScrollResult
+	var lastErr error
+	for range cdpCorpusAttempts {
+		result, lastErr = runCorpusScrollAttempt(fixture, geom, gate)
+		if lastErr == nil {
+			break
+		}
+	}
+	if lastErr != nil {
+		return result, lastErr
+	}
+	if result.PreSettle.Runs == 0 || result.Settled.Runs == 0 {
+		return result, errors.New("scroll coverage has zero matched runs")
+	}
+	minRuns := cdpScrollApprovedPreRuns - cdpScrollRunTolerance
+	minPreBody := cdpScrollApprovedPreBody - cdpScrollRunTolerance
+	minSettleBody := cdpScrollApprovedSettleBody - cdpScrollRunTolerance
+	if result.PreSettle.Runs < minRuns {
+		return result, fmt.Errorf("pre-settle matched runs = %d, want at least %d", result.PreSettle.Runs, minRuns)
+	}
+	if body := result.PreSettle.Runs - result.PreSettle.FixedRuns; body < minPreBody {
+		return result, fmt.Errorf("pre-settle non-fixed matched runs = %d, want at least %d", body, minPreBody)
+	}
+	if body := result.Settled.Runs - result.Settled.FixedRuns; body < minSettleBody {
+		return result, fmt.Errorf("settled non-fixed matched runs = %d, want at least %d", body, minSettleBody)
+	}
+	if result.Settled.FixedRuns != 13 {
+		return result, fmt.Errorf("settled fixed navigation cohort = %d, want 13", result.Settled.FixedRuns)
+	}
+	if err := metrics.CheckScrollGate(result.PreSettle, gate); err != nil {
+		return result, fmt.Errorf("pre-settle: %w", err)
+	}
+	if err := metrics.CheckScrollGate(result.Settled, gate); err != nil {
+		return result, fmt.Errorf("settled: %w", err)
+	}
+	return result, nil
+}
+
+func runCorpusScrollAttempt(fixture string, geom cdpGeometry, gate metrics.ScrollGate) (cdpScrollResult, error) {
+	result := cdpScrollResult{Fixture: fixture, Geometry: geom.name, Gate: gate}
+	e, err := startCorpusEngine(fixture, geom, false)
+	if err != nil {
+		return result, err
+	}
+	defer e.Close()
+	before, err := waitCorpusFrame(e.Frames(), geom, 0, false, true)
+	if err != nil {
+		return result, err
+	}
+	baseScroll := before.Diagnostics.Meta.ScrollOffsetY
+	e.SendScroll(600)
+	pre, err := waitCorpusFrame(e.Frames(), geom, baseScroll, true, false)
+	if err != nil {
+		return result, err
+	}
+	settled, err := waitCorpusFrame(e.Frames(), geom, baseScroll, false, false)
+	if err != nil {
+		return result, err
+	}
+	result.ScrollOffsets = []float64{baseScroll, pre.Diagnostics.Meta.ScrollOffsetY, settled.Diagnostics.Meta.ScrollOffsetY}
+	cssScale := max(1, float64(geom.cols*geom.cellW)/cdpInteropLayoutWidth)
+	cellH, bucket := float64(geom.cellH)/cssScale, float64(geom.cellW)/cssScale
+	result.PreSettle = metrics.ScrollDance([][]metrics.ScrollRun{scrollRuns(before.Text), scrollRuns(pre.Text)}, result.ScrollOffsets[:2], cellH, bucket)
+	result.Settled = metrics.ScrollDance([][]metrics.ScrollRun{scrollRuns(before.Text), scrollRuns(settled.Text)}, []float64{result.ScrollOffsets[0], result.ScrollOffsets[2]}, cellH, bucket)
+	return result, nil
+}
+
+func writeJSON(path string, value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o600)
 }
 
 func runCDPInteropCase(tc cdpInteropCase, caseDir string, result *cdpInteropResult) error {
@@ -301,10 +774,14 @@ func paintedCDPInteropSource(img *image.RGBA) bool {
 
 func runCDPInteropBlock(state State, frames []render.Frame, tc cdpInteropCase, caseDir string, result *cdpInteropResult, terminal *bytes.Buffer) error {
 	var expected block.Grid
-	state.SetCaptureGrid(&expected)
 	state.SetDiff(&block.GridDiff{})
 	result.GridDiffActive = true
 	for i, frame := range frames {
+		grid := state.ComposeBlockFrame(frame)
+		if grid == nil {
+			return fmt.Errorf("compose Block frame %d returned nil", i+1)
+		}
+		expected = block.Grid{Cols: grid.Cols, Rows: grid.Rows, Cells: append([]block.Cell(nil), grid.Cells...)}
 		before := terminal.Len()
 		if err := state.RenderStreamFrame(frame, terminal); err != nil {
 			return fmt.Errorf("render Block frame %d: %w", i+1, err)
@@ -317,25 +794,14 @@ func runCDPInteropBlock(state State, frames []render.Frame, tc cdpInteropCase, c
 	if err != nil {
 		return fmt.Errorf("decode Block terminal stream: %w", err)
 	}
-	rasteriser, err := capture.NewRasteriser()
-	if err != nil {
-		return fmt.Errorf("create Block rasteriser: %w", err)
-	}
-	want := rasteriser.Rasterise(expected)
-	got := rasteriser.Rasterise(decoded)
-	if err := writeCDPInteropPNG(filepath.Join(caseDir, "expected-composed.png"), want); err != nil {
-		return err
-	}
-	if err := writeCDPInteropPNG(filepath.Join(caseDir, "decoded-terminal.png"), got); err != nil {
-		return err
-	}
-	result.DecodedWidth, result.DecodedHeight = got.Bounds().Dx(), got.Bounds().Dy()
 	result.CellModelExact = equalCDPInteropGrids(decoded, expected)
-	result.ExactPixels = got.Bounds().Eq(want.Bounds()) && bytes.Equal(got.Pix, want.Pix)
-	if !result.CellModelExact || !result.ExactPixels {
-		return errors.New("Block terminal model or raster differs from the production composed grid")
+	if !result.CellModelExact {
+		return errors.New("Block terminal model differs from the production composed grid")
 	}
 	terminalText := cdpInteropGridText(decoded)
+	if err := os.WriteFile(filepath.Join(caseDir, "grid.txt"), []byte(terminalText), 0o600); err != nil {
+		return fmt.Errorf("write Block grid: %w", err)
+	}
 	result.VisibleSentinel = strings.Contains(terminalText, tc.visible)
 	if !result.VisibleSentinel {
 		return fmt.Errorf("decoded Block terminal lacks visible sentinel %q", tc.visible)
@@ -391,7 +857,7 @@ func runCDPInteropSixel(state State, frame render.Frame, source *image.RGBA, six
 	if err != nil {
 		return err
 	}
-	goDecoded, err := capture.DecodeSixel(payload)
+	goDecoded, err := renderdecode.DecodeSixel(payload)
 	if err != nil {
 		return fmt.Errorf("decode Sixel with Nyala decoder: %w", err)
 	}
@@ -496,7 +962,7 @@ func prepareCDPInteropDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	for _, name := range []string{"source-cdp.png", "decoded-terminal.png", "expected-composed.png", "diff.png", "result.json"} {
+	for _, name := range []string{"source-cdp.png", "decoded-terminal.png", "diff.png", "grid.txt", "result.json"} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -509,7 +975,7 @@ func writeCDPInteropPNG(path string, img image.Image) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", path, err)
 	}
-	if err := capture.EncodePNG(f, img); err != nil {
+	if err := cellraster.EncodePNG(f, img); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("encode %s: %w", path, err)
 	}

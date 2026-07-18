@@ -28,7 +28,7 @@ Three rendering backends sit behind one `Renderer` seam. Swapping backend change
 | **Sixel** | Sixel graphics | Higher | Higher-fidelity bitmap than blocks, for terminals that speak Sixel. Every live frame uses lossless CDP PNG; there is no adaptive JPEG switch. |
 | **Kitty** | Kitty graphics | Highest | Lossless CDP PNG, passed straight to Kitty framing without an image decode or re-encode. |
 
-Kitty is the reason to run Nyala on a capable terminal: every live Kitty stream requests PNG, then rechunks Chromium's base64 PNG for the terminal without decoding or re-encoding it. Sixel is the next step down, a high-fidelity bitmap for terminals that speak it. Block is the guarantee Nyala works on any TTY, down to a bare Linux console under KMSCON with no graphics protocol. Its sharpest mode is sextant (2x3), which Nyala uses where the terminal self-draws sextant glyphs; an unknown terminal falls back to quadrant. See [`docs/BLOCK-MODES.md`](docs/BLOCK-MODES.md). Nyala detects what the terminal supports and picks the highest-fidelity backend automatically: Kitty, then Sixel, then Block. Press Tab to cycle the supported backends. Diagnostic capture still requests and decodes PNG for every backend.
+Kitty is the reason to run Nyala on a capable terminal: every live Kitty stream requests PNG, then rechunks Chromium's base64 PNG for the terminal without decoding or re-encoding it. Sixel is the next step down, a high-fidelity bitmap for terminals that speak it. Block is the guarantee Nyala works on any TTY, down to a bare Linux console under KMSCON with no graphics protocol. Its sharpest mode is sextant (2x3), which Nyala uses where the terminal self-draws sextant glyphs; an unknown terminal falls back to quadrant. See [`docs/BLOCK-MODES.md`](docs/BLOCK-MODES.md). Nyala detects what the terminal supports and picks the highest-fidelity backend automatically: Kitty, then Sixel, then Block. Press Tab to cycle the supported backends. Block requests JPEG; Kitty and Sixel request PNG.
 
 A measurement harness scores each render for quality, cost, and legibility. Run it with `just diagnostics`.
 
@@ -37,9 +37,8 @@ A measurement harness scores each render for quality, cost, and legibility. Run 
 Enter the pinned environment with `nix develop`. `just test` runs the routine,
 pure-Go unit suite. `just block-interop` sends two frames through the production
 Block compose and live cell-diff encoder, decodes the CUP, SGR, and UTF-8 byte
-stream with an independent VT emulator, and compares its final cell model and
-Route A PNG with the composed grid. The existing `just rasterise <frame-dir>`
-command exposes the same terminal-model-to-PNG path for captured Block frames.
+stream with an independent VT emulator, and compares its final cell model with
+the exact grid returned by the production compose seam.
 This offline gate checks Nyala's byte stream and repaint state without a TTY. It
 does not check a terminal's font choice, glyph metrics, ambiguous-width policy,
 colour profile, or inter-row bleed; `just kmscon-testcard` and live terminal runs
@@ -68,7 +67,7 @@ through Block, Kitty, and Sixel, and checks independently decoded terminal outpu
 It retains correctness-only PNG and JSON evidence under
 `testdata/diagnostics/cdp-interop/`. The synthetic interop gates remain the faster
 protocol-edge checks. This gate has no timing assertions and does not replace
-arbitrary-URL `just record` bundles or physical-terminal checks.
+physical-terminal checks.
 
 ## Install
 
@@ -119,20 +118,18 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 | `--color` | `auto` | Viewer colour mode: `auto`, `truecolor`, `256`, or `none`. |
 | `--version` | | Print the version and exit. |
 
-### Record mode
+### Diagnostics
 
-`just record` records a bounded run to disk for diagnosis. It is distinct from
-`just diagnostics`, the heavy quality gate, and it is not a benchmark.
+`just diagnostics` is the single correctness workflow. It runs the browser-free
+image-quality harness, independent Block, Kitty, and Sixel protocol checks, and
+Chromium-fed corpus placement, paint, and scroll checks. It keeps gitignored
+evidence under `testdata/diagnostics/` and exits non-zero when a required leg
+fails.
 
 ```bash
-just record example.com frames=30
+just diagnostics
 ```
 
-The recipe accepts `backend=auto|block|kitty|sixel`, a non-negative
-`scroll=<CSS pixels>`, `settle=0|1`, and a positive `cell=WxH`. It forwards
-through `just run`, including its TTY and sandbox handling. The existing
-`capture=` run argument and `NYALA_CAPTURE*` variables remain compatible.
-
-`frames=1` writes a first-frame bundle. A larger value draws that many usable frames, writes one `nyala-capture-*` directory, prints its path, then exits. A full recording exits 0; a partial run (a timeout, a forced backend the terminal cannot run, or the engine closing early) writes what it has and exits non-zero. Use `backend=` to pin the renderer under test.
-
-The bundle holds the rendered viewport image, the text overlay, the terminal byte stream, per-frame timings, and the recorded CDP session and events. It can contain page pixels, page text, URLs, and proxy details, so review it before you share it.
+Use `just block-interop`, `just kitty-interop`, `just sixel-interop`, or
+`just cdp-interop` only when developing one leg. Nyala has no general recording
+mode or diagnostic bundle format.

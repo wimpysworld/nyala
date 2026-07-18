@@ -1,10 +1,8 @@
 package engine
 
 import (
-	"bytes"
-	"encoding/base64"
+	"context"
 	"image"
-	"image/png"
 	"math"
 	"testing"
 	"time"
@@ -121,75 +119,70 @@ func TestIngestCounterGatedOffSilent(t *testing.T) {
 	}
 }
 
-// TestWorkerRecordsDecodeWhenArmed checks the runFrameLoop worker feeds decode times
-// to the ingest counter when armed, off the receiver goroutine. It runs the loop with
-// an armed counter and a decode hook, delivers frames via handleScreencastFrame, and
-// asserts the decode budget populates.
-func TestWorkerRecordsDecodeWhenArmed(t *testing.T) {
+func TestDecodeWorkerRecordsDecodeWhenArmed(t *testing.T) {
 	t.Parallel()
 	bitmap := image.NewRGBA(image.Rect(0, 0, 2, 2))
 	e := &ChromiumEngine{
 		backend: "block",
 		acks:    make(chan int64, ackBufferDepth),
 		ingest:  &ingestCounter{on: true, window: ingestWindow},
-		decode:  staticDecode(bitmap),
+		decode:  func(string) (*image.RGBA, error) { return bitmap, nil },
 	}
-	slot := newFrameSlot()
-	ts := &textSync{}
-	ctx := t.Context()
-	frames := make(chan render.Frame, 1)
-	scroll := make(chan struct{}, 1)
-	reEmit := make(chan struct{}, 1)
-	go e.runFrameLoop(ctx, slot, frames, ts, scroll, reEmit)
+	queue := newRawFrameQueue(1)
+	decoded := make(chan decodedFrame, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.runDecodeWorker(ctx, queue, decoded)
 
-	e.handleScreencastFrame(slot, &page.EventScreencastFrame{Data: "p", SessionID: 1})
-	recvFrame(t, frames)
+	e.handleScreencastFrameLive(queue, 1, &page.EventScreencastFrame{Data: "payload", SessionID: 1})
+	select {
+	case ack := <-e.acks:
+		if ack != 1 {
+			t.Fatalf("acknowledged SessionID %d, want 1", ack)
+		}
+	default:
+		t.Fatal("live receive did not acknowledge before decode completed")
+	}
+	select {
+	case got := <-decoded:
+		if got.pending.img != bitmap {
+			t.Fatalf("decoded image = %p, want %p", got.pending.img, bitmap)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("decode worker did not deliver frame")
+	}
 
 	stats := e.ingest.summary()
-	if stats.Frames < 1 {
-		t.Fatalf("ingest counted %d frames, want at least 1", stats.Frames)
+	if stats.Frames != 1 {
+		t.Fatalf("ingest counted %d frames, want 1", stats.Frames)
 	}
-	// The decode ran on the worker and was recorded; a real time.Now delta is >= 0.
-	if stats.DecodeMaxMS < 0 {
-		t.Fatalf("in_decode_max_ms = %.3f, want a recorded (>=0) worker decode time", stats.DecodeMaxMS)
-	}
-	if c := decodeCount(e.ingest); c != 1 {
-		t.Fatalf("worker recorded %d decode timings, want 1", c)
+	if got := ingestDecodeCount(e.ingest); got != 1 {
+		t.Fatalf("worker recorded %d decode timings, want 1", got)
 	}
 }
 
-// decodeCount reads the recorded decode-timing count under the counter lock, so a
-// test can assert the worker fed exactly one timing per frame.
-func decodeCount(c *ingestCounter) int {
+func TestHandleScreencastFrameLiveCountsIngestBeforeQueueDrop(t *testing.T) {
+	t.Parallel()
+	e := &ChromiumEngine{ingest: &ingestCounter{on: true, window: ingestWindow}}
+	queue := newRawFrameQueue(1)
+	for i := range 3 {
+		e.handleScreencastFrameLive(queue, uint64(i+1), &page.EventScreencastFrame{Data: "payload", SessionID: int64(i + 1)})
+	}
+	if stats := e.ingest.summary(); stats.Frames != 3 {
+		t.Fatalf("ingest counted %d frames over 3 delivered frames, want 3", stats.Frames)
+	}
+	select {
+	case got := <-queue.items:
+		if got.seq != 3 {
+			t.Fatalf("queue retained sequence %d, want latest 3", got.seq)
+		}
+	default:
+		t.Fatal("queue retained no frame")
+	}
+}
+
+func ingestDecodeCount(c *ingestCounter) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.decodeFrames
-}
-
-// TestHandleScreencastFrameCountsIngest checks the true ingest point tallies one
-// frame per delivered screencast frame, before the latest-wins slot drops any. No
-// browser is involved: frames are fed straight to the handler with a nil acks
-// channel (ackFrame drops), so the slot's replace path never blocks.
-func TestHandleScreencastFrameCountsIngest(t *testing.T) {
-	t.Parallel()
-	e := &ChromiumEngine{ingest: &ingestCounter{on: true, window: ingestWindow}}
-	slot := newFrameSlot()
-	data := base64PNG(t, 2, 2)
-	for i := range 3 {
-		e.handleScreencastFrame(slot, &page.EventScreencastFrame{Data: data, SessionID: int64(i + 1)})
-	}
-	if stats := e.ingest.summary(); stats.Frames != 3 {
-		t.Fatalf("ingest counted %d frames over 3 handleScreencastFrame calls, want 3", stats.Frames)
-	}
-}
-
-// base64PNG builds a base64-encoded PNG of the given size, the wire shape a
-// screencast frame carries, so a decode has real bytes without a browser.
-func base64PNG(t *testing.T, w, h int) string {
-	t.Helper()
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, w, h))); err != nil {
-		t.Fatalf("encode png: %v", err)
-	}
-	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }

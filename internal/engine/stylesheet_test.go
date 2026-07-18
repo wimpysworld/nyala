@@ -129,6 +129,16 @@ func TestBuildStylesheetScriptEmbedsFontBytes(t *testing.T) {
 	}
 }
 
+func TestBuildStylesheetScriptDiagnosticPaint(t *testing.T) {
+	script := buildStylesheetScriptWithPaint([]byte("fake-ttf"), 9, 18, true)
+	if !strings.Contains(script, "-webkit-text-fill-color: currentColor !important") {
+		t.Fatal("diagnostic stylesheet does not preserve source text paint")
+	}
+	if strings.Contains(script, "-webkit-text-fill-color: transparent !important") {
+		t.Fatal("diagnostic stylesheet still hides source text paint")
+	}
+}
+
 func TestBuildStyleRemovalScript(t *testing.T) {
 	// The removal script must target the injected style by its id, remove it, and be
 	// null-safe so a page with no forcing style never throws.

@@ -18,14 +18,14 @@ import (
 // pngSignature is the 8-byte PNG file magic. decodeFrameImage sniffs it to route
 // PNG frames explicitly through the woozymasta decoder instead of the image.Decode
 // registry, so a second registered "png" format cannot make dispatch init-order
-// dependent (internal/capture also imports stdlib image/png for encoding).
+// dependent (correctness packages also import stdlib image/png for encoding).
 var pngSignature = []byte("\x89PNG\r\n\x1a\n")
 
 // decodeFrameImage decodes one raw image payload, routing by file signature. A PNG
 // (matched by its 8-byte magic) decodes through woozymasta/png, a byte-identical and
 // faster drop-in for image/png; everything else (JPEG) decodes through the stdlib
 // image.Decode registry. The explicit PNG route avoids registering a second "png"
-// format alongside internal/capture's stdlib image/png import, which would make
+// format alongside correctness code's stdlib image/png import, which would make
 // image.Decode dispatch init-order dependent.
 func decodeFrameImage(raw []byte) (image.Image, error) {
 	if bytes.HasPrefix(raw, pngSignature) {
@@ -84,21 +84,19 @@ func decodeBase64Pooled(data string) (raw []byte, release func(), err error) {
 	return out, func() {}, nil
 }
 
-// screencastQuality is recorded in capture metadata and encodes the JPEG decode
-// test fixture. Live Block uses JPEG q90. Kitty and Sixel use PNG, as does capture
-// for byte-exact bundles, so this value does not select their wire format.
+// screencastQuality is the JPEG quality used by the live Block screencast.
+// Kitty and Sixel use PNG, so this value does not select their wire format.
 const screencastQuality = 90
 
 // blockScreencastQuality is the JPEG quality the block backend uses for its live
 // stream. Quality 90 retains page detail while native-YCbCr composition keeps the
-// live Block path within its processing budget. Capture stays PNG, so this value
-// does not affect corpus output.
+// live Block path within its processing budget.
 const blockScreencastQuality = 90
 
 // frameChannelBuffer is the buffer size of the emitted-frame channel. A small
 // buffer stops a transient restartStream stall from parking the frame loop on the
 // frames send while the viewer control goroutine runs the restart; the latest-wins
-// slot already bounds upstream backpressure, so a couple of slots is enough.
+// raw queue already bounds upstream backpressure, so a couple of results are enough.
 const frameChannelBuffer = 2
 
 // ackBufferDepth is the buffer size of the ack channel the ack pump drains. Every

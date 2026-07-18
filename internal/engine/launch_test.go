@@ -353,7 +353,7 @@ func TestProxyAuthDecisionTrackerFreshPerSession(t *testing.T) {
 }
 
 func TestCaptureSizeBlock(t *testing.T) {
-	const cols, rows = 80, 24
+	const cols, rows = 96, 30
 	e := &ChromiumEngine{backend: "block"}
 
 	gotW, gotH := e.captureSize(cols, rows)
@@ -362,8 +362,8 @@ func TestCaptureSizeBlock(t *testing.T) {
 		t.Errorf("captureSize block = (%d, %d), want (%d, %d)", gotW, gotH, wantW, wantH)
 	}
 	// Pin the quadrant scheme explicitly so a scheme regression is obvious.
-	if wantW != 160 || wantH != 96 {
-		t.Fatalf("quadrant scheme drifted: BlockCaptureSize(80x24) = (%d, %d), want (160, 96)", wantW, wantH)
+	if wantW != 192 || wantH != 120 {
+		t.Fatalf("quadrant scheme drifted: BlockCaptureSize(96x30) = (%d, %d), want (192, 120)", wantW, wantH)
 	}
 }
 

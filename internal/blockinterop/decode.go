@@ -15,7 +15,7 @@ import (
 // visual model: every drawable grapheme is stored in Cell.Text because a
 // terminal stream does not retain whether the producer sourced it from Text or
 // Glyph. Wide-cell placeholders are restored as Cell.Wide. The result can be
-// passed to capture.Rasteriser.Rasterise for offline terminal-stream readback.
+// compared directly with the grid returned by the production compose seam.
 func Decode(payload []byte, cols, rows int) (block.Grid, error) {
 	if cols <= 0 || rows <= 0 {
 		return block.Grid{}, fmt.Errorf("blockinterop: invalid grid %dx%d", cols, rows)

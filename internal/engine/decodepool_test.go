@@ -394,9 +394,8 @@ func TestDirectKittyPNGRejectsInvalidRawData(t *testing.T) {
 		t.Fatal("pixel backend entered the direct Kitty path")
 	}
 	e.backend = "kitty"
-	e.captureOn = true
-	if e.directKittyPNG(valid) {
-		t.Fatal("capture entered the direct Kitty path")
+	if !e.directKittyPNG(valid) {
+		t.Fatal("valid Kitty PNG missed the direct path")
 	}
 }
 
@@ -456,7 +455,7 @@ func equalU64(a, b []uint64) bool {
 
 // TestHandleScreencastFrameLiveAcksAndEnqueues proves the live listener arm acks each
 // delivered frame on receive (before any decode) and enqueues the raw frame tagged
-// with its arrival sequence, mirroring the slot arm's ack-exactly-once contract.
+// with its arrival sequence, preserving the ack-exactly-once contract.
 func TestHandleScreencastFrameLiveAcksAndEnqueues(t *testing.T) {
 	t.Parallel()
 	acks := make(chan int64, ackBufferDepth)

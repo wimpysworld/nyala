@@ -1,5 +1,10 @@
 # Nyala Performance
 
+> Historical note: bounded recording commands and bundle metrics in this
+> research record were retired by the diagnostics consolidation. Use
+> `just diagnostics` for current correctness validation and `just fps` for live
+> throughput measurement.
+
 This is the durable superset of three former working docs: the block and graphics
 performance research (was `PERF-RESEARCH.md`), the GPU acceleration research (was
 `docs/GPU-ACCEL-RESEARCH.md`, folded in as the "GPU acceleration for headless

@@ -79,7 +79,7 @@ func (e *ChromiumEngine) captureSize(cols, rows int) (pxW, pxH int) {
 
 // blockScheme maps the engine's scheme string to a render.BlockScheme. It
 // accepts "half" and "sextant"; any other value, including the empty string,
-// resolves to quadrant, the default that keeps capture and corpus unchanged.
+// resolves to quadrant, the production and corpus default.
 func blockScheme(name string) render.BlockScheme {
 	switch name {
 	case "half":
@@ -161,18 +161,14 @@ func (e *ChromiumEngine) textOverlayBackend() bool {
 // When enableGPU is set it adds --enable-gpu: headless Chromium forces SwiftShader
 // (CPU) by default, and this flag turns that force off and reverts to normal driver
 // selection, so a GPU-backed Mesa driver can serve WebGL (docs/PERFORMANCE.md,
-// [S1][S2]). It rides the live path only. The capture path forces the block backend
-// and compares pixels for a byte-deterministic corpus/golden, so a hardware GPU would
-// shift antialiasing and break that determinism; the caller passes enableGPU false
-// under capture so it stays on software SwiftShader.
+// [S1][S2]).
 // When enableAudio is set it appends the bool false for mute-audio, overriding the
 // mute-audio=true that Headless sets: chromedp flags are last-write-wins by map key,
 // and this append lands after DefaultExecAllocatorOptions. The bool false emits no
 // flag at all (audio on); a string "false" would emit --mute-audio=false and keep
 // Chromium muted. It also sets autoplay-policy=no-user-gesture-required so audible
 // media plays on load: Chromium otherwise blocks audible autoplay until a user
-// gesture, and Nyala has no input yet. Like the GPU flag both ride the live path
-// only, stay off under capture, and the caller gates them on a detected host audio
+// gesture, and Nyala has no input yet. The caller gates audio on a detected host
 // sink. disableFrameRateLimit appends Chromium's matching launch switch when
 // requested; false preserves the default allocator options.
 func newAllocator(parent context.Context, execPath string, surfW, surfH int, z float64, cfg ProxyConfig, enableGPU, enableAudio, disableFrameRateLimit bool) (context.Context, context.CancelFunc) {
@@ -274,7 +270,7 @@ func applySizing(ctx context.Context, windowID browser.WindowID, surfW, surfH in
 // enableLifecycle enables the Page domain and lifecycle events once per session
 // before navigation. CDP emits Page.lifecycleEvent only after
 // SetLifecycleEventsEnabled, so without it the navigate waiter cannot match a
-// loaderID from the "init" event and the capture paint latch never fires.
+// loaderID from the "init" event and the paint milestone never fires.
 func enableLifecycle(ctx context.Context) error {
 	return chromedp.Run(ctx,
 		page.Enable(),
@@ -293,8 +289,9 @@ func enableLifecycle(ctx context.Context) error {
 func (e *ChromiumEngine) injectFontStylesheet(ctx context.Context) error {
 	e.mu.Lock()
 	cellW, cellH := e.snapshotCellPx()
+	paintText := e.diagnosticTextPaint
 	e.mu.Unlock()
-	script := buildStylesheetScript(font.FiraCodeTTF(), cellW, cellH)
+	script := buildStylesheetScriptWithPaint(font.FiraCodeTTF(), cellW, cellH, paintText)
 	var id page.ScriptIdentifier
 	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {
 		var err error
@@ -329,13 +326,8 @@ func (e *ChromiumEngine) launch(flag string) error {
 	z := e.layoutScale()
 	disableFrameRateLimit := e.disableFrameRateLimit
 	e.mu.Unlock()
-	// Enable the GPU on the live path only. captureOn is set once by EnableCapture
-	// before Navigate, so it is known here at allocator-build time; gating on it keeps
-	// the capture path on deterministic software SwiftShader (see newAllocator).
-	enableGPU := !e.captureOn
-	// Audio rides the live path only; capture stays silent and deterministic. The
-	// sink gate keeps a no-audio host from unmuting pointlessly.
-	enableAudio := !e.captureOn && audioAvailable()
+	enableGPU := true
+	enableAudio := audioAvailable()
 	allocCtx, allocCancel := newAllocator(context.Background(), execPath, surfW, surfH, z, e.proxy, enableGPU, enableAudio, disableFrameRateLimit)
 	ctx, ctxCancel := chromedp.NewContext(allocCtx)
 	cancel := func() {

@@ -7,25 +7,21 @@ import (
 )
 
 // TestInitialScreencastFormatBackendMatrix pins the fixed backend-format policy:
-// capture forces PNG, live Block runs JPEG q90, and Kitty and Sixel always run PNG.
+// Block runs JPEG q90, and Kitty and Sixel always run PNG.
 func TestInitialScreencastFormatBackendMatrix(t *testing.T) {
 	cases := []struct {
 		name       string
 		backend    string
-		capture    bool
 		wantFormat page.ScreencastFormat
 		wantQual   int
 	}{
-		{"block capture", "block", true, page.ScreencastFormatPng, 0},
-		{"block live", "block", false, page.ScreencastFormatJpeg, blockScreencastQuality},
-		{"kitty capture", "kitty", true, page.ScreencastFormatPng, 0},
-		{"kitty live", "kitty", false, page.ScreencastFormatPng, 0},
-		{"sixel capture", "sixel", true, page.ScreencastFormatPng, 0},
-		{"sixel live", "sixel", false, page.ScreencastFormatPng, 0},
+		{"block", "block", page.ScreencastFormatJpeg, blockScreencastQuality},
+		{"kitty", "kitty", page.ScreencastFormatPng, 0},
+		{"sixel", "sixel", page.ScreencastFormatPng, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			e := &ChromiumEngine{backend: tc.backend, captureOn: tc.capture}
+			e := &ChromiumEngine{backend: tc.backend}
 			got := e.initialScreencastFormat()
 			if got.format != tc.wantFormat || got.quality != tc.wantQual {
 				t.Fatalf("format = {%s %d}, want {%s %d}", got.format, got.quality, tc.wantFormat, tc.wantQual)

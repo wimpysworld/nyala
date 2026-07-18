@@ -37,7 +37,7 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
@@ -229,7 +229,7 @@ type CalibInput struct {
 // when the sixel noise floor cannot be measured (every round trip for a card
 // failed), so a broken sixel encoder surfaces rather than reporting a perfect
 // floor. Channel order is RGBA.
-func MeasureCalibration(rast *capture.Rasteriser, inputs []CalibInput, progress Progress) (Calibration, error) {
+func MeasureCalibration(rast *cellraster.Rasteriser, inputs []CalibInput, progress Progress) (Calibration, error) {
 	cards := make([]CalibCard, 0, len(inputs))
 	for i, in := range inputs {
 		progress.report("calibration: measuring card %d/%d (%s)", i+1, len(inputs), in.Card)
@@ -370,7 +370,7 @@ func sixelRoundTripPSNR(reference *image.RGBA) (float64, error) {
 
 // measureCard block-renders one card at the pinned grid and scores it absolute,
 // relative, and against a repeated identical render for the noise floor.
-func measureCard(rast *capture.Rasteriser, in CalibInput) CalibCard {
+func measureCard(rast *cellraster.Rasteriser, in CalibInput) CalibCard {
 	// Downscale the source so each cell maps to a 2x4 block, the geometry the
 	// block compositor and the oracle both read.
 	cw, ch := Viewport{Cols: CalibCols, Rows: CalibRows}.ComposeSize()
@@ -417,7 +417,7 @@ func encodeBytes(encode func(io.Writer) error) int {
 
 // renderBlock composes the downscaled source onto the given block renderer's
 // grid and rasterises it to the Route A pixel geometry.
-func renderBlock(rast *capture.Rasteriser, br block.Renderer, composeSrc *image.RGBA) *image.RGBA {
+func renderBlock(rast *cellraster.Rasteriser, br block.Renderer, composeSrc *image.RGBA) *image.RGBA {
 	grid := br.Compose(render.Frame{Img: composeSrc})
 	return rast.Rasterise(grid)
 }

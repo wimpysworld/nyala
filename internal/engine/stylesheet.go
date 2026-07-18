@@ -63,8 +63,16 @@ var forcingExclusions = []string{"img", "svg", "canvas", "video", "iframe", "emb
 // fixed element paints at, so a fixed nav lands on its painted row without forcing it
 // into flow.
 func buildStylesheetScript(fontBytes []byte, cellW, cellH float64) string {
+	return buildStylesheetScriptWithPaint(fontBytes, cellW, cellH, false)
+}
+
+func buildStylesheetScriptWithPaint(fontBytes []byte, cellW, cellH float64, paintText bool) string {
 	dataURL := "data:font/ttf;base64," + base64.StdEncoding.EncodeToString(fontBytes)
 	seedPx := cellW / advanceRatio
+	textFill := "transparent"
+	if paintText {
+		textFill = "currentColor"
+	}
 	var not strings.Builder
 	for _, sel := range forcingExclusions {
 		not.WriteString(":not(")
@@ -81,7 +89,7 @@ func buildStylesheetScript(fontBytes []byte, cellW, cellH float64) string {
   letter-spacing: 0 !important;
   font-variant-ligatures: none !important;
   text-align: left !important;
-  -webkit-text-fill-color: transparent !important;
+  -webkit-text-fill-color: %s !important;
   text-shadow: none !important;
   -webkit-text-stroke: 0 !important;
 }
@@ -94,7 +102,7 @@ input, textarea, select, option, svg, svg *, ::placeholder {
 *%s {
   font-size: %gpx !important;
   line-height: %gpx !important;
-}`, fontFamily, dataURL, fontFamily, not.String(), seedPx, cellH)
+}`, fontFamily, dataURL, fontFamily, textFill, not.String(), seedPx, cellH)
 
 	var b strings.Builder
 	b.WriteString("(function(){var s=document.createElement('style');s.id=")

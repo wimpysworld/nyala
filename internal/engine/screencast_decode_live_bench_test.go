@@ -116,9 +116,7 @@ func BenchmarkCDPScreencastDecode(b *testing.B) {
 
 		b.Run(payload.name+"/block-decode+direct-compose-160x90", func(b *testing.B) {
 			e := &ChromiumEngine{
-				backend:  "block",
-				captureW: screencastBenchDstW,
-				captureH: screencastBenchDstH,
+				backend: "block",
 			}
 			pool := rowband.New()
 			defer pool.Close()

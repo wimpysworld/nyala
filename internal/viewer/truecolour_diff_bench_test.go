@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
@@ -22,7 +22,7 @@ func (w *trueColourCountingBuffer) Write(p []byte) (int, error) {
 }
 
 func trueColourBenchFrame(cols, rows, phase int) render.Frame {
-	w, h := cols*capture.CellPxW, rows*capture.CellPxH
+	w, h := cols*cellraster.CellPxW, rows*cellraster.CellPxH
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	for y := range h {
 		for x := range w {
@@ -37,7 +37,7 @@ func trueColourBenchFrame(cols, rows, phase int) render.Frame {
 }
 
 func trueColourBenchState(cols, rows int) *State {
-	s := NewState(cols, rows, cols*capture.CellPxW, rows*capture.CellPxH)
+	s := NewState(cols, rows, cols*cellraster.CellPxW, rows*cellraster.CellPxH)
 	s.SetEnabled([]Backend{BackendBlock})
 	s.SetDiff(&block.GridDiff{})
 	return &s

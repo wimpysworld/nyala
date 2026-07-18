@@ -147,7 +147,7 @@ and research documents.
     `internal/viewer/stream.go` (`streamSession.assemble`, `drainFrames`,
     `streamWriter`) without adding terminal writes inside the encoder. Extend the
     existing `fpsMeter` in `internal/viewer/stream.go`, the writer measurements in
-    `internal/viewer/stream_writer.go`, `internal/capture/performance.go`, and the
+    `internal/viewer/stream_writer.go`, the retired diagnostics recorder, and the
     focused Sixel benchmarks and harness.
   - **Correctness decisions before coding.** Decide from measurements whether tiles
     use independent palettes or one shared frame palette; test colour seams and the

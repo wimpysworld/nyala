@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/wimpysworld/nyala/internal/capture"
+	"github.com/wimpysworld/nyala/internal/cellraster"
 )
 
 // These helpers serve the heavy, rasteriser-driven tests behind the diagnostics
@@ -94,9 +94,9 @@ func loadCalibInputs(t *testing.T) []CalibInput {
 }
 
 // newRasteriser builds a Route A rasteriser or fails the test.
-func newRasteriser(t *testing.T) *capture.Rasteriser {
+func newRasteriser(t *testing.T) *cellraster.Rasteriser {
 	t.Helper()
-	r, err := capture.NewRasteriser()
+	r, err := cellraster.NewRasteriser()
 	if err != nil {
 		t.Fatalf("NewRasteriser: %v", err)
 	}

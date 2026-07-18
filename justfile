@@ -1,7 +1,4 @@
-capture := ""
 backend := ""
-scroll := ""
-settle := ""
 cell := ""
 
 # List available recipes
@@ -18,10 +15,7 @@ run url="https://wimpys.world" *flags: build
     #!/usr/bin/env bash
     set -euo pipefail
 
-    capture={{ quote(capture) }}
     backend={{ quote(backend) }}
-    scroll={{ quote(scroll) }}
-    settle={{ quote(settle) }}
     cell={{ quote(cell) }}
     url="$1"
     shift
@@ -32,17 +26,12 @@ run url="https://wimpys.world" *flags: build
     for ((i = 0; i < ${#raw_flags[@]}; i++)); do
         arg="${raw_flags[$i]}"
         case "$arg" in
-            capture=*)
-                capture="${arg#capture=}"
+            capture=*|scroll=*|settle=*|frames=*)
+                printf '%s\n' "just run: obsolete recording argument '$arg' is not supported; use just diagnostics" >&2
+                exit 2
                 ;;
             backend=*)
                 backend="${arg#backend=}"
-                ;;
-            scroll=*)
-                scroll="${arg#scroll=}"
-                ;;
-            settle=*)
-                settle="${arg#settle=}"
                 ;;
             cell=*)
                 cell="${arg#cell=}"
@@ -85,23 +74,10 @@ run url="https://wimpys.world" *flags: build
     cmd=(./nyala "${args[@]}")
     env_pairs=()
     # cell overrides the terminal cell pixel size (NYALA_CELL_PX="WxH"). It is a
-    # diagnostic and harness knob and rides any run, capture or not, so a headless
+    # diagnostic and harness knob, so a headless
     # pty run can pin a real terminal's cell size to reproduce device quantisation.
     if [ -n "$cell" ]; then
         env_pairs+=("NYALA_CELL_PX=$cell")
-    fi
-    if [ -n "$capture" ]; then
-        env_pairs+=("NYALA_CAPTURE=$capture")
-        # scroll rides only with capture: NYALA_CAPTURE_SCROLL is ignored off the
-        # capture path, so setting it without capture would do nothing.
-        if [ -n "$scroll" ]; then
-            env_pairs+=("NYALA_CAPTURE_SCROLL=$scroll")
-        fi
-        # settle rides only with capture: NYALA_CAPTURE_SCROLL_SETTLE=0 skips the
-        # scroll hook's settle wait so the pre-settle scrolled frame is captured.
-        if [ -n "$settle" ]; then
-            env_pairs+=("NYALA_CAPTURE_SCROLL_SETTLE=$settle")
-        fi
     fi
     if [ ${#env_pairs[@]} -gt 0 ]; then
         cmd=(env "${env_pairs[@]}" "${cmd[@]}")
@@ -128,91 +104,19 @@ run url="https://wimpys.world" *flags: build
         SHELL=/bin/sh script -qec "$wrapped" /dev/null
     fi
 
-# Record a bounded diagnostic bundle through the supported run wrapper
-[positional-arguments]
-record url="https://wimpys.world" *flags:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    url="$1"
-    frames="1"
-    shift
-    forwarded=()
-    backend=""
-    scroll=""
-    settle=""
-    cell=""
-    raw_flags=("$@")
-    for ((i = 0; i < ${#raw_flags[@]}; i++)); do
-        arg="${raw_flags[$i]}"
-        case "$arg" in
-            capture=*)
-                printf '%s\n' 'record: capture= is not accepted; use frames=' >&2
-                exit 2
-                ;;
-            frames=*) frames="${arg#frames=}" ;;
-            backend=*) backend="${arg#backend=}" ;;
-            scroll=*) scroll="${arg#scroll=}" ;;
-            settle=*) settle="${arg#settle=}" ;;
-            cell=*) cell="${arg#cell=}" ;;
-            --backend=*) backend="${arg#--backend=}" ;;
-            --backend)
-                if ((i + 1 >= ${#raw_flags[@]})); then
-                    printf '%s\n' 'record: --backend needs a value' >&2
-                    exit 2
-                fi
-                i=$((i + 1))
-                backend="${raw_flags[$i]}"
-                ;;
-            *) forwarded+=("$arg") ;;
-        esac
-    done
-
-    if [[ ! "$frames" =~ ^[1-9][0-9]*$ ]]; then
-        printf 'record: frames must be a positive integer, got %q\n' "$frames" >&2
-        exit 2
-    fi
-    if [ -n "$scroll" ] && [[ ! "$scroll" =~ ^(0|[1-9][0-9]*)$ ]]; then
-        printf 'record: scroll must be a non-negative integer, got %q\n' "$scroll" >&2
-        exit 2
-    fi
-    if [ -n "$settle" ] && [[ ! "$settle" =~ ^[01]$ ]]; then
-        printf 'record: settle must be 0 or 1, got %q\n' "$settle" >&2
-        exit 2
-    fi
-    if [ -n "$backend" ] && [[ ! "$backend" =~ ^(auto|block|kitty|sixel)$ ]]; then
-        printf 'record: backend must be auto, block, kitty, or sixel, got %q\n' "$backend" >&2
-        exit 2
-    fi
-    if [ -n "$cell" ] && [[ ! "$cell" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]]; then
-        printf 'record: cell must be positive WxH pixels, got %q\n' "$cell" >&2
-        exit 2
-    fi
-
-    [ -n "$backend" ] && forwarded+=("backend=$backend")
-    [ -n "$scroll" ] && forwarded+=("scroll=$scroll")
-    [ -n "$settle" ] && forwarded+=("settle=$settle")
-    [ -n "$cell" ] && forwarded+=("cell=$cell")
-    just capture="$frames" run "$url" "${forwarded[@]}"
-
 # Run Nyala with load-path timing. Interactive tty streams and writes the stderr
-# timing to NYALA_TIMING_FILE (default nyala-timings.log); headless runs the bounded
-# capture path and print its performance.json load_timings, so it works with no tty.
+# timing to NYALA_TIMING_FILE (default nyala-timings.log). Headless use fails
+# because load timing is an interactive instrument.
 [positional-arguments]
 debug-run url="https://wimpys.world" *flags:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    for arg in "$@"; do
-        case "$arg" in
-            capture=*)
-                printf '%s\n' 'debug-run: capture= is not accepted; the recipe owns its bounded recording' >&2
-                exit 2
-                ;;
-        esac
-    done
-
-    if [ -t 0 ] && [ -t 1 ]; then
+    if ! { [ -t 0 ] && [ -t 1 ]; }; then
+        printf '%s\n' 'just debug-run: needs an interactive terminal; use just cdp-interop for headless load-path health.' >&2
+        exit 1
+    fi
+    {
         # Interactive tty: NYALA_DEBUG_TIMING makes the engine print one stderr line
         # per load milestone; just run forwards the ambient env to nyala. The viewer
         # draws to the tty (fd 0), so redirecting stderr (fd 2) captures the timings
@@ -223,33 +127,7 @@ debug-run url="https://wimpys.world" *flags:
         printf '\nload timings (%s):\n' "$out" >&2
         grep '^nyala timing:' "$out" >&2 || printf '  none captured\n' >&2
         exit "$rc"
-    fi
-
-    # No tty (agent, CI, fenced): the interactive viewer never self-exits and script
-    # binds stderr to the pty, so run the bounded capture path, which records the load
-    # milestones into performance.json by construction. The throwaway bundle is deleted
-    # after its timings print; it can hold page content, so it is not kept.
-    log="$(mktemp)"
-    rc=0
-    just record "$@" frames=1 >"$log" 2>&1 || rc=$?
-    # The capture prints "capture bundle: <path>" on the pty, glued to the frame
-    # escape stream and ending in a carriage return, so match just the path token.
-    bundle="$(grep -aoE 'capture bundle: [^[:space:]]+' "$log" | tail -n1 || true)"
-    bundle="${bundle#capture bundle: }"
-    if [ -n "$bundle" ] && [ -f "$bundle/performance.json" ]; then
-        printf 'load timings from %s\n' "$bundle/performance.json" >&2
-        cat "$bundle/performance.json"
-        rm -rf "$bundle"
-    else
-        printf 'debug-run: capture produced no bundle; tail of output:\n' >&2
-        tail -c 2000 "$log" >&2
-        # No bundle means no load_timings, the recipe's whole output. Fail so a CI or
-        # agent caller does not read success from a run that produced nothing, even if
-        # the capture itself exited 0.
-        if [ "$rc" -eq 0 ]; then rc=1; fi
-    fi
-    rm -f "$log"
-    exit "$rc"
+    }
 
 # Run Nyala with the live FPS meter. Sets NYALA_FPS_TIMING so the viewer draws a
 # ~1 Hz fps badge over the page and prints a summary line to stdout on quit. It
@@ -267,211 +145,65 @@ fps url="https://wimpys.world" *flags: build
     fi
     NYALA_FPS_TIMING=1 just run "$@"
 
-# Capture every corpus fixture on the block backend for a text-layout sweep
-corpus:
-    #!/usr/bin/env bash
-    set -uo pipefail
-    root="$(pwd)/testdata/corpus"
-    fail=0
-
-    # capture_bundle COLS ROWS DIR CELL: capture one block bundle for the fixture
-    # at DIR (the index.html directory) at the given grid, forcing CELL device px
-    # per cell when CELL is non-empty. It prints the parsed bundle path on stdout
-    # and returns non-zero on a capture failure (tail of the run output goes to
-    # stderr). The 240-column screencast is megabytes of escape bytes, so the run
-    # output goes to a temp file, not a shell variable, to stay under ARG_MAX. The
-    # pty wrapper emits CRLF, so the trailing CR is stripped before use.
-    capture_bundle() {
-        local cols="$1" rows="$2" dir="$3" cell="$4"
-        local out; out="$(mktemp)"
-        local cellflag=(); [ -n "$cell" ] && cellflag=("cell=$cell")
-        COLUMNS="$cols" LINES="$rows" just record "file://${dir}index.html" frames=1 backend=block "${cellflag[@]}" > "$out" 2>&1
-        local status=$?
-        if [ "$status" -ne 0 ]; then
-            tail -n 20 "$out" >&2
-            rm -f "$out"
-            return 1
-        fi
-        local bundle; bundle="$(grep 'capture bundle:' "$out" | tail -n 1)"
-        rm -f "$out"
-        bundle="${bundle#*capture bundle: }"
-        bundle="${bundle%$'\r'}"
-        [ -n "$bundle" ] || return 1
-        printf '%s' "$bundle"
-    }
-
-    # paint_gate FIXTURE_JSON FRAME LABEL: run the paint-referenced displacement
-    # gate against FRAME. The gate threshold is the correctness target (mean-abs
-    # below 0.5 cell, max-abs below 1.0 cell, both axes), NOT the current build's
-    # baseline, so on the unfixed architecture several fixtures breach it. This is
-    # the point: the board is honest. A breach is logged as an expected-fail with
-    # its real numbers and does NOT set fail, so the sweep exit code stays usable
-    # while the architecture is unfixed; every later phase turns these expected-
-    # fails green. A run with no source glyph ink is N/A, not a pass. This mirrors
-    # the report-the-number discipline the layout-13 scroll leg uses. The paint
-    # metric reads screenshot.png, the source page paint, not block-render.png,
-    # which folds our overlay on and would cancel. It therefore cannot self-cancel
-    # the way placement-score can.
-    paint_gate() {
-        local fjson="$1" frame="$2" label="$3"
-        local numbers measure_status
-        numbers="$(go run ./tools/paint-displacement "$frame" 2>/dev/null | grep -E 'measured|skipped|disp')"
-        measure_status=$?
-        if [ "$measure_status" -ne 0 ]; then
-            printf 'paint-displacement ERROR (measurement failed): %s\n' "$label" >&2
-            fail=1
-            return
-        fi
-        local measured; measured="$(printf '%s\n' "$numbers" | awk '$1 == "measured" && $2 == "runs:" { print $3 }')"
-        if ! [[ "$measured" =~ ^[0-9]+$ ]]; then
-            printf 'paint-displacement ERROR (invalid measured-run count): %s\n' "$label" >&2
-            fail=1
-            return
-        fi
-        if [ "$measured" -eq 0 ]; then
-            printf 'paint-displacement N/A (no source glyph ink): %s\n' "$label"
-            printf '%s\n' "$numbers" | sed 's/^/    /'
-            return
-        fi
-        if go run ./tools/paint-displacement -gate -thresholds "$fjson" "$frame" >/dev/null 2>&1; then
-            printf 'paint-displacement PASS: %s\n' "$label"
-        else
-            printf 'paint-displacement EXPECTED-FAIL (architecture unfixed): %s\n' "$label"
-            printf '%s\n' "$numbers" | sed 's/^/    /'
-        fi
-    }
-
-    # Each fixture captures and gates at three grids: the default 120x40, a wide
-    # 240x48, and the owner's real terminal geometry 158x86 (cell 16x33 device px,
-    # pinned so a headless pty reproduces the device quantisation). Every leg runs
-    # the placement-score gate (a cheap regression guard, hard-gated as before) and
-    # the paint-referenced displacement gate (the honest arbiter, expected-fail on
-    # the current build). The run wrapper honours caller-exported LINES/COLUMNS.
-    legs=("120x40 " "240x48 " "158x86 16x33")
-    for dir in "$root"/layout-*/; do
-        name="$(basename "$dir")"
-        for leg in "${legs[@]}"; do
-            grid="${leg%% *}"
-            cell="${leg#* }"
-            cols="${grid%x*}"
-            rows="${grid#*x}"
-            label="$name [$grid${cell:+ cell $cell}]"
-            printf '== %s ==\n' "$label"
-            bundle="$(capture_bundle "$cols" "$rows" "$dir" "$cell")" || {
-                printf 'capture failed: %s\n' "$label" >&2
-                fail=1
-                continue
-            }
-            frame="$(printf '%s' "$bundle"/frames/frame-*/)"
-            if ! go run ./tools/placement-score -gate -thresholds "${dir}fixture.json" "$frame"; then
-                printf 'placement gate failed: %s\n' "$label" >&2
-                fail=1
-            fi
-            paint_gate "${dir}fixture.json" "$frame" "$label"
-        done
-    done
-
-    # layout-13 real-geometry scroll leg. It captures three frames then scrolls
-    # 600 CSS px and settles, so the bundle holds consecutive snapshot generations
-    # across a scroll. The scroll-dance gate hard-fails on danced 0: the metric
-    # classifies the position:fixed nav as fixed (viewport-stationary on scroll)
-    # and scores every other run on its own scroll-compensated document row, so a
-    # fixed nav and scrolling body content each read honestly. Whole-cell scroll
-    # lands the settle re-snapshot's runs on the resting bitmap's scroll and
-    # composeFrame pairs the two on scroll equality, so no run hops one cell at
-    # settle. Only layout-13 carries the scroll leg; the placement and paint legs
-    # above cover every fixture at all three geometries.
-    lm="$root/layout-13-linuxmatters/"
-    if [ -d "$lm" ]; then
-        printf '== layout-13-linuxmatters [158x86 cell 16x33 scroll=600] ==\n'
-        out="$(mktemp)"
-        COLUMNS=158 LINES=86 just record "file://${lm}index.html" frames=3 scroll=600 backend=block cell=16x33 > "$out" 2>&1
-        status=$?
-        if [ "$status" -ne 0 ]; then
-            tail -n 20 "$out"
-            rm -f "$out"
-            printf 'scroll capture failed: layout-13-linuxmatters [158x86 cell 16x33 scroll=600]\n' >&2
-            fail=1
-        else
-            bundle="$(grep 'capture bundle:' "$out" | tail -n 1)"
-            rm -f "$out"
-            bundle="${bundle#*capture bundle: }"
-            bundle="${bundle%$'\r'}"
-            if ! go run ./tools/scroll-dance -gate -thresholds "${lm}fixture.json" "$bundle"; then
-                printf 'scroll-dance gate failed: layout-13-linuxmatters [158x86 cell 16x33 scroll=600]\n' >&2
-                fail=1
-            fi
-        fi
-    fi
-
-    exit "$fail"
-
-# Run all local checks
-check:
-    @just tidy-check
-    @just fmt-check
-    @just lint
-    @just test
-    @just build
-    @just release-check
+# Run the full local gate
+check: tidy-check fmt-check lint test build release-check
     @nix flake check
     @just vuln
 
-# Run the heavy quality gate: sweep, calibration, golden track, and overlay grade
+# Run every correctness and diagnostic leg, collecting independent failures
 diagnostics:
-    @go test -v -tags diagnostics -count=1 ./internal/harness/
-
-# Cross-check the production Sixel encoder with libsixel's independent decoder
-sixel-interop:
     #!/usr/bin/env bash
-    set -euo pipefail
-    if ! command -v sixel2png >/dev/null 2>&1; then
-        printf '%s\n' 'sixel2png not found; enter the Nix dev shell with nix develop' >&2
-        exit 1
+    set -uo pipefail
+    fail=0
+    run_leg() { printf '\n== %s ==\n' "$1"; shift; "$@" || fail=1; }
+    chromium_found=0
+    if [ -n "${NYALA_BROWSER:-}" ] || [ -n "${CHROME_PATH:-}" ]; then chromium_found=1; fi
+    for name in chromium chromium-browser google-chrome google-chrome-stable chrome; do
+        if command -v "$name" >/dev/null 2>&1; then chromium_found=1; break; fi
+    done
+    sixel_found=0
+    if command -v sixel2png >/dev/null 2>&1; then sixel_found=1; fi
+    run_leg 'browser-free quality' go test -count=1 -tags diagnostics ./internal/harness/
+    run_leg 'Block protocol interop' go test -count=1 -tags blockinterop ./internal/viewer/ -run '^TestBlockTerminalRoundTrip$'
+    run_leg 'Kitty protocol interop' go test -count=1 -tags kittyinterop ./internal/viewer/ -run '^TestKittyTerminalRoundTrip$'
+    if [ "$sixel_found" -eq 1 ]; then
+        run_leg 'Sixel protocol interop' go test -count=1 -tags sixelinterop ./internal/render/sixel/ -run '^TestLibsixelRoundTrip$'
+    else
+        printf '\n== Sixel protocol interop ==\nSKIP: sixel2png not found\n' >&2
+        fail=1
     fi
-    go test -v -run '^TestLibsixelRoundTrip$' -tags sixelinterop -count=1 ./internal/render/sixel/
+    if [ "$chromium_found" -eq 1 ]; then
+        run_leg 'CDP-fed correctness' env FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" go test -count=1 -tags cdpinterop ./internal/viewer/ -run '^TestCDP'
+    else
+        printf '\n== CDP-fed correctness ==\nSKIP: Chromium not found; set NYALA_BROWSER or CHROME_PATH, or add Chromium/Chrome to PATH\n' >&2
+        fail=1
+    fi
+    exit "$fail"
 
-# Cross-check the production Block terminal stream with an independent VT model
+# Run the synthetic Block terminal protocol gate
 block-interop:
-    @go test -v -run '^TestBlockTerminalRoundTrip$' -tags blockinterop -count=1 ./internal/viewer/
+    @go test -count=1 -tags blockinterop ./internal/viewer/ -run '^TestBlockTerminalRoundTrip$'
 
-# Cross-check the production Kitty viewer stream with an independent terminal model
+# Run the synthetic Kitty terminal protocol gate
 kitty-interop:
-    @go test -v -run '^TestKittyTerminalRoundTrip$' -tags kittyinterop -count=1 ./internal/viewer/
+    @go test -count=1 -tags kittyinterop ./internal/viewer/ -run '^TestKittyTerminalRoundTrip$'
 
-# Drive local pages from Chromium through every terminal protocol and independent decoder
+# Run the synthetic Sixel terminal protocol gate
+sixel-interop:
+    @command -v sixel2png >/dev/null || { echo 'sixel2png not found' >&2; exit 1; }
+    @go test -count=1 -tags sixelinterop ./internal/render/sixel/ -run '^TestLibsixelRoundTrip$'
+
+# Run the Chromium-fed renderer correctness matrix
 cdp-interop:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if ! command -v sixel2png >/dev/null 2>&1; then
-        printf '%s\n' 'sixel2png not found; enter the Nix dev shell with nix develop' >&2
-        exit 1
-    fi
-    FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" go test -v -run '^TestCDPInteropMatrix$' -tags cdpinterop -count=1 ./internal/viewer/
+    @FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" go test -count=1 -tags cdpinterop ./internal/viewer/ -run '^TestCDP'
 
-# Regenerate golden archives via the golden track writer
+# Regenerate committed golden archives
 update-golden:
-    @UPDATE_GOLDEN=1 go test -run 'TestGoldenTrack|TestOverlayGoldenTrack' -tags diagnostics -count=1 ./internal/harness/
+    @UPDATE_GOLDEN=1 go test -count=1 -tags diagnostics ./internal/harness/ -run 'Test(GoldenTrack|OverlayGoldenTrack)'
 
-# Regenerate the overlay artefact PNGs into testdata/diagnostics/ for eyeballing
+# Regenerate overlay artefacts for visual inspection
 overlay:
-    @OVERLAY_ARTEFACTS=1 go test -run TestOverlayMatcherRoundTrip -tags diagnostics -count=1 ./internal/harness/
-
-# Rasterise a captured terminal-model.json (or frame dir) into block-render.png beside it
-rasterise path:
-    @go run ./tools/rasterise {{path}}
-
-# Score horizontal text placement error from a captured text-map.json (or frame dir)
-placement-score path:
-    @go run ./tools/placement-score {{path}}
-
-# Score paint-referenced glyph displacement from a captured frame dir against screenshot.png
-paint-displacement path:
-    @go run ./tools/paint-displacement {{path}}
-
-# Score overlay re-placement (scroll dance) across a capture bundle's frame sequence
-scroll-dance path:
-    @go run ./tools/scroll-dance {{path}}
+    @go test -count=1 -tags diagnostics ./internal/harness/ -run '^TestOverlayArtefacts$'
 
 # Print the KMSCON quadrant test card to the TTY (owner-verified, off CI)
 kmscon-testcard:
@@ -527,7 +259,7 @@ test:
 
 # Run the live engine integration test (needs Chromium; off CI, not in `test`)
 live:
-    @FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" go test -tags live ./internal/engine/
+    @FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" go test -count=1 -tags live ./internal/engine/
 
 # Measure internal renderer-to-terminal-byte costs from production CDP frames.
 internal-render-metrics:

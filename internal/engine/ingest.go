@@ -22,14 +22,14 @@ const fpsTimingEnv = "NYALA_FPS_TIMING"
 const ingestWindow = time.Second
 
 // ingestCounter counts screencast frames at the true ingest point
-// (handleScreencastFrame), before the latest-wins slot drops any, so it reports the
+// before the live queue drops any, so it reports the
 // pre-drop ingest rate the paint meter cannot see. It holds a trailing window of
 // frame instants for the live rolling rate, session totals (count, first and last
 // instant) for the summary mean, and the per-frame inter-arrival gaps for the
 // min/max/median/worst-gap extremes that mirror the paint meter's Out stats. Under
 // the decoupled receiver/worker model the arrival times are true per-frame instants,
 // not coalesced bursts, so the gap extremes are meaningful. It also accumulates the
-// worker decode budget (mean and max), fed from runFrameLoop when armed. The listener
+// worker decode budget (mean and max), fed from decode workers when armed. The listener
 // goroutine records arrivals, the worker records decode times, the viewer draw
 // goroutine reads; one mutex guards all three, and a screencast frame arrives at only
 // ~10-60/s, so the lock cost is nil. It is armed once at engine construction from
@@ -71,7 +71,7 @@ func newIngestCounter() *ingestCounter {
 	return &ingestCounter{on: os.Getenv(fpsTimingEnv) != "", window: ingestWindow}
 }
 
-// armed reports whether the counter records. handleScreencastFrame checks it before
+// armed reports whether the counter records. The listener checks it before
 // reading the clock, so an off run pays one bool check and no time.Now read. A nil
 // counter is not armed, so a session built without one (a unit test) is safe.
 func (c *ingestCounter) armed() bool {
@@ -79,7 +79,7 @@ func (c *ingestCounter) armed() bool {
 }
 
 // record stamps one delivered screencast frame at now. It is called once per frame
-// on the listener goroutine, before the slot drops any, so it counts true ingest and
+// on the listener goroutine, before the queue drops any, so it counts true ingest and
 // the inter-arrival gaps are the real per-frame arrival intervals. From the second
 // frame on it measures the gap since the previous arrival, tracking the min and max
 // and appending to the gap slice for the quit-time median. A nil or disabled counter
@@ -111,7 +111,7 @@ func (c *ingestCounter) record(now time.Time) {
 
 // recordDecode adds one worker decode wall time in milliseconds to the decode
 // budget: the count and running sum feed the mean, and it tracks the slowest single
-// decode. runFrameLoop calls it on the worker goroutine per successfully decoded
+// decode. A decode worker calls it per successfully decoded
 // frame, gated on the armed check, so an off run reads no clock and does no work
 // here. A nil or disabled counter returns at once.
 func (c *ingestCounter) recordDecode(ms float64) {

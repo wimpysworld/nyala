@@ -58,8 +58,7 @@ func adaptiveDecodeWorkers(procs int) int {
 
 // decodeWorkerCount reads the live decode-pool size from NYALA_DECODE_WORKERS, clamped to
 // [1, maxDecodeWorkers], falling back to the core-adaptive defaultDecodeWorkers when unset
-// or unparseable. It is read once per session on the live path only; capture keeps its
-// single ordered worker.
+// or unparseable. It is read once per live session.
 func decodeWorkerCount() int {
 	if v := os.Getenv(decodeWorkersEnv); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
@@ -96,20 +95,18 @@ type decodedFrame struct {
 // the viewer decodes the retained payload when the active consumer is not Kitty.
 func (e *ChromiumEngine) directKittyPNG(data string) bool {
 	e.mu.Lock()
-	kitty := e.backend == "kitty" && !e.captureOn
+	kitty := e.backend == "kitty"
 	e.mu.Unlock()
 	return kitty && renderkitty.ValidDirectPNGData(data)
 }
 
 // rawFrameQueue is the bounded, drop-oldest feed from the listener goroutine to the
-// live decode pool. It is the multi-consumer counterpart of frameSlot: several
-// decode workers pull from it in parallel, so it holds a small backlog rather than a
-// single latest-wins slot. When full it drops the OLDEST undecoded frame, never the
+// live decode pool. Several decode workers pull from it in parallel, so it holds a
+// small backlog. When full it drops the OLDEST undecoded frame, never the
 // newest and never blocking the listener, so Chromium's ack-on-receive credit and the
 // 60 fps arrival stay unchanged while memory stays bounded. The draw path draws the
 // newest published frame, so dropping an old undecoded frame under load only skips a
-// frame that would have been superseded anyway. Capture does not use it; it keeps the
-// ordered frameSlot.
+// frame that would have been superseded anyway.
 type rawFrameQueue struct {
 	items chan seqRawFrame
 }
@@ -148,7 +145,7 @@ func (q *rawFrameQueue) put(f seqRawFrame) {
 // publish. A corrupt frame fails to decode and is dropped (it was already acked on
 // receive). It records the per-frame decode time into the ingest counter when armed,
 // so in_decode_ms still measures per-frame decode under the pool. It exits when ctx is
-// cancelled (session teardown). Capture never runs it: capture keeps runFrameLoop.
+// cancelled during session teardown.
 func (e *ChromiumEngine) runDecodeWorker(ctx context.Context, q *rawFrameQueue, out chan<- decodedFrame) {
 	if ctx == nil || q == nil || out == nil {
 		return
@@ -158,9 +155,8 @@ func (e *ChromiumEngine) runDecodeWorker(ctx context.Context, q *rawFrameQueue, 
 	e.mu.Unlock()
 	// A test-swapped e.decode keeps the old decoded-pixel hook. The production nil
 	// case selects direct Kitty PNG or decodeLiveFrame per payload below.
-	// Time the decode only when the ingest counter is armed. On the live path
-	// captureOn is false, so the per-frame decodeMS the bundle records is never needed
-	// here; the only clock read is the NYALA_FPS_TIMING decode budget.
+	// Time the decode only when the ingest counter is armed for the
+	// NYALA_FPS_TIMING decode budget.
 	ingestArmed := e.ingest.armed()
 	for {
 		select {
@@ -206,8 +202,7 @@ func (e *ChromiumEngine) runDecodeWorker(ctx context.Context, q *rawFrameQueue, 
 // workers decode in parallel and finish out of order, so this stage restores order and
 // owns everything the frame loop kept serial: the monotonic publish gate, the held
 // bitmap for re-emit, the scroll-offset tracking, the composed-overlay hold, and the
-// frame send. It mirrors runFrameLoop's non-decode body exactly, so the live block
-// path behaves as before apart from the parallel decode ahead of it.
+// frame send, preserving ordered publication after parallel decode.
 //
 // Monotonic ordering: each decoded frame carries its arrival sequence. A frame whose
 // seq is not newer than the last published seq is dropped, so a worker that finished an

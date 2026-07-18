@@ -24,7 +24,7 @@ type ChromiumEngine struct {
 	// mu guards the session and geometry fields read or written from both the
 	// viewer goroutine (Resize, SetBackend, SendKey, SendMouse, dispatchWheel)
 	// and the supervisor goroutine (startSession, teardownSession, launch,
-	// rebuild): ctx, cancel, slot, acks, text, frame, captureW, captureH, cols, rows, scrollX,
+	// rebuild): ctx, cancel, acks, text, frame, cols, rows, scrollX,
 	// scrollY, scrollYTarget, backend, blockScheme, cellW, cellH, layoutWidth, windowID,
 	// inputFailures and fontForcingID. Lock, copy the fields into locals or write
 	// the updates, unlock, then run the chromedp I/O on the locals. Never hold mu
@@ -62,10 +62,20 @@ type ChromiumEngine struct {
 	// --disable-frame-rate-limit switch. It is set before Navigate and remains
 	// false by default, preserving Chromium's normal frame scheduling.
 	disableFrameRateLimit bool
-	cols                  int // terminal grid width in cells
-	rows                  int // terminal grid height in cells
-	captureW              int // capture width in pixels for the active backend
-	captureH              int // capture height in pixels for the active backend
+	// diagnosticTextPaint keeps ordinary DOM glyph ink in the forced Block page.
+	// It is set only by the CDP source-paint correctness pass before Navigate.
+	diagnosticTextPaint bool
+	// diagnosticFrameMeta attaches CDP screencast metadata to emitted frames.
+	// It is set only by diagnostics before Navigate, so ordinary frame publication
+	// performs no metadata conversion, allocation, or copy.
+	diagnosticFrameMeta bool
+	// diagnosticCalibration fields are guarded by mu and copied only into the
+	// opt-in frame diagnostic sidecar.
+	diagnosticCalibrationSerial    int64
+	diagnosticCalibrationSucceeded bool
+	diagnosticCalibratedFontSize   float64
+	cols                           int // terminal grid width in cells
+	rows                           int // terminal grid height in cells
 
 	// fontForcingID is the ScriptIdentifier of the registered font-forcing
 	// on-new-document script, empty when no forcing is active. Only the block backend
@@ -90,8 +100,7 @@ type ChromiumEngine struct {
 	windowID browser.WindowID
 
 	// inputFailures counts consecutive input-dispatch failures. A successful
-	// dispatch resets it; a run past inputDispatchFailureThreshold records one
-	// capture event so a wedged browser is observable without spamming.
+	// dispatch resets it.
 	inputFailures int
 
 	// screencastCtl owns every screencast start and transition. After taking it, the
@@ -100,8 +109,7 @@ type ChromiumEngine struct {
 	// failing transition without deadlocking.
 	screencastCtl sync.Mutex
 	// screencastFmt is the last successfully started screencast format and JPEG
-	// quality, guarded by e.mu. Block runs live JPEG; Kitty, Sixel, and capture use
-	// PNG. initialScreencastFormat picks it from the backend and capture flag.
+	// quality, guarded by e.mu. Block uses JPEG; Kitty and Sixel use PNG.
 	screencastFmt screencastFmt
 	// screencastStarted distinguishes a published frame sink from a successful
 	// StartScreencast, guarded by e.mu. A resize or backend change in that publication
@@ -109,11 +117,8 @@ type ChromiumEngine struct {
 	screencastStarted bool
 	// Frame plumbing.
 	frames chan render.Frame // emitted frames, created once and closed only on Close
-	slot   *frameSlot        // capture-path latest-wins single-frame backpressure slot
-	// rawQ is the live-path bounded, drop-oldest feed from the listener goroutine to
-	// the parallel decode pool. It replaces the single-frame slot on the live path so
-	// several workers decode concurrently; capture keeps the ordered slot and leaves
-	// this nil. Either being non-nil means the session is streaming (see streaming).
+	// rawQ is the bounded, drop-oldest feed from the listener goroutine to the
+	// parallel decode pool.
 	// Reset per session by teardownSession.
 	rawQ *rawFrameQueue
 	// acks carries screencast frame SessionID values from the listener goroutine
@@ -146,7 +151,7 @@ type ChromiumEngine struct {
 	// teardownSession.
 	reEmit chan struct{}
 	// framePublisherDone closes when the session's sole frame publisher exits: the
-	// live decode collector or the capture frame loop. teardownSession waits for it
+	// live decode collector. teardownSession waits for it
 	// before draining the shared frame channel, so a cancelled publisher cannot leave
 	// an old-session frame for recovery or race the supervisor's channel close.
 	// Reset per session by teardownSession.
@@ -155,12 +160,12 @@ type ChromiumEngine struct {
 	// to snapshotRuns. The unit test swaps in a counter to assert the snapshot is
 	// gated to about one call per delivered frame without launching a browser; it is
 	// nil in production, where runTextSync falls back to snapshotRuns. It returns the
-	// decoded runs, the snapshot time, the DOM scroll offset the runs were decoded at,
+	// decoded runs, the DOM scroll offset the runs were decoded at,
 	// the layout generation read in the same sequence, and the updated hold state.
-	snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, int64, overlayState)
+	snapshot func(context.Context, overlayState) ([]render.GlyphRun, scrollOffset, int64, overlayState)
 
 	// decode is the decoded-RGBA test override. Frame-loop and decode-pool tests swap
-	// in a fake so they can drive raw slots without image payloads. It is nil in
+	// in a fake so they can drive queued frames without image payloads. It is nil in
 	// production, where consumers keep decoder-native pixels or direct Kitty PNG.
 	decode func(string) (*image.RGBA, error)
 
@@ -184,7 +189,7 @@ type ChromiumEngine struct {
 	stallPoked  atomic.Bool
 
 	// ingest counts delivered screencast frames at the true ingest point
-	// (handleScreencastFrame), before the latest-wins slot drops any, for the
+	// before the live queue drops any, for the
 	// NYALA_FPS_TIMING In rate. It is armed once in New from the env switch and read
 	// by the viewer over the ingestReporter seam (IngestFPS, IngestSummary). It
 	// persists across sessions, so a resize or backend switch keeps the
@@ -204,50 +209,6 @@ type ChromiumEngine struct {
 	// never written again, so they need no mu guard.
 	proxy    ProxyConfig // parsed proxy settings for the launch path
 	proxyErr error       // proxy parse error, returned later by launch
-
-	// Capture wiring set once by EnableCapture before Navigate, read-only
-	// afterwards. Like proxy above, the caller sets these before any goroutine
-	// starts and never writes them again, so the listener and supervisor
-	// goroutines read them without a mu guard. captureOn gates the phase timing
-	// in composeFrame; recorder is the event sink the emit sites use behind a
-	// nil check. Both stay unset on the production path, so it pays zero cost.
-	captureOn bool // true once EnableCapture turned capture on
-	// loadSpans is the capture-run load-timing recorder. EnableCapture allocates it
-	// before any goroutine starts and hands it to the capture recorder; startSession
-	// hands it to the per-session loadTimer, which records the four load-path
-	// milestones into it. The capture driver reads it at bundle-finalise time via the
-	// recorder's LoadTimings. It stays nil off the capture path, so the loadTimer
-	// records nothing and production pays only its existing nil checks.
-	loadSpans *sessionTimings
-	// settleHold gates the initial-layout settle hold on textReady. The capture driver
-	// sets it true only for a single-frame capture (n == 1), where the one bundled
-	// frame must be the settled page, and leaves it false for a multi-frame capture,
-	// where the extra frames come from the load period a settle wait would drain. It
-	// takes the same set-once treatment as captureOn: written once before Navigate,
-	// read-only on the snapshot goroutine afterwards. Off capture it stays false.
-	settleHold  bool
-	recorder    captureRecorder // event sink, nil off the capture path
-	painted     chan struct{}   // closed on the first contentful paint (or load) under capture
-	paintedOnce sync.Once       // guards painted against a double close
-	// textReady is the capture-only first-publish latch. The snapshot goroutine
-	// closes it once the overlay has published and the initial layout has settled (the
-	// first debounced-reflow re-snapshot, or a bounded backstop), so the capture driver
-	// waits for the settled overlay runs to land before it counts a usable frame.
-	// Without it the driver and the snapshot goroutine both wake off painted and the
-	// driver can latch the first frame before the (calibration-delayed) publish, so the
-	// captured frame carries no text; without the settle hold it can latch a pre-settle
-	// snapshot a post-paint reflow would still shift. It stays nil off the capture path.
-	textReady     chan struct{}
-	textReadyOnce sync.Once // guards textReady against a double close
-	// scrollSettle is the capture-only post-scroll settle signal. The snapshot
-	// goroutine pokes it (latest-wins, capacity 1) after the trailing settle
-	// snapshot publishes the text at the resting scroll position, so the capture
-	// scroll hook can wait for a publish that landed after its scroll injection
-	// before it draws the scrolled frame. Without it the hook draws the first frame
-	// whose bitmap shows the advanced scroll, which arrives before the debounced
-	// settle re-snapshot, so the drawn frame carries the stale pre-scroll text. It
-	// stays nil off the capture path.
-	scrollSettle chan struct{}
 
 	// Lifecycle. The supervisor goroutine owns the engine lifetime: it starts
 	// each browser session, watches for a crash or a lost connection, rebuilds
@@ -293,9 +254,17 @@ func (e *ChromiumEngine) SetDisableFrameRateLimit(disable bool) {
 	e.mu.Unlock()
 }
 
+// SetDiagnosticFrameMeta controls whether emitted frames carry CDP screencast
+// metadata. Diagnostics call it before Navigate; production leaves it disabled.
+func (e *ChromiumEngine) SetDiagnosticFrameMeta(enabled bool) {
+	e.mu.Lock()
+	e.diagnosticFrameMeta = enabled
+	e.mu.Unlock()
+}
+
 // IngestFPS returns the rolling screencast-ingest rate over the trailing window,
 // pruned to now, for the fps badge's In figure. It counts frames at the true ingest
-// point before the latest-wins slot drops any, so it reports the pre-drop rate the
+// point before the live queue drops any, so it reports the pre-drop rate the
 // paint meter cannot see; an idle page decays it to 0. It returns 0 when
 // NYALA_FPS_TIMING is unset. It is the ingestReporter capability the viewer fps
 // meter type-asserts, so the Engine seam stays unchanged.
@@ -311,105 +280,21 @@ func (e *ChromiumEngine) IngestSummary() render.IngestStats {
 	return e.ingest.summary()
 }
 
-// EnableCapture turns on engine-phase timing and event recording, setting rec
-// as the event sink. The caller sets it before Navigate, so the capture flag
-// and recorder take the same set-once treatment as the proxy config: written
-// once before any goroutine starts and read-only afterwards, so the listener
-// and supervisor goroutines need no mu guard. Off the capture path EnableCapture
-// is never called, so captureOn stays false, the recorder stays nil, and
-// Frame.Stats stays nil. A nil rec leaves the recorder unset.
-func (e *ChromiumEngine) EnableCapture(rec captureRecorder) {
-	e.captureOn = true
-	e.recorder = rec
-	// The painted latch lets the capture driver wait for first contentful paint
-	// before it counts usable frames, so a blank pre-paint frame is never one of
-	// the n. It is created once here, before any goroutine starts, like the recorder
-	// above. markPainted closes it on the first paint signal; a late reader still
-	// sees the closed channel. The exported recorder relays it to the viewer's
-	// CaptureSession, so the viewer never imports the engine package.
-	e.painted = make(chan struct{})
-	// The textReady latch lets the capture driver wait for the first overlay publish
-	// before it counts a usable frame, so the first captured frame carries its text
-	// runs rather than the pre-publish nil. It is created here alongside painted,
-	// before any goroutine starts; markTextReady closes it on the first publish.
-	e.textReady = make(chan struct{})
-	// The scrollSettle channel lets the capture scroll hook wait for a text publish
-	// that landed after its scroll injection. It is latest-wins, capacity 1, so a
-	// burst of settle pokes collapses to one and the snapshot goroutine never blocks.
-	e.scrollSettle = make(chan struct{}, 1)
-	// The load-timing recorder holds the four load-path spans the per-session
-	// loadTimer records. It is allocated here, before any goroutine starts, and shared
-	// with the recorder so the capture driver reads the spans at finalise; startSession
-	// hands the same holder to newLoadTimer.
-	e.loadSpans = &sessionTimings{}
-	if r, ok := rec.(*Recorder); ok {
-		r.setPainted(e.painted)
-		r.setTextReady(e.textReady)
-		r.setScrollSettle(e.scrollSettle)
-		r.setLoadSpans(e.loadSpans)
-	}
-}
-
-// SetCaptureSettleHold gates the initial-layout settle hold on the capture
-// first-publish latch. The capture driver calls it once before Navigate with
-// hold=true only for a single-frame capture (n == 1), so that one bundled frame
-// waits for the layout to settle; a multi-frame capture passes false, so the load
-// period frames it counts are not drained by the wait. It is a set-once flag read on
-// the snapshot goroutine, matching captureOn, so it needs no lock. Off the capture
-// path the viewer never calls it, so settleHold stays false and production holds
-// nothing.
-func (e *ChromiumEngine) SetCaptureSettleHold(hold bool) {
-	e.settleHold = hold
-}
-
-// markTextReady closes the textReady latch once the overlay has published and the
-// initial layout has settled, so a late reader still sees the closed channel. The
-// snapshot goroutine (runTextSync) holds it past the first publishSnapshot until the
-// first debounced-reflow re-snapshot (networkAlmostIdle) lands, or a bounded backstop
-// fires, so the first counted capture frame carries the settled overlay rather than a
-// pre-settle snapshot. textReadyOnce guards the close because a crash rebuild restarts
-// the snapshot goroutine. It is a no-op off the capture path, where textReady stays
-// nil.
-func (e *ChromiumEngine) markTextReady() {
-	if e.textReady == nil {
-		return
-	}
-	e.textReadyOnce.Do(func() { close(e.textReady) })
-}
-
-// pokeScrollSettle signals the capture scroll hook that a settle snapshot has
-// published the text at the resting scroll position. The send is latest-wins on a
-// capacity-1 channel, so it never blocks and a burst of settle snapshots collapses
-// to one signal. It is a no-op off the capture path, where scrollSettle stays nil.
-func (e *ChromiumEngine) pokeScrollSettle() {
-	if e.scrollSettle == nil {
-		return
-	}
-	select {
-	case e.scrollSettle <- struct{}{}:
-	default:
-	}
-}
-
-// markPainted closes the painted latch, so a late reader still sees it closed. The
-// primary fire source is the watchPaint listener on the Page.lifecycleEvent whose
-// Name is "firstContentfulPaint"; navigateAsync calls it again on navigate-return
-// as the bounded timeout backstop. paintedOnce guards the close because both
-// sources may fire and a crash rebuild re-registers the listener. It is a no-op
-// off the capture path, where painted stays nil.
-func (e *ChromiumEngine) markPainted() {
-	if e.painted == nil {
-		return
-	}
-	e.paintedOnce.Do(func() { close(e.painted) })
-}
-
 // SetCellPx records the resolved terminal cell pixel size. The engine uses it to
 // size the graphics-backend capture and to bin DOM text boxes to cells. The
 // caller sets it before Navigate, with the backend and the grid.
 func (e *ChromiumEngine) SetCellPx(w, h int) {
 	e.mu.Lock()
 	e.cellW, e.cellH = w, h
+	e.mu.Unlock()
+}
+
+// SetDiagnosticTextPaint controls whether Block font forcing keeps ordinary DOM
+// glyph ink in the screencast. Diagnostics set it before Navigate to measure
+// paint displacement. Production leaves the zero value false for separate layers.
+func (e *ChromiumEngine) SetDiagnosticTextPaint(enabled bool) {
+	e.mu.Lock()
+	e.diagnosticTextPaint = enabled
 	e.mu.Unlock()
 }
 
@@ -483,7 +368,6 @@ func (e *ChromiumEngine) Resize(cols, rows int) {
 	defer e.screencastCtl.Unlock()
 	e.mu.Lock()
 	e.cols, e.rows = cols, rows
-	e.captureW, e.captureH = e.captureSize(cols, rows)
 	streaming := e.screencastStartedLocked()
 	e.mu.Unlock()
 	if streaming {
@@ -494,7 +378,7 @@ func (e *ChromiumEngine) Resize(cols, rows int) {
 // streamingLocked reports whether a session has published a frame sink, read under
 // the caller's e.mu hold. The initial transition uses it before StartScreencast.
 func (e *ChromiumEngine) streamingLocked() bool {
-	return e.slot != nil || e.rawQ != nil
+	return e.rawQ != nil
 }
 
 // screencastStartedLocked reports whether the published session has completed its
@@ -526,7 +410,6 @@ func (e *ChromiumEngine) SetBackend(backend string) {
 	defer e.screencastCtl.Unlock()
 	e.mu.Lock()
 	e.backend = backend
-	e.captureW, e.captureH = e.captureSize(e.cols, e.rows)
 	streaming := e.screencastStartedLocked()
 	e.mu.Unlock()
 	if streaming {
@@ -570,9 +453,8 @@ func (e *ChromiumEngine) SendMouse(m MouseEvent) {
 }
 
 // SendScroll scrolls the page down by dy CSS pixels through the same wheel
-// transport a user wheel or scroll key takes, so the capture scroll hook
-// exercises the full input chain. It is the capture-only vertical scroll
-// injection; a non-positive dy is a no-op.
+// transport a user wheel or scroll key takes. Diagnostic tests use it to
+// exercise the full input chain; a non-positive dy is a no-op.
 func (e *ChromiumEngine) SendScroll(dy int) {
 	if dy <= 0 {
 		return
@@ -649,12 +531,6 @@ func (e *ChromiumEngine) Close() error {
 	supDone := e.supDone
 	supervised := e.supervised
 	e.mu.Unlock()
-	// Emit one stop at the clean session end so the event stream shows a tidy
-	// close. Crash rebuilds tear down through teardownSession without this, so
-	// only the real shutdown records a stop.
-	if e.recorder != nil {
-		e.recorder.Record(captureEvent{Type: captureEventScreencastControl, Action: "stop"})
-	}
 	if closing != nil {
 		e.closeOnce.Do(func() { close(closing) })
 	}

@@ -25,7 +25,7 @@ import (
 
 // apcIntro opens a Kitty graphics Application Programming Command: ESC _ G.
 // st is the String Terminator, ESC backslash, that closes the envelope. They
-// mirror the names the capture decoder uses for the same bytes.
+// mirror the names the independent protocol decoder uses for the same bytes.
 const (
 	apcIntro = "\x1b_G"
 	st       = "\x1b\\"
@@ -59,8 +59,8 @@ func (*Renderer) Name() string { return "kitty" }
 // protocol chunk limit is split across successive APC frames with the m= key. A
 // nil frame image emits an empty but well-framed payload. The frame image is
 // RGBA; the encoder reads it through the image.Image colour interface, so
-// channel order holds. It transmits without an explicit image id, so the capture
-// round-trip stays stateless.
+// channel order holds. It transmits without an explicit image id, so the
+// protocol round-trip stays stateless.
 func (r *Renderer) Render(f render.Frame, w io.Writer) error {
 	return r.render(f, 0, w)
 }
@@ -68,7 +68,7 @@ func (r *Renderer) Render(f render.Frame, w io.Writer) error {
 // RenderID renders like Render but tags the transmitted image with the given
 // Kitty image id (i=<id>), so a caller can double-buffer by alternating two ids
 // and deleting the previous one with DeleteImage. An id of zero omits the i= key
-// and matches Render byte for byte, so the stateless capture path is unchanged.
+// and matches Render byte for byte when id is zero.
 func (r *Renderer) RenderID(f render.Frame, id int, w io.Writer) error {
 	return r.render(f, id, w)
 }

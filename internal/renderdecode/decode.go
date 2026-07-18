@@ -1,4 +1,6 @@
-package capture
+// Package renderdecode contains correctness-only decoders for terminal graphics
+// protocol output.
+package renderdecode
 
 import (
 	"bytes"
@@ -32,14 +34,14 @@ const (
 // The returned image is in RGBA channel order.
 func DecodeSixel(payload []byte) (*image.RGBA, error) {
 	if !hasSixelIntroducer(payload) {
-		return nil, errors.New("capture: sixel payload missing DCS introducer ESC P ... q")
+		return nil, errors.New("renderdecode: sixel payload missing DCS introducer ESC P ... q")
 	}
 	var img image.Image
 	if err := gosixel.NewDecoder(bytes.NewReader(payload)).Decode(&img); err != nil {
-		return nil, fmt.Errorf("capture: decode sixel: %w", err)
+		return nil, fmt.Errorf("renderdecode: decode sixel: %w", err)
 	}
 	if img == nil {
-		return nil, errors.New("capture: sixel payload decoded to no image")
+		return nil, errors.New("renderdecode: sixel payload decoded to no image")
 	}
 	return toRGBA(img), nil
 }
@@ -78,12 +80,12 @@ func DecodeKitty(payload []byte) (*image.RGBA, error) {
 
 	var opts kitty.Options
 	if err := opts.UnmarshalText([]byte(optsText)); err != nil {
-		return nil, fmt.Errorf("capture: parse kitty options: %w", err)
+		return nil, fmt.Errorf("renderdecode: parse kitty options: %w", err)
 	}
 
 	raw, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
-		return nil, fmt.Errorf("capture: decode kitty base64: %w", err)
+		return nil, fmt.Errorf("renderdecode: decode kitty base64: %w", err)
 	}
 
 	format := opts.Format
@@ -98,7 +100,7 @@ func DecodeKitty(payload []byte) (*image.RGBA, error) {
 	}
 	img, err := dec.Decode(bytes.NewReader(raw))
 	if err != nil {
-		return nil, fmt.Errorf("capture: decode kitty image: %w", err)
+		return nil, fmt.Errorf("renderdecode: decode kitty image: %w", err)
 	}
 	return toRGBA(img), nil
 }
@@ -116,18 +118,18 @@ func reassembleKittyFrames(s string) (optsText, b64 string, err error) {
 	seen := false
 	for len(s) > 0 {
 		if !strings.HasPrefix(s, apcIntro) {
-			return "", "", errors.New("capture: kitty payload missing APC envelope ESC _ G ... ESC backslash")
+			return "", "", errors.New("renderdecode: kitty payload missing APC envelope ESC _ G ... ESC backslash")
 		}
 		end := strings.Index(s, st)
 		if end < 0 {
-			return "", "", errors.New("capture: kitty payload missing String Terminator ESC backslash")
+			return "", "", errors.New("renderdecode: kitty payload missing String Terminator ESC backslash")
 		}
 		inner := s[len(apcIntro):end]
 		s = s[end+len(st):]
 
 		semi := strings.IndexByte(inner, ';')
 		if semi < 0 {
-			return "", "", errors.New("capture: kitty payload missing options/payload separator")
+			return "", "", errors.New("renderdecode: kitty payload missing options/payload separator")
 		}
 		frameControl, frameBody := inner[:semi], inner[semi+1:]
 		if !seen {
@@ -141,7 +143,7 @@ func reassembleKittyFrames(s string) (optsText, b64 string, err error) {
 		}
 	}
 	if !seen {
-		return "", "", errors.New("capture: kitty payload missing APC envelope ESC _ G ... ESC backslash")
+		return "", "", errors.New("renderdecode: kitty payload missing APC envelope ESC _ G ... ESC backslash")
 	}
 	return first, bodies.String(), nil
 }

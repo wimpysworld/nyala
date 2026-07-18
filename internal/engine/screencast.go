@@ -16,155 +16,29 @@ import (
 )
 
 // msSince returns the milliseconds elapsed since start as a wall-clock duration.
-// It is never negative because time.Since uses the monotonic clock. The capture
-// phase timing uses it so the stats carry float milliseconds.
+// It is never negative because time.Since uses the monotonic clock.
 func msSince(start time.Time) float64 {
 	return float64(time.Since(start).Microseconds()) / 1000
 }
 
 // pendingFrame is one decoded screencast frame the worker produces off the
 // listener goroutine and hands to compose. It carries no ack id: the frame was
-// already acked on receive (handleScreencastFrame), before decode.
+// already acknowledged on receipt, before decode.
 type pendingFrame struct {
-	img      image.Image                   // decoded bitmap in its decoder-native layout
-	png      string                        // owned base64 PNG for direct live Kitty transmission
-	meta     *page.ScreencastFrameMetadata // scroll offset and page scale for the sync
-	bytes    int                           // screencast payload byte size, for capture stats
-	decodeMS float64                       // wall-clock decode time in ms, set under capture only
-}
-
-// rawFrame is one undecoded screencast frame waiting in the coalescing slot: the
-// base64 payload and the screencast metadata. The frame is acked on receive,
-// before it enters the slot, so it carries no ack id. The slot exists only to hand
-// the latest raw frame to the decode worker, dropping older undecoded frames.
-type rawFrame struct {
-	data string                        // base64 screencast payload, decoded by the worker
+	img  image.Image                   // decoded bitmap in its decoder-native layout
+	png  string                        // owned base64 PNG for direct live Kitty transmission
 	meta *page.ScreencastFrameMetadata // scroll offset and page scale for the sync
 }
 
-// frameSlot is the latest-wins coalescing slot for undecoded screencast frames. It
-// holds at most one raw frame; a newly arrived frame replaces any unconsumed one,
-// so the decode worker always takes the newest and older undecoded frames are
-// dropped without decode. It carries no ack: every delivered frame is acked once on
-// receive (handleScreencastFrame), before it reaches the slot, so a dropped raw
-// frame is already acked. The slot is the pure, browser-free coalescing core: feed
-// it raw frames with put and take the latest with tryConsume, both browser-free and
-// assertable in a unit test (see screencast_test.go).
-type frameSlot struct {
-	mu      sync.Mutex
-	held    rawFrame
-	full    bool
-	ready   chan struct{} // signals consume that a frame is waiting; buffered size 1
-	dropped bool          // set by drain so a late put stores nothing
-}
-
-// newFrameSlot returns an empty slot ready to accept frames.
-func newFrameSlot() *frameSlot {
-	return &frameSlot{ready: make(chan struct{}, 1)}
-}
-
-// put places the raw frame in the slot, replacing any unconsumed one (latest-wins
-// coalescing). After drain it stores nothing, so no goroutine feeds a slot that
-// will never be consumed. It never acks: the frame is acked on receive before it
-// reaches here, so a replaced frame is already acked.
-func (s *frameSlot) put(frame rawFrame) {
-	s.mu.Lock()
-	if s.dropped {
-		s.mu.Unlock()
-		return
-	}
-	s.held = frame
-	s.full = true
-	s.mu.Unlock()
-	select {
-	case s.ready <- struct{}{}:
-	default:
-	}
-}
-
-// readyC returns the buffered wake channel a put signals, so a caller that must
-// also select on another source (the re-emit poke) can park on the slot's wake
-// alongside it rather than block in consume. A receive on it is only a hint that a
-// frame may be waiting; the caller takes it with tryConsume, which re-checks under
-// the lock.
-func (s *frameSlot) readyC() <-chan struct{} {
-	return s.ready
-}
-
-// tryConsume takes the held raw frame without blocking, returning ok=true when one
-// was present. It returns ok=false on an empty or drained slot, so a caller woken by
-// readyC that finds nothing waiting (a spurious or drained wake) loops back to its
-// select rather than parking. The caller decodes the taken frame off the listener
-// goroutine.
-func (s *frameSlot) tryConsume() (rawFrame, bool) {
-	s.mu.Lock()
-	if !s.full {
-		s.mu.Unlock()
-		return rawFrame{}, false
-	}
-	frame := s.held
-	s.held = rawFrame{}
-	s.full = false
-	s.mu.Unlock()
-	return frame, true
-}
-
-// drained reports whether the slot has been drained, so a caller woken by readyC
-// that found no frame can tell a teardown wake (exit) from a spurious wake (re-park).
-func (s *frameSlot) drained() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.dropped
-}
-
-// drain marks the slot dropped and unblocks a consumer parked on ready, so Close
-// releases the frame loop. After drain, put stores nothing and tryConsume returns
-// ok=false. It needs no ack: the held raw frame was already acked on receive.
-func (s *frameSlot) drain() {
-	s.mu.Lock()
-	s.dropped = true
-	s.held, s.full = rawFrame{}, false
-	s.mu.Unlock()
-	select {
-	case s.ready <- struct{}{}:
-	default:
-	}
-}
-
-// handleScreencastFrame acks one delivered screencast frame immediately, then
-// hands the raw, undecoded frame to the coalescing slot for the worker to decode
-// off this goroutine. It is the screencast-frame arm of the listener type switch,
-// running on the chromedp ListenTarget event goroutine, so it must do no PNG decode
-// and no chromedp.Run here: it counts ingest, records the metadata event, acks via
-// the pump channel (the #920-safe off-goroutine ack), stamps the watchdog, and puts
-// the raw frame. Acking on receive, before decode, releases Chrome's in-flight
-// credit at once and decouples the ack from decode and any downstream stall. The
-// recorder carries metadata only, never the frame image bytes, so the event stream
-// holds no payload.
-func (e *ChromiumEngine) handleScreencastFrame(slot *frameSlot, f *page.EventScreencastFrame) {
-	e.receiveScreencastFrame(f)
-	// Hand the raw frame to the coalescing slot; the worker decodes it. An older
-	// undecoded frame is dropped without decode, and it is already acked.
-	slot.put(rawFrame{data: f.Data, meta: f.Metadata})
-}
-
-// handleScreencastFrameLive is the live-path arm of the listener: it runs the same
-// receive-side work as handleScreencastFrame (count, watchdog stamp,
-// record, ack) then hands the raw frame, tagged with its arrival sequence, to the
-// bounded decode-pool queue rather than the single-worker slot. The pool decodes in
-// parallel and the collector re-serialises by sequence, so several frames decode at
-// once while the screen stays monotonic. Capture never takes this arm: it keeps the
-// ordered slot via handleScreencastFrame. The frame is acked here on receive, so a
-// frame the queue later drops (oldest, under load) is already acked.
+// handleScreencastFrameLive acknowledges a frame on receipt and queues it for
+// parallel decode, tagged with its arrival sequence for ordered publication.
 func (e *ChromiumEngine) handleScreencastFrameLive(q *rawFrameQueue, seq uint64, f *page.EventScreencastFrame) {
 	e.receiveScreencastFrame(f)
 	q.put(seqRawFrame{seq: seq, data: f.Data, meta: f.Metadata})
 }
 
-// receiveScreencastFrame runs the sink-independent receive-side work both the slot
-// (capture) and queue (live) arms share: it counts true ingest before any coalescing,
-// stamps the stuck-state watchdog, records the metadata event (never the image
-// bytes), and acks the frame. The
+// receiveScreencastFrame counts true ingest before queue coalescing, stamps the
+// stuck-state watchdog, and acknowledges the frame. The
 // ack lands on receive, before any decode, so Chrome's in-flight credit is released at
 // once and decoupled from decode and any downstream stall. It runs on the chromedp
 // ListenTarget event goroutine, so it does no PNG decode and no chromedp.Run: the ack
@@ -178,45 +52,23 @@ func (e *ChromiumEngine) receiveScreencastFrame(f *page.EventScreencastFrame) {
 	}
 	// Stamp the receive for the stuck-state watchdog (always on, lock-free).
 	e.markFrameReceived(now, f.SessionID)
-	if e.recorder != nil {
-		e.recorder.Record(captureEvent{
-			Type:      captureEventScreencastFrame,
-			Meta:      f.Metadata,
-			SessionID: f.SessionID,
-		})
-	}
 	// Ack on receive, before any decode. The enqueue is #920-safe: ackPump runs the
 	// chromedp.Run off this event goroutine. Whether this frame is later decoded or
 	// dropped, it is acked exactly once, here.
 	e.ackFrame(f.SessionID)
 }
 
-// registerScreencastListener registers the one ListenTarget handler that feeds each
-// EventScreencastFrame into the frame sink, acking it on receive. It routes to the
-// live decode-pool queue when one is set (rawQ non-nil) and to the ordered slot
-// otherwise (capture), so the pool is gated to the live path exactly like the GPU
-// flag. It stamps each delivered frame with a strictly increasing arrival sequence
-// (a closure-local counter, single-goroutine on the event goroutine, lock-free), so
-// the pool collector can drop a stale out-of-order decode. It is called once per
-// session, on the fresh session context, so a stream restart (restartStream) does not
-// add a second handler. chromedp appends listeners and drops them only when the
-// context is done, so re-registering on every backend switch or resize would pile up
-// handlers that each ack every frame. The capture paint latch is not fired here: the
-// navigate waiter's matched load signal closes it (markPainted from navigateAsync),
-// so this listener handles only screencast frames.
-func (e *ChromiumEngine) registerScreencastListener(ctx context.Context, slot *frameSlot, rawQ *rawFrameQueue) {
-	if ctx == nil || (slot == nil && rawQ == nil) {
+// registerScreencastListener registers the session listener that acknowledges each
+// frame on receipt and feeds the live decode queue with an arrival sequence.
+func (e *ChromiumEngine) registerScreencastListener(ctx context.Context, rawQ *rawFrameQueue) {
+	if ctx == nil || rawQ == nil {
 		return
 	}
 	var seq uint64
 	chromedp.ListenTarget(ctx, func(ev any) {
 		if f, ok := ev.(*page.EventScreencastFrame); ok {
-			if rawQ != nil {
-				seq++
-				e.handleScreencastFrameLive(rawQ, seq, f)
-				return
-			}
-			e.handleScreencastFrame(slot, f)
+			seq++
+			e.handleScreencastFrameLive(rawQ, seq, f)
 		}
 	})
 }
@@ -229,8 +81,8 @@ type screencastFmt struct {
 	quality int                   // JPEG quality (0-100); ignored for PNG
 }
 
-// startScreencast starts (or restarts) the screencast at the engine's active capture
-// size in fmtSel. The frame listener is
+// startScreencast starts or restarts the screencast at the active frame dimensions
+// in fmtSel. The frame listener is
 // registered once per session by registerScreencastListener, so this issues only the
 // CDP StartScreencast command; restartStream re-issues it without leaking a second
 // listener. It sets the JPEG quality only for Block's JPEG format. The stream
@@ -241,9 +93,6 @@ func (e *ChromiumEngine) startScreencast(ctx context.Context, capW, capH int, fm
 	}
 	if fmtSel.format == "" {
 		fmtSel.format = page.ScreencastFormatPng
-	}
-	if e.recorder != nil {
-		e.recorder.Record(captureEvent{Type: captureEventScreencastControl, Action: "start"})
 	}
 	action := page.StartScreencast().
 		WithFormat(fmtSel.format).
@@ -380,8 +229,7 @@ func (e *ChromiumEngine) startInitialScreencast(ctx context.Context) error {
 }
 
 // initialScreencastFormat picks the screencast format for a stream (re)start from the
-// active backend and the capture flag, read under e.mu. Capture forces PNG for a
-// byte-exact corpus. Live Block runs JPEG for its whole stream, since the block
+// active backend, read under e.mu. Block runs JPEG for its whole stream, since the block
 // backend's sub-cell downsample washes out JPEG artefacts and a static page under
 // JPEG is deterministic. Live Kitty always uses PNG so every frame can pass directly
 // to the terminal. Live Sixel also uses PNG for every frame, preserving fidelity and
@@ -394,9 +242,6 @@ func (e *ChromiumEngine) initialScreencastFormat() screencastFmt {
 }
 
 func (e *ChromiumEngine) initialScreencastFormatLocked() screencastFmt {
-	if e.captureOn {
-		return screencastFmt{format: page.ScreencastFormatPng}
-	}
 	if e.backend == "block" {
 		return screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality}
 	}
@@ -404,10 +249,10 @@ func (e *ChromiumEngine) initialScreencastFormatLocked() screencastFmt {
 }
 
 // ackFrame enqueues one frame's SessionID onto the pump channel for ackPump to run
-// as page.ScreencastFrameAck off the ListenTarget event goroutine. handleScreencastFrame
-// calls it once per delivered frame, on receive; the watchdog calls it to re-couple
-// a stalled stream. It never runs the ack inline, because handleScreencastFrame is
-// on the event goroutine and a chromedp.Run there is the chromedp #920 self-deadlock.
+// as page.ScreencastFrameAck off the ListenTarget event goroutine. The listener calls
+// it once per delivered frame; the watchdog calls it to re-couple a stalled stream.
+// It never runs the ack inline because chromedp.Run on the event goroutine causes
+// the chromedp #920 self-deadlock.
 // The enqueue is select-with-default so a full channel or a torn-down session (a nil
 // acks channel) drops the ack rather than parking the caller. Chrome self-throttles
 // the screencast to at most a few frames in flight, so the buffered pump keeps pace
@@ -416,9 +261,6 @@ func (e *ChromiumEngine) ackFrame(ack int64) {
 	e.mu.Lock()
 	acks := e.acks
 	e.mu.Unlock()
-	if e.recorder != nil {
-		e.recorder.Record(captureEvent{Type: captureEventFrameAck, SessionID: ack})
-	}
 	if acks == nil {
 		return
 	}
@@ -461,7 +303,7 @@ const screencastStallThreshold = 5 * time.Second
 
 // markFrameReceived stamps the wall time and SessionID of a delivered screencast
 // frame for the stuck-state watchdog, and clears the per-gap poke guard so a fresh
-// frame re-arms recovery. handleScreencastFrame calls it on the listener goroutine
+// frame re-arms recovery. The listener calls it
 // for every delivered frame, before any decode. It is lock-free (atomics), so it
 // adds only three atomic stores to the hot receive path and is always on,
 // independent of the NYALA_FPS_TIMING ingest counter.
@@ -537,9 +379,8 @@ type overlayState struct {
 // frame-emit goroutine). The held runs are read-only once published, so the
 // reader shares the slice without copying.
 type textSync struct {
-	mu         sync.Mutex
-	runs       []render.GlyphRun
-	snapshotMS float64
+	mu   sync.Mutex
+	runs []render.GlyphRun
 	// scrollY tags the runs with the DOM vertical scroll offset (CSS pixels) they were
 	// decoded at, so composeFrame pairs a bitmap to this set only when the bitmap's own
 	// scroll matches. Vertical scroll is the only axis that reflows rows, so the pair
@@ -554,22 +395,21 @@ type textSync struct {
 
 // store publishes the latest decoded runs, snapshot time, the DOM vertical scroll
 // offset the runs were decoded at, and the layout generation they were decoded at.
-func (t *textSync) store(runs []render.GlyphRun, snapshotMS, scrollY float64, gen int64) {
+func (t *textSync) store(runs []render.GlyphRun, scrollY float64, gen int64) {
 	t.mu.Lock()
 	t.runs = runs
-	t.snapshotMS = snapshotMS
 	t.scrollY = scrollY
 	t.gen = gen
 	t.mu.Unlock()
 }
 
-// latest returns the most recently published runs, snapshot time, the DOM vertical
+// latest returns the most recently published runs, the DOM vertical
 // scroll offset, and the layout generation the runs were decoded at, or nil and
 // zeroes before the first snapshot lands.
-func (t *textSync) latest() ([]render.GlyphRun, float64, float64, int64) {
+func (t *textSync) latest() ([]render.GlyphRun, float64, int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.runs, t.snapshotMS, t.scrollY, t.gen
+	return t.runs, t.scrollY, t.gen
 }
 
 // noSnapshotBackoff is the idle pause the snapshot goroutine takes between
@@ -595,23 +435,12 @@ const reSnapshotMinInterval = time.Second
 // scroll position regardless of the cadence phase.
 const scrollCadence = 150 * time.Millisecond
 
-// initialSettleTimeout bounds how long the capture first-publish latch (textReady)
-// waits for the initial layout to settle before it releases anyway. Under capture
-// the snapshot goroutine holds textReady past the first publish until the first
-// debounced-reflow re-snapshot lands (networkAlmostIdle, the load-settle signal), so
-// the first counted capture frame carries the settled overlay rather than a
-// pre-settle snapshot a post-paint reflow would still shift. A page that never fires
-// that signal releases the latch on this backstop, so the capture never stalls. It
-// is a var, not a const, so a test shrinks it to run instantly; production reads it
-// only under capture, where textReady is non-nil, so the live path never touches it.
-var initialSettleTimeout = 2 * time.Second
-
 // runTextSync runs the DOM snapshot loop on its own goroutine, off the frame-emit
 // goroutine, so snapshot latency never stalls frame emission or withholds acks. It
-// is clocked by the page, not by frame delivery: it takes the first snapshot when
-// the painted latch closes (firstContentfulPaint), then re-snapshots only on a real
-// trigger. So a static page that produces no further frames still publishes its
-// text once after paint, and the frame loop folds the published runs onto every
+// is independent of frame delivery: it takes the first snapshot as soon as the
+// block backend is active, then re-snapshots only on a real trigger. So a static
+// page that produces no further frames still publishes its text, and the frame
+// loop folds the published runs onto every
 // frame as sticky state. The re-snapshot triggers arrive on three channels: reSnap
 // fires an immediate re-snapshot on resize or backend switch (restartStream),
 // reflow carries the networkAlmostIdle late-reflow pokes, which this loop debounces
@@ -659,9 +488,8 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 	// waitForFirstSnapshot only returns for the block backend, so a graphics start
 	// never reaches here.
 	e.syncFontForcing(ctx)
-	// First snapshot on the painted latch: the navigation trigger, single-shot per
-	// session, and the new reader of the painted latch replacing firstSnapshotAfterPaint.
-	// Publish before calibrating so first paint shows text without waiting the
+	// Publish the session's first snapshot as soon as the block backend is active.
+	// Publish before calibrating so the first composed frame can show text without waiting for the
 	// calibration base (document.fonts.load plus probe and reinject evals). The seed
 	// advance is already ~cellW (advanceRatio measured from the shipped TTF), so seed
 	// placement is near-correct; the calibrated re-publish below trims the residual.
@@ -680,45 +508,6 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 	e.mu.Unlock()
 	state = e.publishSnapshot(ctx, snapshot, ts, state)
 	pokeReEmit(reEmit)
-	// Signal the capture driver that the overlay runs have published, so it counts a
-	// usable frame only once the calibrated text has landed: this runs after the
-	// calibrated re-publish above, so a multi-frame capture never counts the
-	// uncalibrated first publish. Off the capture path textReady is nil, so
-	// markTextReady is a no-op and this arms no timer, keeping production at a nil
-	// check. For a single-frame capture (settleHold) hold the latch past the first
-	// publish until the initial layout settles: the first debounced-reflow re-snapshot
-	// (networkAlmostIdle, the load-settle signal) releases it on the settled overlay,
-	// and initialSettleTimeout is the backstop for a page that never fires that signal.
-	// Without the hold the one bundled frame can carry a pre-settle snapshot a
-	// post-paint reflow (a late font swap, a CJK vertical/ruby relayout) would still
-	// shift, making the single-frame capture non-deterministic. A multi-frame capture
-	// leaves settleHold false and fires the latch now, so the extra frames it counts
-	// come from the load period a settle wait would otherwise drain.
-	textReadyPending := e.settleHold
-	if !textReadyPending {
-		e.markTextReady()
-	}
-	var settleTimer *time.Timer
-	var settleTimerC <-chan time.Time
-	if textReadyPending {
-		settleTimer = time.NewTimer(initialSettleTimeout)
-		settleTimerC = settleTimer.C
-	}
-	// releaseTextReady closes the capture first-publish latch once and stops the
-	// settle backstop timer, so the load-settle and backstop arms below both funnel
-	// through one place and the latch fires exactly once.
-	releaseTextReady := func() {
-		if !textReadyPending {
-			return
-		}
-		e.markTextReady()
-		textReadyPending = false
-		settleTimerC = nil
-		if settleTimer != nil {
-			settleTimer.Stop()
-		}
-	}
-
 	// debounce arms a trailing timer per reflow quiet window; scrollDebounce does the
 	// same for scroll. A nil channel means none is pending; each timer is armed on its
 	// poke and cleared on fire.
@@ -763,15 +552,6 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 			debounceC = nil
 			state = e.reSnapshotCapped(ctx, snapshot, ts, state)
 			pokeReEmit(reEmit)
-			// The load settled: the first debounced-reflow re-snapshot published the
-			// resting-layout overlay and re-emitted the held bitmap with it, so release
-			// the capture first-publish latch now, on the settled text.
-			releaseTextReady()
-		case <-settleTimerC:
-			// Backstop: the page fired no load-settle reflow within initialSettleTimeout,
-			// so release the capture first-publish latch on the first-publish text rather
-			// than stall the capture.
-			releaseTextReady()
 		case <-scroll:
 			// Scroll: leading throttle plus trailing debounce. Snapshot now when the
 			// cadence allows, so the overlay tracks mid-scroll, and always re-arm the
@@ -786,32 +566,18 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 			state = e.publishSnapshot(ctx, snapshot, ts, state)
 			state.lastScrollSnap = time.Now()
 			pokeReEmit(reEmit)
-			// Signal the capture scroll hook that the text at the resting scroll position
-			// has published, so it draws the scrolled frame with the settled overlay rather
-			// than the stale pre-scroll text. A no-op off the capture path.
-			e.pokeScrollSettle()
 		}
 	}
 }
 
-// waitForFirstSnapshot blocks until the active backend takes the overlay and the
-// painted latch has closed, the gate the first post-paint snapshot fires on. A
+// waitForFirstSnapshot blocks until the active backend takes the overlay. A
 // graphics backend publishes nil and backs off rather than reading layout it
-// ignores; this runs before the painted gate so a non-block launch does not block
-// on paint. Under capture painted closes on firstContentfulPaint; in production
-// painted is nil so it proceeds at once. It returns false when ctx is cancelled, so
+// ignores. It returns false when ctx is cancelled, so
 // the caller exits without snapshotting.
 func (e *ChromiumEngine) waitForFirstSnapshot(ctx context.Context, ts *textSync) bool {
 	for !e.textOverlayBackend() {
-		ts.store(nil, 0, 0, 0)
+		ts.store(nil, 0, 0)
 		if sleepCtx(ctx, noSnapshotBackoff) {
-			return false
-		}
-	}
-	if e.painted != nil {
-		select {
-		case <-e.painted:
-		case <-ctx.Done():
 			return false
 		}
 	}
@@ -827,7 +593,7 @@ func (e *ChromiumEngine) waitForFirstSnapshot(ctx context.Context, ts *textSync)
 // paint would leave a stale font-size and drift the origins the walk snaps. The
 // recalibrate rides the same rate cap, so a chatty page cannot re-measure per reflow.
 // It returns the updated hold state.
-func (e *ChromiumEngine) reSnapshotCapped(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, int64, overlayState), ts *textSync, state overlayState) overlayState {
+func (e *ChromiumEngine) reSnapshotCapped(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, scrollOffset, int64, overlayState), ts *textSync, state overlayState) overlayState {
 	now := time.Now()
 	if !state.lastReSnap.IsZero() && now.Sub(state.lastReSnap) < reSnapshotMinInterval {
 		return state
@@ -855,7 +621,7 @@ func scrollSnapDue(last, now time.Time, cadence time.Duration) bool {
 // reEmit on a fire so the held frame repaints with the new scroll's text. Each
 // snapshot decodes runs at its own whole-cell scroll, so the overlay tracks the page
 // as it scrolls.
-func (e *ChromiumEngine) scrollSnap(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, int64, overlayState), ts *textSync, state overlayState, reEmit chan<- struct{}) overlayState {
+func (e *ChromiumEngine) scrollSnap(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, scrollOffset, int64, overlayState), ts *textSync, state overlayState, reEmit chan<- struct{}) overlayState {
 	now := time.Now()
 	if !scrollSnapDue(state.lastScrollSnap, now, scrollCadence) {
 		return state
@@ -897,18 +663,18 @@ func armDebounce(t *time.Timer, d time.Duration) *time.Timer {
 	return t
 }
 
-// publishSnapshot runs one snapshot and publishes its runs, time, scroll, and
+// publishSnapshot runs one snapshot and publishes its runs, scroll, and
 // layout generation to ts. It returns the updated hold state. It is the single
 // snapshot-and-publish step the first-after-paint and re-snapshot triggers share, so
 // the publish stays in one place. A graphics backend takes no overlay, so it
 // publishes nil and skips the layout read rather than snapshot the full viewport it
 // ignores.
-func (e *ChromiumEngine) publishSnapshot(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, float64, scrollOffset, int64, overlayState), ts *textSync, state overlayState) overlayState {
+func (e *ChromiumEngine) publishSnapshot(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, scrollOffset, int64, overlayState), ts *textSync, state overlayState) overlayState {
 	if !e.textOverlayBackend() {
-		ts.store(nil, 0, 0, 0)
+		ts.store(nil, 0, 0)
 		return state
 	}
-	runs, snapshotMS, scroll, gen, next := snapshot(ctx, state)
+	runs, scroll, gen, next := snapshot(ctx, state)
 	// snapshotRuns rebuilds the hold fields and drops the cadence timestamps, so carry
 	// them forward here: the re-snapshot caps live in runTextSync, not the snapshot.
 	next.lastReSnap = state.lastReSnap
@@ -916,7 +682,7 @@ func (e *ChromiumEngine) publishSnapshot(ctx context.Context, snapshot func(cont
 	// Tag the published runs with the DOM scroll and the layout generation they were
 	// decoded at, so composeFrame can pair them to a same-generation bitmap at the same
 	// scroll.
-	ts.store(runs, snapshotMS, scroll.Y, gen)
+	ts.store(runs, scroll.Y, gen)
 	return next
 }
 
@@ -930,133 +696,6 @@ func sleepCtx(ctx context.Context, d time.Duration) (cancelled bool) {
 		return false
 	case <-ctx.Done():
 		return true
-	}
-}
-
-// runFrameLoop takes the latest raw frame from the slot, decodes it off the
-// listener goroutine, builds a synced render.Frame, and pushes it on the frames
-// channel, until the context is cancelled or the slot is drained. The decode runs
-// here, not in handleScreencastFrame, so the chromedp receiver goroutine never
-// stalls on a PNG decode and acks are never queued behind one. A corrupt frame
-// fails to decode and is dropped; it is already acked on receive, so no ack is
-// needed here. It runs in its own goroutine started per session; a crash
-// or Close drains the slot and cancels the context to stop it. The DOM snapshot
-// runs on a separate goroutine (runTextSync) clocked by the page, not by frame
-// delivery, so this loop reads the latest published overlay runs as sticky state
-// and folds them onto every frame without ever poking the snapshot or blocking on
-// a snapshot read. It also parks on the re-emit poke the snapshot goroutine sends
-// after each publish: on a poke it re-pushes its last consumed bitmap recomposed
-// with the freshly published text, so a static page that delivers no new screencast
-// frame still repaints with text. The re-emit reuses the held decoded bitmap and
-// never re-feeds the slot. On
-// each consumed frame it compares the frame's scroll offset against the last seen
-// one and pokes the scroll channel on any change, so the snapshot goroutine
-// re-snapshots the text at the new scroll once a scroll settles. The latest-wins
-// slot may drop intermediate frames during a fast scroll, but a scroll always
-// delivers a final settled frame, so the offset change is seen and the overlay
-// catches up. It does not close frames: the channel outlives one session so
-// consumers keep reading across a crash recovery, and only the supervisor closes
-// it on Close. The send selects on the context so the goroutine cannot leak when
-// the consumer stops.
-func (e *ChromiumEngine) runFrameLoop(ctx context.Context, slot *frameSlot, frames chan render.Frame, ts *textSync, scroll chan<- struct{}, reEmit <-chan struct{}) {
-	if ctx == nil || slot == nil || frames == nil {
-		return
-	}
-	// Read the per-session load timer once here, on the goroutine start ordering, so
-	// no per-frame lock and no rebuild race with startSession's write. A nil timer is
-	// a valid disabled timer.
-	e.mu.Lock()
-	timer := e.timing
-	decode := e.decode
-	e.mu.Unlock()
-	// timeDecode gates the worker decode-clock read. It is on under capture (for the
-	// per-frame decodeMS the bundle records) or when the ingest counter is armed (for
-	// the NYALA_FPS_TIMING decode budget). Off both, the decode is not timed, so an
-	// off run reads no clock on the worker. Read once here: captureOn is set before
-	// the goroutine starts, and the ingest arming is fixed at construction.
-	ingestArmed := e.ingest.armed()
-	timeDecode := e.captureOn || ingestArmed
-	var held pendingFrame
-	var haveHeld bool
-	// lastScroll tracks the scroll offset of the last consumed frame so a change
-	// pokes a re-snapshot. It lives on this goroutine, so the tracking is lock-free.
-	var lastScroll scrollOffset
-	var haveScroll bool
-	// lastComposed is the overlay the previous frame composed. When a bitmap's
-	// inferred generation or scroll does not match the latest published run set,
-	// composeFrame holds this set for one frame rather than composing a stale set onto
-	// a fresh bitmap. It lives on this goroutine, so the hold is lock-free.
-	var lastComposed []render.GlyphRun
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-reEmit:
-			// Text published with no new frame in flight: re-push the held bitmap so
-			// the viewer repaints with the fresh text. Before the first frame there is
-			// nothing to re-push, so the poke is a no-op; the first frame carries it.
-			if !haveHeld {
-				continue
-			}
-			if !e.emitFrame(ctx, frames, ts, held, &lastComposed) {
-				return
-			}
-			timer.markFrame()
-		case <-slot.readyC():
-			raw, ok := slot.tryConsume()
-			if !ok {
-				// A drained slot wakes readyC with no frame; exit on drain, otherwise the
-				// wake was spurious and the select re-parks.
-				if slot.drained() {
-					return
-				}
-				continue
-			}
-			// Decode off the listener goroutine. Time it only when capture or the ingest
-			// counter needs it. A corrupt frame fails here and is dropped; it was already
-			// acked on receive, and it does not count toward the decode budget.
-			var start time.Time
-			if timeDecode {
-				start = time.Now()
-			}
-			var img image.Image
-			var derr error
-			switch {
-			case decode != nil:
-				img, derr = decode(raw.data)
-			default:
-				img, derr = decodeScreencastNative(raw.data)
-			}
-			if derr != nil {
-				continue
-			}
-			var decodeMS float64
-			if timeDecode {
-				decodeMS = msSince(start)
-			}
-			if ingestArmed {
-				e.ingest.recordDecode(decodeMS)
-			}
-			pending := pendingFrame{img: img, meta: raw.meta}
-			if e.captureOn {
-				pending.bytes = len(raw.data)
-				pending.decodeMS = decodeMS
-			}
-			held, haveHeld = pending, true
-			off, offOK := frameScrollOffset(pending)
-			if offOK {
-				if !haveScroll || off != lastScroll {
-					if haveScroll {
-						pokeScroll(scroll)
-					}
-					lastScroll, haveScroll = off, true
-				}
-			}
-			if !e.emitFrame(ctx, frames, ts, pending, &lastComposed) {
-				return
-			}
-			timer.markFrame()
-		}
 	}
 }
 
@@ -1146,17 +785,16 @@ func (e *ChromiumEngine) emitFrame(ctx context.Context, frames chan render.Frame
 // run set) it composes nil, the bitmap alone.
 func (e *ChromiumEngine) composeFrame(pending pendingFrame, ts *textSync, lastComposed *[]render.GlyphRun) render.Frame {
 	var runs []render.GlyphRun
-	var snapshotMS, snapScrollY float64
+	var snapScrollY float64
 	var tsGen int64
 	var haveTS bool
 	if ts != nil {
-		runs, snapshotMS, snapScrollY, tsGen = ts.latest()
+		runs, snapScrollY, tsGen = ts.latest()
 		haveTS = runs != nil
 	}
 	e.mu.Lock()
 	_, cellCSSH := e.snapshotCellPx()
 	rows := e.rows
-	scale := e.layoutScale()
 	e.mu.Unlock()
 	bitmapScrollY := snapScrollY
 	if pending.meta != nil {
@@ -1197,18 +835,17 @@ func (e *ChromiumEngine) composeFrame(pending pendingFrame, ts *textSync, lastCo
 		*lastComposed = composed
 	}
 	frame := render.Frame{Img: pending.img, EncodedPNG: pending.png, Text: composed}
-	if e.captureOn {
-		frame.Stats = &render.FrameStats{
-			ScreencastPayloadBytes: int64(pending.bytes),
-			ScreencastDecodeMS:     pending.decodeMS,
-			DOMSnapshotMS:          snapshotMS,
-			LayoutScale:            scale,
-		}
-		// Copy the screencast metadata onto a neutral render.ScreencastMeta so the
-		// bundle records it without the render seam importing the page type. Off the
-		// capture path frame.Meta stays nil, so production pays zero cost.
-		if pending.meta != nil {
-			frame.Meta = screencastMeta(pending.meta)
+	if e.diagnosticFrameMeta && pending.meta != nil {
+		e.mu.Lock()
+		serial := e.diagnosticCalibrationSerial
+		succeeded := e.diagnosticCalibrationSucceeded
+		fontSize := e.diagnosticCalibratedFontSize
+		e.mu.Unlock()
+		frame.Diagnostics = &render.FrameDiagnostics{
+			Meta:                 screencastMeta(pending.meta),
+			CalibrationSerial:    serial,
+			CalibrationSucceeded: succeeded,
+			CalibratedFontSize:   fontSize,
 		}
 	}
 	return frame
@@ -1252,27 +889,19 @@ func shiftRunsToBitmapScroll(runs []render.GlyphRun, bitmapScrollY, snapScrollY,
 // grid right-edge clip), then routes the result through the bounded holdDecision: a
 // successful read emits the fresh runs, a failing read holds the last-matched runs
 // for at most holdStalenessLimit before dropping to nil. It returns the emitted
-// runs, the snapshot time, the scroll offset, the layout generation, and the updated
-// state. It runs on the snapshot goroutine; the walk chromedp.Run stays outside any
+// runs, the scroll offset, the layout generation, and the updated state. It runs
+// on the snapshot goroutine; the walk chromedp.Run stays outside any
 // lock.
-func (e *ChromiumEngine) snapshotRuns(ctx context.Context, state overlayState) ([]render.GlyphRun, float64, scrollOffset, int64, overlayState) {
+func (e *ChromiumEngine) snapshotRuns(ctx context.Context, state overlayState) ([]render.GlyphRun, scrollOffset, int64, overlayState) {
 	if ctx == nil {
 		emit, last, failing := holdDecision(context.Canceled, nil, state.lastText, state.failingSince, time.Now())
-		return emit, 0, state.lastScroll, state.lastGen, overlayState{lastText: last, lastScroll: state.lastScroll, lastGen: state.lastGen, failingSince: failing}
+		return emit, state.lastScroll, state.lastGen, overlayState{lastText: last, lastScroll: state.lastScroll, lastGen: state.lastGen, failingSince: failing}
 	}
 	e.mu.Lock()
 	cellW, cellH := e.snapshotCellPx()
 	cols := e.cols
 	e.mu.Unlock()
-	start := time.Now()
 	result, err := e.textWalk(ctx, cellW, cellH)
-	var snapshotMS float64
-	if e.captureOn {
-		snapshotMS = msSince(start)
-	}
-	if e.recorder != nil {
-		e.recorder.Record(captureEvent{Type: captureEventDOMSnapshot})
-	}
 	var decoded []render.GlyphRun
 	gen := state.lastGen
 	var scroll scrollOffset
@@ -1298,20 +927,20 @@ func (e *ChromiumEngine) snapshotRuns(ctx context.Context, state overlayState) (
 		emitScroll = state.lastScroll
 		emitGen = state.lastGen
 	}
-	return emit, snapshotMS, emitScroll, emitGen, overlayState{lastText: last, lastScroll: emitScroll, lastGen: emitGen, failingSince: failing}
+	return emit, emitScroll, emitGen, overlayState{lastText: last, lastScroll: emitScroll, lastGen: emitGen, failingSince: failing}
 }
 
 // screencastMeta copies the CDP screencast frame metadata into a neutral
-// render.ScreencastMeta, so the bundle records the scroll offset, page scale, and
-// device size without the render seam importing the page type. The timestamp is
+// render.ScreencastMeta so diagnostics can read scroll and device geometry without
+// the render seam importing the page type. The timestamp is
 // the frame swap time as float64 seconds since the Unix epoch, or 0 when absent.
-func screencastMeta(meta *page.ScreencastFrameMetadata) *render.ScreencastMeta {
+func screencastMeta(meta *page.ScreencastFrameMetadata) render.ScreencastMeta {
 	var ts float64
 	if meta.Timestamp != nil {
 		t := time.Time(*meta.Timestamp)
 		ts = float64(t.UnixNano()) / float64(time.Second)
 	}
-	return &render.ScreencastMeta{
+	return render.ScreencastMeta{
 		OffsetTop:       meta.OffsetTop,
 		PageScaleFactor: meta.PageScaleFactor,
 		DeviceWidth:     meta.DeviceWidth,
@@ -1332,9 +961,6 @@ func (e *ChromiumEngine) restartStreamLocked() error {
 	e.mu.Unlock()
 	if ctx == nil {
 		return nil
-	}
-	if e.recorder != nil {
-		e.recorder.Record(captureEvent{Type: captureEventScreencastControl, Action: "restart"})
 	}
 	// Poke the snapshot goroutine for an immediate re-snapshot: a resize or backend
 	// switch changes the layout viewport, so the prior text no longer maps to the

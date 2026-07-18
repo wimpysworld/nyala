@@ -8,7 +8,7 @@
 // never reads as a real value. Nullable fields are pointers for that reason.
 package harness
 
-import "github.com/wimpysworld/nyala/internal/capture"
+import "github.com/wimpysworld/nyala/internal/cellraster"
 
 // SchemaVersion is the report schema version. Bump it on any breaking change to
 // the JSON shape. Stage 0 pins it to 1.
@@ -24,7 +24,7 @@ type Viewport struct {
 // the Route A cell pixel size. It is the geometry the reference image is
 // downscaled to before scoring.
 func (v Viewport) PixelSize() (w, h int) {
-	return v.Cols * capture.CellPxW, v.Rows * capture.CellPxH
+	return v.Cols * cellraster.CellPxW, v.Rows * cellraster.CellPxH
 }
 
 // ComposeSize returns the compose extent in pixels: two columns by four rows per
