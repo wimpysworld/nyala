@@ -111,6 +111,23 @@ func TestValidateGatedCompleteDefaults(t *testing.T) {
 	}
 }
 
+// TestDefaultSixelPSNRUsesGlobalBand checks deterministic sixel output uses the
+// same tight PSNR threshold as the other backends.
+func TestDefaultSixelPSNRUsesGlobalBand(t *testing.T) {
+	thresholds := DefaultThresholds()
+	if _, ok := thresholds.Modes[string(ModeSixel)]; ok {
+		t.Fatal("DefaultThresholds().Modes contains a sixel override, want none")
+	}
+	got, ok := thresholds.thresholdFor(string(ModeSixel), psnrMetric)
+	if !ok {
+		t.Fatal("sixel PSNR threshold is missing")
+	}
+	want := MetricThreshold{Band: 0.5, HigherIsBetter: true}
+	if got != want {
+		t.Errorf("sixel PSNR threshold = %+v, want %+v", got, want)
+	}
+}
+
 // TestValidateGatedMissingMetricErrors checks a thresholds set missing one gated
 // metric fails loud, so a dropped or typo'd JSON key cannot silently disable a
 // gate.

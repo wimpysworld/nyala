@@ -9,14 +9,10 @@
 // is deterministic, so the floor is exactly zero, which is itself the recorded
 // baseline a real per-run jitter would have to clear.
 //
-// The sixel backend is the exception: its lossy encoder is non-deterministic, so
-// repeated identical renders jitter. The calibration measures that jitter as the
-// sixel PSNR noise floor: the standard deviation of PSNR across repeated sixel
-// renders, the worst card-wise value over the corpus. The standard deviation is
-// stable to the recorded precision, while the raw min/max spread never settles,
-// so the floor traces to data rather than a guess. The sixel PSNR threshold band
-// sits well above it. The value is quantised so the committed file stays
-// byte-stable despite the jitter.
+// The sixel calibration repeats identical renders and records their PSNR
+// standard deviation, taking the worst card-wise value over the corpus. The
+// encoder is deterministic, so this floor is exactly zero and sixel uses the
+// global PSNR threshold band.
 //
 // The CER ladder is gosseract-only and cgo-gated behind the "ocr" build tag, so
 // the CER numbers are measured by the tagged calibration path (see
@@ -59,18 +55,11 @@ func (p Progress) report(format string, args ...any) {
 }
 
 // sixelNoiseFloorRuns is how many times the calibration encodes and decodes each
-// card through the sixel backend to measure the PSNR jitter. The lossy encoder
-// draws PSNR from a near-continuous spread that never saturates, so the recorded
-// floor is the standard deviation of that spread (a stable estimator), not the
-// observed min/max (which grows run to run). This many runs is enough for the
-// standard deviation to settle to the committed precision.
+// card through the sixel backend to verify its PSNR is deterministic.
 const sixelNoiseFloorRuns = 64
 
 // sixelNoiseFloorDP is the decimal precision the sixel PSNR noise floor is
-// quantised to, so the committed calibration file stays byte-stable across runs
-// despite the encoder jitter. The standard deviation settles near 0.2 dB with a
-// few thousandths of run-to-run wobble, so one decimal place keeps the committed
-// value stable while two would flap at a rounding boundary.
+// quantised to.
 const sixelNoiseFloorDP = 1
 
 // CalibCols and CalibRows are the pinned calibration grid: the Stage 0 120x40
@@ -123,9 +112,8 @@ type CalibCard struct {
 
 // CalibByteCost is one card's frame byte cost through the deterministic
 // backends, measured by encoding the downscaled card to each wire payload and
-// counting the bytes. The lossy sixel encoder jitters its payload size run to
-// run, so it is omitted here to keep the committed file byte-stable; the block
-// and kitty costs bracket the corpus byte span the bytesPerFrame band fractions.
+// counting the bytes. The historical calibration records block and kitty costs,
+// which bracket the corpus byte span the bytesPerFrame band fractions.
 type CalibByteCost struct {
 	Block int `json:"block"`
 	Kitty int `json:"kitty"`
@@ -195,13 +183,8 @@ type Calibration struct {
 	Ranges CalibRanges `json:"ranges"`
 	// SixelPSNRNoiseFloor is the sixel backend's intrinsic PSNR jitter in dB: the
 	// standard deviation of PSNR across repeated identical sixel renders, taken as
-	// the worst (largest) card-wise value over the corpus. The lossy sixel encoder
-	// is non-deterministic, so this is non-zero; the sixel PSNR threshold band sits
-	// well above it. The standard deviation is used because the encoder's PSNR
-	// spread is near-continuous and its observed min/max never settle, while the
-	// standard deviation is stable to the recorded precision. The byte cost is
-	// excluded from calibration for the same jitter reason, so this is the one
-	// sixel non-determinism number the file records.
+	// the worst (largest) card-wise value over the corpus. The encoder is
+	// deterministic, so this is zero and sixel uses the global PSNR threshold.
 	SixelPSNRNoiseFloor float64 `json:"sixelPsnrNoiseFloor"`
 	// OCRBuilt reports whether the OCR ladder was measured. It is false when the
 	// calibration ran without the "ocr" build tag or without a Tesseract engine,
@@ -255,12 +238,10 @@ func MeasureCalibration(rast *cellraster.Rasteriser, inputs []CalibInput, progre
 // source to the sweep pixel geometry, encodes and decodes it through the sixel
 // backend sixelNoiseFloorRuns times, scores each decoded render against the same
 // reference, and computes the standard deviation of those PSNRs. The corpus-wide
-// maximum standard deviation is the band-driving number: the sixel PSNR threshold
-// sits well above it. The result is quantised to sixelNoiseFloorDP decimals so
-// the committed calibration file is byte-stable across runs despite the encoder
-// jitter. It returns an error when any card's round trips all fail, so a broken
-// sixel encoder surfaces rather than reporting a perfect zero floor. Channel
-// order is RGBA.
+// maximum standard deviation is the recorded noise floor. The result is
+// quantised to sixelNoiseFloorDP decimals. It returns an error when any card's
+// round trips all fail, so a broken sixel encoder surfaces rather than reporting
+// a perfect zero floor. Channel order is RGBA.
 func measureSixelPSNRNoiseFloor(inputs []CalibInput) (float64, error) {
 	pxW, pxH := Viewport{Cols: CalibCols, Rows: CalibRows}.PixelSize()
 	var worst float64
@@ -362,7 +343,7 @@ func sixelRoundTripPSNR(reference *image.RGBA) (float64, error) {
 		return 0, fmt.Errorf("harness: sixel round trip: %w", err)
 	}
 	// Score only PSNR here, not the full metric set. This loop runs many sixel
-	// round trips per card to measure the encoder's jitter floor, and PSNR is the
+	// round trips per card to measure the encoder's noise floor, and PSNR is the
 	// one metric it reads; computing SSIM, MS-SSIM, and CIEDE2000 per iteration
 	// dominated the calibration run for no use. metrics.PSNR is the same value.
 	return metrics.PSNR(img, reference), nil

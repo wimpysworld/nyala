@@ -99,8 +99,7 @@ func TestSweepEmitsAllFiles(t *testing.T) {
 // committed baseline and thresholds under UPDATE_BASELINE (write-if-changed).
 // The thresholds file is byte-stable (generated, not measured) and checked
 // exactly; the baseline holds measured metrics and is gated within the
-// thresholds, not matched byte for byte, since the lossy sixel encoder jitters
-// run to run.
+// thresholds rather than matched byte for byte.
 func TestSweepGatesAgainstCommittedBaseline(t *testing.T) {
 	res, _ := sharedSweep(t)
 	fresh := BaselineFromReports(Viewport{Cols: CalibCols, Rows: CalibRows}, res.Reports)
