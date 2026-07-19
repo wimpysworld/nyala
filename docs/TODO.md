@@ -232,10 +232,8 @@ and research documents.
   Re-blit after repaint or resize, and do not let chrome erase or move the bitmap.
   Sources: [Stage 4 architecture](./OVERVIEW.md#tui-library-research) and
   [TUI decisions](./OVERVIEW.md#decisions-tui-research).
-- [ ] Add a user-facing JPEG q quality scale for Block only. Keep q90 as the default,
-  while allowing users on lower-spec hardware to reduce quality to reach acceptable
-  performance. Validate the choices with real-terminal and delivered-frame measurements
-  across flat, text, photo, and motion pages. Source:
+- [x] Keep Block JPEG quality fixed at q90 as the accepted fidelity and performance
+  balance. Do not add runtime quality control or extra configuration. Source:
   [Direct native-YCbCr Block grid](./PERFORMANCE.md#direct-native-ycbcr-block-grid-2026-07-15).
 - [ ] Validate Stage 4 scheduling on KMSCON and graphics terminals. Chrome-only diffs
   plus any post-repaint viewport re-blit must finish within one frame budget. Test
@@ -291,9 +289,15 @@ and research documents.
   shows no inter-row bleed. Record terminal name and version, and add version gates
   where one release is bad. Source:
   [Block mode follow-ups](./BLOCK-MODES.md#open-follow-ups).
-- [ ] Add REP to the Block diff writer only after measuring byte savings and verifying
-  KMSCON, foot, tmux, Zellij, and herdr. The cell diff writer itself is complete.
-  Sources: `STAGE-2.md`, "Out of scope", and `OVERVIEW.md`, REP research.
+- [ ] Keep REP as an open Block production spike. The retained benchmark-only harness
+  shows large byte savings on compressible fixtures, but its fixed threshold regresses
+  photo and motion writer p90 by 15.7% to 24.6%; production `diff.go` remains
+  unchanged. Require cheaper or adaptive detection, a capability and literal-fallback
+  policy, physical checks on KMSCON, foot, tmux, Zellij, herdr, and GNU Screen, and
+  terminal-presented byte, latency, and frame-rate evidence before acceptance. GNU
+  Screen requires literal fallback. Sources:
+  [Block REP benchmark](./PERFORMANCE.md#block-rep-benchmark-only-spike-2026-07-19),
+  `STAGE-2.md`, "Out of scope", and `OVERVIEW.md`, REP research.
 - [ ] Add the character-density and text-only monochrome variants as optional modes.
   Preserve the current `ColourMono` silhouette as the default monochrome path. Source:
   `STAGE-1.md`, "Monochrome mode".

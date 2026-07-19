@@ -1084,8 +1084,8 @@ JPEG q90 is now the Block default. Against q80, it raises PSNR from 45.234 dB to
 49.021 dB and SSIM from 0.995468 to 0.997696; payload grows from 425,401 to 563,559
 bytes. Its 10.276 ms matched median at 2560x2880 leaves 6.39 ms median processing
 headroom and provides more headroom for higher resolutions than q95.
-Stage 4 will expose a user-facing JPEG q quality scale for Block only, with q90 as
-the default. Lower-spec hardware can use lower quality to reach acceptable performance.
+Block JPEG quality remains fixed at q90 as the accepted fidelity and performance
+balance. No runtime quality control or extra configuration will be added.
 q100 is rejected as a candidate: it adds 59.76 percent payload over q95 and leaves too
 little processing headroom. These headless figures exclude terminal decode and draw time.
 
@@ -1156,6 +1156,33 @@ over q90 for a fidelity gain on an already high-quality source, while q100 adds
 107.21 percent and leaves Block too close to its processing limit. The headless
 results do not establish enough user-visible gain to accept those payload and
 headroom costs, especially without terminal-side measurements.
+
+#### Block REP benchmark-only spike (2026-07-19)
+
+A benchmark-only Block writer added REP for runs of three or more equal cells. Six
+fresh processes used rotated arm order, four warm-ups, 30 retained samples,
+`GOMAXPROCS=4`, and `GOGC=100`.
+
+| Fixture class | Output-byte saving | REP writer p90 |
+|---|---:|---|
+| Flat | 97.19% to 97.90% | Improved |
+| Scroll | 92.33% to 94.15% | Improved |
+| Web and text | 16.49% to 16.76% | Improved |
+| Photo and motion | 0% | Regressed by 15.7% to 24.6% |
+
+REP preserved zero allocations and the existing buffer budgets. Logical screen and
+cursor equivalence passed across rows, colours, overlays, multi-rune text, wide
+cells, unchanged gaps, CUP, and SGR. Focused tests and race checks, formatting,
+build, unit tests, lint, and Block interoperability passed.
+
+The benchmark identifies high byte savings on compressible output, but the fixed
+threshold pays a material detection cost when nothing compresses. It is not accepted
+for production. The benchmark-only harness remains in
+`internal/render/block/rep_bench_test.go`; the production writer in `diff.go` is
+unchanged. A production spike still needs cheaper or adaptive detection, a capability
+and literal-fallback policy, physical checks on KMSCON, foot, tmux, Zellij, herdr,
+and GNU Screen, and terminal-presented byte, latency, and frame-rate evidence. GNU
+Screen requires literal output fallback.
 
 ### Summary
 
