@@ -328,6 +328,14 @@ func TestRenderNilImageEmitsEmptyFramedPayload(t *testing.T) {
 	}
 }
 
+func TestRenderRejectsNRGBA(t *testing.T) {
+	var r Renderer
+	err := r.Render(render.Frame{Img: image.NewNRGBA(image.Rect(0, 0, 1, 1))}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "unsupported image type") {
+		t.Fatalf("Render() error = %v, want unsupported image type", err)
+	}
+}
+
 var errTestWriter = errors.New("test writer failure")
 
 type errorWriter struct{}
@@ -495,8 +503,6 @@ func TestOpaqueEncoderMatchesGoSixel(t *testing.T) {
 			})
 		}
 	}
-	nrgba := image.NewNRGBA(bounds)
-	draw.Draw(nrgba, bounds, rgba, bounds.Min, draw.Src)
 	var jpegBytes bytes.Buffer
 	if err := jpeg.Encode(&jpegBytes, rgba, &jpeg.Options{Quality: 90}); err != nil {
 		t.Fatal(err)
@@ -508,7 +514,6 @@ func TestOpaqueEncoderMatchesGoSixel(t *testing.T) {
 
 	for name, img := range map[string]image.Image{
 		"rgba":  rgba,
-		"nrgba": nrgba,
 		"ycbcr": ycbcr,
 	} {
 		t.Run(name, func(t *testing.T) {

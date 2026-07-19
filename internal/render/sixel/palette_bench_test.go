@@ -302,7 +302,10 @@ func measureCombinedBenchArm(t *testing.T, src *image.RGBA, pngData []byte, arm 
 func encodeCombinedBench(enc *opaqueEncoder, img image.Image, arm combinedBenchArm) (combinedBenchStages, error) {
 	const colours = 255
 	var stages combinedBenchStages
-	rgba := toRGBA(img)
+	rgba, ok := img.(*image.RGBA)
+	if !ok {
+		return stages, fmt.Errorf("unsupported benchmark image type %T", img)
+	}
 	start := time.Now()
 	palette := samplePalette(rgba, colours)
 	stages.palette = time.Since(start)
