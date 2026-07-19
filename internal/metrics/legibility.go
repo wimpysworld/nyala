@@ -112,22 +112,6 @@ func LaplacianVariance(img *image.RGBA) float64 {
 	return variance(resp)
 }
 
-// Crop returns the sub-image of img bounded by rect, intersected with the image
-// bounds, as a fresh *image.RGBA in the cropped coordinate space. It is the
-// text-region selector for LaplacianVariance: pass the bounds of the cells that
-// hold text. An empty intersection yields a zero-size image. Channel order is
-// RGBA.
-func Crop(img *image.RGBA, rect image.Rectangle) *image.RGBA {
-	r := rect.Intersect(img.Bounds())
-	out := image.NewRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
-	for y := range r.Dy() {
-		for x := range r.Dx() {
-			out.SetRGBA(x, y, img.RGBAAt(r.Min.X+x, r.Min.Y+y))
-		}
-	}
-	return out
-}
-
 // PixelContrast derives a WCAG contrast ratio from the decoded pixels of a
 // gridless render (sixel, kitty). It splits the render's luminance into two
 // clusters by an Otsu threshold, takes each cluster's mean colour as a
