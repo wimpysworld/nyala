@@ -39,6 +39,38 @@ func TestMatcherExactRoundTrip(t *testing.T) {
 	}
 }
 
+// TestMatcherWideGraphemeRoundTrip proves Recover reads a width-2 grapheme from
+// its lead cell, skips its Wide trailing cell once, and resumes at the next cell.
+func TestMatcherWideGraphemeRoundTrip(t *testing.T) {
+	rast := newTestRasteriser(t)
+	truth := "A界B"
+	white := color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
+	br := block.Renderer{Cols: render.DisplayWidth(truth), Rows: 1}
+	g := br.Compose(render.Frame{
+		Text: []render.GlyphRun{{Col: 0, Row: 0, Text: truth, FG: white}},
+	})
+
+	if lead := g.At(1, 0); lead.Text != "界" || lead.Wide {
+		t.Fatalf("wide lead cell = %#v, want text %q and Wide false", lead, "界")
+	}
+	if trailing := g.At(2, 0); trailing.Text != "" || !trailing.Wide {
+		t.Fatalf("wide trailing cell = %#v, want empty text and Wide true", trailing)
+	}
+	if after := g.At(3, 0); after.Text != "B" || after.Wide {
+		t.Fatalf("cell after wide grapheme = %#v, want text %q and Wide false", after, "B")
+	}
+
+	img := rast.Rasterise(g)
+	m := NewMatcher(rast, []string{truth})
+	got := m.Recover(img, g)
+	if got != truth {
+		t.Fatalf("recovered text = %q, want %q", got, truth)
+	}
+	if cer := CER(truth, got); cer != 0 {
+		t.Fatalf("wide-grapheme round-trip CER = %v (got %q, want %q)", cer, got, truth)
+	}
+}
+
 // TestMatcherRecoversBothPolarities composes one row of dark-on-light cells and
 // one row of light-on-dark cells with the same text, rasterises, and asserts both
 // rows round-trip at CER 0. The adaptive Otsu split plus the polarity-invariant
