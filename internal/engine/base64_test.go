@@ -2,11 +2,11 @@ package engine
 
 // base64 wiring guard: the live and capture screencast paths base64-decode the
 // Chromium Data field through github.com/emmansun/base64 (SIMD, drop-in
-// encoding/base64 API) with a stdlib fallback (decodeBase64Pooled in frame.go). These
-// tests guard the byte-identical decode across the blob and the padding/newline edge
-// cases, prove the fallback engages on a malformed input, and keep an emmansun-vs-
-// stdlib decode benchmark so the win stays measurable. The decode sits inside the
-// measured in_decode span, ahead of the image decode.
+// encoding/base64 API). These tests guard the byte-identical decode across the blob
+// and padding/newline edge cases, prove malformed input returns the SIMD decoder's
+// error without losing the pooled buffer, and keep an emmansun-vs-stdlib decode
+// benchmark so the win stays measurable. The decode sits inside the measured
+// in_decode span, ahead of the image decode.
 //
 // Run:
 //   go test -run 'TestEmmansunBase64|TestDecodeBase64Pooled' ./internal/engine/
@@ -14,7 +14,9 @@ package engine
 
 import (
 	stdb64 "encoding/base64"
+	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	emmb64 "github.com/emmansun/base64"
@@ -128,19 +130,29 @@ func TestDecodeBase64PooledEquivalence(t *testing.T) {
 	}
 }
 
-// TestDecodeBase64PooledFallback proves the stdlib fallback engages on an input the
-// emmansun decoder declines, and returns a callable no-op release.
-func TestDecodeBase64PooledFallback(t *testing.T) {
+// TestDecodeBase64PooledMalformed proves malformed input returns the emmansun error
+// and restores the borrowed buffer pointer to the pool before returning.
+func TestDecodeBase64PooledMalformed(t *testing.T) {
 	const bad = "!!!!"
-	_, release, gErr := decodeBase64Pooled(bad)
-	release()
-	_, sErr := stdb64.StdEncoding.DecodeString(bad)
-	if (gErr == nil) != (sErr == nil) {
-		t.Fatalf("error mismatch: decodeBase64Pooled=%v stdlib=%v", gErr, sErr)
+	base64DecodeBufPool = sync.Pool{New: func() any { b := make([]byte, 0); return &b }}
+	seed := make([]byte, 0, emmb64.StdEncoding.DecodedLen(len(bad)))
+	seedPtr := &seed
+	base64DecodeBufPool.Put(seedPtr)
+
+	wantBuf := make([]byte, emmb64.StdEncoding.DecodedLen(len(bad)))
+	_, wantErr := emmb64.StdEncoding.Decode(wantBuf, []byte(bad))
+	raw, release, gotErr := decodeBase64Pooled(bad)
+	if !errors.Is(gotErr, wantErr) {
+		t.Fatalf("error = %v, want emmansun error %v", gotErr, wantErr)
 	}
-	if sErr == nil {
-		t.Fatal("expected stdlib to reject malformed input; the fallback branch is not exercised")
+	if raw != nil || release != nil {
+		t.Fatalf("error result has raw=%t release=%t, want both false", raw != nil, release != nil)
 	}
+	reusedPtr, _ := base64DecodeBufPool.Get().(*[]byte)
+	if reusedPtr != seedPtr {
+		t.Fatalf("pool returned buffer pointer %p, want borrowed pointer %p", reusedPtr, seedPtr)
+	}
+	base64DecodeBufPool.Put(reusedPtr)
 }
 
 func benchB64Stdlib(b *testing.B, s string) {
