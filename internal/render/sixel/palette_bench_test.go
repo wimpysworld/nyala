@@ -555,8 +555,8 @@ func (e *paletteBenchEncoder) encode(src *image.RGBA) ([]byte, time.Duration, ti
 
 	start := time.Now()
 	var palette color.Palette
-	paletted := palettedFromRGBA(src, paletteColours)
-	if paletted != nil {
+	paletted, exact := palettedFromRGBA(src, paletteColours)
+	if exact {
 		selection := time.Since(start)
 		err := e.nyala.encode(paletted)
 		return append([]byte(nil), e.out.Bytes()...), selection, 0, err
@@ -575,8 +575,8 @@ func (e *paletteBenchEncoder) encode(src *image.RGBA) ([]byte, time.Duration, ti
 	}
 	selection := time.Since(start)
 	start = time.Now()
-	if paletted == nil {
-		paletted = image.NewPaletted(src.Bounds(), palette)
+	if palette != nil {
+		paletted.Palette = palette
 		lut := newPaletteLUT(palette)
 		if e.arm.kind == "serial" {
 			lut = serialPaletteLUT(palette)

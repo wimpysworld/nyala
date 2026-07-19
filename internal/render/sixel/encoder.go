@@ -39,32 +39,47 @@ type opaqueEncoder struct {
 
 	outScratch []byte
 	band       []bandScratch
+	rgba       *image.RGBA
+	paletted   *image.Paletted
+	lut        []uint8
 }
 
 func newOpaqueEncoder(w io.Writer) *opaqueEncoder { return &opaqueEncoder{w: w} }
 
 func (e *opaqueEncoder) encode(img image.Image) error {
 	const colours = 256
-	width, height := img.Bounds().Dx(), img.Bounds().Dy()
+	bounds := img.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
 	if width == 0 || height == 0 {
 		return nil
 	}
+	e.dropResizedScratch(bounds)
 	var paletted *image.Paletted
+	var exact bool
 	switch p := img.(type) {
 	case *image.Paletted:
 		if len(p.Palette) <= colours {
 			paletted = p
+			exact = true
 		}
 	case *image.NRGBA:
-		paletted = palettedFromNRGBA(p, colours-1)
+		paletted, exact = palettedFromOpaquePixelsInto(e.paletted, p.Bounds(), p.Pix, p.Stride, p.PixOffset, colours-1)
+		e.paletted = paletted
 	case *image.RGBA:
-		paletted = palettedFromRGBA(p, colours-1)
+		paletted, exact = palettedFromOpaquePixelsInto(e.paletted, p.Bounds(), p.Pix, p.Stride, p.PixOffset, colours-1)
+		e.paletted = paletted
 	}
-	if paletted == nil {
-		rgba := toRGBA(img)
+	if !exact {
+		rgba := e.toRGBA(img)
 		palette := samplePalette(rgba, colours-1)
-		paletted = image.NewPaletted(rgba.Bounds(), palette)
-		mapPaletted(paletted, rgba, newPaletteLUT(palette))
+		if paletted == nil {
+			paletted = reusablePaletted(e.paletted, rgba.Bounds(), palette)
+			e.paletted = paletted
+		} else {
+			paletted.Palette = palette
+		}
+		e.lut = paletteLUT(e.lut, palette)
+		mapPaletted(paletted, rgba, e.lut)
 	}
 
 	paletteSize := len(paletted.Palette)
@@ -86,6 +101,15 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 	e.outScratch = out[:0]
 	_, err := e.w.Write(out)
 	return err
+}
+
+func (e *opaqueEncoder) dropResizedScratch(bounds image.Rectangle) {
+	if e.rgba != nil && e.rgba.Bounds() != bounds {
+		e.rgba = nil
+	}
+	if e.paletted != nil && e.paletted.Bounds() != bounds {
+		e.paletted = nil
+	}
 }
 
 func (e *opaqueEncoder) appendBands(dst []byte, paletted *image.Paletted) []byte {
@@ -295,6 +319,18 @@ func toRGBA(img image.Image) *image.RGBA {
 	return rgba
 }
 
+func (e *opaqueEncoder) toRGBA(img image.Image) *image.RGBA {
+	if rgba, ok := img.(*image.RGBA); ok {
+		return rgba
+	}
+	bounds := img.Bounds()
+	if e.rgba == nil || e.rgba.Bounds() != bounds || e.rgba.Stride != bounds.Dx()*4 || len(e.rgba.Pix) != bounds.Dx()*bounds.Dy()*4 {
+		e.rgba = image.NewRGBA(bounds)
+	}
+	draw.Draw(e.rgba, bounds, img, bounds.Min, draw.Src)
+	return e.rgba
+}
+
 func samplePalette(rgba *image.RGBA, maxColours int) color.Palette { //nolint:unparam // The fixed production limit remains explicit for test helpers.
 	const budget = 1 << 16
 	bounds := rgba.Bounds()
@@ -321,12 +357,18 @@ func samplePalette(rgba *image.RGBA, maxColours int) color.Palette { //nolint:un
 }
 
 func newPaletteLUT(palette color.Palette) []uint8 {
+	return paletteLUT(nil, palette)
+}
+
+func paletteLUT(lut []uint8, palette color.Palette) []uint8 {
 	var pr, pg, pb [256]int32
 	for i, colour := range palette {
 		r, g, b, _ := colour.RGBA()
 		pr[i], pg[i], pb[i] = int32(r>>8), int32(g>>8), int32(b>>8)
 	}
-	lut := make([]uint8, 1<<15)
+	if len(lut) != 1<<15 || cap(lut) != 1<<15 {
+		lut = make([]uint8, 1<<15)
+	}
 	workers := sixelWorkerCount()
 	var wg sync.WaitGroup
 	for worker := range workers {
@@ -393,19 +435,19 @@ func mapPalettedRows(dst *image.Paletted, src *image.RGBA, lut []uint8, first, l
 	}
 }
 
-func palettedFromNRGBA(img *image.NRGBA, maxColours int) *image.Paletted {
+func palettedFromRGBA(img *image.RGBA, maxColours int) (*image.Paletted, bool) {
 	return palettedFromOpaquePixels(img.Bounds(), img.Pix, img.Stride, img.PixOffset, maxColours)
 }
 
-func palettedFromRGBA(img *image.RGBA, maxColours int) *image.Paletted {
-	return palettedFromOpaquePixels(img.Bounds(), img.Pix, img.Stride, img.PixOffset, maxColours)
+func palettedFromOpaquePixels(bounds image.Rectangle, pix []byte, stride int, offset func(int, int) int, maxColours int) (*image.Paletted, bool) {
+	return palettedFromOpaquePixelsInto(nil, bounds, pix, stride, offset, maxColours)
 }
 
-func palettedFromOpaquePixels(bounds image.Rectangle, pix []byte, stride int, offset func(int, int) int, maxColours int) *image.Paletted {
+func palettedFromOpaquePixelsInto(dst *image.Paletted, bounds image.Rectangle, pix []byte, stride int, offset func(int, int) int, maxColours int) (*image.Paletted, bool) {
 	palette := make(color.Palette, 1, maxColours+1)
 	palette[0] = color.NRGBA{}
 	indexes := make(map[uint32]uint8, maxColours)
-	dst := image.NewPaletted(bounds, palette)
+	dst = reusablePaletted(dst, bounds, palette)
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 		srcOffset := offset(bounds.Min.X, y)
 		dstOffset := dst.PixOffset(bounds.Min.X, y)
@@ -416,7 +458,7 @@ func palettedFromOpaquePixels(bounds image.Rectangle, pix []byte, stride int, of
 			idx, ok := indexes[key]
 			if !ok {
 				if len(palette) > maxColours {
-					return nil
+					return dst, false
 				}
 				idx = uint8(len(palette)) //nolint:gosec // The 255-colour limit bounds the index.
 				indexes[key] = idx
@@ -424,6 +466,14 @@ func palettedFromOpaquePixels(bounds image.Rectangle, pix []byte, stride int, of
 			}
 			dst.Pix[dstOffset+x] = idx
 		}
+	}
+	dst.Palette = palette
+	return dst, true
+}
+
+func reusablePaletted(dst *image.Paletted, bounds image.Rectangle, palette color.Palette) *image.Paletted {
+	if dst == nil || dst.Bounds() != bounds || dst.Stride != bounds.Dx() || len(dst.Pix) != bounds.Dx()*bounds.Dy() {
+		return image.NewPaletted(bounds, palette)
 	}
 	dst.Palette = palette
 	return dst

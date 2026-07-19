@@ -365,6 +365,62 @@ func TestRenderReusesEncoderAndRecoversFromWriterError(t *testing.T) {
 	}
 }
 
+func TestRenderReusesFrameScratchAndReplacesItOnResize(t *testing.T) {
+	frame := render.Frame{Img: scratchYCbCr(image.Rect(3, 5, 35, 23))}
+	var r Renderer
+	var first, second bytes.Buffer
+	if err := r.Render(frame, &first); err != nil {
+		t.Fatal(err)
+	}
+	rgba, paletted := r.enc.rgba, r.enc.paletted
+	if rgba == nil || paletted == nil || len(r.enc.lut) != 1<<15 {
+		t.Fatal("renderer did not retain complete frame scratch")
+	}
+	if cap(rgba.Pix) != 32*18*4 || cap(paletted.Pix) != 32*18 || cap(r.enc.lut) != 1<<15 {
+		t.Fatalf("retained capacities = RGBA %d, Paletted %d, LUT %d", cap(rgba.Pix), cap(paletted.Pix), cap(r.enc.lut))
+	}
+	if err := r.Render(frame, &second); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(second.Bytes(), first.Bytes()) {
+		t.Fatal("reused frame scratch changed repeated payload")
+	}
+	if r.enc.rgba != rgba || r.enc.paletted != paletted {
+		t.Fatal("same-size frame replaced retained image scratch")
+	}
+
+	resized := render.Frame{Img: scratchYCbCr(image.Rect(0, 0, 19, 11))}
+	var want, got bytes.Buffer
+	var fresh Renderer
+	if err := fresh.Render(resized, &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Render(resized, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Bytes(), want.Bytes()) {
+		t.Fatal("resized frame payload differs from fresh encoder")
+	}
+	if r.enc.rgba == rgba || r.enc.paletted == paletted {
+		t.Fatal("resize retained stale image scratch")
+	}
+	if cap(r.enc.rgba.Pix) != 19*11*4 || cap(r.enc.paletted.Pix) != 19*11 {
+		t.Fatalf("resized capacities = RGBA %d, Paletted %d", cap(r.enc.rgba.Pix), cap(r.enc.paletted.Pix))
+	}
+}
+
+func scratchYCbCr(bounds image.Rectangle) *image.YCbCr {
+	img := image.NewYCbCr(bounds, image.YCbCrSubsampleRatio420)
+	for i := range img.Y {
+		img.Y[i] = uint8(i*29 + 17) //nolint:gosec // Deliberate wrapping test pattern.
+	}
+	for i := range img.Cb {
+		img.Cb[i] = uint8(i*13 + 41) //nolint:gosec // Deliberate wrapping test pattern.
+		img.Cr[i] = uint8(i*7 + 83)  //nolint:gosec // Deliberate wrapping test pattern.
+	}
+	return img
+}
+
 func TestRenderConcurrentCallsAreDeterministic(t *testing.T) {
 	var r Renderer
 	var want bytes.Buffer

@@ -94,6 +94,7 @@
                 go
                 gocyclo
                 golangci-lint
+                goperf
                 goreleaser
                 govulncheck
                 ineffassign
