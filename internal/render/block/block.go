@@ -67,9 +67,9 @@ type Cell struct {
 	Wide  bool       // trailing cell of a wide (width-2) overlay glyph
 }
 
-// Grid is an owned cols x rows array of cells, stored row-major. It is the
-// backend-neutral product of compositing a Frame: every renderer reads the same
-// grid, then emits it in its own representation.
+// Grid is the Block backend's owned cols x rows array of cells, stored
+// row-major. Production writers and diagnostic rasterisation consume the same
+// composed grid.
 type Grid struct {
 	Cols  int    // grid width in cells
 	Rows  int    // grid height in cells
@@ -83,12 +83,11 @@ func (g *Grid) At(col, row int) *Cell {
 }
 
 // Renderer composites a Frame onto an owned cell grid, then writes one
-// truecolour SGR cell per grid cell. Scheme selects the pixel-to-cell mapping:
-// the quadrant (2x2) binarisation, or the half-block floor. The quadrant scheme
-// is self-consistent: the glyph fills the bright quadrants with the foreground,
-// the dark quadrants with the background. The scheme is a backend-specific knob
-// on this concrete type, not on the render.Renderer interface. It satisfies
-// render.Renderer.
+// truecolour SGR cell per grid cell. Scheme selects quadrant or sextant
+// binarisation, or the half-block floor. The binarisation schemes fill bright
+// sub-cells with the foreground and dark sub-cells with the background. The
+// scheme is a backend-specific knob on this concrete type, not on the
+// render.Renderer interface. Renderer satisfies render.Renderer.
 type Renderer struct {
 	Cols   int    // requested grid width in cells
 	Rows   int    // requested grid height in cells
@@ -102,7 +101,8 @@ var _ render.Renderer = (*Renderer)(nil)
 func (*Renderer) Name() string { return "block" }
 
 // Render composites the frame's image onto a Cols x Rows cell grid and writes
-// the grid to w as truecolour SGR sequences, one block glyph per cell. Each row
+// the grid to w as truecolour SGR sequences. Bitmap cells emit a block glyph;
+// overlay cells emit their text, and wide trailing cells emit nothing. Each row
 // ends with an SGR reset and a CRLF; the carriage return returns the cursor to
 // column 0 when auto-wrap is off in a raw terminal. Output is deterministic: the
 // same Frame yields byte-identical output across runs.
@@ -175,8 +175,8 @@ func (br *Renderer) Compose(f render.Frame) Grid {
 
 // ComposeInto is the allocation-reusing twin of Compose for the live draw path.
 // It composes f into dst, reusing dst's Cells backing array when it already holds
-// at least Cols*Rows cells, and grows it only on a size change. compose fully
-// overwrites every cell it visits, so a reused buffer carries no stale content.
+// at least Cols*Rows cells, and grows it only on a size change. Each scheme
+// fully overwrites every cell, so a reused buffer carries no stale content.
 // It returns the same dst.
 func (br *Renderer) ComposeInto(dst *Grid, f render.Frame) *Grid {
 	f = rgbaFrame(f)

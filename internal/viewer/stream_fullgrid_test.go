@@ -10,24 +10,20 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
-// TestRenderBlockComposesFullGridNoLetterbox guards the block stream path against
-// the aspect-fit letterbox regression. The engine sizes the block frame to the
+// TestRenderBlockComposesFullGridNoLetterbox verifies that the block stream fills
+// the grid without aspect-fit letterboxing. The engine sizes the block frame to the
 // exact grid geometry (cols*cellW by rows*cellH device pixels) and bins each text
 // run in whole-cell coordinates, so the bitmap must map edge-to-edge across every
-// column. The old path routed the compose through a 1:2 aspect fit, which
-// letterboxed the bitmap onto fewer columns whenever the real cell
-// aspect differed, blanking the margin columns while the overlay still used the
-// full grid. That sheared the text right of the bitmap by a factor that grew with
-// the column.
+// column. An aspect fit would letterbox the bitmap onto fewer columns whenever the
+// real cell aspect differs, blanking margin columns while the overlay still uses
+// the full grid and shearing text progressively farther from the bitmap.
 //
 // Each case fills a full-frame source with one colour, draws it through
 // RenderStreamFrame on the block backend, captures the composed grid, and asserts
 // no column is a blank letterbox margin: the leftmost and rightmost columns carry
 // the fill and the whole grid holds zero blank cells. The 8x16 leg is the 1:2 cell
-// aspect where the bug is invisible (the former fit filled the full width); the
-// 16x33 and 13x27 legs are real non-1:2 terminal geometries where the letterbox
-// blanked the edge columns. Restoring the retired aspect-fit path fails the
-// non-1:2 legs, whose edge columns then blank, while the 8x16 leg still passes.
+// aspect where a fit fills the full width; the 16x33 and 13x27 legs are real
+// non-1:2 terminal geometries where letterboxing would blank the edge columns.
 func TestRenderBlockComposesFullGridNoLetterbox(t *testing.T) {
 	fill := color.RGBA{R: 0xff, G: 0x40, B: 0x20, A: 0xff}
 	cases := []struct {

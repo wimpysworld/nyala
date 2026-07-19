@@ -310,8 +310,8 @@ func (w *errWriter) Write(p []byte) (int, error) {
 }
 
 // shortWriter is a tty stand-in whose Write returns one byte short with a nil error,
-// the io.Writer contract the production *os.File never trips. It exercises the
-// short-write fix: the writer must treat n < len(p) as a failure.
+// the io.Writer contract the production *os.File never trips. It verifies that
+// the writer treats n < len(p) as a failure.
 type shortWriter struct{}
 
 func (w *shortWriter) Write(p []byte) (int, error) {
@@ -470,7 +470,7 @@ func TestStreamLoopControlFrameInterleaveUnderSlowTTY(t *testing.T) {
 	}
 }
 
-// TestStreamWriterShortWriteFails pins the short-write fix at the writer seam: a tty
+// TestStreamWriterShortWriteFails verifies at the writer seam that a tty
 // returning n < len(p) with a nil error must surface io.ErrShortWrite on errc and
 // still free the pooled buffer, so a torn frame never passes silently.
 func TestStreamWriterShortWriteFails(t *testing.T) {
@@ -495,10 +495,9 @@ func TestStreamWriterShortWriteFails(t *testing.T) {
 	w.stop()
 }
 
-// TestStreamLoopReturnsShortWriteError drives the real loop against a tty that always
-// short-writes and asserts loop returns io.ErrShortWrite. Without the fix the short
-// write passes as success and this test hangs until timeout, so it pins the fix end
-// to end.
+// TestStreamLoopReturnsShortWriteError drives the real loop against a tty that
+// always short-writes and asserts loop returns io.ErrShortWrite, preventing a torn
+// frame from passing as a successful write.
 func TestStreamLoopReturnsShortWriteError(t *testing.T) {
 	frames := make(chan render.Frame)
 	eng := &pipeEngine{frames: frames}

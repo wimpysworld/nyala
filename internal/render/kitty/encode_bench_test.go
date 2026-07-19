@@ -32,8 +32,8 @@ func BenchmarkEncodeStdlib(b *testing.B) {
 	}
 }
 
-// BenchmarkEncodeEmmansun measures emmansun/base64 StdEncoding.Encode, the SIMD
-// drop-in the live and capture encoders now use.
+// BenchmarkEncodeEmmansun measures the SIMD-capable emmansun/base64
+// StdEncoding.Encode used by the stateless Kitty renderer.
 func BenchmarkEncodeEmmansun(b *testing.B) {
 	src := benchPayload(b, 300*1024)
 	dst := make([]byte, emmb64.StdEncoding.EncodedLen(len(src)))

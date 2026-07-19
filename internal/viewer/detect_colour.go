@@ -21,7 +21,7 @@ import (
 // The profile maps exhaustively: TrueColor -> ColourTrue; ANSI256, ANSI, ASCII,
 // NoTTY, Unknown -> ColourXTerm256. Two COLORTERM tokens override first, because
 // colorprofile upgrades on COLORTERM only when TERM is also set and non-dumb, but
-// Stage 1 treats a present COLORTERM as a trusted positive regardless of TERM:
+// Nyala treats a present COLORTERM as a trusted positive regardless of TERM:
 // kmscon (which colorprofile caps at ANSI) and the truecolor/24bit tokens both
 // force ColourTrue. This is the one place Nyala must not defer to colorprofile.
 //

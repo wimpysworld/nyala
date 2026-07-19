@@ -130,7 +130,7 @@ func (t Thresholds) thresholdFor(mode string, metric metricName) (MetricThreshol
 	return th, ok
 }
 
-// DefaultThresholds returns the Stage 0 thresholds banded above the committed
+// DefaultThresholds returns the diagnostics thresholds banded above the committed
 // calibration noise floor.
 //
 // The calibration measured the intrinsic-noise floor on repeated identical block

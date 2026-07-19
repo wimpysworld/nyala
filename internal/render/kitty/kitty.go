@@ -57,10 +57,9 @@ func (*Renderer) Name() string { return "kitty" }
 // transmit-and-display action, so the terminal both loads and shows the image.
 // The q=2 key suppresses the terminal's OK and error replies. A payload over the
 // protocol chunk limit is split across successive APC frames with the m= key. A
-// nil frame image emits an empty but well-framed payload. The frame image is
-// RGBA; the encoder reads it through the image.Image colour interface, so
-// channel order holds. It transmits without an explicit image id, so the
-// protocol round-trip stays stateless.
+// nil frame image emits an empty but well-framed payload. The encoder reads the
+// image through image.Image and emits RGBA channel order. Render transmits
+// without an explicit image id, so the protocol round-trip stays stateless.
 func (r *Renderer) Render(f render.Frame, w io.Writer) error {
 	return r.render(f, 0, w)
 }

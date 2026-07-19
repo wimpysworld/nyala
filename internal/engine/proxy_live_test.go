@@ -21,8 +21,8 @@ const (
 	proxyLivePassword = "s3cr3t-proxy-pass"
 )
 
-// TestLiveProxyAuthenticatedFrame is the live-tagged end-to-end test that a page
-// loads through an authenticating HTTP forward proxy (Phase 6). It runs two
+// TestLiveProxyAuthenticatedFrame verifies that a page loads through an
+// authenticating HTTP forward proxy. It runs two
 // in-process httptest servers: a plain http:// upstream serving one line of
 // text, and a forward proxy. The proxy returns 407 with a Proxy-Authenticate
 // header when Proxy-Authorization is missing or wrong, and forwards the GET

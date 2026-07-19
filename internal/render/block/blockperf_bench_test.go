@@ -27,7 +27,7 @@ var bpSizes = []bpSize{
 }
 
 // BenchmarkBlockCompose measures the downsample + two-colour pick + binarise over
-// a full grid with no overlay, for both schemes and both sizes. It reuses the
+// a full grid with no overlay, for every scheme and both sizes. It reuses the
 // benchImage worst case (every cell non-flat) and the ComposeInto reused-grid path
 // the live viewer drives.
 func BenchmarkBlockCompose(b *testing.B) {
@@ -59,9 +59,9 @@ func BenchmarkBlockCompose(b *testing.B) {
 }
 
 // BenchmarkBlockComposeParallel measures the same compose worst case as
-// BenchmarkBlockCompose, but split across a rowband.Pool by grid-row bands, for both
-// schemes and both sizes. It reuses one pool and one ParallelCompose driver built
-// once outside the timed loop, so it times the per-frame fan-out, not the pool
+// BenchmarkBlockCompose, but split across a rowband.Pool by grid-row bands, for
+// every scheme and both sizes. It reuses one pool and one ParallelCompose driver
+// built outside the timed loop, so it times the per-frame fan-out, not the pool
 // build, and pairs with BenchmarkBlockCompose to report the parallel speedup.
 func BenchmarkBlockComposeParallel(b *testing.B) {
 	pool := rowband.New()

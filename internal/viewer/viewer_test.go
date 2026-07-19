@@ -360,8 +360,8 @@ func TestReadKeysKeepsQuitKeysAfterDownArrow(t *testing.T) {
 	}
 }
 
-// TestStreamLoopQuitsAfterDownArrowWhenSendKeyBlocks pins the regression where
-// a blocked scroll dispatch keeps the loop from seeing a later quit key.
+// TestStreamLoopQuitsAfterDownArrowWhenSendKeyBlocks asserts that a blocked scroll
+// dispatch does not keep the loop from seeing a later quit key.
 func TestStreamLoopQuitsAfterDownArrowWhenSendKeyBlocks(t *testing.T) {
 	cases := []struct {
 		name string
@@ -786,9 +786,9 @@ func ttyByteCount(t *testing.T, f *os.File) int64 {
 
 // TestCellPxDefaultWhenGeometryAbsent asserts that when every geometry report is
 // absent the resolved cell pixel size is the 8x16 default (8 wide, 16 tall). The
-// source of truth is the pinned Route A raster recorded in docs/STAGE-0.md and
-// capture.CellPxW (8) / capture.CellPxH (16). NewState seeds these, and a temp
-// file tty has no winsize and no handshake reply, so the chain rests on them.
+// source of truth is cellraster.CellPxW (8) and cellraster.CellPxH (16).
+// NewState seeds these, and a temp file tty has no winsize and no handshake reply,
+// so the chain rests on them.
 func TestCellPxDefaultWhenGeometryAbsent(t *testing.T) {
 	if cellraster.CellPxW != 8 || cellraster.CellPxH != 16 {
 		t.Fatalf("raster default = %dx%d, want 8x16 (pinned Route A raster in docs/STAGE-0.md)", cellraster.CellPxW, cellraster.CellPxH)
@@ -836,9 +836,9 @@ func TestCellPxInBounds(t *testing.T) {
 
 // TestDeriveCellPixels exercises the pure core of winsizeCellPixels with
 // synthetic winsize fields the live ioctl cannot supply. It pins the named
-// 32000x0 bogus report (see docs/STAGE-1.md): Ypixel 0 trips the
-// zero-guard, so it resolves to ok=false before any division. It also pins a
-// healthy report and a derived cell px outside the sanity window.
+// 32000x0 bogus report: Ypixel 0 trips the zero-guard, so it resolves to ok=false
+// before any division. It also pins a healthy report and a derived cell px outside
+// the sanity window.
 func TestDeriveCellPixels(t *testing.T) {
 	cases := []struct {
 		name                     string
@@ -1013,13 +1013,13 @@ func benchStreamFrame() render.Frame {
 	}
 }
 
-// BenchmarkRenderStreamFrameUnchanged is the live-path allocation baseline that
-// gates P2-8. It drives State.RenderStreamFrame on the block backend through the
+// BenchmarkRenderStreamFrameUnchanged is the live-path allocation baseline. It
+// drives State.RenderStreamFrame on the block backend through the
 // cell differ at the fixed 120x40 grid, redrawing the same text-bearing frame.
 // The differ is primed with one draw outside the timed loop, so each measured
 // iteration is the diffed steady-state path: an unchanged frame that emits no
 // terminal bytes but still composes the grid. b.ReportAllocs reports allocs/op
-// and B/op. P2-8 must lower the unchanged-frame allocs/op against this baseline.
+// and B/op for tracking steady-state allocation costs.
 func BenchmarkRenderStreamFrameUnchanged(b *testing.B) {
 	s := NewState(120, 40)
 	s.SetEnabled([]Backend{BackendBlock})
@@ -1044,8 +1044,8 @@ func BenchmarkRenderStreamFrameUnchanged(b *testing.B) {
 
 // BenchmarkRenderStreamFrameChanged is the full-repaint companion to the
 // unchanged-frame baseline. It resets the differ each iteration, so every draw is
-// a first-frame full repaint against a blank screen. It is not the P2-8 gate; it
-// frames the cost of the worst case beside the steady-state baseline.
+// a first-frame full repaint against a blank screen. It frames the worst-case
+// cost beside the steady-state baseline.
 func BenchmarkRenderStreamFrameChanged(b *testing.B) {
 	s := NewState(120, 40)
 	s.SetEnabled([]Backend{BackendBlock})

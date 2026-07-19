@@ -19,8 +19,8 @@ func snapshotCellHeight(e *ChromiumEngine) float64 {
 // the block backend lands the held vertical offset on a whole multiple of the CSS
 // cell height. At 158x86 with cell 16x33 and layout width 1280 the CSS cell height
 // is fractional (~16.7 px), so a raw 40 px line step must snap to the nearest whole
-// cell, not to the raw 40. This is the R2 fix: the DOM scroll the snapshot and the
-// screencast metadata report is always a whole number of cells.
+// cell, not to the raw 40. The DOM scroll reported by the snapshot and screencast
+// metadata must always be a whole number of cells.
 func TestWheelSnapsVerticalToWholeCellBlock(t *testing.T) {
 	e := New("")
 	e.SetCellPx(16, 33)

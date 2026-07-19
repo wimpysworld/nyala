@@ -34,8 +34,8 @@ func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 }
 
 // applyOverlayYCbCr folds the overlay against direct native-YCbCr samples. The
-// sampler returns the same sub-cell colours the former intermediate RGBA image
-// held, so overlay background and boundary recomposition stay byte-identical.
+// sampler returns the same sub-cell colours as a materialised intermediate RGBA
+// image, so overlay background and boundary recomposition stay byte-identical.
 func applyOverlayYCbCr(g *Grid, f render.Frame, scheme Scheme, src *ycbcrSampler) {
 	applyOverlayFrom(g, f, scheme, src)
 }
@@ -193,7 +193,7 @@ func claimed(c *Cell) bool {
 //
 // Half-cell fidelity floor: the quadrant grid has only cellPxW source columns
 // per cell (2), so the mask quantises at a half cell; a covered residue finer
-// than a half cell is not removed. This is the achievable fix at the block
+// than a half cell is not removed. This is the available precision at the block
 // sample resolution. When the box covers the whole cell, no geometry is present
 // (cellCSSW <= 0), or every source column is covered, the average falls back to
 // the whole-cell mean, byte for byte with the geometry-free path.

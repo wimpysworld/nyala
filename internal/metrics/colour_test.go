@@ -23,7 +23,8 @@ type sharmaRow struct {
 // https://hajim.rochester.edu/ece/sites/gsharma/ciede2000/dataNprograms/ciede2000testdata.txt
 // Rows 10 and 11 (1-indexed) sit on the documented hue discontinuity at the
 // a=2.49 -> -2.49 boundary, where go-colorful resolves both to one value rather
-// than splitting 7.1792/7.2195. They are skipped, as the task fixes.
+// than splitting 7.1792/7.2195. The table skips those two rows because
+// go-colorful cannot reproduce their distinct published values.
 var sharmaTable = []sharmaRow{
 	{50.0000, 2.6772, -79.7751, 50.0000, 0.0000, -82.7485, 2.0425, false},
 	{50.0000, 3.1571, -77.2803, 50.0000, 0.0000, -82.7485, 2.8615, false},

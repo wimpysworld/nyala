@@ -89,7 +89,7 @@ type SweepInput struct {
 // SweepConfig is the fixed configuration for one sweep run: the pinned grid, the
 // output directory, and the commit the renders came from.
 type SweepConfig struct {
-	// Viewport is the cell grid the sweep renders at. Stage 0 pins 120x40. It
+	// Viewport is the cell grid the sweep renders at. It
 	// carries the cell-to-pixel and compose-extent geometry the sweep needs.
 	Viewport
 	// OutDir is the directory the report files and the per-(page, mode) artefact
@@ -396,8 +396,8 @@ func scoreQualityRelative(renderImg, idealImg *image.RGBA) QualityRelative {
 }
 
 // cellStats counts the owned grid cells for the block mode; non-block modes own
-// no grid, so every count is zero. Stage 0 has no text/bitmap classifier wired
-// into the sweep, so the class splits stay zero and only Total carries.
+// no grid, so every count is zero. No text/bitmap classifier is wired into the
+// sweep, so the class splits stay zero and only Total carries.
 func cellStats(cfg SweepConfig, grid *block.Grid) CellStats {
 	if grid == nil {
 		return CellStats{}

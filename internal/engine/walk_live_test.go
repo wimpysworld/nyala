@@ -132,8 +132,8 @@ const srOnlyTestPage = "data:text/html," +
 	"<p>keepme</p>" +
 	"</body></html>"
 
-// TestLiveScreenReaderOnlyTextDropped is the live-tagged regression test for the
-// block backend leaking screen-reader-only text as overlay runs. It launches a real
+// TestLiveScreenReaderOnlyTextDropped verifies that the block backend omits
+// screen-reader-only text from overlay runs. It launches a real
 // Chromium, navigates the srOnly page, injects the production forcing stylesheet,
 // waits for the font to load, then runs the in-page text walk and asserts both
 // hidden variants emit no run while the visible narrow text survives. The live tag
@@ -226,8 +226,8 @@ const occlusionTestPage = "data:text/html," +
 	"<div style='position:fixed;bottom:0;left:0;width:640px;height:80px;background:rgb(0,0,0);color:rgb(255,255,255);z-index:20'>acceptcookies</div>" +
 	"</body></html>"
 
-// TestLiveOccludedTextDropped is the live-tagged regression test for the block
-// backend leaking page text through opaque overlays (cookie banners, sticky
+// TestLiveOccludedTextDropped verifies that the block backend does not leak page
+// text through opaque overlays (cookie banners, sticky
 // headers, modals). It launches a real Chromium, navigates the occlusion page,
 // injects the production forcing stylesheet, waits for the font, then runs the walk
 // and asserts the opaque banner culls the behind-text while the banner's own text,

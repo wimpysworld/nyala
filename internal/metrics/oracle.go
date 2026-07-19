@@ -51,7 +51,7 @@ const (
 // top-right, bit1 bottom-left, bit0 bottom-right) to the quadrant block rune
 // whose filled quadrants match the foreground set. It is the full distinct
 // quadrant set, the best-achievable quadrant cell, so the oracle measures a
-// full-quadrant ideal ceiling. The block backend now uses the same
+// full-quadrant ideal ceiling. The block backend uses the same
 // full-quadrant mapping, but splits on a luma-midpoint mask rather than the
 // Otsu split this oracle uses, so the two can pick different masks for the same
 // cell. So these are not always the exact runes the block renderer emits; they

@@ -40,7 +40,7 @@ func New() *Pool {
 	return NewSized(runtime.GOMAXPROCS(0) - 1)
 }
 
-// NewSized builds a pool with workers persistent goroutines, clamped to at least
+// NewSized builds a pool with persistent worker goroutines, clamped to at least
 // one. It is the shared constructor; New sizes workers from GOMAXPROCS, and tests
 // pass an explicit count to force the multi-band path.
 func NewSized(workers int) *Pool {

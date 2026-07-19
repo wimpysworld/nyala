@@ -65,9 +65,8 @@ var (
 // NewMatcher builds a matcher whose candidate set is the distinct graphemes of
 // runTexts plus the fixed block glyph set. It renders each candidate to a single
 // cell through rast.RenderGlyphCell, binarises it by an adaptive Otsu split over
-// luma, and stores the bit template. The templates render through the same face
-// path the rasteriser
-// draws cells with, so a matched cell compares against a like-for-like glyph.
+// luma, and stores the bit template. The templates use the same font path as the
+// rasteriser, so a matched cell compares against a like-for-like glyph.
 func NewMatcher(rast *cellraster.Rasteriser, runTexts []string) *Matcher {
 	seen := make(map[string]bool)
 	var texts []string

@@ -47,7 +47,7 @@ type ChromiumEngine struct {
 	// the block backend it tracks scrollY exactly.
 	scrollYTarget int
 
-	// Resolved geometry from the Stage 1 cell px and the active backend.
+	// Resolved geometry from terminal cell detection and the active backend.
 	cellW int // resolved cell width in pixels
 	cellH int // resolved cell height in pixels
 
@@ -220,17 +220,15 @@ type ChromiumEngine struct {
 	supervised bool          // true after the supervisor goroutine starts
 	// navigated guards Navigate single-shot. The frame channel is created once by
 	// the first Navigate and replaced only by Navigate; Resize and SetBackend never
-	// touch it (the channel-stability invariant V3). A second Navigate is rejected
+	// touch it, preserving channel stability. A second Navigate is rejected
 	// so two supervisors can never target the engine's session state at once.
 	navigated bool
 }
 
-// New returns a ChromiumEngine that discovers its executable from browserFlag,
-// then the NYALA_BROWSER and CHROME_PATH environment variables, then PATH. It
-// parses the proxy environment once and stores the config and any parse error
-// for the launch path. The caller sets the backend and cell px (SetBackend,
-// SetCellPx) and the grid (Resize) before Navigate, since the engine sizes the
-// screencast capture from them.
+// New returns a ChromiumEngine configured with the browser preference and proxy
+// environment. Executable discovery is deferred until Navigate starts a browser
+// session. The caller sets the backend, cell px, and grid before Navigate because
+// the engine derives the screencast capture size from them.
 func New(browserFlag string) *ChromiumEngine {
 	proxy, proxyErr := parseProxyEnv()
 	return &ChromiumEngine{
@@ -328,8 +326,8 @@ func (e *ChromiumEngine) Navigate(url string) error {
 	e.url = url
 	e.scrollX, e.scrollY, e.scrollYTarget = 0, 0, 0
 	// A small frame-channel buffer keeps a transient restartStream stall from
-	// parking the producer on an unbuffered frames <- frame send (Decision 3); the
-	// control goroutine on the viewer side is the primary interactive-hang fix.
+	// parking the producer while the viewer's control goroutine handles a resize or
+	// backend change.
 	e.frames = make(chan render.Frame, frameChannelBuffer)
 	e.closing = make(chan struct{})
 	e.supDone = make(chan struct{})
@@ -387,7 +385,7 @@ func (e *ChromiumEngine) screencastStartedLocked() bool {
 
 // Frames returns the emitted-frame channel. The channel is stable across Resize
 // and SetBackend (which restart the stream but keep the same channel) and is
-// replaced only by Navigate, which is single-shot (invariant V3). So a consumer
+// replaced only by Navigate, which is single-shot. A consumer
 // that caches the handle keeps reading across a resize, a backend switch, and a
 // crash rebuild.
 func (e *ChromiumEngine) Frames() <-chan render.Frame {
@@ -467,7 +465,7 @@ func (e *ChromiumEngine) SendScroll(dy int) {
 // delta accumulates into scrollYTarget, that target snaps to the nearest whole
 // cellCSSH, and the actual dispatched vertical delta closes the gap to the snapped
 // offset. So the DOM scroll offset the screencast metadata and the snapshot report
-// always advances in whole cells, which removes the fractional-cell row aliasing (R2)
+// always advances in whole cells, which removes fractional-cell row aliasing
 // and lets composeFrame pair a run set to the bitmap on scroll equality once the
 // settle re-snapshot lands. Snapping the accumulated target rather than each raw delta
 // keeps repeated small scrolls from drifting. Horizontal scroll and graphics backends

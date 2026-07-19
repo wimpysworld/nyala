@@ -9,8 +9,8 @@ import (
 
 // ycbcrSampler maps the decoder's full-size native YCbCr planes onto the
 // renderer's sub-cell sample grid. Each sample averages its complete source
-// region in YCbCr, then converts that one average to RGBA. It matches the former
-// averageYCbCrToRGBA output without materialising that intermediate image.
+// region in YCbCr, then converts that one average to RGBA. This produces the
+// same samples as materialising an intermediate RGBA image.
 type ycbcrSampler struct {
 	src           *image.YCbCr
 	dstW, dstH    int

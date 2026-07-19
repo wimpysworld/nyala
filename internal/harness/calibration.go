@@ -57,8 +57,8 @@ const sixelNoiseFloorRuns = 64
 // quantised to.
 const sixelNoiseFloorDP = 1
 
-// CalibCols and CalibRows are the pinned calibration grid: the Stage 0 120x40
-// sweep grid, so the calibration numbers match the grid the sweep runs at.
+// CalibCols and CalibRows are the pinned 120x40 calibration grid, matching the
+// grid used by the diagnostics sweep.
 const (
 	CalibCols = 120
 	CalibRows = 40
@@ -107,8 +107,8 @@ type CalibCard struct {
 
 // CalibByteCost is one card's frame byte cost through the deterministic
 // backends, measured by encoding the downscaled card to each wire payload and
-// counting the bytes. The historical calibration records block and kitty costs,
-// which bracket the corpus byte span the bytesPerFrame band fractions.
+// counting the bytes. Block and Kitty costs bracket the corpus byte span used to
+// derive the bytesPerFrame band fractions.
 type CalibByteCost struct {
 	Block int `json:"block"`
 	Kitty int `json:"kitty"`

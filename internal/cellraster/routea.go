@@ -3,8 +3,8 @@
 // owned cell grid (glyph, foreground, background per cell) to an *image.RGBA,
 // emulating a fixed-cell terminal.
 //
-// The cell raster is pinned at 8x16 pixels (1:2 aspect), the Stage 0 Route A
-// cell size. The output is deterministic: the same grid rasterises to a
+// The cell raster is pinned at the Route A size of 8x16 pixels (1:2 aspect).
+// The output is deterministic: the same grid rasterises to a
 // byte-identical *image.RGBA across runs, and PNG writes are timestamp-free, so
 // golden frames stay stable. Channel order is RGBA throughout.
 package cellraster
@@ -79,9 +79,10 @@ func NewRasteriser() (*Rasteriser, error) {
 }
 
 // Rasterise renders the grid to a fresh *image.RGBA of width Cols*8 and height
-// Rows*16. Each cell is filled with its background colour, then its glyph is
-// drawn in the foreground colour. The result is deterministic: the same grid
-// yields a byte-identical image across runs. Channel order is RGBA.
+// Rows*16. Each cell is filled with its background colour, then its overlay
+// text or bitmap glyph is drawn in the foreground colour. The result is
+// deterministic: the same grid yields a byte-identical image across runs.
+// Channel order is RGBA.
 func (r *Rasteriser) Rasterise(g block.Grid) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, g.Cols*CellPxW, g.Rows*CellPxH))
 	for row := range g.Rows {

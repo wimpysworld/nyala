@@ -618,9 +618,9 @@ const exitFullScreen = "\x1b[?7h\x1b[?25h"
 
 // configureBackends decides which backends the cycle offers and resolves the
 // real cell pixel size, then writes both into st. Behind a multiplexer (TMUX,
-// ZELLIJ, herdr, or STY set) it offers block only, because Stage 0 has no
-// passthrough. Otherwise it runs one terminal handshake and offers a graphics
-// backend only when the terminal confirms it. The colour mode resolves first, on
+// ZELLIJ, herdr, or STY set) it offers block only because Nyala does not use
+// graphics passthrough. Otherwise it runs one terminal handshake and offers a
+// graphics backend only when the terminal confirms it. The colour mode resolves first, on
 // every path, because it is multiplexer-agnostic, so it must not strand at the
 // NewState default behind an early return. A NYALA_CELL_PX override (a diagnostic
 // and harness knob) takes precedence over the ioctl and handshake cell; a
@@ -669,8 +669,8 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag strin
 // (TMUX), zellij (ZELLIJ present, any value), herdr (HERDR_ENV=1 with
 // HERDR_PANE_ID present), or GNU screen (STY). A bare ZELLIJ=0 is a presence
 // signal, not a truth value; herdr needs both keys so a stray var does not gate
-// graphics off. Stage 0 does not pass graphics through a multiplexer, so it
-// offers block only there.
+// graphics off. Nyala offers block only under a multiplexer because it does not
+// use graphics passthrough there.
 func multiplexed() bool {
 	if os.Getenv("TMUX") != "" || os.Getenv("STY") != "" {
 		return true

@@ -324,9 +324,9 @@ func evaluateWalk(ctx context.Context, expr string) (walkResult, error) {
 // snapped each run's origin against the forced cell, so this trusts Col and Row and
 // never divides a pixel by a cell width. It keeps only the grid right-edge clip:
 // a run may run at most to the grid's right edge (cols), counting cells with the
-// Stage 2 width rule so a width-2 cluster is never half-emitted. cellW converts the
+// decoded run width so a width-2 cluster is never half-emitted. cellW converts the
 // box right edge to a cell to cap the clip at the nearer of the box's own right edge
-// and the grid, matching the old dual-edge clip so a font-metric residue never drops
+// and the grid, so a font-metric residue never drops
 // the last cell. A non-positive cellW falls back to the grid edge alone.
 func decodeWalkRuns(res walkResult, cellW float64, cols int) []render.GlyphRun {
 	if cols <= 0 {

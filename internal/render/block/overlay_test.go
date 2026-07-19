@@ -236,9 +236,9 @@ func twoColumnQuadrantAt(cols, col int, left, right, fill color.RGBA) *image.RGB
 }
 
 // TestCellBGAverageWholeCellIdentity pins the geometry-free path: a run with no
-// box geometry (W == 0) must reproduce the whole-cell mean byte for byte, the
-// value the pre-change function returned. The expected value is the arithmetic
-// mean of the two source columns, computed here independently of the function.
+// box geometry (W == 0) must reproduce the whole-cell mean byte for byte. The
+// expected value is the arithmetic mean of the two source columns, computed
+// here independently of the function.
 func TestCellBGAverageWholeCellIdentity(t *testing.T) {
 	left := color.RGBA{R: 200, G: 100, B: 40, A: 0xff}
 	right := color.RGBA{R: 40, G: 60, B: 220, A: 0xff}
@@ -263,9 +263,7 @@ func TestCellBGAverageWholeCellIdentity(t *testing.T) {
 // compared against the cell's snapped grid position ((Col+off)*cellCSSW), not
 // its own left edge. The cell sits at column 1, so its snapped left is 10; the
 // box spans [15, 20), covering the cell's right source column only. The average
-// must be the uncovered left column. The pre-repair anchoring set the cell left
-// to run.X (15), which covered the left column and returned the right one, so
-// this asserts the fix.
+// must therefore be the uncovered left column.
 func TestCellBGAveragePartialCoverage(t *testing.T) {
 	left := color.RGBA{R: 200, G: 100, B: 40, A: 0xff}
 	right := color.RGBA{R: 40, G: 60, B: 220, A: 0xff}

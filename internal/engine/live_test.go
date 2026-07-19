@@ -20,9 +20,9 @@ import (
 const liveTestPage = "data:text/html," +
 	"<html><body style='margin:0'><p>nyala live smoke</p></body></html>"
 
-// TestLiveSyncedFrame is the live-tagged integration test (decision 5). It
-// launches a real Chromium, navigates to a self-contained page, and asserts at
-// least one synced frame arrives with non-empty Text (the crisp DOM overlay).
+// TestLiveSyncedFrame launches a real Chromium, navigates to a self-contained
+// page, and asserts that at least one synced frame arrives with non-empty Text
+// (the crisp DOM overlay).
 // The DOM snapshot publishes on its own goroutine, decoupled from frame emit, and
 // ack-on-receive lets the first bitmap arrive before the first text publishes, so
 // it reads frames until one carries text rather than demanding it on the first.
@@ -66,10 +66,10 @@ func TestLiveSyncedFrame(t *testing.T) {
 	}
 }
 
-// TestLiveBlockLayoutWidthCapped is the live-tagged criterion-4 test for the
-// block layout scale. It launches a wide grid whose cols*cellW exceeds the target
-// layout width, navigates a self-contained page, then reads window.innerWidth (the
-// CSS layout viewport width) and asserts it equals min(cols*cellW, layoutWidth)
+// TestLiveBlockLayoutWidthCapped tests the block layout scale with a wide grid
+// whose cols*cellW exceeds the target layout width. It navigates a self-contained
+// page, then reads window.innerWidth, the CSS layout viewport width, and asserts
+// it equals min(cols*cellW, layoutWidth)
 // within one pixel. On a wide grid the page lays out at the target width via the
 // continuous device scale Z, so the innerWidth caps at layoutWidth rather than the
 // full cols*cellW. Run it with `just live`.
