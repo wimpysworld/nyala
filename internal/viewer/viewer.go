@@ -87,20 +87,15 @@ type State struct {
 	Enabled []Backend    // backends in the Tab cycle, block first
 	cellPx               // terminal cell pixel size for graphics scaling
 
-	// diff is the live-path cell differ. It defaults nil. The interactive stream
-	// session sets it so renderBlock emits only the cells that changed since the
-	// previous frame, with CUP and SGR coalescing. When nil, the static-image path
-	// writes the full grid via writeGrid, so it keeps its byte output. The viewer live path is not golden-
-	// pinned, so the diffed output may differ from a full rewrite while the
-	// rendered result matches.
+	// diff is the Block cell differ. The interactive stream session and Block
+	// diagnostics set it before composition so renderBlock emits only the cells
+	// that changed since the previous frame, with CUP and SGR coalescing.
 	diff *block.GridDiff
 
-	// scratch holds the reusable per-frame buffers for the live diff path: the
+	// scratch holds the reusable per-frame buffers for the Block path: the
 	// downscale destination, the compose grid, and the buffered tty writer. It is
-	// used only when diff is set, which is the single-goroutine interactive draw
-	// path, so the buffers never alias across goroutines. Off the diff path it stays
-	// untouched and the static-image path keeps its
-	// fresh-allocation byte output.
+	// used by the single-goroutine interactive draw path and diagnostics, so the
+	// buffers never alias across goroutines.
 	scratch frameScratch
 
 	// kittyID is the Kitty image id the last drawn kitty frame placed, or 0 before
@@ -123,7 +118,7 @@ type State struct {
 	sixelEnc *sixel.Renderer
 }
 
-// frameScratch is the live diff path's reusable per-frame buffers. Each draw
+// frameScratch is the Block path's reusable per-frame buffers. Each draw
 // fully overwrites the downscale pixels and recomposes the grid, so reuse carries
 // no stale content. dstW and dstH record the downscale size so the destination
 // reallocates only when the grid or scheme changes the pixel extent. bw buffers
@@ -138,17 +133,16 @@ type frameScratch struct {
 	bwSize     int           // current tty buffer capacity in bytes
 
 	// pool fans both the block downscale and the compose binarise across one
-	// persistent worker set. It is built once, lazily on the first diff draw, and
+	// persistent worker set. It is built once, lazily on the first Block compose, and
 	// reused every frame, so the hot path spawns no goroutine. The live diff path is
 	// single-goroutine, so the one pool is driven from one caller and never overlaps
-	// calls. It stays nil off the diff path, which keeps the serial downscale and compose.
+	// calls.
 	pool *rowband.Pool
 
 	// downscale and compose are the pool-driving band drivers, each holding one band
-	// closure built once so a reused frame allocates nothing. They stay nil off the
-	// diff path. downscale splits the source area-average, compose splits the
-	// binarise; both fan over the shared pool and both are byte-identical to their
-	// serial twins.
+	// closure built once so a reused frame allocates nothing. downscale splits the
+	// source area-average, compose splits the binarise; both fan over the shared pool
+	// and both are byte-identical to their serial twins.
 	downscale *metrics.ParallelDownscale
 	compose   *block.ParallelCompose
 }
@@ -193,10 +187,10 @@ func frameBufferSize(cols, rows int) int {
 	return cols*rows*perCell + slack
 }
 
-// SetDiff sets the live-path cell differ. The interactive stream session passes a
-// pointer to a block.GridDiff once before the draw loop; renderBlock then emits
-// only the cells that changed since the previous frame. Pass nil to fall back to
-// the full-grid writeGrid path. It is a no-op for the graphics backends.
+// SetDiff sets the Block cell differ. The interactive stream session and Block
+// diagnostics pass a pointer to a block.GridDiff before the first composition;
+// renderBlock then emits only the cells that changed since the previous frame.
+// It is a no-op for the graphics backends.
 func (s *State) SetDiff(d *block.GridDiff) {
 	s.diff = d
 }
@@ -447,24 +441,21 @@ func (s *State) renderBlock(src image.Image, text []render.GlyphRun, w io.Writer
 	if grid == nil {
 		return nil
 	}
-	if s.diff != nil {
-		bw := s.scratch.writer(w, frameBufferSize(s.Cols, s.Rows))
-		var err error
-		if s.Colour == ColourTrue {
-			err = s.diff.EmitTrueColour(bw, *grid)
-		} else {
-			err = s.diff.Emit(bw, *grid, fgSGRFunc(s.Colour), bgSGRFunc(s.Colour))
-		}
-		if err != nil {
-			return err
-		}
-		return bw.Flush()
+	bw := s.scratch.writer(w, frameBufferSize(s.Cols, s.Rows))
+	var err error
+	if s.Colour == ColourTrue {
+		err = s.diff.EmitTrueColour(bw, *grid)
+	} else {
+		err = s.diff.Emit(bw, *grid, fgSGRFunc(s.Colour), bgSGRFunc(s.Colour))
 	}
-	return writeGrid(*grid, s.Colour, w)
+	if err != nil {
+		return err
+	}
+	return bw.Flush()
 }
 
 // ComposeBlockFrame returns the exact Block grid consumed by the terminal
-// writer. The live path reuses State scratch storage, so callers that retain the
+// writer. The Block path reuses State scratch storage, so callers that retain the
 // result across another compose must copy it.
 func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 	if frame.Img == nil {
@@ -474,11 +465,6 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 	pxW, pxH := schemePixels(s.Scheme, s.Cols, s.Rows)
 	if pxW <= 0 || pxH <= 0 {
 		return nil
-	}
-	if s.diff == nil {
-		sub := metrics.Downscale(frame.Img, pxW, pxH)
-		grid := br.Compose(render.Frame{Img: sub, Text: frame.Text})
-		return &grid
 	}
 	if s.scratch.pool == nil {
 		s.scratch.pool = rowband.New()
@@ -574,59 +560,6 @@ func schemePixels(scheme block.Scheme, cols, rows int) (pxW, pxH int) {
 	return render.BlockCaptureSize(renderScheme(scheme), cols, rows)
 }
 
-// writeGrid writes a composed grid to w as SGR cells, one block glyph per cell,
-// in the chosen colour mode. Truecolour emits 24-bit SGR; xterm-256 maps each
-// cell's fg and bg onto the 256-colour palette; monochrome emits the glyph alone
-// with no fg/bg SGR, rendering a 1-bit silhouette on the terminal default fg/bg.
-// Each row ends with an SGR reset; rows are joined by CRLF with no trailing
-// newline after the last row, so a full-height grid does not scroll the top row
-// off a raw-mode terminal. The carriage return returns the cursor to column 0
-// when auto-wrap is off in raw mode. It adds the colour toggle the concrete
-// block.Renderer.Render does not carry.
-func writeGrid(g block.Grid, mode ColourMode, w io.Writer) error {
-	var sb strings.Builder
-	for row := range g.Rows {
-		if row > 0 {
-			sb.WriteString("\r\n")
-		}
-		for col := range g.Cols {
-			c := g.At(col, row)
-			if err := block.WriteCell(&sb, c, fgSGR(c.FG, mode), bgSGR(c.BG, mode)); err != nil {
-				return err
-			}
-		}
-		sb.WriteString(sgrReset)
-	}
-	_, err := io.WriteString(w, sb.String())
-	return err
-}
-
-// fgSGR returns the foreground SGR for a colour in the chosen mode. Monochrome
-// emits no foreground SGR.
-func fgSGR(c color.RGBA, mode ColourMode) string {
-	switch mode {
-	case ColourMono:
-		return ""
-	case ColourXTerm256:
-		return sgr256(fg256Prefix, block.XTerm256(c))
-	default:
-		return block.TrueColorFG(c)
-	}
-}
-
-// bgSGR returns the background SGR for a colour in the chosen mode. Monochrome
-// emits no background SGR.
-func bgSGR(c color.RGBA, mode ColourMode) string {
-	switch mode {
-	case ColourMono:
-		return ""
-	case ColourXTerm256:
-		return sgr256(bg256Prefix, block.XTerm256(c))
-	default:
-		return block.TrueColorBG(c)
-	}
-}
-
 // appendSGR256 appends an xterm-256 SGR escape, prefix + index + "m", to dst with
 // strconv.AppendInt and returns the extended slice. It is the allocation-free
 // build the differ folds into its reused per-frame buffer.
@@ -634,15 +567,6 @@ func appendSGR256(dst []byte, prefix string, idx uint8) []byte {
 	dst = append(dst, prefix...)
 	dst = strconv.AppendInt(dst, int64(idx), 10)
 	return append(dst, 'm')
-}
-
-// sgr256 builds an xterm-256 SGR escape, prefix + index + "m", with
-// strconv.AppendInt into a stack buffer instead of fmt.Sprintf. The index is a
-// uint8, so the escape never exceeds the buffer. One string allocation remains
-// for the return value; the change drops the fmt reflection path.
-func sgr256(prefix string, idx uint8) string {
-	var buf [16]byte
-	return string(appendSGR256(buf[:0], prefix, idx))
 }
 
 // fgSGRFunc binds a colour mode into a block.SGRFunc for the cell differ, so the
@@ -681,13 +605,9 @@ func bgSGRFunc(mode ColourMode) block.SGRFunc {
 // (ESC [ row ; col H). cursorPosition fills it with 1-based coordinates.
 const cupFormat = "\x1b[%d;%dH"
 
-// sgrReset is the SGR reset escape (ESC [ 0 m) that ends each grid row's colour
-// run.
-const sgrReset = "\x1b[0m"
-
 // fg256Prefix and bg256Prefix are the xterm-256 foreground and background SGR
-// prefixes (ESC [ 38;5; and ESC [ 48;5;). sgr256 appends the palette index and
-// the trailing "m".
+// prefixes (ESC [ 38;5; and ESC [ 48;5;). appendSGR256 appends the palette index
+// and the trailing "m".
 const (
 	fg256Prefix = "\x1b[38;5;"
 	bg256Prefix = "\x1b[48;5;"

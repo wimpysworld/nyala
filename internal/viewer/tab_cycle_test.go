@@ -165,6 +165,7 @@ func TestStreamTabCyclesBackend(t *testing.T) {
 func TestBackendCycleUsesActiveFrameRepresentation(t *testing.T) {
 	st := NewState(8, 4, 16, 16)
 	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
+	st.SetDiff(&block.GridDiff{})
 	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
 	pngData := encodedPNG(t, img)
 

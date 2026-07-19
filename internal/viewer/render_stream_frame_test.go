@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/wimpysworld/nyala/internal/render"
+	"github.com/wimpysworld/nyala/internal/render/block"
 	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
 
@@ -52,6 +53,9 @@ func TestRenderStreamFrameDegenerateGuardBothBackends(t *testing.T) {
 		st := NewState(40, 20, 1, 1)
 		st.SetEnabled([]Backend{BackendSixel, BackendBlock})
 		st.Backend = backend
+		if backend == BackendBlock {
+			st.SetDiff(&block.GridDiff{})
+		}
 		var out bytes.Buffer
 		if err := st.RenderStreamFrame(frame, &out); err != nil {
 			t.Fatalf("RenderStreamFrame(%v) on zero-extent image = %v, want nil", backend, err)

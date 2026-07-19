@@ -12,6 +12,7 @@ import (
 
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
+	"github.com/wimpysworld/nyala/internal/render/block"
 	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
 
@@ -217,6 +218,7 @@ func TestRetainedPNGBlockFallbackMatchesDecodedPath(t *testing.T) {
 	data := encodedPNG(t, img)
 	rawState := NewState(8, 4, 16, 16)
 	rawState.Backend = BackendBlock
+	rawState.SetDiff(&block.GridDiff{})
 	var rawOut bytes.Buffer
 	if err := rawState.RenderStreamFrame(render.Frame{EncodedPNG: data}, &rawOut); err != nil {
 		t.Fatalf("render retained PNG through Block: %v", err)
@@ -224,6 +226,7 @@ func TestRetainedPNGBlockFallbackMatchesDecodedPath(t *testing.T) {
 
 	decodedState := NewState(8, 4, 16, 16)
 	decodedState.Backend = BackendBlock
+	decodedState.SetDiff(&block.GridDiff{})
 	var decodedOut bytes.Buffer
 	if err := decodedState.RenderStreamFrame(render.Frame{Img: img}, &decodedOut); err != nil {
 		t.Fatalf("render decoded PNG through Block: %v", err)

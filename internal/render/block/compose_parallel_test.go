@@ -73,8 +73,7 @@ func TestParallelComposeByteIdentical(t *testing.T) {
 	}
 }
 
-// TestParallelComposeNilPool proves a nil pool runs the serial binarise, the
-// capture and static-image fallback the live path drops to when it holds no pool.
+// TestParallelComposeNilPool proves a nil pool runs the serial binarise.
 func TestParallelComposeNilPool(t *testing.T) {
 	pc := NewParallelCompose()
 	br := Renderer{Cols: 120, Rows: 40, Scheme: SchemeQuadrant}

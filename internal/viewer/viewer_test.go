@@ -523,31 +523,53 @@ func TestWaitForNavigateReturnsNavigateError(t *testing.T) {
 	}
 }
 
-// TestRenderFrameBlockColourMode asserts the block path honours the colour
-// toggle: truecolour emits 24-bit SGR (38;2), xterm-256 emits indexed SGR (38;5).
-func TestRenderFrameBlockColourMode(t *testing.T) {
-	s := NewState(8, 4, 16, 16)
+// TestRenderFrameBlockColourModes asserts the production differ emits every row
+// after Reset, emits no cell payload for an unchanged second draw, and honours
+// the selected truecolour, xterm-256, or monochrome mode.
+func TestRenderFrameBlockColourModes(t *testing.T) {
 	src := solidImage(color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})
+	for _, tc := range []struct {
+		name       string
+		mode       ColourMode
+		wantSGR    string
+		forbidSGRs bool
+	}{
+		{name: "truecolour", mode: ColourTrue, wantSGR: "\x1b[38;2;"},
+		{name: "xterm-256", mode: ColourXTerm256, wantSGR: "\x1b[38;5;"},
+		{name: "monochrome", mode: ColourMono, forbidSGRs: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewState(8, 4, 16, 16)
+			s.Colour = tc.mode
+			var d block.GridDiff
+			s.SetDiff(&d)
+			d.Reset()
 
-	var trueBuf bytes.Buffer
-	if err := s.RenderStreamFrame(render.Frame{Img: src}, &trueBuf); err != nil {
-		t.Fatalf("render truecolour: %v", err)
-	}
-	if !strings.Contains(trueBuf.String(), "\x1b[38;2;") {
-		t.Fatalf("truecolour output missing 24-bit SGR")
-	}
+			var first bytes.Buffer
+			if err := s.RenderStreamFrame(render.Frame{Img: src}, &first); err != nil {
+				t.Fatalf("first draw: %v", err)
+			}
+			out := first.String()
+			for row := range s.Rows {
+				if move := cursorPosition(row, 0); !strings.Contains(out, move) {
+					t.Fatalf("first draw omitted row %d CUP %q", row, move)
+				}
+			}
+			if tc.wantSGR != "" && !strings.Contains(out, tc.wantSGR) {
+				t.Fatalf("first draw missing %q SGR", tc.wantSGR)
+			}
+			if tc.forbidSGRs && (strings.Contains(out, "\x1b[38;") || strings.Contains(out, "\x1b[48;")) {
+				t.Fatalf("monochrome draw leaked colour SGR: %q", out)
+			}
 
-	s.Colour = ColourXTerm256
-	var idxBuf bytes.Buffer
-	if err := s.RenderStreamFrame(render.Frame{Img: src}, &idxBuf); err != nil {
-		t.Fatalf("render xterm-256: %v", err)
-	}
-	out := idxBuf.String()
-	if !strings.Contains(out, "\x1b[38;5;") {
-		t.Fatalf("xterm-256 output missing indexed SGR")
-	}
-	if strings.Contains(out, "\x1b[38;2;") {
-		t.Fatalf("xterm-256 output leaked 24-bit SGR")
+			var second bytes.Buffer
+			if err := s.RenderStreamFrame(render.Frame{Img: src}, &second); err != nil {
+				t.Fatalf("unchanged draw: %v", err)
+			}
+			if second.Len() != 0 {
+				t.Fatalf("unchanged draw emitted %q", second.String())
+			}
+		})
 	}
 }
 
@@ -656,92 +678,13 @@ func cupPresent(out string) bool {
 // does not error, so the viewer tolerates a collapsed terminal.
 func TestRenderFrameNoFit(t *testing.T) {
 	s := NewState(0, 0, 16, 16)
+	s.SetDiff(&block.GridDiff{})
 	var buf bytes.Buffer
 	if err := s.RenderStreamFrame(render.Frame{Img: solidImage(color.RGBA{A: 0xff})}, &buf); err != nil {
 		t.Fatalf("render zero grid: %v", err)
 	}
 	if buf.Len() != 0 {
 		t.Fatalf("zero grid wrote %d bytes, want 0", buf.Len())
-	}
-}
-
-// TestWriteGridRowsJoinedByCRLF asserts writeGrid joins rows with CRLF, not a
-// bare LF, and emits no trailing newline after the last row. With auto-wrap off
-// in raw mode, the carriage return is needed to return the cursor to column 0
-// each row; a bare LF leaves it interlaced. A trailing newline on a full-height
-// grid scrolls the top row off the terminal.
-func TestWriteGridRowsJoinedByCRLF(t *testing.T) {
-	g := block.Grid{Cols: 2, Rows: 2, Cells: make([]block.Cell, 4)}
-	for i := range g.Cells {
-		g.Cells[i] = block.Cell{Glyph: ' ', FG: color.RGBA{A: 0xff}, BG: color.RGBA{A: 0xff}}
-	}
-	var buf bytes.Buffer
-	if err := writeGrid(g, ColourTrue, &buf); err != nil {
-		t.Fatalf("writeGrid: %v", err)
-	}
-	out := buf.String()
-	if got := strings.Count(out, "\n"); got != g.Rows-1 {
-		t.Fatalf("line feed count = %d, want %d (one between each row)", got, g.Rows-1)
-	}
-	for i := range len(out) {
-		if out[i] == '\n' && (i == 0 || out[i-1] != '\r') {
-			t.Fatalf("line feed at byte %d not preceded by carriage return", i)
-		}
-	}
-	if strings.HasSuffix(out, "\n") {
-		t.Fatalf("output ends with a newline; a full-height grid would scroll the top row off")
-	}
-}
-
-// TestWriteGridEmitsText asserts writeGrid prefers a text cell's overlay
-// grapheme over its bitmap glyph in every colour mode, and a Wide trailing cell
-// emits nothing.
-func TestWriteGridEmitsText(t *testing.T) {
-	fg := color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
-	bg := color.RGBA{R: 0x10, G: 0x20, B: 0x30, A: 0xff}
-	g := block.Grid{Cols: 2, Rows: 1, Cells: []block.Cell{
-		{Glyph: 0x2588, FG: fg, BG: bg, Text: "Q"},
-		{Glyph: 0x2588, FG: fg, BG: bg, Wide: true},
-	}}
-	for _, mode := range []ColourMode{ColourTrue, ColourXTerm256, ColourMono} {
-		var buf bytes.Buffer
-		if err := writeGrid(g, mode, &buf); err != nil {
-			t.Fatalf("writeGrid mode %d: %v", mode, err)
-		}
-		out := buf.String()
-		if got := strings.Count(out, "Q"); got != 1 {
-			t.Fatalf("mode %d: grapheme count = %d, want 1", mode, got)
-		}
-		if strings.ContainsRune(out, 0x2588) {
-			t.Fatalf("mode %d: output contains the bitmap rune; overlay must win", mode)
-		}
-	}
-}
-
-// TestWriteGridWideTrailingCellEmitsNothing places a width-2 grapheme so its
-// lead cell holds the grapheme and the next cell is the Wide trailing cell. The
-// rendered bytes must contain the grapheme exactly once and the trailing cell
-// must contribute no printable character: the lead cell's wide grapheme already
-// paints both columns, so a space would add a third column and misalign the row.
-func TestWriteGridWideTrailingCellEmitsNothing(t *testing.T) {
-	fg := color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
-	bg := color.RGBA{R: 0x10, G: 0x20, B: 0x30, A: 0xff}
-	g := block.Grid{Cols: 2, Rows: 1, Cells: []block.Cell{
-		{Glyph: 0x2588, FG: fg, BG: bg, Text: "世"},
-		{Glyph: 0x2588, FG: fg, BG: bg, Wide: true},
-	}}
-	for _, mode := range []ColourMode{ColourTrue, ColourXTerm256, ColourMono} {
-		var buf bytes.Buffer
-		if err := writeGrid(g, mode, &buf); err != nil {
-			t.Fatalf("writeGrid mode %d: %v", mode, err)
-		}
-		out := buf.String()
-		if got := strings.Count(out, "世"); got != 1 {
-			t.Fatalf("mode %d: grapheme count = %d, want 1", mode, got)
-		}
-		if strings.ContainsRune(out, ' ') {
-			t.Fatalf("mode %d: output %q contains a space; the Wide trailing cell must emit nothing", mode, out)
-		}
 	}
 }
 
@@ -853,34 +796,6 @@ func ttyByteCount(t *testing.T, f *os.File) int64 {
 		t.Fatalf("stat tty: %v", err)
 	}
 	return info.Size()
-}
-
-// TestWriteGridMonoNoSGR asserts writeGrid in ColourMono emits each cell's glyph
-// with no fg SGR (\x1b[38;) and no bg SGR (\x1b[48;), an SGR reset (\x1b[0m) per
-// row, and a reset-plus-CRLF (\x1b[0m\r\n) between rows (rows-1, none trailing).
-// A leaked fg/bg sequence fails the test.
-func TestWriteGridMonoNoSGR(t *testing.T) {
-	g := block.Grid{Cols: 3, Rows: 2, Cells: make([]block.Cell, 6)}
-	for i := range g.Cells {
-		g.Cells[i] = block.Cell{Glyph: '#', FG: color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff}, BG: color.RGBA{R: 0x10, G: 0x20, B: 0x30, A: 0xff}}
-	}
-	var buf bytes.Buffer
-	if err := writeGrid(g, ColourMono, &buf); err != nil {
-		t.Fatalf("writeGrid: %v", err)
-	}
-	out := buf.String()
-	if strings.Contains(out, "\x1b[38;") {
-		t.Fatalf("mono output leaked foreground SGR (\\x1b[38;)")
-	}
-	if strings.Contains(out, "\x1b[48;") {
-		t.Fatalf("mono output leaked background SGR (\\x1b[48;)")
-	}
-	if got := strings.Count(out, "\x1b[0m"); got != g.Rows {
-		t.Fatalf("reset count = %d, want %d (one per row)", got, g.Rows)
-	}
-	if got := strings.Count(out, "\x1b[0m\r\n"); got != g.Rows-1 {
-		t.Fatalf("reset-CRLF count = %d, want %d (one between each row)", got, g.Rows-1)
-	}
 }
 
 // TestCellPxDefaultWhenGeometryAbsent asserts that when every geometry report is

@@ -79,8 +79,7 @@ func TestParallelDownscaleReuse(t *testing.T) {
 	}
 }
 
-// TestParallelDownscaleNilPool proves a nil pool runs the serial kernel, the
-// capture and static-image fallback the live path drops to when it holds no pool.
+// TestParallelDownscaleNilPool proves a nil pool runs the serial kernel.
 func TestParallelDownscaleNilPool(t *testing.T) {
 	pd := NewParallelDownscale()
 	src := noiseRGBA(7, 1920, 1320)
