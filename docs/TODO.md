@@ -187,10 +187,11 @@ and research documents.
   the final Kitty path. Sources:
   `STAGE-1.md`, "Focus multiplexers", and
   [TUI decisions](./OVERVIEW.md#decisions-tui-research).
-- [ ] Add partial Kitty emission only if the terminal matrix shows full-frame decode,
-  draw, write, or byte cost over budget. Design from the direct CDP PNG wire format.
-  Do not revive the obsolete decoded-full-frame plus Kitty `a=f` plan without a
-  supported protocol path and an end-to-end win. Sources:
+- [x] Keep partial Kitty emission closed unless the sustained real-terminal matrix
+  exceeds 16.67 ms per frame in full-frame write, transport, terminal decode, or draw.
+  Reopening requires a supported direct-CDP-PNG protocol design and an end-to-end win;
+  none exists today. Do not revive the failed decoded-full-frame plus Kitty `a=f`
+  plan. Sources:
   [Stage 3 deferred scope](./STAGE-3.md#objective-and-scope)
   and [Performance recommendation 10](./PERFORMANCE.md#top-recommendations-ranked-by-impact-vs-effort).
 - [x] Do not add a JPEG Kitty fallback. The owner's measurement put
@@ -209,9 +210,9 @@ and research documents.
   intermediate as well. Sources:
   [Full headless profile](./PERFORMANCE.md#full-headless-profile-and-benchmark-pass-2026-07-14)
   and [direct native-YCbCr Block grid](./PERFORMANCE.md#direct-native-ycbcr-block-grid-2026-07-15).
-- [ ] Revisit the Block sub-cell screencast resolution only on an owner decision. It is
-  on hold because it removes the full-resolution benchmark that exposes renderer and
-  terminal differences. Source:
+- [x] Keep Block sub-cell screencast resolution and graphics downscaling closed. Reopen
+  only with specific, explicit owner approval because either change removes the
+  full-resolution benchmark that exposes renderer and terminal differences. Source:
   [Block performance recommendation 1](./PERFORMANCE.md#ranked-recommendations-impact-vs-effort).
 - [x] Replace `averageYCbCrToRGBA` with direct native-YCbCr Block composition. The
   sampler precomputes source and chroma mappings, groups repeated chroma samples with

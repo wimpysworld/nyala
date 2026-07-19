@@ -50,8 +50,9 @@ retained. Parallel construction of the unchanged 15-bit LUT cuts the same path b
 6.21% with byte-identical output. The later combined RGB555 mapping and bounded band
 emitter cut production-shaped full-encode p90 by 28.22% to 49.63% and are retained.
 Long-count RLE is retained with an 8192 repeat ceiling.
-Partial Kitty transport remains conditional on terminal measurements and a supported
-protocol path; see
+Kitty backend optimisation is complete. Partial Kitty transport remains closed unless
+the sustained real-terminal matrix exceeds 16.67 ms per frame in write, transport,
+terminal decode, or draw and a supported protocol path exists; see
 [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
 
 The full headless `pprof` and five-sample `go test -bench` pass completed on
@@ -141,6 +142,13 @@ correct; the perceived "Tab does nothing" traced to a forced `--backend` (which 
 the cycle) or the kitty-to-sixel step looking identical.
 
 ### Theme 3 - Kitty renderer and the fit bug
+
+Current status: direct CDP PNG pass-through, protocol chunking, reusable framing
+buffers, single-write assembly, double-buffered IDs, SIMD base64, and fallback
+RGB/zlib tuning are complete. Framing p90 is 0.008 ms at 1920x1080 and 0.013 ms at
+2560x1600, with 10 allocations and unchanged payload and allocation classes. These
+are framing measurements, not terminal decode or draw measurements. The findings
+below record the older decoded encoder and the work that replaced it.
 
 - KEY (the letterbox / item 6 "best fit"). `RenderStreamFrame` runs the graphics
   bitmap through `block.FitImage` (`internal/viewer/viewer.go:341`, `:226-227`),
@@ -363,7 +371,8 @@ Also landed on the load-time theme, beyond the ranked list:
 
 ### Tier 2 - moderate effort, high value
 
-5. **[PARTIAL - ee99ab7]** **Kitty flash fix + transmit optimise.** The per-frame
+5. **[DONE - ee99ab7 and direct PNG follow-ups]** **Kitty flash fix + transmit
+   optimise.** The per-frame
    flash is fixed: the `a=d,d=A` delete-all is replaced by a double-buffered
    alternating-id swap (place the next id, then free the previous), so the screen is
    never blank. Verified by eye on kitty and WezTerm. Note: the `a=f,r=1,o=z`
@@ -394,9 +403,9 @@ Also landed on the load-time theme, beyond the ranked list:
    22% cut, beating the earlier modelled ~18%. Rejected: klauspost HuffmanOnly was ~38%
    off encode-plus-write on this incompressible frame, but it disables LZ matching, so it
    inflates flat/text pages and shifts cost to the write; wrong default for a
-   general-purpose browser, so BestSpeed. This cuts the paint wall but does not remove
-   it: the encode stays the wall at 115 ms of the 172 ms budget, the write now about a
-   third (57 ms). At that point damage/dirty-rect and motion downscaling were candidate
+   general-purpose browser, so BestSpeed. This cut the historical paint wall but did
+   not remove it: the encode remained the wall at 115 ms of the 172 ms budget, with
+   the write about a third (57 ms). At that point damage/dirty-rect and motion downscaling were candidate
    levers. Direct PNG later removed the decoded Kitty encode path, and graphics
    downscaling is now outside the active roadmap. [DONE - measured] The draw loop now pipelines the
    escape encode with the tty write. A producer goroutine (the draw loop) assembles the
@@ -431,8 +440,9 @@ Also landed on the load-time theme, beyond the ranked list:
    decoded encoder for existing fallback paths and tests. The owner's measurement put
    direct PNG pass-through at about 1 ms, so a JPEG Kitty fallback is
    not required. Reconsider it only if terminal-side PNG decoding or drawing becomes
-   a measured bottleneck. REMAINING: measure sustained Kitty FPS and
-   Kitty-through-multiplexer placement. Impact 8, effort medium.
+   a measured bottleneck. Backend optimisation is complete. Sustained Kitty,
+   WezTerm, and KMSCON measurements and Kitty-through-multiplexer placement remain
+   validation and correctness work, not unfinished encoder optimisation.
 6. **[DONE - staged] Sixel 64K per-frame palette sampling.** A ten-cell still-image
    matrix cuts mean combined q90 decode plus encode by 30.39% against the prior
    parallel-LUT production path, but output quality is
@@ -473,11 +483,13 @@ Also landed on the load-time theme, beyond the ranked list:
 
 ### Tier 3 - larger and strategic
 
-10. **Conditional partial graphics emission.** First measure terminal decode, draw,
-    write, and bytes per frame. If full-frame cost exceeds 16.67 ms, add dirty-band
-    Sixel from its decoded pixels. Direct Kitty PNG has no decoded bitmap, and the
-    tested `a=f` edit was not portable, so do not decode every PNG to recreate the old
-    plan. Design a Kitty path only from protocol support and an end-to-end benchmark.
+10. **Conditional partial graphics emission.** Damage tracking, dirty tiles, and
+    partial Sixel output are excluded. For Kitty, first measure terminal decode, draw,
+    write, transport, and bytes per frame. Reopen partial Kitty research only if the
+    sustained full-frame path exceeds 16.67 ms and a supported protocol design can
+    prove an end-to-end win. Direct Kitty PNG has no decoded bitmap, the tested `a=f`
+    edit was not portable, and no supported design exists. Do not decode every PNG to
+    recreate the old plan.
     See [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
     Impact conditional, effort large.
 11. **[CLOSED - 1fd21a0]** **Compose hot-path cleanup.** Landed: scalar quadrant
@@ -551,10 +563,11 @@ reached the GPU. Verified on hardware (AMD Radeon 8060S, radeonsi): WebGL Report
 the AMD unmasked renderer with no performance caveat, and aquarium browser fps went
 26 -> 60. The `NYALA_FPS_TIMING` badge read `In: 60.3 / Out: 24.6`, so the pipeline now
 ingests the full 60 fps. The browser render, not our pipeline, had been the ingest
-ceiling. Paint (Out ~24) is now the wall: the Kitty encode on the large live surface.
-The klauspost zlib BestSpeed swap (recommendation 5) cuts that encode, measured 22%
-off encode-plus-write, and the encode/write pipeline (recommendation 5) hides the write
-behind the encode, measured `5.8 -> 8.5` out fps. Neither removes the wall: two co-equal
+ceiling. At that point, paint (Out ~24) was the wall: the Kitty encode on the large
+live surface.
+The klauspost zlib BestSpeed swap (recommendation 5) cut that encode, measured 22%
+off encode-plus-write, and the encode/write pipeline (recommendation 5) hid the write
+behind the encode, measured `5.8 -> 8.5` out fps. Neither removed the wall: two co-equal
 ~115 ms limits then bounded paint, our encode CPU (zlib of the 22 MB frame) and the
 terminal ingest. Direct PNG later removed Nyala's decoded Kitty encode. The former
 JPEG-in-motion recommendation is superseded by Sixel's PNG-only decision. The next task
@@ -608,13 +621,15 @@ min, max, median, and worst gap, plus `in_decode_*_ms` (PNG decode on the worker
 <url>` wires it.
 
 MEASURED (bbc.co.uk, kitty, pgup/pgdn): In median ~40 fps, peak ~59; Out 2 to 6 fps.
-So paint is the binding constraint on screen, not ingest. The paint split is decisive:
+At that point, paint was the binding constraint on screen, not ingest. The historical
+paint split was decisive:
 `out_encode_mean_ms ~191` (our Kitty escape build) against `out_write_mean_ms ~8` (the
-terminal). Our encode is the wall, not the terminal or tmux. `in_decode_mean_ms ~34`
-is the ingest ceiling, over the 16.6 ms 60fps budget. So the two levers are, in order:
+terminal). Our encode was the wall, not the terminal or tmux. `in_decode_mean_ms ~34`
+was the ingest ceiling, over the 16.6 ms 60fps budget. The two levers were, in order:
 cut the Kitty encode (recommendation 5, bulk `f=24` and buffer reuse, plus the
 klauspost zlib BestSpeed swap on the live path, measured 22% off encode-plus-write on
 a ~22 MB frame), then the now-superseded JPEG-in-motion experiment (recommendation 15).
+Direct CDP PNG pass-through supersedes this decoded-encoder bottleneck record.
 
 ### Screencast ack decouple + off-goroutine decode [DONE - 7a246f4]
 
@@ -1376,7 +1391,7 @@ faults by construction: no shared mutable state, and it targets the dominant sta
 
 ### Ranked recommendations (impact vs effort)
 
-1. **ON HOLD by owner decision (2026-07-07), not never.** Request the block screencast at
+1. **CLOSED by owner decision.** Request the block screencast at
    the sub-cell resolution and delete the downscale. Size the block backend's device surface
    to the sub-cell grid (cols*2 by rows*4) via a low device scale factor while keeping the
    CSS layout width at target, so the engine emits the exact bitmap Compose samples and
@@ -1389,7 +1404,8 @@ faults by construction: no shared mutable state, and it targets the dominant sta
    shrunk input removes the headroom those wins would show, and (b) hides the performance gap
    between terminal emulators, since the current heavy end-to-end pipeline is what stresses
    the terminals and reveals their throughput ceiling. The owner keeps the full-resolution
-   path as the discriminating benchmark. Revisit when the owner decides otherwise.
+   path as the discriminating benchmark. Reopen only with specific, explicit owner
+   approval.
 2. **[DONE - staged]** Region-split the downscale (owner's parallel region render).
    Landed in `internal/metrics/align.go` (a persistent `DownscalePool`: whole-row
    bands, workers sized `GOMAXPROCS-1` read once, reused `sync.WaitGroup` barrier,
