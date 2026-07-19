@@ -59,6 +59,7 @@ func TestRenderBlockComposesFullGridNoLetterbox(t *testing.T) {
 
 			st := NewState(c.cols, c.rows, src.Bounds().Dx(), src.Bounds().Dy())
 			st.Backend = BackendBlock
+			st.SetDiff(&block.GridDiff{})
 
 			sink := st.ComposeBlockFrame(render.Frame{Img: src})
 
