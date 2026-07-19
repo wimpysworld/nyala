@@ -3,9 +3,12 @@
 package viewer
 
 import (
+	"bytes"
+	"encoding/base64"
 	"fmt"
 	"hash/fnv"
 	"image"
+	"image/png"
 	"io"
 	"math"
 	"net/url"
@@ -13,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,9 +26,10 @@ import (
 )
 
 const (
-	internalRenderSamples = 30
-	internalRenderCellW   = 10
-	internalRenderCellH   = 20
+	internalRenderSamples     = 30
+	internalRenderCellW       = 10
+	internalRenderCellH       = 20
+	internalRenderScrollStyle = `<style>body { min-height: 150vh; }</style>`
 )
 
 type internalRenderCase struct {
@@ -44,7 +49,7 @@ type internalRenderResult struct {
 
 // TestInternalRenderingMetrics measures Nyala's internal production rendering
 // paths against production-shaped frames captured from a local page through CDP.
-// It is opt-in because it launches six Chromium sessions and encodes large Sixel
+// It is opt-in because it launches nine Chromium sessions and encodes large Sixel
 // frames. Run with NYALA_INTERNAL_RENDER_METRICS=1 and the live build tag.
 func TestInternalRenderingMetrics(t *testing.T) {
 	if os.Getenv("NYALA_INTERNAL_RENDER_METRICS") != "1" {
@@ -54,7 +59,6 @@ func TestInternalRenderingMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixtureURL := (&url.URL{Scheme: "file", Path: fixture}).String()
 	cases := []internalRenderCase{
 		{name: "block/1920x1080", backend: BackendBlock, engineBackend: "block", width: 1920, height: 1080},
 		{name: "kitty/1920x1080", backend: BackendKitty, engineBackend: "kitty", width: 1920, height: 1080},
@@ -62,10 +66,13 @@ func TestInternalRenderingMetrics(t *testing.T) {
 		{name: "block/2560x1600", backend: BackendBlock, engineBackend: "block", width: 2560, height: 1600},
 		{name: "kitty/2560x1600", backend: BackendKitty, engineBackend: "kitty", width: 2560, height: 1600},
 		{name: "sixel/2560x1600", backend: BackendSixel, engineBackend: "sixel", width: 2560, height: 1600},
+		{name: "block/2560x2880", backend: BackendBlock, engineBackend: "block", width: 2560, height: 2880},
+		{name: "kitty/2560x2880", backend: BackendKitty, engineBackend: "kitty", width: 2560, height: 2880},
+		{name: "sixel/2560x2880", backend: BackendSixel, engineBackend: "sixel", width: 2560, height: 2880},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			frames, prepMS := captureInternalRenderFrames(t, fixtureURL, tc)
+			frames, prepMS := captureInternalRenderFrames(t, fixture, tc)
 			result := measureInternalRender(t, tc, frames)
 			result.prepMS = prepMS
 			t.Logf("backend=%s size=%dx%d grid=%dx%d mean-ms=%.3f p90-ms=%.3f fps-from-p90=%.2f mean-terminal-B=%.0f allocs/op=%.1f prep-ms=%.1f samples=%d go=%s",
@@ -77,9 +84,12 @@ func TestInternalRenderingMetrics(t *testing.T) {
 	}
 }
 
-func captureInternalRenderFrames(t *testing.T, fixtureURL string, tc internalRenderCase) ([2]render.Frame, float64) {
+func captureInternalRenderFrames(t *testing.T, fixture string, tc internalRenderCase) ([2]render.Frame, float64) {
 	t.Helper()
+	fixtureURL := scrollableInternalRenderFixtureURL(t, fixture)
+	t.Setenv("NYALA_FPS_TIMING", "1")
 	e := engine.New("")
+	e.SetDiagnosticFrameMeta(true)
 	e.SetCellPx(internalRenderCellW, internalRenderCellH)
 	e.SetLayoutWidth(1280)
 	e.SetScheme("quadrant")
@@ -90,29 +100,93 @@ func captureInternalRenderFrames(t *testing.T, fixtureURL string, tc internalRen
 		t.Fatalf("navigate benchmark fixture: %v", err)
 	}
 	t.Cleanup(func() { _ = e.Close() })
-	first := waitSettledInternalRenderFrame(t, e.Frames(), tc, 0)
+	first := waitSettledInternalRenderFrame(t, e.Frames(), tc, "top", 0, 0, e.IngestSummary)
 	firstHash := internalFrameHash(first)
+	var firstScrollY float64
+	if first.Diagnostics != nil {
+		firstScrollY = first.Diagnostics.Meta.ScrollOffsetY
+	}
 	e.SendScroll(tc.height / 2)
-	second := waitSettledInternalRenderFrame(t, e.Frames(), tc, firstHash)
+	second := waitSettledInternalRenderFrame(t, e.Frames(), tc, "scrolled", firstHash, firstScrollY, e.IngestSummary)
 	return [2]render.Frame{first, second}, float64(time.Since(start)) / float64(time.Millisecond)
 }
 
-func waitSettledInternalRenderFrame(t *testing.T, frames <-chan render.Frame, tc internalRenderCase, rejectHash uint64) render.Frame {
+func scrollableInternalRenderFixtureURL(t *testing.T, fixture string) string {
 	t.Helper()
-	deadline := time.NewTimer(30 * time.Second)
+	source, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("read benchmark fixture: %v", err)
+	}
+	closingHead := []byte("</head>")
+	if !bytes.Contains(source, closingHead) {
+		t.Fatal("benchmark fixture has no closing head tag")
+	}
+	document := bytes.Replace(source, closingHead, append([]byte(internalRenderScrollStyle), closingHead...), 1)
+	path := filepath.Join(t.TempDir(), "index.html")
+	if err := os.WriteFile(path, document, 0o600); err != nil {
+		t.Fatalf("write scrollable benchmark fixture: %v", err)
+	}
+	return (&url.URL{Scheme: "file", Path: path}).String()
+}
+
+func waitSettledInternalRenderFrame(t *testing.T, frames <-chan render.Frame, tc internalRenderCase, phase string, rejectHash uint64, afterScroll float64, ingestSummary func() render.IngestStats) render.Frame {
+	t.Helper()
+	frame, err := waitInternalRenderFrame(frames, tc, phase, rejectHash, afterScroll, 30*time.Second, 600*time.Millisecond, ingestSummary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return frame
+}
+
+type internalRenderWaitObservation struct {
+	started          time.Time
+	lastArrival      time.Time
+	total            int
+	accepted         int
+	noImage          int
+	missingBlockText int
+	malformedPNG     int
+	wrongDimensions  int
+	preScrollHash    int
+	unchangedScroll  int
+	lastShape        string
+	lastHash         uint64
+	lastGap          time.Duration
+	lastDiagnostics  *render.FrameDiagnostics
+	acceptedHashes   []uint64
+}
+
+func waitInternalRenderFrame(frames <-chan render.Frame, tc internalRenderCase, phase string, rejectHash uint64, afterScroll float64, deadlineDuration, idleDuration time.Duration, ingestSummary func() render.IngestStats) (render.Frame, error) {
+	deadline := time.NewTimer(deadlineDuration)
 	defer deadline.Stop()
-	idle := time.NewTimer(600 * time.Millisecond)
+	idle := time.NewTimer(idleDuration)
 	defer idle.Stop()
 	var latest render.Frame
+	observation := internalRenderWaitObservation{started: time.Now()}
 	for {
 		select {
 		case frame, ok := <-frames:
 			if !ok {
-				t.Fatal("engine frame channel closed")
+				return render.Frame{}, fmt.Errorf("engine frame channel closed; %s", observation.describe(phase, rejectHash, ingestSummary()))
 			}
-			if !validInternalRenderFrame(frame, tc) || internalFrameHash(frame) == rejectHash {
+			arrival := time.Now()
+			observation.observeArrival(frame, arrival)
+			rejection := internalRenderFrameRejection(frame, tc)
+			if rejection != "" {
+				observation.reject(rejection)
 				continue
 			}
+			hash := observation.lastHash
+			if hash == rejectHash {
+				observation.preScrollHash++
+				continue
+			}
+			if phase == "scrolled" && !internalRenderScrollAdvanced(frame, afterScroll) {
+				observation.unchangedScroll++
+				continue
+			}
+			observation.accepted++
+			observation.acceptedHashes = append(observation.acceptedHashes, hash)
 			latest = frame
 			if !idle.Stop() {
 				select {
@@ -120,30 +194,199 @@ func waitSettledInternalRenderFrame(t *testing.T, frames <-chan render.Frame, tc
 				default:
 				}
 			}
-			idle.Reset(600 * time.Millisecond)
+			idle.Reset(idleDuration)
 		case <-idle.C:
 			if latest.HasImage() {
-				return latest
+				return latest, nil
 			}
-			idle.Reset(600 * time.Millisecond)
+			idle.Reset(idleDuration)
 		case <-deadline.C:
-			t.Fatalf("timed out waiting for settled %s frame", tc.engineBackend)
+			return render.Frame{}, fmt.Errorf("timed out waiting for settled %s frame; %s", tc.engineBackend, observation.describe(phase, rejectHash, ingestSummary()))
 		}
 	}
 }
 
-func validInternalRenderFrame(frame render.Frame, tc internalRenderCase) bool {
+func (o *internalRenderWaitObservation) observeArrival(frame render.Frame, arrival time.Time) {
+	o.total++
+	if !o.lastArrival.IsZero() {
+		o.lastGap = arrival.Sub(o.lastArrival)
+	}
+	o.lastArrival = arrival
+	o.lastHash = internalFrameHash(frame)
+	o.lastDiagnostics = frame.Diagnostics
+	if frame.Img != nil {
+		o.lastShape = fmt.Sprintf("bounds=%v", frame.Img.Bounds())
+	} else {
+		o.lastShape = fmt.Sprintf("png-bytes=%d", len(frame.EncodedPNG))
+	}
+}
+
+func (o *internalRenderWaitObservation) reject(reason string) {
+	switch reason {
+	case "no-image":
+		o.noImage++
+	case "missing-block-text":
+		o.missingBlockText++
+	case "malformed-png":
+		o.malformedPNG++
+	case "wrong-dimensions":
+		o.wrongDimensions++
+	}
+}
+
+func (o internalRenderWaitObservation) describe(phase string, rejectHash uint64, ingest render.IngestStats) string {
+	meta := "unavailable"
+	if o.lastDiagnostics != nil {
+		m := o.lastDiagnostics.Meta
+		meta = fmt.Sprintf("device=%.0fx%.0f scroll=(%.1f,%.1f)", m.DeviceWidth, m.DeviceHeight, m.ScrollOffsetX, m.ScrollOffsetY)
+	}
+	return fmt.Sprintf("phase=%s elapsed=%s published=%d accepted=%d rejected(no-image=%d missing-block-text=%d malformed-png=%d wrong-dimensions=%d pre-scroll-hash=%d unchanged-scroll=%d) reject-hash=%x last(%s hash=%x gap=%s %s) accepted-hashes=%x ingest(frames=%d mean-fps=%.2f min-fps=%.2f max-fps=%.2f median-fps=%.2f worst-gap-ms=%.2f decode-mean-ms=%.2f decode-max-ms=%.2f)",
+		phase, time.Since(o.started).Round(time.Millisecond), o.total, o.accepted,
+		o.noImage, o.missingBlockText, o.malformedPNG, o.wrongDimensions, o.preScrollHash, o.unchangedScroll,
+		rejectHash, o.lastShape, o.lastHash, o.lastGap.Round(time.Millisecond), meta, o.acceptedHashes,
+		ingest.Frames, ingest.MeanFPS, ingest.MinFPS, ingest.MaxFPS, ingest.MedianFPS, ingest.WorstGapMS, ingest.DecodeMeanMS, ingest.DecodeMaxMS)
+}
+
+func internalRenderFrameRejection(frame render.Frame, tc internalRenderCase) string {
 	if !frame.HasImage() {
-		return false
+		return "no-image"
 	}
 	if tc.backend == BackendBlock && len(frame.Text) == 0 {
-		return false
+		return "missing-block-text"
 	}
 	if frame.Img != nil {
 		b := frame.Img.Bounds()
-		return b.Dx() == tc.width && b.Dy() == tc.height
+		if b.Dx() != tc.width || b.Dy() != tc.height {
+			return "wrong-dimensions"
+		}
+		return ""
 	}
-	return tc.backend == BackendKitty && frame.EncodedPNG != ""
+	if tc.backend != BackendKitty {
+		return "no-image"
+	}
+	cfg, err := png.DecodeConfig(base64.NewDecoder(base64.StdEncoding, bytes.NewBufferString(frame.EncodedPNG)))
+	if err != nil {
+		return "malformed-png"
+	}
+	if cfg.Width != tc.width || cfg.Height != tc.height {
+		return "wrong-dimensions"
+	}
+	return ""
+}
+
+func validInternalRenderFrame(frame render.Frame, tc internalRenderCase) bool {
+	return internalRenderFrameRejection(frame, tc) == ""
+}
+
+func internalRenderScrollAdvanced(frame render.Frame, after float64) bool {
+	return frame.Diagnostics != nil && frame.Diagnostics.Meta.ScrollOffsetY > after
+}
+
+func TestInternalRenderScrollAdvanced(t *testing.T) {
+	unscrolled := render.Frame{Diagnostics: &render.FrameDiagnostics{Meta: render.ScreencastMeta{ScrollOffsetY: 0}}}
+	if internalRenderScrollAdvanced(unscrolled, 0) {
+		t.Fatal("zero-range fixture reported an advanced scroll")
+	}
+	scrolled := render.Frame{Diagnostics: &render.FrameDiagnostics{Meta: render.ScreencastMeta{ScrollOffsetY: 1}}}
+	if !internalRenderScrollAdvanced(scrolled, 0) {
+		t.Fatal("positive scroll offset was not accepted")
+	}
+	if internalRenderScrollAdvanced(render.Frame{}, 0) {
+		t.Fatal("frame without diagnostic scroll metadata was accepted")
+	}
+}
+
+func TestWaitInternalRenderFrameFailureEvidence(t *testing.T) {
+	exactPNG := encodedInternalRenderTestPNG(t, 4, 3)
+	rejectFrame := render.Frame{
+		EncodedPNG: exactPNG,
+		Diagnostics: &render.FrameDiagnostics{Meta: render.ScreencastMeta{
+			DeviceWidth: 4, DeviceHeight: 3, ScrollOffsetX: 1, ScrollOffsetY: 2,
+		}},
+	}
+	rejectHash := internalFrameHash(rejectFrame)
+	frames := make(chan render.Frame, 6)
+	frames <- render.Frame{}
+	frames <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 4, 3))}
+	frames <- render.Frame{EncodedPNG: "not-base64"}
+	frames <- render.Frame{EncodedPNG: encodedInternalRenderTestPNG(t, 3, 3)}
+	frames <- rejectFrame
+	frames <- render.Frame{
+		Img: image.NewRGBA(image.Rect(0, 0, 4, 3)),
+		Diagnostics: &render.FrameDiagnostics{Meta: render.ScreencastMeta{
+			DeviceWidth: 4, DeviceHeight: 3, ScrollOffsetX: 1, ScrollOffsetY: 2,
+		}},
+	}
+
+	stats := render.IngestStats{Frames: 9, MeanFPS: 8, MinFPS: 7, MaxFPS: 10, MedianFPS: 9, WorstGapMS: 11, DecodeMeanMS: 12, DecodeMaxMS: 13}
+	_, err := waitInternalRenderFrame(frames, internalRenderCase{backend: BackendKitty, engineBackend: "kitty", width: 4, height: 3}, "scrolled", rejectHash, 0, 10*time.Millisecond, time.Second, func() render.IngestStats { return stats })
+	if err == nil {
+		t.Fatal("waitInternalRenderFrame() error = nil")
+	}
+	for _, want := range []string{
+		"phase=scrolled", "elapsed=", "published=6", "accepted=1", "no-image=1", "missing-block-text=0",
+		"malformed-png=1", "wrong-dimensions=1", "pre-scroll-hash=1", "unchanged-scroll=1", "bounds=(0,0)-(4,3)",
+		"hash=", "gap=", "device=4x3 scroll=(1.0,2.0)", "accepted-hashes=[", "ingest(frames=9",
+		"worst-gap-ms=11.00", "decode-mean-ms=12.00", "decode-max-ms=13.00",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("failure evidence %q does not contain %q", err, want)
+		}
+	}
+}
+
+func TestWaitInternalRenderFrameSuccessUnchanged(t *testing.T) {
+	want := render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 4, 3))}
+	frames := make(chan render.Frame, 1)
+	frames <- want
+	got, err := waitInternalRenderFrame(frames, internalRenderCase{backend: BackendSixel, engineBackend: "sixel", width: 4, height: 3}, "top", 0, 0, time.Second, time.Millisecond, func() render.IngestStats { return render.IngestStats{} })
+	if err != nil {
+		t.Fatalf("waitInternalRenderFrame(): %v", err)
+	}
+	if got.Img != want.Img {
+		t.Fatal("waitInternalRenderFrame() did not return the accepted settled frame")
+	}
+}
+
+func TestValidInternalRenderFrame(t *testing.T) {
+	exactPNG := encodedInternalRenderTestPNG(t, 4, 3)
+	rawPNG, err := base64.StdEncoding.DecodeString(exactPNG)
+	if err != nil {
+		t.Fatalf("decode test PNG: %v", err)
+	}
+	exactImage := image.NewRGBA(image.Rect(0, 0, 4, 3))
+	wrongImage := image.NewRGBA(image.Rect(0, 0, 3, 3))
+	cases := []struct {
+		name  string
+		frame render.Frame
+		tc    internalRenderCase
+		want  bool
+	}{
+		{name: "kitty exact-size PNG", frame: render.Frame{EncodedPNG: exactPNG}, tc: internalRenderCase{backend: BackendKitty, width: 4, height: 3}, want: true},
+		{name: "kitty wrong-size PNG", frame: render.Frame{EncodedPNG: exactPNG}, tc: internalRenderCase{backend: BackendKitty, width: 5, height: 3}, want: false},
+		{name: "kitty malformed PNG", frame: render.Frame{EncodedPNG: base64.StdEncoding.EncodeToString([]byte("not a PNG"))}, tc: internalRenderCase{backend: BackendKitty, width: 4, height: 3}, want: false},
+		{name: "kitty truncated PNG", frame: render.Frame{EncodedPNG: base64.StdEncoding.EncodeToString(rawPNG[:16])}, tc: internalRenderCase{backend: BackendKitty, width: 4, height: 3}, want: false},
+		{name: "decoded image exact size", frame: render.Frame{Img: exactImage}, tc: internalRenderCase{backend: BackendSixel, width: 4, height: 3}, want: true},
+		{name: "decoded image wrong size", frame: render.Frame{Img: wrongImage}, tc: internalRenderCase{backend: BackendSixel, width: 4, height: 3}, want: false},
+		{name: "block image with text", frame: render.Frame{Img: exactImage, Text: []render.GlyphRun{{Text: "x"}}}, tc: internalRenderCase{backend: BackendBlock, width: 4, height: 3}, want: true},
+		{name: "block image without text", frame: render.Frame{Img: exactImage}, tc: internalRenderCase{backend: BackendBlock, width: 4, height: 3}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := validInternalRenderFrame(tc.frame, tc.tc); got != tc.want {
+				t.Fatalf("validInternalRenderFrame() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func encodedInternalRenderTestPNG(t *testing.T, width, height int) string {
+	t.Helper()
+	var out bytes.Buffer
+	if err := png.Encode(&out, image.NewRGBA(image.Rect(0, 0, width, height))); err != nil {
+		t.Fatalf("encode test PNG: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(out.Bytes())
 }
 
 func internalFrameHash(frame render.Frame) uint64 {
