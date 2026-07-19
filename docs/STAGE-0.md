@@ -99,7 +99,7 @@ Determinism differs by backend:
 
 ## Block schemes and the quadrant mapping
 
-The block backend offers two schemes. Quadrant is the default; half-block is the positional floor. `ToggleScheme` lives on the concrete `block.Renderer`, not the `Renderer` interface, to keep the seam thin.
+The early block backend offered two schemes. Quadrant was the default; half-block was the positional floor. Its concrete `block.Renderer` toggle was later retired when launch-time `--blocks` selection superseded live scheme mutation.
 
 The quadrant scheme maps one cell to a 2x4 source block, split into four 2x2 sub-cells (`TL`, `TR`, `BL`, `BR`). Each sub-cell box-averages a 1x2 column. The half-block floor maps one cell to a 1x2 column: the top pixel becomes the background, the bottom pixel the foreground, with glyph `U+2584`.
 

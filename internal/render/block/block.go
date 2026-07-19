@@ -95,18 +95,6 @@ type Renderer struct {
 	Scheme Scheme // pixel-to-cell mapping; zero value is SchemeQuadrant
 }
 
-// ToggleScheme flips between the quadrant and half-block schemes and returns the
-// new scheme. It mutates the receiver, so it touches only this concrete type and
-// never the render.Renderer interface.
-func (br *Renderer) ToggleScheme() Scheme {
-	if br.Scheme == SchemeQuadrant {
-		br.Scheme = SchemeHalfBlock
-	} else {
-		br.Scheme = SchemeQuadrant
-	}
-	return br.Scheme
-}
-
 // Compile-time assertion that Renderer satisfies render.Renderer.
 var _ render.Renderer = (*Renderer)(nil)
 
