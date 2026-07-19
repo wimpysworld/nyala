@@ -17,11 +17,9 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"image"
 	"image/color"
-	"image/draw"
 	"io"
 	"os"
 	"strconv"
@@ -113,9 +111,8 @@ type State struct {
 	// sixel paths.
 	kittyID int
 
-	// kittyEnc is the reused Kitty live encoder. It holds the per-frame scratch
-	// buffers (RGB pack, zlib output, base64 destination, APC frame assembly) so a
-	// kitty draw allocates nothing per frame after warmup. It is lazily built on the
+	// kittyEnc is the reused Kitty live encoder. It holds the APC frame assembly
+	// buffer across direct PNG frames. It is lazily built on the
 	// first kitty frame and driven from the single draw goroutine, so it never
 	// aliases. It stays nil on the block and sixel paths.
 	kittyEnc *kitty.LiveEncoder
@@ -124,11 +121,6 @@ type State struct {
 	// moving frames and switches its output through an internal writer proxy.
 	// The viewer draw path is serial, so one renderer owns the whole stream.
 	sixelEnc *sixel.Renderer
-
-	// graphicsRGBA is the reusable consumer-side conversion target for native
-	// JPEG YCbCr frames. Kitty keeps its RGBA input, so conversion stays at that
-	// consumer. Sixel accepts the decoder-native image directly.
-	graphicsRGBA *image.RGBA
 }
 
 // frameScratch is the live diff path's reusable per-frame buffers. Each draw
@@ -380,12 +372,11 @@ func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
 	if !frame.HasImage() {
 		return nil
 	}
-	if s.Backend == BackendKitty && frame.EncodedPNG != "" {
-		if err := s.encodeKittyPNG(frame.EncodedPNG, w); err == nil {
+	if s.Backend == BackendKitty {
+		if frame.EncodedPNG == "" {
 			return nil
-		} else if !errors.Is(err, kitty.ErrInvalidPNGData) {
-			return err
 		}
+		return s.encodeKittyPNG(frame.EncodedPNG, w)
 	}
 	img := frame.Img
 	if img == nil {
@@ -410,8 +401,8 @@ func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
 }
 
 // decodeFramePNG materialises a retained CDP PNG only when a non-Kitty consumer
-// receives a frame queued before a backend switch, or direct framing rejects it.
-// Normal settled Kitty frames never call it.
+// receives a frame queued before a backend switch. Normal settled Kitty frames
+// never call it.
 func decodeFramePNG(data string) (image.Image, error) {
 	raw, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
@@ -507,49 +498,18 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 // active graphics backend. RenderStreamFrame passes the engine-sized bitmap and
 // the identity graphicsFit through, so the offset is (0,0) and the bitmap fills
 // the grid from the top-left. The fit parameter stays so a caller can still
-// centre a sub-grid image. The kitty path double-buffers the image id (see
-// encodeKitty); sixel draws the bitmap alone.
+// centre a sub-grid image. Sixel draws the bitmap alone.
 func (s *State) encodeGraphics(img image.Image, fit block.Fit, w io.Writer) error {
 	if move := cursorPosition(fit.OffsetRow, fit.OffsetCol); move != "" {
 		if _, err := io.WriteString(w, move); err != nil {
 			return err
 		}
 	}
-	if s.Backend == BackendKitty {
-		return s.encodeKitty(img, w)
-	}
 	return s.Renderer().Render(render.Frame{Img: img}, w)
 }
 
-// encodeKitty draws one kitty frame with double-buffered image ids so the swap
-// never blanks the screen. It places the new image under the next id (a=T,
-// i=<next>), then deletes the previous id and frees its data (a=d,d=I,i=<prev>).
-// The new placement lands before the old image is deleted, so there is never a
-// blank frame, unlike a delete-all before the transmit. The first frame has no
-// previous id and deletes nothing. It tracks the placed id on State so the next
-// frame alternates and the reset can target both ids. The transmit runs through
-// the reused kitty.LiveEncoder (24-bit RGB, BestSpeed zlib, reused scratch
-// buffers), so a warm kitty frame allocates nothing for the encode.
-func (s *State) encodeKitty(img image.Image, w io.Writer) error {
-	next := nextKittyID(s.kittyID)
-	if s.kittyEnc == nil {
-		s.kittyEnc = &kitty.LiveEncoder{}
-	}
-	rgba := s.graphicsPixels(img)
-	if err := s.kittyEnc.EncodeID(rgba, next, w); err != nil {
-		return err
-	}
-	if s.kittyID != 0 {
-		if _, err := io.WriteString(w, kitty.DeleteImage(s.kittyID)); err != nil {
-			return err
-		}
-	}
-	s.kittyID = next
-	return nil
-}
-
-// encodeKittyPNG transmits a retained CDP PNG unchanged, then performs the same
-// double-buffer delete as the decoded Kitty path.
+// encodeKittyPNG transmits a retained CDP PNG unchanged, then deletes the prior
+// double-buffer image.
 func (s *State) encodeKittyPNG(data string, w io.Writer) error {
 	next := nextKittyID(s.kittyID)
 	if s.kittyEnc == nil {
@@ -565,21 +525,6 @@ func (s *State) encodeKittyPNG(data string, w io.Writer) error {
 	}
 	s.kittyID = next
 	return nil
-}
-
-// graphicsPixels returns RGBA pixels for the Kitty consumer. RGBA input is
-// passed through. Native JPEG YCbCr is converted into a reusable target at this
-// consumer boundary.
-func (s *State) graphicsPixels(img image.Image) *image.RGBA {
-	if rgba, ok := img.(*image.RGBA); ok {
-		return rgba
-	}
-	b := img.Bounds()
-	if s.graphicsRGBA == nil || !s.graphicsRGBA.Bounds().Eq(image.Rect(0, 0, b.Dx(), b.Dy())) {
-		s.graphicsRGBA = image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
-	}
-	draw.Draw(s.graphicsRGBA, s.graphicsRGBA.Bounds(), img, b.Min, draw.Src)
-	return s.graphicsRGBA
 }
 
 // nextKittyID returns the next double-buffer image id, alternating between 1 and

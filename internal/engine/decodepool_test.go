@@ -318,10 +318,10 @@ func TestDecodePoolByteIdenticalToSerial(t *testing.T) {
 	}
 }
 
-// TestDecodePoolKittyPassThroughAndFallback pins the Kitty worker selection. PNG
-// remains the exact CDP string, while a non-PNG payload uses decoded pixels and
-// never enters the direct path.
-func TestDecodePoolKittyPassThroughAndFallback(t *testing.T) {
+// TestDecodePoolKittyPassThroughAndStalePixels pins the Kitty worker selection.
+// PNG remains the exact CDP string, while a frame decoded under the prior format
+// remains pixels for the viewer to reject after the switch.
+func TestDecodePoolKittyPassThroughAndStalePixels(t *testing.T) {
 	t.Run("PNG identity", func(t *testing.T) {
 		payload := pngPayload(t)
 		e := &ChromiumEngine{
@@ -341,7 +341,7 @@ func TestDecodePoolKittyPassThroughAndFallback(t *testing.T) {
 		}
 	})
 
-	t.Run("non-PNG fallback", func(t *testing.T) {
+	t.Run("stale non-PNG pixels", func(t *testing.T) {
 		payload := encodeBase64JPEG(t)
 		e := &ChromiumEngine{backend: "kitty"}
 		rawQ, frames, stop := drivePool(t, e, 1)
@@ -350,10 +350,10 @@ func TestDecodePoolKittyPassThroughAndFallback(t *testing.T) {
 
 		got := recvFrame(t, frames)
 		if got.Img == nil {
-			t.Fatal("Kitty non-PNG fallback has no decoded pixels")
+			t.Fatal("stale Kitty non-PNG frame has no decoded pixels")
 		}
 		if got.EncodedPNG != "" {
-			t.Fatal("Kitty non-PNG fallback retained a direct PNG payload")
+			t.Fatal("stale Kitty non-PNG frame retained a direct PNG payload")
 		}
 	})
 }

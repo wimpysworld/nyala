@@ -3,31 +3,20 @@
 package engine
 
 import (
-	"bytes"
 	"fmt"
 	"image"
-	"image/color"
 	"io"
-	"strings"
 	"testing"
 
-	"github.com/charmbracelet/x/ansi/kitty"
 	xsixel "github.com/charmbracelet/x/ansi/sixel"
-	emmb64 "github.com/emmansun/base64"
-	"github.com/klauspost/compress/zlib"
 	"github.com/wimpysworld/nyala/internal/render"
 	renderkitty "github.com/wimpysworld/nyala/internal/render/kitty"
 	rendersixel "github.com/wimpysworld/nyala/internal/render/sixel"
-	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
 
 const (
-	benchKittyAPCIntro = "\x1b_G"
-	benchKittyST       = "\x1b\\"
-	benchKittyMore     = "m=1"
-	benchKittyLast     = "m=0"
-	benchSixelIntro    = "\x1bPq"
-	benchSixelST       = "\x1b\\"
+	benchSixelIntro = "\x1bPq"
+	benchSixelST    = "\x1b\\"
 
 	// JPEG conversion can differ by one RGB level when draw.Draw and a direct
 	// YCbCr-to-RGB pack round an intermediate value in a different order.
@@ -37,9 +26,8 @@ const (
 // BenchmarkCDPNativeFrame compares the current shared full-frame RGBA path with
 // a native-image design. Both arms consume the same real Chromium screencast
 // payload. The proposed shared and Sixel arms keep JPEG as YCbCr and PNG in the
-// PNG decoder's native layout. The proposed Kitty JPEG arm converts YCbCr
-// straight into its final RGB pack. The proposed Kitty PNG arm rechunks CDP's
-// base64 PNG directly into Kitty APC frames and performs no image decode.
+// PNG decoder's native layout. The Kitty PNG arm rechunks CDP's base64 PNG
+// directly into Kitty APC frames and performs no image decode.
 //
 // The setup captures and validates pixels before ResetTimer. PNG pixels are exact.
 // JPEG pixels may differ by benchJPEGMaxRGBDelta per RGB channel. Run with:
@@ -93,69 +81,21 @@ func benchmarkSharedDecode(b *testing.B, payload screencastBenchPayload) {
 }
 
 func benchmarkKittyFrame(b *testing.B, payload screencastBenchPayload) {
-	b.Run(payload.name+"/kitty/current-rgba-rgb", func(b *testing.B) {
-		e := &ChromiumEngine{backend: "kitty"}
+	if payload.name != "png" {
+		return
+	}
+	b.Run(payload.name+"/kitty/direct-png", func(b *testing.B) {
 		enc := &renderkitty.LiveEncoder{}
-		img, err := e.decodeLiveFrame(payload.data)
-		if err != nil {
-			b.Fatal(err)
-		}
 		var count byteCountingWriter
-		if err := enc.EncodeID(imageToRGBA(img), 1, &count); err != nil {
+		if err := enc.EncodePNGID(payload.data, 1, &count); err != nil {
 			b.Fatal(err)
 		}
 		outputBytes := count.n
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			img, err := e.decodeLiveFrame(payload.data)
-			if err != nil {
+			if err := enc.EncodePNGID(payload.data, 1, io.Discard); err != nil {
 				b.Fatal(err)
-			}
-			if err := enc.EncodeID(imageToRGBA(img), 1, io.Discard); err != nil {
-				b.Fatal(err)
-			}
-		}
-		reportNativeFrameMetrics(b, payload, outputBytes)
-	})
-
-	b.Run(payload.name+"/kitty/proposed-native", func(b *testing.B) {
-		var outputBytes int64
-		if payload.name == "png" {
-			enc := &benchKittyPNGEncoder{}
-			var count byteCountingWriter
-			if err := enc.EncodeBase64PNG(payload.data, screencastBenchWidth, screencastBenchHeight, 1, &count); err != nil {
-				b.Fatal(err)
-			}
-			outputBytes = count.n
-			b.ReportAllocs()
-			b.ResetTimer()
-			for range b.N {
-				if err := enc.EncodeBase64PNG(payload.data, screencastBenchWidth, screencastBenchHeight, 1, io.Discard); err != nil {
-					b.Fatal(err)
-				}
-			}
-		} else {
-			enc := &benchKittyNativeEncoder{}
-			img, err := decodeNativeScreencastImage(payload.data)
-			if err != nil {
-				b.Fatal(err)
-			}
-			var count byteCountingWriter
-			if err := enc.EncodeID(img, 1, &count); err != nil {
-				b.Fatal(err)
-			}
-			outputBytes = count.n
-			b.ReportAllocs()
-			b.ResetTimer()
-			for range b.N {
-				img, err := decodeNativeScreencastImage(payload.data)
-				if err != nil {
-					b.Fatal(err)
-				}
-				if err := enc.EncodeID(img, 1, io.Discard); err != nil {
-					b.Fatal(err)
-				}
 			}
 		}
 		reportNativeFrameMetrics(b, payload, outputBytes)
@@ -255,183 +195,6 @@ func (w *byteCountingWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-type benchSliceWriter struct{ buf []byte }
-
-func (w *benchSliceWriter) Write(p []byte) (int, error) {
-	w.buf = append(w.buf, p...)
-	return len(p), nil
-}
-
-type benchKittyNativeEncoder struct {
-	rgb   []byte
-	zbuf  benchSliceWriter
-	zw    *zlib.Writer
-	b64   []byte
-	frame []byte
-}
-
-func (e *benchKittyNativeEncoder) EncodeID(img image.Image, id int, w io.Writer) error {
-	if err := e.packRGB(img); err != nil {
-		return err
-	}
-	e.zbuf.buf = e.zbuf.buf[:0]
-	if e.zw == nil {
-		zw, err := zlib.NewWriterLevel(&e.zbuf, zlib.BestSpeed)
-		if err != nil {
-			return err
-		}
-		e.zw = zw
-	} else {
-		e.zw.Reset(&e.zbuf)
-	}
-	if _, err := e.zw.Write(e.rgb); err != nil {
-		return err
-	}
-	if err := e.zw.Close(); err != nil {
-		return err
-	}
-	need := emmb64.StdEncoding.EncodedLen(len(e.zbuf.buf))
-	if cap(e.b64) < need {
-		e.b64 = make([]byte, need)
-	}
-	e.b64 = e.b64[:need]
-	emmb64.StdEncoding.Encode(e.b64, e.zbuf.buf)
-	b := img.Bounds()
-	opts := kitty.Options{
-		Format:       kitty.RGB,
-		Compression:  kitty.Zlib,
-		Transmission: kitty.Direct,
-		Action:       kitty.TransmitAndPut,
-		Quite:        2,
-		ImageWidth:   b.Dx(),
-		ImageHeight:  b.Dy(),
-		ID:           id,
-	}
-	e.frame = appendBenchKittyByteFrames(e.frame[:0], e.b64, opts.Options())
-	_, err := w.Write(e.frame)
-	return err
-}
-
-func (e *benchKittyNativeEncoder) packRGB(img image.Image) error {
-	switch src := img.(type) {
-	case *image.YCbCr:
-		e.packYCbCr(src)
-		return nil
-	case *image.RGBA:
-		e.packRGBA(src)
-		return nil
-	default:
-		return fmt.Errorf("unsupported native Kitty image type %T", img)
-	}
-}
-
-func (e *benchKittyNativeEncoder) packRGBA(src *image.RGBA) {
-	b := src.Bounds()
-	n := b.Dx() * b.Dy() * 3
-	e.growRGB(n)
-	di := 0
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		o := src.PixOffset(b.Min.X, y)
-		row := src.Pix[o : o+b.Dx()*4]
-		for i := 0; i < len(row); i += 4 {
-			e.rgb[di], e.rgb[di+1], e.rgb[di+2] = row[i], row[i+1], row[i+2]
-			di += 3
-		}
-	}
-}
-
-func (e *benchKittyNativeEncoder) packYCbCr(src *image.YCbCr) {
-	b := src.Bounds()
-	w, h := b.Dx(), b.Dy()
-	e.growRGB(w * h * 3)
-	ratH, ratV := benchSubsampleShift(src.SubsampleRatio)
-	minXc := b.Min.X / ratH
-	minYc := b.Min.Y / ratV
-	di := 0
-	for py := range h {
-		yRow := src.Y[py*src.YStride:]
-		cBase := ((b.Min.Y+py)/ratV - minYc) * src.CStride
-		cb := src.Cb[cBase:]
-		cr := src.Cr[cBase:]
-		for px := range w {
-			ci := (b.Min.X+px)/ratH - minXc
-			r, g, bl := color.YCbCrToRGB(yRow[px], cb[ci], cr[ci])
-			e.rgb[di], e.rgb[di+1], e.rgb[di+2] = r, g, bl
-			di += 3
-		}
-	}
-}
-
-func (e *benchKittyNativeEncoder) growRGB(n int) {
-	if cap(e.rgb) < n {
-		e.rgb = make([]byte, n)
-	}
-	e.rgb = e.rgb[:n]
-}
-
-type benchKittyPNGEncoder struct{ frame []byte }
-
-func (e *benchKittyPNGEncoder) EncodeBase64PNG(data string, width, height, id int, w io.Writer) error {
-	opts := kitty.Options{
-		Format:       kitty.PNG,
-		Transmission: kitty.Direct,
-		Action:       kitty.TransmitAndPut,
-		Quite:        2,
-		ImageWidth:   width,
-		ImageHeight:  height,
-		ID:           id,
-	}
-	e.frame = appendBenchKittyStringFrames(e.frame[:0], data, opts.Options())
-	_, err := w.Write(e.frame)
-	return err
-}
-
-func appendBenchKittyByteFrames(dst, payload []byte, opts []string) []byte {
-	control := strings.Join(opts, ",")
-	if len(payload) <= kitty.MaxChunkSize {
-		return appendBenchKittyFrame(dst, control, payload)
-	}
-	control += "," + benchKittyMore
-	for len(payload) > kitty.MaxChunkSize {
-		dst = appendBenchKittyFrame(dst, control, payload[:kitty.MaxChunkSize])
-		payload = payload[kitty.MaxChunkSize:]
-		control = benchKittyMore
-	}
-	return appendBenchKittyFrame(dst, benchKittyLast, payload)
-}
-
-func appendBenchKittyStringFrames(dst []byte, payload string, opts []string) []byte {
-	control := strings.Join(opts, ",")
-	if len(payload) <= kitty.MaxChunkSize {
-		return appendBenchKittyStringFrame(dst, control, payload)
-	}
-	control += "," + benchKittyMore
-	for len(payload) > kitty.MaxChunkSize {
-		dst = appendBenchKittyStringFrame(dst, control, payload[:kitty.MaxChunkSize])
-		payload = payload[kitty.MaxChunkSize:]
-		control = benchKittyMore
-	}
-	return appendBenchKittyStringFrame(dst, benchKittyLast, payload)
-}
-
-func appendBenchKittyFrame(dst []byte, control string, payload []byte) []byte {
-	dst = append(dst, benchKittyAPCIntro...)
-	dst = append(dst, control...)
-	dst = append(dst, ';')
-	dst = append(dst, payload...)
-	dst = append(dst, benchKittyST...)
-	return dst
-}
-
-func appendBenchKittyStringFrame(dst []byte, control, payload string) []byte {
-	dst = append(dst, benchKittyAPCIntro...)
-	dst = append(dst, control...)
-	dst = append(dst, ';')
-	dst = append(dst, payload...)
-	dst = append(dst, benchKittyST...)
-	return dst
-}
-
 func validateNativeFrameOutputs(tb testing.TB, payloads []screencastBenchPayload) {
 	tb.Helper()
 	for _, payload := range payloads {
@@ -450,31 +213,11 @@ func validateNativeFrameOutputs(tb testing.TB, payloads []screencastBenchPayload
 		}
 		assertBenchImagesClose(tb, payload.name+" shared", current, native, tolerance)
 
-		var currentKitty bytes.Buffer
-		if err := (&renderkitty.LiveEncoder{}).EncodeID(imageToRGBA(current), 1, &currentKitty); err != nil {
-			tb.Fatalf("%s current Kitty encode: %v", payload.name, err)
-		}
-		var proposedKitty bytes.Buffer
 		if payload.name == "png" {
-			if err := (&benchKittyPNGEncoder{}).EncodeBase64PNG(payload.data, screencastBenchWidth, screencastBenchHeight, 1, &proposedKitty); err != nil {
-				tb.Fatalf("%s proposed Kitty PNG: %v", payload.name, err)
+			if err := (&renderkitty.LiveEncoder{}).EncodePNGID(payload.data, 1, io.Discard); err != nil {
+				tb.Fatalf("%s direct Kitty PNG: %v", payload.name, err)
 			}
-		} else if err := (&benchKittyNativeEncoder{}).EncodeID(native, 1, &proposedKitty); err != nil {
-			tb.Fatalf("%s proposed Kitty JPEG: %v", payload.name, err)
 		}
-		if payload.name != "png" && !bytes.Equal(currentKitty.Bytes(), proposedKitty.Bytes()) {
-			tb.Fatalf("%s Kitty output differs, want exact bytes", payload.name)
-		}
-		currentKittyImg, err := renderdecode.DecodeKitty(currentKitty.Bytes())
-		if err != nil {
-			tb.Fatalf("%s decode current Kitty output: %v", payload.name, err)
-		}
-		proposedKittyImg, err := renderdecode.DecodeKitty(proposedKitty.Bytes())
-		if err != nil {
-			tb.Fatalf("%s decode proposed Kitty output: %v", payload.name, err)
-		}
-		assertBenchImagesClose(tb, payload.name+" Kitty", currentKittyImg, proposedKittyImg, tolerance)
-
 	}
 }
 

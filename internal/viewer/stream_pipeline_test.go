@@ -228,6 +228,7 @@ func TestStreamLoopTeardownAfterTabAndWinch(t *testing.T) {
 	eng := &tabCycleEngine{frames: make(chan render.Frame, 4)}
 
 	st := NewState(8, 4, 16, 16)
+	eng.kittyPNG = encodedPNG(t, image.NewRGBA(image.Rect(0, 0, 16, 16)))
 	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
 	diff := &block.GridDiff{}
 	st.SetDiff(diff)
@@ -245,7 +246,7 @@ func TestStreamLoopTeardownAfterTabAndWinch(t *testing.T) {
 
 	// Draw one kitty frame so a kitty image is placed (kittyID != 0), so the Tab away
 	// actually emits a reset.
-	eng.frames <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}
+	eng.frames <- render.Frame{EncodedPNG: eng.kittyPNG}
 	if !waitFor(3*time.Second, func() bool { return strings.Contains(out.String(), "\x1b_G") }) {
 		t.Fatalf("no kitty graphics escape before Tab; output = %q", out.String())
 	}
@@ -418,6 +419,7 @@ func TestStreamLoopControlFrameInterleaveUnderSlowTTY(t *testing.T) {
 	eng := &tabCycleEngine{frames: make(chan render.Frame, 8)}
 
 	st := NewState(8, 4, 16, 16)
+	eng.kittyPNG = encodedPNG(t, image.NewRGBA(image.Rect(0, 0, 16, 16)))
 	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
 	diff := &block.GridDiff{}
 	st.SetDiff(diff)
@@ -433,7 +435,7 @@ func TestStreamLoopControlFrameInterleaveUnderSlowTTY(t *testing.T) {
 
 	// Burst of kitty frames, then wait for a kitty graphics escape to reach the tty.
 	for range 6 {
-		eng.frames <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}
+		eng.frames <- render.Frame{EncodedPNG: eng.kittyPNG}
 	}
 	if !waitFor(3*time.Second, func() bool { return strings.Contains(out.String(), "\x1b_G") }) {
 		t.Fatalf("no kitty graphics escape before Tab; output = %q", out.String())

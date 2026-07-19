@@ -19,7 +19,8 @@ import (
 // so the drawing loop repaints with the newly selected backend, mimicking the
 // real engine's restartStream re-emit.
 type tabCycleEngine struct {
-	frames chan render.Frame
+	frames   chan render.Frame
+	kittyPNG string
 
 	mu    sync.Mutex
 	names []string
@@ -29,8 +30,12 @@ func (e *tabCycleEngine) SetBackend(name string) {
 	e.mu.Lock()
 	e.names = append(e.names, name)
 	e.mu.Unlock()
-	// The real engine restarts the screencast on a backend switch and emits a
-	// fresh frame sized for the new backend. Mirror that so the loop repaints.
+	// The real engine restarts the screencast with the selected backend's frame
+	// representation. Mirror that so the loop repaints through the production seam.
+	if name == "kitty" {
+		e.frames <- render.Frame{EncodedPNG: e.kittyPNG}
+		return
+	}
 	e.frames <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}
 }
 
@@ -107,6 +112,7 @@ func TestStreamTabCyclesBackend(t *testing.T) {
 	eng := &tabCycleEngine{frames: make(chan render.Frame, 4)}
 
 	st := NewState(8, 4, 16, 16)
+	eng.kittyPNG = encodedPNG(t, image.NewRGBA(image.Rect(0, 0, 16, 16)))
 	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
 	diff := &block.GridDiff{}
 	st.SetDiff(diff)
@@ -125,7 +131,7 @@ func TestStreamTabCyclesBackend(t *testing.T) {
 	}()
 
 	// Draw one kitty frame first, so the pre-Tab output carries a kitty escape.
-	eng.frames <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}
+	eng.frames <- render.Frame{EncodedPNG: eng.kittyPNG}
 	if !waitFor(2*time.Second, func() bool { return strings.Contains(out.String(), "\x1b_G") }) {
 		t.Fatalf("no kitty graphics escape before Tab; output = %q", out.String())
 	}
@@ -154,4 +160,42 @@ func TestStreamTabCyclesBackend(t *testing.T) {
 	_ = pw.Close()
 	<-drained
 	_ = pr.Close()
+}
+
+func TestBackendCycleUsesActiveFrameRepresentation(t *testing.T) {
+	st := NewState(8, 4, 16, 16)
+	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
+	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
+	pngData := encodedPNG(t, img)
+
+	st.CycleBackend()
+	if st.Backend != BackendBlock {
+		t.Fatalf("backend after first cycle = %d, want Block", st.Backend)
+	}
+	var blockOut bytes.Buffer
+	if err := st.RenderStreamFrame(render.Frame{EncodedPNG: pngData}, &blockOut); err != nil {
+		t.Fatalf("render queued Kitty PNG through Block: %v", err)
+	}
+	if blockOut.Len() == 0 {
+		t.Fatal("queued Kitty PNG produced no Block output")
+	}
+
+	st.CycleBackend()
+	if st.Backend != BackendKitty {
+		t.Fatalf("backend after second cycle = %d, want Kitty", st.Backend)
+	}
+	var stale bytes.Buffer
+	if err := st.RenderStreamFrame(render.Frame{Img: img}, &stale); err != nil {
+		t.Fatalf("render stale pixel frame through Kitty: %v", err)
+	}
+	if stale.Len() != 0 {
+		t.Fatalf("stale pixel frame wrote %d bytes through Kitty, want 0", stale.Len())
+	}
+	var kittyOut bytes.Buffer
+	if err := st.RenderStreamFrame(render.Frame{EncodedPNG: pngData}, &kittyOut); err != nil {
+		t.Fatalf("render restarted direct PNG through Kitty: %v", err)
+	}
+	if !strings.Contains(kittyOut.String(), "f=100") || !strings.Contains(kittyOut.String(), "i=1") {
+		t.Fatalf("restarted Kitty output lacks direct PNG under id 1: %q", kittyOut.String())
+	}
 }

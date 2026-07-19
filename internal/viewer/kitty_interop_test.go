@@ -24,15 +24,16 @@ func TestKittyTerminalRoundTrip(t *testing.T) {
 
 	small := kittyInteropFixture(8, 6, 1)
 	largePNG := kittyInteropFixture(128, 128, 2)
-	largeRGB := kittyInteropFixture(160, 120, 3)
+	largeSecondPNG := kittyInteropFixture(160, 120, 3)
 	smallPNG := encodeKittyInteropPNG(t, small)
 	largePNGBytes := encodeKittyInteropPNG(t, largePNG)
+	largeSecondPNGBytes := encodeKittyInteropPNG(t, largeSecondPNG)
 
 	var stream bytes.Buffer
 	frames := []render.Frame{
 		{EncodedPNG: base64.StdEncoding.EncodeToString(smallPNG)},
 		{EncodedPNG: base64.StdEncoding.EncodeToString(largePNGBytes)},
-		{Img: largeRGB},
+		{EncodedPNG: base64.StdEncoding.EncodeToString(largeSecondPNGBytes)},
 	}
 	for i, frame := range frames {
 		if err := state.RenderStreamFrame(frame, &stream); err != nil {
@@ -58,7 +59,7 @@ func TestKittyTerminalRoundTrip(t *testing.T) {
 	}{
 		{eventIndex: 0, id: 1, format: 100, want: small, pngPayload: smallPNG},
 		{eventIndex: 1, id: 2, format: 100, want: largePNG, pngPayload: largePNGBytes, chunked: true},
-		{eventIndex: 3, id: 1, format: 24, want: largeRGB, chunked: true},
+		{eventIndex: 3, id: 1, format: 100, want: largeSecondPNG, pngPayload: largeSecondPNGBytes, chunked: true},
 	}
 	for i, tc := range transmits {
 		event := terminal.Events[tc.eventIndex]
@@ -84,7 +85,7 @@ func TestKittyTerminalRoundTrip(t *testing.T) {
 	if terminal.LastPlaced != 1 || len(terminal.Images) != 1 {
 		t.Fatalf("final terminal state = last id %d with %d stored images, want id 1 only", terminal.LastPlaced, len(terminal.Images))
 	}
-	assertKittyInteropImage(t, terminal.Images[1], largeRGB)
+	assertKittyInteropImage(t, terminal.Images[1], largeSecondPNG)
 }
 
 func kittyInteropFixture(width, height int, seed uint32) *image.RGBA {

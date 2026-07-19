@@ -332,8 +332,8 @@ and research documents.
 - [x] Remove graphics letterboxing with identity fit. Kitty and Sixel now use the full
   engine-sized grid from the top-left; tests cover non-1:2 terminal cells. Source:
   [Performance recommendation 2](./PERFORMANCE.md#top-recommendations-ranked-by-impact-vs-effort).
-- [x] Retire normal-path decoded-pixel Kitty encoding as an optimisation target. The
-  decoded encoder remains only for fallback and tests.
+- [x] Remove decoded-pixel Kitty live encoding. Direct PNG is the only accepted live
+  Kitty representation; stale pixel frames are dropped during backend transitions.
 - [x] Retire decoded-bitmap diff plus Kitty `a=f` as the current damage plan. Direct
   PNG has no decoded bitmap, and `a=f` support was not reliable across target
   terminals. The conditional byte and latency goal remains in section 2.

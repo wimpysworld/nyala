@@ -59,25 +59,3 @@ func BenchmarkBaselineUpstream(b *testing.B) {
 	}
 	b.ReportMetric(float64(dst.Len()), "payloadB")
 }
-
-// BenchmarkLiveEncoder models the new encode: the reused LiveEncoder that the
-// viewer drives, alternating the double-buffer id like the live path.
-func BenchmarkLiveEncoder(b *testing.B) {
-	img := benchFrame(benchW, benchH)
-	var e LiveEncoder
-	var dst bytes.Buffer
-	id := 1
-	b.ReportAllocs()
-	for b.Loop() {
-		dst.Reset()
-		if err := e.EncodeID(img, id, &dst); err != nil {
-			b.Fatal(err)
-		}
-		if id == 1 {
-			id = 2
-		} else {
-			id = 1
-		}
-	}
-	b.ReportMetric(float64(dst.Len()), "payloadB")
-}
