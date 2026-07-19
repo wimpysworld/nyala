@@ -4,10 +4,11 @@ import "github.com/wimpysworld/nyala/internal/render"
 
 type fakeEngine struct {
 	frames chan render.Frame
+	scheme string
 }
 
 func (e *fakeEngine) SetBackend(string)           {}
-func (e *fakeEngine) SetScheme(string)            {}
+func (e *fakeEngine) SetScheme(scheme string)     { e.scheme = scheme }
 func (e *fakeEngine) SetCellPx(int, int)          {}
 func (e *fakeEngine) SetLayoutWidth(int)          {}
 func (e *fakeEngine) Resize(int, int)             {}
