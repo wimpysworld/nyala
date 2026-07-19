@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	_ "image/png"
 	"os"
 	"path/filepath"
@@ -151,10 +152,6 @@ func loadRGBA(path string) (*image.RGBA, error) {
 	}
 	bb := src.Bounds()
 	dst := image.NewRGBA(bb)
-	for y := bb.Min.Y; y < bb.Max.Y; y++ {
-		for x := bb.Min.X; x < bb.Max.X; x++ {
-			dst.Set(x, y, src.At(x, y))
-		}
-	}
+	draw.Draw(dst, bb, src, bb.Min, draw.Src)
 	return dst, nil
 }

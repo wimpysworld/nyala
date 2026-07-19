@@ -32,11 +32,6 @@ type Engine interface {
 	// sizes the capture: sub-cell for block, cell-pixel for the graphics
 	// backends. When streaming it restarts the stream at the new size.
 	SetBackend(name string)
-	// SetScheme names the active block glyph scheme (quadrant, half, sextant) so
-	// the engine sizes the block capture: quadrant samples 2x4 source pixels per
-	// cell, half 1x2, sextant 2x3. It is set once before Navigate, so unlike
-	// SetBackend it needs no live stream restart.
-	SetScheme(name string)
 	// SetCellPx sets the resolved terminal cell pixel size the engine uses to
 	// size the graphics capture and to bin DOM text boxes to cells.
 	SetCellPx(w, h int)
@@ -162,50 +157,6 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks strin
 	return s.loop(winch, keys)
 }
 
-// coalescingWorker runs one handler serially off a producer loop. It holds a
-// one-slot work channel; submit sends non-blocking, so a fresh item supersedes
-// an unprocessed older one and the producer never blocks (latest-wins-drop). The
-// goroutine selects on the work channel and a done channel and exits when done
-// closes. The control restart queue routes through it; the scroll key sender
-// accumulates instead of dropping, so it does not.
-type coalescingWorker[T any] struct {
-	work chan T
-	done <-chan struct{}
-	fn   func(T)
-}
-
-// startCoalescingWorker starts the goroutine and returns the worker handle the
-// producer submits on. done stops the goroutine; fn runs each submitted item
-// serially. The work channel is buffered one, so submit drops on full.
-func startCoalescingWorker[T any](done <-chan struct{}, fn func(T)) *coalescingWorker[T] {
-	w := &coalescingWorker[T]{work: make(chan T, 1), done: done, fn: fn}
-	go w.run()
-	return w
-}
-
-// submit enqueues one item with a non-blocking send. If an item is already
-// queued the new one is dropped, so the producer loop never blocks on a wedged
-// handler. The drop is safe wherever a fresh item supersedes the queued one.
-func (w *coalescingWorker[T]) submit(item T) {
-	select {
-	case w.work <- item:
-	default:
-	}
-}
-
-// run processes items serially until done closes. Running them here, not on the
-// producer loop, keeps that loop responsive while a handler blocks.
-func (w *coalescingWorker[T]) run() {
-	for {
-		select {
-		case item := <-w.work:
-			w.fn(item)
-		case <-w.done:
-			return
-		}
-	}
-}
-
 // control runs engine restarts off the viewer consumer loop. The loop enqueues a
 // resize or a backend switch with a non-blocking send; this goroutine runs the
 // engine call (which may block in restartStream) serially, so a slow restart
@@ -214,15 +165,18 @@ func (w *coalescingWorker[T]) run() {
 // responsive: a coalesced restart is fine because each request re-reads the
 // current size and backend from the engine state.
 type control struct {
-	eng    Engine
-	worker *coalescingWorker[func(Engine)]
+	eng  Engine
+	work chan func(Engine)
+	done <-chan struct{}
 }
 
 // newControl starts the control goroutine and returns the handle the loop
 // enqueues restarts on. done stops the goroutine when Stream returns; the caller
 // owns done and closes it, so control needs no close of its own.
 func newControl(eng Engine, done <-chan struct{}) *control {
-	return &control{eng: eng, worker: startCoalescingWorker(done, func(fn func(Engine)) { fn(eng) })}
+	c := &control{eng: eng, work: make(chan func(Engine), 1), done: done}
+	go c.run()
+	return c
 }
 
 // submit enqueues one engine restart for the control goroutine. The send is
@@ -230,7 +184,23 @@ func newControl(eng Engine, done <-chan struct{}) *control {
 // the queued one will re-read the latest size and backend when it runs. So the
 // consumer loop never blocks on a wedged restart.
 func (c *control) submit(fn func(Engine)) {
-	c.worker.submit(fn)
+	select {
+	case c.work <- fn:
+	default:
+	}
+}
+
+// run processes restart requests serially until done closes. Running them here,
+// not on the consumer loop, keeps that loop responsive while an engine call blocks.
+func (c *control) run() {
+	for {
+		select {
+		case fn := <-c.work:
+			fn(c.eng)
+		case <-c.done:
+			return
+		}
+	}
 }
 
 // setupViewer performs Stream's terminal setup: it checks tty is a terminal, reads the grid size, puts the
@@ -238,9 +208,8 @@ func (c *control) submit(fn func(Engine)) {
 // and hands the resolved backend, cell px, and layout width to the engine before
 // Navigate so the engine sizes its screencast capture and block device scale. It
 // returns the tty fd, the State, and a restore closure the caller must defer to
-// leave raw mode. Scheme is the resolved
-// block glyph scheme; it sets the scheme on the State and hands its engine name to
-// the engine before Navigate. The caller resolves it through detection.
+// leave raw mode. Scheme is the resolved block glyph scheme; it is set directly
+// on State. The caller resolves it through detection.
 func setupViewer(eng Engine, tty *os.File, colourFlag string, scheme block.Scheme, layoutWidth int) (fd uintptr, st *State, restore func(), err error) {
 	fd = tty.Fd()
 	if !cterm.IsTerminal(fd) {
@@ -274,7 +243,6 @@ func setupViewer(eng Engine, tty *os.File, colourFlag string, scheme block.Schem
 	// from them.
 	eng.SetCellPx(state.W, state.H)
 	eng.SetLayoutWidth(layoutWidth)
-	eng.SetScheme(schemeEngineName(state.Scheme))
 	eng.SetBackend(backendName(state.Backend))
 	eng.Resize(cols, rows)
 
@@ -1100,20 +1068,6 @@ func resolveScheme(blocks string, env []string) block.Scheme {
 		return block.SchemeQuadrant
 	default:
 		return block.SchemeQuadrant
-	}
-}
-
-// schemeEngineName maps a block.Scheme to the engine's scheme string, the name
-// SetScheme accepts. It returns "half" for half-block, "sextant" for sextant, and
-// "quadrant" otherwise, matching the engine's set-once scheme seam.
-func schemeEngineName(s block.Scheme) string {
-	switch s {
-	case block.SchemeHalfBlock:
-		return "half"
-	case block.SchemeSextant:
-		return "sextant"
-	default:
-		return "quadrant"
 	}
 }
 

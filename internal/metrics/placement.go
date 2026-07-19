@@ -3,8 +3,7 @@ package metrics
 import (
 	"math"
 
-	"github.com/mattn/go-runewidth"
-	"github.com/rivo/uniseg"
+	"github.com/wimpysworld/nyala/internal/render"
 )
 
 // PlacementBox is one text run with the geometry the placement metric needs: the
@@ -101,7 +100,7 @@ func Placement(boxes []PlacementBox, cellW, cellH float64, cols, rows int) Place
 	gridKnown := cols > 0 && rows > 0
 	for i, box := range boxes {
 		boxCells := box.W / cw
-		runCells := displayCells(box.Text)
+		runCells := render.DisplayWidth(box.Text)
 		widthErr := float64(runCells) - boxCells
 		rightEdgeErr := float64(box.Col+runCells) - (box.X+box.W)/cw
 		stats.PerBox[i] = PlacementBoxError{WidthErr: widthErr, RightEdgeErr: rightEdgeErr}
@@ -137,34 +136,17 @@ func countCollisions(boxes []PlacementBox) int {
 	count := 0
 	for i := range boxes {
 		iStart := boxes[i].Col
-		iEnd := iStart + displayCells(boxes[i].Text)
+		iEnd := iStart + render.DisplayWidth(boxes[i].Text)
 		for j := i + 1; j < len(boxes); j++ {
 			if boxes[j].Row != boxes[i].Row {
 				continue
 			}
 			jStart := boxes[j].Col
-			jEnd := jStart + displayCells(boxes[j].Text)
+			jEnd := jStart + render.DisplayWidth(boxes[j].Text)
 			if iStart < jEnd && jStart < iEnd {
 				count++
 			}
 		}
 	}
 	return count
-}
-
-// displayCells counts the display cells a run occupies, summing each grapheme
-// cluster under the renderer's width rule: a cluster of display width 2 or more
-// counts 2, every other cluster counts 1. It mirrors the engine's cellWidth so
-// the metric and the renderer agree on how many cells a run fills.
-func displayCells(text string) int {
-	total := 0
-	gr := uniseg.NewGraphemes(text)
-	for gr.Next() {
-		if runewidth.StringWidth(gr.Str()) >= 2 {
-			total += 2
-		} else {
-			total++
-		}
-	}
-	return total
 }

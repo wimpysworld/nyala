@@ -41,7 +41,7 @@ func newSetupViewerTTY(t *testing.T) *os.File {
 }
 
 // TestSetupViewerWiresResolvedScheme proves every --blocks resolution reaches
-// matching viewer state and engine configuration through the launch setup seam.
+// matching viewer state through the launch setup seam.
 func TestSetupViewerWiresResolvedScheme(t *testing.T) {
 	clearMuxEnv(t)
 	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
@@ -75,9 +75,6 @@ func TestSetupViewerWiresResolvedScheme(t *testing.T) {
 			t.Cleanup(restore)
 			if state.Scheme != scheme {
 				t.Fatalf("viewer scheme = %d, want resolved scheme %d", state.Scheme, scheme)
-			}
-			if want := schemeEngineName(state.Scheme); eng.scheme != want {
-				t.Fatalf("engine scheme = %q, want %q for viewer scheme %d", eng.scheme, want, state.Scheme)
 			}
 		})
 	}

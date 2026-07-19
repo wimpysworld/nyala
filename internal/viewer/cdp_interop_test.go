@@ -399,7 +399,6 @@ func startCorpusEngine(fixture string, geom cdpGeometry, paintText bool) (*engin
 	e.SetDiagnosticFrameMeta(true)
 	e.SetCellPx(geom.cellW, geom.cellH)
 	e.SetLayoutWidth(cdpInteropLayoutWidth)
-	e.SetScheme("quadrant")
 	e.SetBackend("block")
 	e.SetDiagnosticTextPaint(paintText)
 	e.Resize(geom.cols, geom.rows)
@@ -650,7 +649,6 @@ func captureCDPInteropFrames(tc cdpInteropCase) ([]render.Frame, error) {
 	e := engine.New("")
 	e.SetCellPx(cdpInteropCellW, cdpInteropCellH)
 	e.SetLayoutWidth(cdpInteropLayoutWidth)
-	e.SetScheme("quadrant")
 	e.SetBackend(tc.backend)
 	e.Resize(cdpInteropCols, cdpInteropRows)
 	if err := e.Navigate(fixtureURL); err != nil {

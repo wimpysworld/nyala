@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/chromedp/cdproto/fetch"
-	"github.com/wimpysworld/nyala/internal/render"
 )
 
 // fakeExecutable writes an executable file named name into a fresh temp dir and
@@ -352,80 +351,6 @@ func TestProxyAuthDecisionTrackerFreshPerSession(t *testing.T) {
 	}
 }
 
-func TestCaptureSizeBlock(t *testing.T) {
-	const cols, rows = 96, 30
-	e := &ChromiumEngine{backend: "block"}
-
-	gotW, gotH := e.captureSize(cols, rows)
-	wantW, wantH := render.BlockCaptureSize(render.BlockQuadrant, cols, rows)
-	if gotW != wantW || gotH != wantH {
-		t.Errorf("captureSize block = (%d, %d), want (%d, %d)", gotW, gotH, wantW, wantH)
-	}
-	// Pin the quadrant scheme explicitly so a scheme regression is obvious.
-	if wantW != 192 || wantH != 120 {
-		t.Fatalf("quadrant scheme drifted: BlockCaptureSize(96x30) = (%d, %d), want (192, 120)", wantW, wantH)
-	}
-}
-
-func TestCaptureSizeBlockScheme(t *testing.T) {
-	const cols, rows = 80, 24
-
-	cases := []struct {
-		name   string
-		scheme string
-		wantW  int
-		wantH  int
-	}{
-		{"unset defaults to quadrant", "", cols * 2, rows * 4},
-		{"quadrant explicit", "quadrant", cols * 2, rows * 4},
-		{"half", "half", cols, rows * 2},
-		{"sextant", "sextant", cols * 2, rows * 3},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			e := &ChromiumEngine{backend: "block", blockScheme: c.scheme}
-			gotW, gotH := e.captureSize(cols, rows)
-			if gotW != c.wantW || gotH != c.wantH {
-				t.Errorf("captureSize scheme %q = (%d, %d), want (%d, %d)", c.scheme, gotW, gotH, c.wantW, c.wantH)
-			}
-		})
-	}
-}
-
-func TestSizingThreeIndependentValuesBlock(t *testing.T) {
-	// The block backend proves the split: the layout viewport and the captured
-	// surface (surfaceSize) are the real cell-pixel viewport, while the sample-grid
-	// downscale target (captureSize) is the sub-cell quadrant grid. The two must be
-	// different numbers, the fault the rewrite fixes.
-	const cols, rows = 80, 24
-	const cellW, cellH = 9, 18
-	e := &ChromiumEngine{backend: "block", cellW: cellW, cellH: cellH, cols: cols, rows: rows}
-
-	surfW, surfH := e.surfaceSize(cols, rows)
-	capW, capH := e.captureSize(cols, rows)
-
-	// The layout viewport / surface / screencast cap is the real pixel viewport.
-	if surfW != cols*cellW || surfH != rows*cellH {
-		t.Errorf("surfaceSize = (%d, %d), want the real viewport (%d, %d)", surfW, surfH, cols*cellW, rows*cellH)
-	}
-	// The downscale target is the sub-cell quadrant grid, a different number.
-	wantCapW, wantCapH := render.BlockCaptureSize(render.BlockQuadrant, cols, rows)
-	if capW != wantCapW || capH != wantCapH {
-		t.Errorf("captureSize = (%d, %d), want the sub-cell grid (%d, %d)", capW, capH, wantCapW, wantCapH)
-	}
-	// The surface and the sample grid must not be fused into one number.
-	if surfW == capW && surfH == capH {
-		t.Fatalf("layout viewport and sample grid are the same (%d, %d); they must be independent", surfW, surfH)
-	}
-	// The snapshot cell-px divisor is the real cell px, derived from the surface.
-	// At this grid cols*cellW = 720 <= the default layout width, so Z == 1 and the
-	// fractional cell equals the real cell px.
-	cw, ch := e.snapshotCellPx()
-	if cw != float64(cellW) || ch != float64(cellH) {
-		t.Errorf("snapshotCellPx = (%g, %g), want real cell px (%d, %d)", cw, ch, cellW, cellH)
-	}
-}
-
 func TestSurfaceSizeNonZeroFloor(t *testing.T) {
 	// A 0x0 grid (the agent shell reports no pixel size) must resolve to the
 	// non-zero floor, never a blank 0x0 surface Chromium cannot lay out.
@@ -494,26 +419,5 @@ func TestScreencastCapNeverExceedsSurface(t *testing.T) {
 	gCapW, gCapH := g.screencastCap(cols, rows)
 	if gCapW != gSurfW || gCapH != gSurfH {
 		t.Errorf("graphics screencastCap = (%d,%d), want the surface (%d,%d) at Z 1", gCapW, gCapH, gSurfW, gSurfH)
-	}
-}
-
-func TestCaptureSizeGraphics(t *testing.T) {
-	const cols, rows = 80, 24
-	const cellW, cellH = 9, 18
-	for _, backend := range []string{"sixel", "kitty"} {
-		t.Run(backend, func(t *testing.T) {
-			e := &ChromiumEngine{backend: backend, cellW: cellW, cellH: cellH}
-
-			gotW, gotH := e.captureSize(cols, rows)
-			wantW, wantH := render.GraphicsCaptureSize(cols, rows, cellW, cellH)
-			if gotW != wantW || gotH != wantH {
-				t.Errorf("captureSize %s = (%d, %d), want (%d, %d)", backend, gotW, gotH, wantW, wantH)
-			}
-			// Graphics capture is cell-pixel: cols*cellW by rows*cellH.
-			if wantW != cols*cellW || wantH != rows*cellH {
-				t.Fatalf("graphics size not cell-pixel: got (%d, %d), want (%d, %d)",
-					wantW, wantH, cols*cellW, rows*cellH)
-			}
-		})
 	}
 }

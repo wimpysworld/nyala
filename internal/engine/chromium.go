@@ -25,7 +25,7 @@ type ChromiumEngine struct {
 	// viewer goroutine (Resize, SetBackend, SendKey, SendMouse, dispatchWheel)
 	// and the supervisor goroutine (startSession, teardownSession, launch,
 	// rebuild): ctx, cancel, acks, text, frame, cols, rows, scrollX,
-	// scrollY, scrollYTarget, backend, blockScheme, cellW, cellH, layoutWidth, windowID,
+	// scrollY, scrollYTarget, backend, cellW, cellH, layoutWidth, windowID,
 	// inputFailures and fontForcingID. Lock, copy the fields into locals or write
 	// the updates, unlock, then run the chromedp I/O on the locals. Never hold mu
 	// across a chromedp.Run or a channel send, or it deadlocks with the supervisor.
@@ -53,10 +53,6 @@ type ChromiumEngine struct {
 
 	layoutWidth int    // block-backend target layout width in CSS pixels
 	backend     string // active backend (block, sixel, kitty)
-	// blockScheme is the block-backend cell rendering scheme ("quadrant" or
-	// "half"); the zero value and any other value read as quadrant (see
-	// captureSize). Set once by SetScheme before Navigate.
-	blockScheme string
 	browserFlag string // --browser value, empty for env/PATH discovery
 	// disableFrameRateLimit passes Chromium's launch-time
 	// --disable-frame-rate-limit switch. It is set before Navigate and remains

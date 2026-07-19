@@ -63,8 +63,6 @@ github.com/emmansun/base64 v0.10.0 h1:sMW+wqusjjq6wPIhIS9+kAMq+UXL4/qRPy7dX9oLFN
 github.com/emmansun/base64 v0.10.0/go.mod h1:BD7xc9SDECKNzG6q5kX4wMXmIdgHJ+HXWvQv3ImB1V4=
 github.com/ericpauley/go-quantize v0.0.0-20200331213906-ae555eb2afa4 h1:BBade+JlV/f7JstZ4pitd4tHhpN+w+6I+LyOS7B4fyU=
 github.com/ericpauley/go-quantize v0.0.0-20200331213906-ae555eb2afa4/go.mod h1:H7chHJglrhPPzetLdzBleF8d22WYOv7UM/lEKYiwlKM=
-github.com/fogleman/gg v1.3.0 h1:/7zJX8F6AaYQc57WQCyN9cAIz+4bCJGO9B+dyW29am8=
-github.com/fogleman/gg v1.3.0/go.mod h1:R/bRT+9gY/C5z7JzPU0zXsXHKM4/ayA+zqcVNZzPa1k=
 github.com/gen2brain/jpegn v0.4.4 h1:KIM1n1161Jq2cm+wXBf7a63hH6XFnZX40j/uQq/McSw=
 github.com/gen2brain/jpegn v0.4.4/go.mod h1:YvcVOmVPSAsefH6yn9HBW3uY0EHlZwCMoiJXoAWfgL0=
 github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 h1:KZaTBSyshWX3MP5jukJcNSuXDQTO+rNpt0J564dX/eg=

@@ -46,7 +46,6 @@ func (e *tabCycleEngine) backends() []string {
 }
 
 func (e *tabCycleEngine) Frames() <-chan render.Frame { return e.frames }
-func (e *tabCycleEngine) SetScheme(string)            {}
 func (e *tabCycleEngine) SetCellPx(int, int)          {}
 func (e *tabCycleEngine) SetLayoutWidth(int)          {}
 func (e *tabCycleEngine) Resize(int, int)             {}

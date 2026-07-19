@@ -62,55 +62,13 @@ func resolveExecutable(flag string) (string, error) {
 // surface, and the screencast cap non-degenerate so the page still renders.
 const surfaceFloorPx = 16
 
-// captureSize returns the client-side downscale (sample-grid) target for the
-// active backend: the source-pixel extent the emitted bitmap is reduced to. The
-// block backend samples a sub-cell grid via render.BlockCaptureSize (in the
-// active block scheme); the graphics backends keep the real cell-pixel bitmap via
-// render.GraphicsCaptureSize. This is no longer the layout viewport or the
-// screencast cap (see surfaceSize); it is only the downscale target and the
-// snapshot cell-px divisor source. The engine derives it itself on every resize
-// and backend switch, so the size is never passed in from the viewer.
-func (e *ChromiumEngine) captureSize(cols, rows int) (pxW, pxH int) {
-	if e.backend == "block" {
-		return render.BlockCaptureSize(blockScheme(e.blockScheme), cols, rows)
-	}
-	return render.GraphicsCaptureSize(cols, rows, e.cellW, e.cellH)
-}
-
-// blockScheme maps the engine's scheme string to a render.BlockScheme. It
-// accepts "half" and "sextant"; any other value, including the empty string,
-// resolves to quadrant, the production and corpus default.
-func blockScheme(name string) render.BlockScheme {
-	switch name {
-	case "half":
-		return render.BlockHalf
-	case "sextant":
-		return render.BlockSextant
-	default:
-		return render.BlockQuadrant
-	}
-}
-
-// SetScheme records the block-backend cell rendering scheme. It accepts
-// "quadrant", "half", and "sextant"; any other value, including the empty
-// string, resolves to quadrant at read time (see captureSize). The caller sets it before
-// Navigate, alongside SetBackend and SetCellPx, so this is set-once and needs
-// no live stream restart, unlike SetBackend, which switches an
-// already-streaming engine.
-func (e *ChromiumEngine) SetScheme(scheme string) {
-	e.mu.Lock()
-	e.blockScheme = scheme
-	e.mu.Unlock()
-}
-
 // surfaceSize returns the real CSS-pixel viewport the page lays out into: the
 // terminal grid in cell pixels, cols*cellW by rows*cellH, the same for every
 // backend. It is one of the three independent sizing values: the layout viewport
 // (setDeviceMetricsOverride), the captured surface (Browser.SetContentsSize), and
 // the screencast cap (maxWidth/maxHeight) all take this real viewport, while the
-// per-backend captureSize is the separate client-side downscale target. Each axis
-// is clamped to surfaceFloorPx so a 0x0 grid resolves to a small non-zero surface
-// rather than a blank one.
+// Each axis is clamped to surfaceFloorPx so a 0x0 grid resolves to a small
+// non-zero surface rather than a blank one.
 func (e *ChromiumEngine) surfaceSize(cols, rows int) (pxW, pxH int) {
 	w, h := render.GraphicsCaptureSize(cols, rows, e.cellW, e.cellH)
 	if w < surfaceFloorPx {

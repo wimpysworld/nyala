@@ -92,7 +92,6 @@ func captureInternalRenderFrames(t *testing.T, fixture string, tc internalRender
 	e.SetDiagnosticFrameMeta(true)
 	e.SetCellPx(internalRenderCellW, internalRenderCellH)
 	e.SetLayoutWidth(1280)
-	e.SetScheme("quadrant")
 	e.SetBackend(tc.engineBackend)
 	e.Resize(tc.width/internalRenderCellW, tc.height/internalRenderCellH)
 	start := time.Now()

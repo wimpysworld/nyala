@@ -228,19 +228,6 @@ func (e *ChromiumEngine) startInitialScreencast(ctx context.Context) error {
 	return e.transitionScreencastLocked(ctx, screencastTransition{resize: true})
 }
 
-// initialScreencastFormat picks the screencast format for a stream (re)start from the
-// active backend, read under e.mu. Block runs JPEG for its whole stream, since the block
-// backend's sub-cell downsample washes out JPEG artefacts and a static page under
-// JPEG is deterministic. Live Kitty always uses PNG so every frame can pass directly
-// to the terminal. Live Sixel also uses PNG for every frame, preserving fidelity and
-// one input format. startSession and restartStream set e.screencastFmt from this, so
-// a Tab between backends re-picks the format.
-func (e *ChromiumEngine) initialScreencastFormat() screencastFmt {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.initialScreencastFormatLocked()
-}
-
 func (e *ChromiumEngine) initialScreencastFormatLocked() screencastFmt {
 	if e.backend == "block" {
 		return screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality}

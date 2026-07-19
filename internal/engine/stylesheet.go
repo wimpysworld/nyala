@@ -62,10 +62,6 @@ var forcingExclusions = []string{"img", "svg", "canvas", "video", "iframe", "emb
 // takes each run's rect from Range.getClientRects(), which returns the viewport rect a
 // fixed element paints at, so a fixed nav lands on its painted row without forcing it
 // into flow.
-func buildStylesheetScript(fontBytes []byte, cellW, cellH float64) string {
-	return buildStylesheetScriptWithPaint(fontBytes, cellW, cellH, false)
-}
-
 func buildStylesheetScriptWithPaint(fontBytes []byte, cellW, cellH float64, paintText bool) string {
 	dataURL := "data:font/ttf;base64," + base64.StdEncoding.EncodeToString(fontBytes)
 	seedPx := cellW / advanceRatio

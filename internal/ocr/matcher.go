@@ -3,6 +3,7 @@ package ocr
 import (
 	"image"
 	"image/color"
+	"image/draw"
 
 	"github.com/rivo/uniseg"
 
@@ -156,15 +157,7 @@ func cropCell(img *image.RGBA, col, row int) *image.RGBA {
 	out := image.NewRGBA(image.Rect(0, 0, cellraster.CellPxW, cellraster.CellPxH))
 	x0 := col * cellraster.CellPxW
 	y0 := row * cellraster.CellPxH
-	b := img.Bounds()
-	for dy := range cellraster.CellPxH {
-		for dx := range cellraster.CellPxW {
-			p := image.Point{X: x0 + dx, Y: y0 + dy}
-			if p.In(b) {
-				out.SetRGBA(dx, dy, img.RGBAAt(p.X, p.Y))
-			}
-		}
-	}
+	draw.Draw(out, out.Bounds(), img, image.Pt(x0, y0), draw.Src)
 	return out
 }
 

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"image"
-	"image/draw"
 	_ "image/jpeg" // register the JPEG decoder for the image.Decode JPEG fallback
 	"sync"
 	"unsafe"
@@ -136,53 +135,6 @@ func (e *ChromiumEngine) snapshotCellPx() (cellW, cellH float64) {
 		return float64(surfW) / z / float64(e.cols), float64(surfH) / z / float64(e.rows)
 	}
 	return float64(e.cellW), float64(e.cellH)
-}
-
-// decodeScreencastNative decodes one base64 screencast payload without forcing
-// the decoder result into RGBA. Pixel consumers use this path so PNG retains its
-// decoder-native layout across the engine/render seam.
-func decodeScreencastNative(data string) (image.Image, error) {
-	raw, release, err := decodeBase64Pooled(data)
-	if err != nil {
-		return nil, fmt.Errorf("engine: base64-decode frame: %w", err)
-	}
-	defer release()
-	img, err := decodeFrameImage(raw)
-	if err != nil {
-		return nil, fmt.Errorf("engine: decode frame image: %w", err)
-	}
-	return img, nil
-}
-
-// decodeImageBytes decodes raw image bytes to an *image.RGBA in RGBA channel order.
-// It is the shared decode both the base64 screencast payload and the CDP verification
-// screenshot feed: page.captureScreenshot's Do already base64-decodes to raw bytes, so
-// the verification path skips the base64 step and hands the bytes straight here. The
-// decode routes through decodeFrameImage, so a PNG frame decodes via woozymasta and a
-// JPEG via the stdlib registry. A non-RGBA decode is converted to RGBA with a bulk
-// draw.Draw in draw.Src mode, which runs the same colour conversion the render path
-// expects far faster than a per-pixel copy, so the render and anchor paths read one
-// pixel layout.
-func decodeImageBytes(raw []byte) (*image.RGBA, error) {
-	img, err := decodeFrameImage(raw)
-	if err != nil {
-		return nil, fmt.Errorf("engine: decode frame image: %w", err)
-	}
-	return imageToRGBA(img), nil
-}
-
-// imageToRGBA returns img as an *image.RGBA in RGBA channel order. An image that is
-// already *image.RGBA is returned as-is with no copy; any other layout (a JPEG
-// YCbCr, for example) is converted with a bulk draw.Draw in draw.Src mode, the same
-// colour conversion the render path expects, far faster than a per-pixel copy.
-func imageToRGBA(img image.Image) *image.RGBA {
-	if rgba, ok := img.(*image.RGBA); ok {
-		return rgba
-	}
-	b := img.Bounds()
-	rgba := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
-	draw.Draw(rgba, rgba.Bounds(), img, b.Min, draw.Src)
-	return rgba
 }
 
 // decodeJPEGFast decodes one live-frame image, preferring the SIMD jpegn decoder

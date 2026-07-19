@@ -78,7 +78,6 @@ type pipeEngine struct {
 }
 
 func (e *pipeEngine) SetBackend(string)           {}
-func (e *pipeEngine) SetScheme(string)            {}
 func (e *pipeEngine) SetCellPx(int, int)          {}
 func (e *pipeEngine) SetLayoutWidth(int)          {}
 func (e *pipeEngine) Resize(int, int)             {}
