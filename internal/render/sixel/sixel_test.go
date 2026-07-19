@@ -409,6 +409,31 @@ func TestRenderReusesFrameScratchAndReplacesItOnResize(t *testing.T) {
 	}
 }
 
+func TestRenderReplacesFrameScratchWhenOriginChanges(t *testing.T) {
+	first := render.Frame{Img: scratchYCbCr(image.Rect(3, 5, 35, 23))}
+	second := render.Frame{Img: scratchYCbCr(image.Rect(0, 0, 32, 18))}
+	var r Renderer
+	if err := r.Render(first, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	rgba, paletted := r.enc.rgba, r.enc.paletted
+
+	var want, got bytes.Buffer
+	var fresh Renderer
+	if err := fresh.Render(second, &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Render(second, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Bytes(), want.Bytes()) {
+		t.Fatal("origin-changed frame payload differs from fresh encoder")
+	}
+	if r.enc.rgba == rgba || r.enc.paletted == paletted {
+		t.Fatal("origin change retained stale image scratch")
+	}
+}
+
 func scratchYCbCr(bounds image.Rectangle) *image.YCbCr {
 	img := image.NewYCbCr(bounds, image.YCbCrSubsampleRatio420)
 	for i := range img.Y {
@@ -879,8 +904,12 @@ func BenchmarkOpaqueEncoderComparison(b *testing.B) {
 	b.Run("upstream-alpha", func(b *testing.B) {
 		encoder := gosixel.NewEncoder(io.Discard)
 		encoder.Colors = 256
+		if err := encoder.Encode(img); err != nil {
+			b.Fatal(err)
+		}
 		b.ReportAllocs()
 		b.ReportMetric(float64(baselineBytes), "payload-B")
+		b.ResetTimer()
 		for range b.N {
 			if err := encoder.Encode(img); err != nil {
 				b.Fatal(err)
@@ -889,8 +918,12 @@ func BenchmarkOpaqueEncoderComparison(b *testing.B) {
 	})
 	b.Run("nyala-opaque", func(b *testing.B) {
 		encoder := newOpaqueEncoder(io.Discard)
+		if err := encoder.encode(img); err != nil {
+			b.Fatal(err)
+		}
 		b.ReportAllocs()
 		b.ReportMetric(float64(candidateBytes), "payload-B")
+		b.ResetTimer()
 		for range b.N {
 			if err := encoder.encode(img); err != nil {
 				b.Fatal(err)

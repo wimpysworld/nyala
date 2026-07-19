@@ -34,6 +34,7 @@ type bandScratch struct {
 
 // opaqueEncoder is the subset of mattn/go-sixel's encoder used by Nyala.
 // CDP frames are composited and opaque, so it omits alpha handling.
+// It is stateful and must not be used concurrently.
 type opaqueEncoder struct {
 	w io.Writer
 
