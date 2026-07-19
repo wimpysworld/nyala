@@ -145,11 +145,15 @@ func TestSamplePalette64KPreservesExactColourPath(t *testing.T) {
 			src.SetRGBA(x, y, c)
 		}
 	}
-	if palettedFromRGBA(src, paletteColours) == nil {
+	if _, exact := palettedFromRGBA(src, paletteColours); !exact {
 		t.Fatal("exact-colour fixture did not take the exact path")
 	}
-	if palettedFromRGBA(src, 2) != nil {
+	reusable, exact := palettedFromRGBA(src, 2)
+	if exact {
 		t.Fatal("exact-colour fixture ignored a smaller palette limit")
+	}
+	if reusable == nil || reusable.Bounds() != src.Bounds() || len(reusable.Pix) != src.Bounds().Dx()*src.Bounds().Dy() {
+		t.Fatal("palette overflow did not retain reusable indexed storage")
 	}
 	current := encodePaletteBudget(t, src, 1<<18)
 	candidate := encodePaletteBudget(t, src, 1<<16)
@@ -160,12 +164,38 @@ func TestSamplePalette64KPreservesExactColourPath(t *testing.T) {
 	assertOpaque(t, decoded)
 }
 
+func TestOpaquePaletteFallbackReuseMatchesFreshMapping(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 32, 16))
+	for y := range 16 {
+		for x := range 32 {
+			src.SetRGBA(x, y, color.RGBA{R: uint8(x * 8), G: uint8(y * 16), B: uint8((x + y) * 5), A: 0xff}) //nolint:gosec // Deliberate wrapping test pattern.
+		}
+	}
+	if _, exact := palettedFromRGBA(src, paletteColours); exact {
+		t.Fatal("fallback fixture did not exceed the exact palette limit")
+	}
+
+	palette := samplePalette(src, paletteColours)
+	fresh := image.NewPaletted(src.Bounds(), palette)
+	mapPaletted(fresh, src, newPaletteLUT(palette))
+	var want, got bytes.Buffer
+	if err := newOpaqueEncoder(&want).encode(fresh); err != nil {
+		t.Fatal(err)
+	}
+	if err := newOpaqueEncoder(&got).encode(src); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Bytes(), want.Bytes()) {
+		t.Fatal("reused indexed storage changed the fallback payload")
+	}
+}
+
 func encodePaletteBudget(t *testing.T, src *image.RGBA, budget int) []byte {
 	t.Helper()
-	paletted := palettedFromRGBA(src, paletteColours)
-	if paletted == nil {
+	paletted, exact := palettedFromRGBA(src, paletteColours)
+	if !exact {
 		palette := samplePaletteBudget(src, budget)
-		paletted = image.NewPaletted(src.Bounds(), palette)
+		paletted.Palette = palette
 		mapPaletted(paletted, src, newPaletteLUT(palette))
 	}
 	var out bytes.Buffer
@@ -216,7 +246,7 @@ func rareColourFixture(t *testing.T, size paletteBenchSize, stride int) (*image.
 		}
 	}
 	assertOpaque(t, src)
-	if palettedFromRGBA(src, paletteColours) != nil {
+	if _, exact := palettedFromRGBA(src, paletteColours); exact {
 		t.Fatal("rare-colour fixture did not exercise palette sampling")
 	}
 	return src, features
