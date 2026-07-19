@@ -54,17 +54,23 @@ quadrant or half-block backend stays the permanent floor.
 
 ## Architecture (key decision)
 
-Decouple the browser engine from everything else via an `Engine` seam. The bulk of
-the codebase (rendering, input, TUI, config) is engine-agnostic and reusable.
+Decouple the browser engine from everything else through the consumer-owned
+`viewer.Engine` seam. The bulk of the codebase (rendering, input, TUI, config) is
+engine-agnostic and reusable. `app.engineAdapter` maps this terminal-neutral
+contract to the concrete `engine.ChromiumEngine`.
 
 ```go
-// engine/engine.go
+// viewer/stream.go
 type Engine interface {
+    SetBackend(name string)
+    SetScheme(name string)
+    SetCellPx(w, h int)
+    SetLayoutWidth(w int)
+    Resize(cols, rows int)
     Navigate(url string) error
-    Resize(cols, rows int)            // logical terminal cell size
-    Frames() <-chan Frame             // native pixels or direct PNG + synced Text
-    SendKey(k Key)
-    SendMouse(m MouseEvent)
+    Frames() <-chan render.Frame
+    SendKey(code string)
+    SendScroll(dy int)
     Close() error
 }
 ```
@@ -100,8 +106,8 @@ and tearing remain to be validated.
 - **Engine #1: `ChromiumEngine` (chromedp).** Frames via `Page.startScreencast`;
   text layer via CDP DOM queries, placed by the snapshot's scroll and folded into
   `Frame.Text`. This is the only engine to build now.
-- **Future engines** (e.g. WPE WebKit) implement the same interface. No other code
-  changes. Do not build these yet; the seam keeps the option open.
+- **Future engines** (e.g. WPE WebKit) satisfy `viewer.Engine` through the app
+  wiring. Do not build these yet; the consumer seam keeps the option open.
 - **CEF (not required).** CEF embeds Chromium in-process and hands back BGRA frames
   from `OnPaint`, with no CDP screencast hop. CDP performance has already exceeded the
   owner's expectations, so Nyala does not require a CEF engine spike. CEF would bake
@@ -113,7 +119,7 @@ and tearing remain to be validated.
 ### Rendering pipeline (engine-agnostic)
 
 1. Receive decoder-native pixels, or a direct Kitty PNG, plus a positioned text
-   layer from the active `Engine`.
+   layer from the engine through `viewer.Engine`.
 2. Downsample pixel frames to terminal resolution; render block cells, quadrant (2x2)
    by default with half-block (`▄`) as the floor (the half-block cell sets background =
    top pixel, foreground = bottom pixel, two square pixels per cell). On graphics
@@ -267,8 +273,8 @@ chromedp.ListenTarget(ctx, func(ev interface{}) {
 
 ## Architecture Decisions
 
-Resolved in the architecture phase. Each decision sits behind the `Engine` seam and
-is reversible.
+Resolved in the architecture phase. Each decision sits behind the consumer-owned
+`viewer.Engine` seam and is reversible.
 
 - **Frame model: push, with Nyala-side damage.** CDP `Page.screencastFrame` events
   are emitted by the engine on compositor damage, so the model is inherently push;

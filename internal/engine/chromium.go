@@ -225,9 +225,6 @@ type ChromiumEngine struct {
 	navigated bool
 }
 
-// Ensure ChromiumEngine satisfies Engine.
-var _ Engine = (*ChromiumEngine)(nil)
-
 // New returns a ChromiumEngine that discovers its executable from browserFlag,
 // then the NYALA_BROWSER and CHROME_PATH environment variables, then PATH. It
 // parses the proxy environment once and stores the config and any parse error
@@ -267,7 +264,7 @@ func (e *ChromiumEngine) SetDiagnosticFrameMeta(enabled bool) {
 // point before the live queue drops any, so it reports the pre-drop rate the
 // paint meter cannot see; an idle page decays it to 0. It returns 0 when
 // NYALA_FPS_TIMING is unset. It is the ingestReporter capability the viewer fps
-// meter type-asserts, so the Engine seam stays unchanged.
+// meter type-asserts, so the viewer's required engine contract stays unchanged.
 func (e *ChromiumEngine) IngestFPS(now time.Time) float64 {
 	return e.ingest.fps(now)
 }
@@ -403,8 +400,7 @@ func (e *ChromiumEngine) Frames() <-chan render.Frame {
 // the block backend captures a sub-cell grid and the graphics backends capture a
 // cell-pixel bitmap. When the engine is already streaming it restarts the stream
 // at the new capture size, so the next frames arrive sized for the new backend.
-// It is not part of the Engine interface; the viewer push consumer (Phase 7)
-// calls it on a Tab cycle.
+// The viewer push consumer calls it through its local interface on a Tab cycle.
 func (e *ChromiumEngine) SetBackend(backend string) {
 	e.screencastCtl.Lock()
 	defer e.screencastCtl.Unlock()

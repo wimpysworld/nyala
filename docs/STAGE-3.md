@@ -7,9 +7,10 @@
 Stage 3 turns Nyala into a web-first binary. `nyala <url>` launches a managed
 headless Chromium, streams a live screencast over the Chrome DevTools Protocol,
 extracts the page text layer from the DOM, folds crisp Unicode text onto each
-bitmap frame, and pushes the frame through the existing viewer render path. It is
-the first concrete implementation of the `Engine` seam, `ChromiumEngine`, and it
-replaces the static PNG source from Stages 0 through 2. The make-or-break point is
+bitmap frame, and pushes the frame through the existing viewer render path. It
+introduced `ChromiumEngine` behind an engine-package interface, which the current
+code has superseded with the consumer-owned `viewer.Engine` seam. It replaces the
+static PNG source from Stages 0 through 2. The make-or-break point is
 crisp DOM text composited over a live screencast: the bitmap shows what the DOM
 cannot (images, canvas, video, CSS visuals) and the overlay paints real glyphs
 where the bitmap floor fails. This document is the durable record of the completed
@@ -47,7 +48,8 @@ Chromium screencast with the crisp DOM text layer synced on.
 
 In scope, delivered:
 
-- The `Engine` seam and one concrete `ChromiumEngine` over `chromedp`.
+- The historical engine-package interface and one concrete `ChromiumEngine` over
+  `chromedp`. The current code uses the consumer-owned `viewer.Engine` seam.
 - The screencast start, ack, decode loop with a latest-wins single-frame slot.
 - The DOM snapshot decode to positioned glyph runs, with colour.
 - Frame sync between the bitmap and the text on the scroll offset.
@@ -85,14 +87,17 @@ conditional on terminal measurements and a supported protocol route; see
 
 ## Work as built
 
-### The Engine seam and ChromiumEngine
+### The historical Engine seam and ChromiumEngine
 
-`Engine` (`engine.go`) is one interface: `Navigate(url) error`, `Resize(cols,
-rows)`, `Frames() <-chan render.Frame`, `SendKey(Key)`, `SendMouse(MouseEvent)`,
-and `Close() error`. One synced channel delivers the bitmap with its crisp text
-already folded on `Frame.Text`, so the consumer does no two-cadence reconcile. The
-`Key` and `MouseEvent` types are terminal-neutral; scroll uses wheel deltas in CSS
-pixels. `ChromiumEngine` (`chromium.go`) is the one concrete engine. It owns a
+Stage 3 introduced a producer-owned `Engine` interface in `engine.go` with
+`Navigate`, `Resize`, `Frames`, `SendKey`, `SendMouse`, and `Close`. The viewer
+later declared the narrower interface it consumes, so the producer-owned interface
+was removed. The current seam is `viewer.Engine`, supplied by `app.engineAdapter`
+and backed by the concrete `ChromiumEngine`. One synced channel delivers the
+bitmap with its crisp text already folded on `Frame.Text`, so the consumer does no
+two-cadence reconcile. The retained `Key` and `MouseEvent` types are
+terminal-neutral; scroll uses wheel deltas in CSS pixels. `ChromiumEngine`
+(`chromium.go`) is the one concrete engine. It owns a
 `chromedp` context, the URL, the scroll offset, the resolved cell px, the active
 backend, the capture size, the latest-wins slot, the ack-pump channel, and the
 overlay publisher. The last-matched text lives in the snapshot goroutine, not engine
