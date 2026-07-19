@@ -253,7 +253,7 @@ func TestCellBGAverageWholeCellIdentity(t *testing.T) {
 		A: 0xff,
 	}
 	// No geometry: run.W == 0, so cellCSSW is 0 and every column is uncovered.
-	got := cellBGAverage(img, 0, 0, SchemeQuadrant, render.GlyphRun{Col: 0, Row: 0, Text: "A"}, 0, 0)
+	got := cellBGAverageFrom(rgbaPixelSource{img: img}, 0, 0, SchemeQuadrant, render.GlyphRun{Col: 0, Row: 0, Text: "A"}, 0, 0)
 	if got != want {
 		t.Fatalf("geometry-free BG = %v, want whole-cell mean %v", got, want)
 	}
@@ -274,7 +274,7 @@ func TestCellBGAveragePartialCoverage(t *testing.T) {
 	cellCSSW := 10.0
 	// Cell at column 1 (snapped left 10); box [15, 20) covers source column 1.
 	run := render.GlyphRun{Col: 1, Row: 0, Text: "A", X: 15, W: 5}
-	got := cellBGAverage(img, 1, 0, SchemeQuadrant, run, 0, cellCSSW)
+	got := cellBGAverageFrom(rgbaPixelSource{img: img}, 1, 0, SchemeQuadrant, run, 0, cellCSSW)
 	if got != left {
 		t.Fatalf("partial-coverage BG = %v, want uncovered left column %v", got, left)
 	}
@@ -306,6 +306,46 @@ func TestComposeBoundaryCellExcludesCoveredColumns(t *testing.T) {
 	// The unrelated far cell keeps its plain bitmap background (fill), untouched.
 	if far := g.At(3, 0); far.BG != fill {
 		t.Fatalf("far cell BG = %v, want untouched fill %v", far.BG, fill)
+	}
+}
+
+// TestComposeBoundaryCellUsesSharedDisplayWidth proves the zero-only fallback
+// measures hand-built runs through render.DisplayWidth for representative
+// grapheme classes and recomposes the boundary at the measured display column.
+func TestComposeBoundaryCellUsesSharedDisplayWidth(t *testing.T) {
+	tests := []struct {
+		name         string
+		text         string
+		displayCells int
+	}{
+		{name: "ASCII", text: "A", displayCells: 1},
+		{name: "combining", text: "e\u0301", displayCells: 1},
+		{name: "emoji", text: "🙂", displayCells: 2},
+		{name: "width-2", text: "界", displayCells: 2},
+	}
+	left := color.RGBA{R: 200, G: 100, B: 40, A: 0xff}
+	right := color.RGBA{R: 40, G: 60, B: 220, A: 0xff}
+	fill := color.RGBA{R: 10, G: 10, B: 10, A: 0xff}
+	const cellCSSW = 10.0
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			boundaryCol := 1 + tc.displayCells
+			img := twoColumnQuadrantAt(boundaryCol+2, boundaryCol, left, right, fill)
+			br := &Renderer{Cols: boundaryCol + 2, Rows: 1}
+			run := render.GlyphRun{
+				Col: 1, Row: 0, Text: tc.text,
+				X: cellCSSW, W: float64(tc.displayCells)*cellCSSW + cellCSSW/2,
+				CellW: cellCSSW, FG: color.RGBA{A: 0xff},
+			}
+			g := br.Compose(render.Frame{Img: img, Text: []render.GlyphRun{run}})
+			boundary := g.At(boundaryCol, 0)
+			if boundary.Text != "" || boundary.Wide {
+				t.Fatalf("boundary cell claimed an overlay: Text=%q Wide=%v", boundary.Text, boundary.Wide)
+			}
+			if boundary.BG != right {
+				t.Fatalf("boundary at column %d has BG %v, want uncovered right column %v", boundaryCol, boundary.BG, right)
+			}
+		})
 	}
 }
 
@@ -361,7 +401,7 @@ func TestCellBGAverageFullCoverageIdentity(t *testing.T) {
 	}
 	// Box spans the whole cell: both source columns covered, fall back to mean.
 	run := render.GlyphRun{Col: 0, Row: 0, Text: "A", X: 0, W: cellCSSW}
-	got := cellBGAverage(img, 0, 0, SchemeQuadrant, run, 0, cellCSSW)
+	got := cellBGAverageFrom(rgbaPixelSource{img: img}, 0, 0, SchemeQuadrant, run, 0, cellCSSW)
 	if got != want {
 		t.Fatalf("full-coverage BG = %v, want whole-cell mean %v", got, want)
 	}

@@ -135,7 +135,7 @@ func recomposeBoundaryCellsFrom(g *Grid, src pixelSource, run render.GlyphRun, s
 	// back to measuring Text, which yields the same count.
 	displayCells := run.DisplayCells
 	if displayCells == 0 {
-		displayCells = runDisplayCells(run.Text)
+		displayCells = render.DisplayWidth(run.Text)
 	}
 	for _, gridCol := range [2]int{run.Col - 1, run.Col + displayCells} {
 		if gridCol < 0 || gridCol >= g.Cols {
@@ -153,7 +153,7 @@ func recomposeBoundaryCellsFrom(g *Grid, src pixelSource, run render.GlyphRun, s
 			pxW, pxH = sextCellPxW, sextCellPxH
 		}
 		covered := coveredColumnsAt(run, gridCol, cellCSSW, pxW)
-		if !anyCovered(covered) {
+		if covered == 0 {
 			continue
 		}
 		bg := averageUncoveredFrom(src, gridCol*pxW, row*pxH, pxW, pxH, covered)
@@ -161,27 +161,11 @@ func recomposeBoundaryCellsFrom(g *Grid, src pixelSource, run render.GlyphRun, s
 	}
 }
 
-// runDisplayCells is the run's total display-cell width, the sum of each
-// grapheme's cell width. It sizes the boundary trailing cell (run.Col + this).
-func runDisplayCells(text string) int {
-	cells := 0
-	gr := uniseg.NewGraphemes(text)
-	for gr.Next() {
-		cells += render.CellWidth(gr.Str())
-	}
-	return cells
-}
-
-// anyCovered reports whether the mask covers at least one source column.
-func anyCovered(mask uint) bool {
-	return mask != 0
-}
-
 // runCellCSSWidth is the CSS-pixel width of one grid cell the run was snapped
 // with. The engine carries this exact value on run.CellW; the render seam does
 // not recompute it, because run.W is the untrimmed box width while run.Text is
 // trimmed and grid-clipped, so W / display-cells would inflate the width. A zero
-// or negative CellW is unknown and returns 0, driving cellBGAverage and the
+// or negative CellW is unknown and returns 0, driving cellBGAverageFrom and the
 // boundary recompose back onto the whole-cell average identity.
 func runCellCSSWidth(run render.GlyphRun) float64 {
 	if run.CellW <= 0 {
@@ -197,7 +181,7 @@ func claimed(c *Cell) bool {
 	return c.Text != "" || c.Wide
 }
 
-// cellBGAverage averages the uncovered source footprint of cell (col, row) into
+// cellBGAverageFrom averages the uncovered source footprint of cell (col, row) into
 // one RGBA colour, in RGBA channel order. The footprint is the scheme's per-cell
 // source block: 2x4 (cellPxW x cellPxH) for the quadrant scheme, 1x2
 // (halfCellPxW x halfCellPxH) for the half-block scheme, 2x3 (sextCellPxW x
@@ -215,11 +199,6 @@ func claimed(c *Cell) bool {
 // the whole-cell mean, byte for byte with the geometry-free path.
 //
 // Out-of-bounds reads return opaque black via pixel, matching the bitmap path.
-func cellBGAverage(img *image.RGBA, col, row int, scheme Scheme, run render.GlyphRun, off int, cellCSSW float64) color.RGBA {
-	src := rgbaPixelSource{img: img}
-	return cellBGAverageFrom(src, col, row, scheme, run, off, cellCSSW)
-}
-
 func cellBGAverageFrom(src pixelSource, col, row int, scheme Scheme, run render.GlyphRun, off int, cellCSSW float64) color.RGBA {
 	pxW, pxH := cellPxW, cellPxH
 	switch scheme {

@@ -69,7 +69,7 @@ The overlay lives inside the block `Grid`, so all three consumers and the Route 
 `applyOverlay` walks each `GlyphRun`, segments its text into grapheme clusters, and places one cluster per cell starting at `(Col, Row)`:
 
 - The cluster overwrites the bitmap glyph in its cell. The grapheme wins; the original `Glyph` is kept on the cell but `Text` is preferred by every consumer.
-- The foreground is the run colour. The background is `cellBGAverage`: the exact whole-cell average of the source pixels under the cell, in RGBA order. The glyph sits on its local page background, so contrast holds by construction at near-zero cost.
+- The foreground is the run colour. The background comes from `cellBGAverageFrom`: the exact whole-cell average of the source pixels under the cell, in RGBA order. The glyph sits on its local page background, so contrast holds by construction at near-zero cost.
 - A run past the grid edge is clipped. A negative start column is skipped cell by cell until the run reaches column 0.
 
 Cell positions are the producer's contract, not a compositor step. `GlyphRun.Col, Row` is already a cell address, so the compositor places each run at its cell and does no binning. The `floor(px/cellW)`, `floor(py/cellH)` rule that maps pixels to cells is the producer's job (the Stage 2 fixtures, Stage 3's DOM mapping later). Floor, never round: floor keeps the text and the quadrant bitmap on one monotonic, non-overlapping partition, so no glyph drifts into a neighbour.
