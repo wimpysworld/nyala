@@ -63,8 +63,7 @@ func sharedSweep(t *testing.T) (*SweepResult, string) {
 }
 
 // sharedCalibration measures the calibration once and caches it. Every tagged
-// calibration test reads this shared record. The OCR ladder is carried forward
-// from the committed file, since the default build does not measure it.
+// calibration test reads this shared record.
 func sharedCalibration(t *testing.T) Calibration {
 	t.Helper()
 	calibOnce.Do(func() {
@@ -72,12 +71,6 @@ func sharedCalibration(t *testing.T) Calibration {
 		cal, err := MeasureCalibration(rast, loadCalibInputs(t), logProgress(t))
 		if err != nil {
 			t.Fatalf("MeasureCalibration: %v", err)
-		}
-		prior := loadCommittedCalibration(t)
-		if prior.OCRBuilt {
-			cal.OCRBuilt = prior.OCRBuilt
-			cal.CERBound = prior.CERBound
-			cal.Ladder = prior.Ladder
 		}
 		calibVal = cal
 	})

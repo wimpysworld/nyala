@@ -233,7 +233,7 @@ func runOne(rast *cellraster.Rasteriser, cfg SweepConfig, in SweepInput, mode Mo
 	}
 	idealImg := rast.Rasterise(*ideal)
 
-	rep.Quality = scoreQuality(mode, renderImg, reference, grid, rast)
+	rep.Quality = scoreQuality(mode, renderImg, reference, grid)
 	rep.QualityRelative = scoreQualityRelative(renderImg, idealImg)
 	rep.Perf = toPerf(perf)
 	rep.CellStats = cellStats(cfg, grid)
@@ -354,10 +354,8 @@ func (g graphicsBackend) roundTrip(img *image.RGBA) (*image.RGBA, error) {
 // scoreQuality scores one render against the reference and fills the report
 // Quality block. Sharpness (Laplacian variance on the decoded render) is reported
 // for all three modes. WCAG contrast is the owned cell-grid contrast for block;
-// for sixel and kitty, which own no grid, it is derived from the decoded pixels
-// over the ladder region. OCR scores come from the build-tagged hook: null in the
-// default cgo-free build, measured under the "ocr" tag.
-func scoreQuality(mode Mode, renderImg, reference *image.RGBA, grid *block.Grid, rast *cellraster.Rasteriser) Quality {
+// for sixel and kitty, which own no grid, it is derived from the decoded pixels.
+func scoreQuality(mode Mode, renderImg, reference *image.RGBA, grid *block.Grid) Quality {
 	abs := metrics.ScorePair(renderImg, reference)
 	q := Quality{
 		MSSSIM:         f64v(abs.MSSSIM),
@@ -373,11 +371,6 @@ func scoreQuality(mode Mode, renderImg, reference *image.RGBA, grid *block.Grid,
 		q.ContrastMin = f64v(wc.Min)
 	} else {
 		q.ContrastMin = f64v(metrics.PixelContrast(renderImg))
-	}
-	if cer, wer, minLeg := ocrScores(rast, mode, renderImg); cer != nil || wer != nil || minLeg != nil {
-		q.OCRCER = cer
-		q.OCRWER = wer
-		q.MinLegiblePx = minLeg
 	}
 	return q
 }

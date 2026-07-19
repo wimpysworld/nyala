@@ -12,11 +12,6 @@ import (
 // record against the committed testdata/calibration.json. Under
 // UPDATE_CALIBRATION it rewrites the file (write-if-changed). It reads the shared
 // calibration, so it adds no new measurement pass.
-//
-// The OCR ladder is gosseract-only and cgo-gated; the default build cannot run
-// it. The shared calibration carries the OCR section of the committed file
-// forward when it is present, so this path does not wipe any committed CER
-// numbers.
 func TestCalibration(t *testing.T) {
 	cal := sharedCalibration(t)
 	if cal.SixelPSNRNoiseFloor != 0 {

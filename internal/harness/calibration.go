@@ -14,11 +14,6 @@
 // encoder is deterministic, so this floor is exactly zero and sixel uses the
 // global PSNR threshold band.
 //
-// The CER ladder is gosseract-only and cgo-gated behind the "ocr" build tag, so
-// the CER numbers are measured by the tagged calibration path (see
-// calibration_ocr_test.go) and folded into the same committed file. The default
-// build measures the metric ranges and leaves the CER ladder empty.
-//
 // Channel order is RGBA throughout.
 package harness
 
@@ -149,28 +144,9 @@ type CalibRanges struct {
 	BytesPerFrame  CalibIntRange `json:"bytesPerFrame"`
 }
 
-// CalibLadderRung is one OCR ladder rung's measured CER and WER on a card, with
-// whether it round-tripped below the mode's CER bound.
-type CalibLadderRung struct {
-	SizePx  int     `json:"sizePx"`
-	CER     float64 `json:"cer"`
-	WER     float64 `json:"wer"`
-	Legible bool    `json:"legible"`
-}
-
-// CalibCardLadder holds one card's OCR ladder: every rung's CER and WER and the
-// minimum legible size. MinLegiblePx is nil when no rung round-trips below the
-// bound. It is populated only by the tagged OCR calibration path.
-type CalibCardLadder struct {
-	Card         string            `json:"card"`
-	Rungs        []CalibLadderRung `json:"rungs"`
-	MinLegiblePx *int              `json:"minLegiblePx"`
-}
-
 // Calibration is the committed calibration record: the per-card scores, the
-// corpus-wide metric ranges, the intrinsic-noise floor, and the OCR CER ladder.
-// DefaultThresholds turns these numbers into thresholds banded above the noise
-// floor.
+// corpus-wide metric ranges, and the intrinsic-noise floor. DefaultThresholds
+// turns these numbers into thresholds banded above the noise floor.
 type Calibration struct {
 	// SchemaVersion pins the calibration file shape; bump on a breaking change.
 	SchemaVersion int `json:"schemaVersion"`
@@ -186,15 +162,6 @@ type Calibration struct {
 	// the worst (largest) card-wise value over the corpus. The encoder is
 	// deterministic, so this is zero and sixel uses the global PSNR threshold.
 	SixelPSNRNoiseFloor float64 `json:"sixelPsnrNoiseFloor"`
-	// OCRBuilt reports whether the OCR ladder was measured. It is false when the
-	// calibration ran without the "ocr" build tag or without a Tesseract engine,
-	// in which case Ladder is empty and the CER numbers are unset.
-	OCRBuilt bool `json:"ocrBuilt"`
-	// CERBound is the CER bound the ladder legibility used. Zero when OCR was not
-	// measured.
-	CERBound float64 `json:"cerBound"`
-	// Ladder holds one OCR ladder per card; empty unless OCRBuilt is true.
-	Ladder []CalibCardLadder `json:"ladder"`
 }
 
 // CalibInput pairs a card filename with its decoded source image.
@@ -205,13 +172,12 @@ type CalibInput struct {
 
 // MeasureCalibration block-renders each input at the pinned grid and measures
 // the absolute and relative scores plus the intrinsic-noise floor, returning the
-// per-card records and the corpus-wide ranges. The OCR ladder is left empty; the
-// tagged path fills it. rast rasterises the block grid to the Route A pixel
-// geometry the scores compare in. progress streams a line before each card is
-// measured and before the sixel noise floor; it may be nil. It returns an error
-// when the sixel noise floor cannot be measured (every round trip for a card
-// failed), so a broken sixel encoder surfaces rather than reporting a perfect
-// floor. Channel order is RGBA.
+// per-card records and the corpus-wide ranges. rast rasterises the block grid to
+// the Route A pixel geometry the scores compare in. progress streams a line
+// before each card is measured and before the sixel noise floor; it may be nil.
+// It returns an error when the sixel noise floor cannot be measured (every round
+// trip for a card failed), so a broken sixel encoder surfaces rather than
+// reporting a perfect floor. Channel order is RGBA.
 func MeasureCalibration(rast *cellraster.Rasteriser, inputs []CalibInput, progress Progress) (Calibration, error) {
 	cards := make([]CalibCard, 0, len(inputs))
 	for i, in := range inputs {
@@ -574,13 +540,10 @@ func CompareCalibration(path string, c Calibration, update bool) (ok bool, wrote
 
 // calibrationsClose reports whether every numeric metric field of a and b sits
 // within the calibration tolerance, and the structural fields (schema, grid,
-// card and ladder shape, OCR flags) match exactly. It governs only pass/fail; it
+// and card shape) match exactly. It governs only pass/fail; it
 // never changes the stored values.
 func calibrationsClose(a, b Calibration) bool {
 	if a.SchemaVersion != b.SchemaVersion || a.Grid != b.Grid {
-		return false
-	}
-	if a.OCRBuilt != b.OCRBuilt || !floatClose(a.CERBound, b.CERBound) {
 		return false
 	}
 	if !floatClose(a.SixelPSNRNoiseFloor, b.SixelPSNRNoiseFloor) {
@@ -594,10 +557,7 @@ func calibrationsClose(a, b Calibration) bool {
 			return false
 		}
 	}
-	if !calibRangesClose(a.Ranges, b.Ranges) {
-		return false
-	}
-	return calibLaddersClose(a.Ladder, b.Ladder)
+	return calibRangesClose(a.Ranges, b.Ranges)
 }
 
 // calibCardClose reports whether two cards match: the same source filename, the
@@ -636,42 +596,6 @@ func calibRangesClose(a, b CalibRanges) bool {
 // rangeClose reports whether both bounds of two ranges sit within tolerance.
 func rangeClose(a, b CalibRange) bool {
 	return floatClose(a.Min, b.Min) && floatClose(a.Max, b.Max)
-}
-
-// calibLaddersClose reports whether two OCR ladders match: the same shape, the
-// same card labels and legibility flags, the same minimum legible size, and CER
-// and WER within tolerance. The ladder is carried forward verbatim from the
-// committed file in the default build, so this is an identity check there; it
-// guards the tagged path where the CER is freshly measured.
-func calibLaddersClose(a, b []CalibCardLadder) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].Card != b[i].Card || !intPtrEqual(a[i].MinLegiblePx, b[i].MinLegiblePx) {
-			return false
-		}
-		if len(a[i].Rungs) != len(b[i].Rungs) {
-			return false
-		}
-		for j := range a[i].Rungs {
-			ra, rb := a[i].Rungs[j], b[i].Rungs[j]
-			if ra.SizePx != rb.SizePx || ra.Legible != rb.Legible ||
-				!floatClose(ra.CER, rb.CER) || !floatClose(ra.WER, rb.WER) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// intPtrEqual reports whether two optional int pointers hold the same value or
-// are both nil.
-func intPtrEqual(a, b *int) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return *a == *b
 }
 
 // floatClose reports whether a and b sit within the calibration tolerance: an

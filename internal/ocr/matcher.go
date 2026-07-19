@@ -26,7 +26,7 @@ import (
 // overlay should have won.
 //
 // Matcher is pure Go and carries no build tag, so it builds and unit-tests under
-// the routine gate. Only the gosseract engine in tesseract.go needs cgo.
+// the routine gate without cgo.
 type Matcher struct {
 	candidates []candidate
 }
