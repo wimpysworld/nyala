@@ -18,6 +18,7 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/block"
 	"github.com/wimpysworld/nyala/internal/render/kitty"
 	"github.com/wimpysworld/nyala/internal/render/sixel"
+	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
 
 // TestCycleBackendOrder asserts the default cycle is best-first kitty -> sixel ->
@@ -600,7 +601,7 @@ func TestRenderFrameGraphicsFillsGrid(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			src := solidImage(color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})
+			src := solidImageSize(c.imgW, c.imgH, color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})
 			for _, b := range []Backend{BackendSixel, BackendKitty} {
 				s := NewState(c.cols, c.rows)
 				s.Backend = b
@@ -616,6 +617,11 @@ func TestRenderFrameGraphicsFillsGrid(t *testing.T) {
 				if cupPresent(out) {
 					t.Fatalf("backend %d (%s): emitted a CUP move, want none (identity fit fills the grid)", b, c.name)
 				}
+
+				var (
+					decoded *image.RGBA
+					err     error
+				)
 				if b == BackendKitty {
 					if !strings.Contains(out, "i=1") || !strings.Contains(out, "a=T") {
 						t.Fatalf("kitty: first frame missing the i=1 transmit-and-place")
@@ -623,6 +629,15 @@ func TestRenderFrameGraphicsFillsGrid(t *testing.T) {
 					if strings.Contains(out, "a=d") {
 						t.Fatalf("kitty: first frame emitted a delete, want none")
 					}
+					decoded, err = renderdecode.DecodeKitty(buf.Bytes())
+				} else {
+					decoded, err = renderdecode.DecodeSixel(buf.Bytes())
+				}
+				if err != nil {
+					t.Fatalf("decode backend %d output: %v", b, err)
+				}
+				if got, want := decoded.Bounds(), src.Bounds(); !got.Eq(want) {
+					t.Fatalf("backend %d decoded bounds = %v, want full-grid target %v", b, got, want)
 				}
 			}
 		})
@@ -959,14 +974,7 @@ func (e streamTestEngine) Close() error { return nil }
 
 // solidImage builds a 16 x 16 RGBA image filled with one colour.
 func solidImage(c color.RGBA) *image.RGBA {
-	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
-	for i := 0; i < len(img.Pix); i += 4 {
-		img.Pix[i] = c.R
-		img.Pix[i+1] = c.G
-		img.Pix[i+2] = c.B
-		img.Pix[i+3] = c.A
-	}
-	return img
+	return solidImageSize(16, 16, c)
 }
 
 // benchStreamImage builds a w x h RGBA viewport bitmap with a deterministic
