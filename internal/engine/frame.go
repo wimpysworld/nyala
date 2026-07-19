@@ -76,10 +76,6 @@ func decodeBase64Pooled(data string) (raw []byte, release func(), err error) {
 	return nil, nil, derr
 }
 
-// screencastQuality is the JPEG quality used by the live Block screencast.
-// Kitty and Sixel use PNG, so this value does not select their wire format.
-const screencastQuality = 90
-
 // blockScreencastQuality is the JPEG quality the block backend uses for its live
 // stream. Quality 90 retains page detail while native-YCbCr composition keeps the
 // live Block path within its processing budget.

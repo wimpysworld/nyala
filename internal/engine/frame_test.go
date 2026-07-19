@@ -212,7 +212,7 @@ func BenchmarkDecodeImageBytes(b *testing.B) {
 		}
 	}
 	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, src, &jpeg.Options{Quality: screencastQuality}); err != nil {
+	if err := jpeg.Encode(&buf, src, &jpeg.Options{Quality: blockScreencastQuality}); err != nil {
 		b.Fatalf("encode benchmark JPEG: %v", err)
 	}
 	raw := buf.Bytes()
