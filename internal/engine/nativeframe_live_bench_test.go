@@ -247,23 +247,6 @@ func assertBenchImagesClose(tb testing.TB, label string, a, b image.Image, toler
 	}
 }
 
-func benchSubsampleShift(r image.YCbCrSubsampleRatio) (h, v int) {
-	switch r {
-	case image.YCbCrSubsampleRatio420:
-		return 2, 2
-	case image.YCbCrSubsampleRatio422:
-		return 2, 1
-	case image.YCbCrSubsampleRatio440:
-		return 1, 2
-	case image.YCbCrSubsampleRatio411:
-		return 4, 1
-	case image.YCbCrSubsampleRatio410:
-		return 4, 2
-	default:
-		return 1, 1
-	}
-}
-
 func absI(a int) int {
 	if a < 0 {
 		return -a

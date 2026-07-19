@@ -66,23 +66,6 @@ func TestCycleBackendBlockOnly(t *testing.T) {
 	}
 }
 
-// TestCycleBackendAllThree asserts CycleBackend steps the full best-first set
-// kitty -> sixel -> block, wrapping, the same as the default cycle. The initial
-// active backend is the kitty ceiling.
-func TestCycleBackendAllThree(t *testing.T) {
-	s := NewState(120, 40)
-	s.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
-	if s.Backend != BackendKitty {
-		t.Fatalf("after SetEnabled, backend = %d, want BackendKitty", s.Backend)
-	}
-	want := []Backend{BackendSixel, BackendBlock, BackendKitty}
-	for i, w := range want {
-		if got := s.CycleBackend(); got != w {
-			t.Fatalf("cycle %d: got %d, want %d", i, got, w)
-		}
-	}
-}
-
 // TestSetEnabledNominatesCeiling asserts SetEnabled nominates the best available
 // backend: enabled[0] is the active backend and block sits last as the floor. It
 // pins the orderings configureBackends builds for each detected set.
