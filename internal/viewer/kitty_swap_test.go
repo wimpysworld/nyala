@@ -71,7 +71,7 @@ func solidImageSize(w, h int, c color.RGBA) *image.RGBA {
 func renderKittyFrame(t *testing.T, s *State, img *image.RGBA) []string {
 	t.Helper()
 	var buf bytes.Buffer
-	if err := s.RenderStreamFrame(render.Frame{Img: img}, &buf); err != nil {
+	if err := s.RenderStreamFrame(render.Frame{EncodedPNG: encodedPNG(t, img)}, &buf); err != nil {
 		t.Fatalf("render kitty frame: %v", err)
 	}
 	return kittyCommands(buf.String())
@@ -161,9 +161,6 @@ func TestKittyDoubleBufferResize(t *testing.T) {
 	}
 	assertTransmit(t, f2[0], "2")
 	assertDelete(t, f2[1], "1")
-	if !hasOpt(f2[0], "s=32") || !hasOpt(f2[0], "v=24") {
-		t.Fatalf("post-resize transmit %q missing new dimensions s=32,v=24", f2[0])
-	}
 }
 
 func TestKittyDirectPNGUsesRawPayloadAndIDs(t *testing.T) {
@@ -236,7 +233,7 @@ func TestRetainedPNGBlockFallbackMatchesDecodedPath(t *testing.T) {
 	}
 }
 
-func TestInvalidDirectPNGFallsBackToDecodedPixels(t *testing.T) {
+func TestInvalidDirectPNGRejectedBeforeOutput(t *testing.T) {
 	img := solidImageSize(8, 8, color.RGBA{R: 0xff, A: 0xff})
 	valid := encodedPNG(t, img)
 	raw, err := base64.StdEncoding.DecodeString(valid)
@@ -265,18 +262,17 @@ func TestInvalidDirectPNGFallsBackToDecodedPixels(t *testing.T) {
 			s := NewState(8, 4, 16, 16)
 			s.Backend = BackendKitty
 			var out bytes.Buffer
-			if err := s.RenderStreamFrame(render.Frame{Img: img, EncodedPNG: data}, &out); err != nil {
-				t.Fatalf("render fallback pixels: %v", err)
+			if err := s.RenderStreamFrame(render.Frame{Img: img, EncodedPNG: data}, &out); err == nil {
+				t.Fatal("invalid direct PNG was accepted")
 			}
-			cmds := kittyCommands(out.String())
-			if len(cmds) != 1 || !hasOpt(cmds[0], "f=24") {
-				t.Fatalf("fallback command = %v, want decoded f=24 transmit", cmds)
+			if out.Len() != 0 {
+				t.Fatalf("invalid direct PNG wrote %d terminal bytes, want 0", out.Len())
 			}
 		})
 	}
 }
 
-func TestNativeJPEGGraphicsOutputMatchesRGBAPath(t *testing.T) {
+func TestNativeJPEGSixelOutputMatchesRGBAPath(t *testing.T) {
 	yc := image.NewYCbCr(image.Rect(0, 0, 16, 16), image.YCbCrSubsampleRatio420)
 	for i := range yc.Y {
 		yc.Y[i] = byte(i*17 + 31)
@@ -288,42 +284,34 @@ func TestNativeJPEGGraphicsOutputMatchesRGBAPath(t *testing.T) {
 	rgba := image.NewRGBA(yc.Bounds())
 	draw.Draw(rgba, rgba.Bounds(), yc, yc.Bounds().Min, draw.Src)
 
-	for _, backend := range []Backend{BackendKitty, BackendSixel} {
-		nativeState := NewState(8, 4, 16, 16)
-		nativeState.Backend = backend
-		var native bytes.Buffer
-		if err := nativeState.RenderStreamFrame(render.Frame{Img: yc}, &native); err != nil {
-			t.Fatalf("backend %d native render: %v", backend, err)
-		}
+	nativeState := NewState(8, 4, 16, 16)
+	nativeState.Backend = BackendSixel
+	var native bytes.Buffer
+	if err := nativeState.RenderStreamFrame(render.Frame{Img: yc}, &native); err != nil {
+		t.Fatalf("native render: %v", err)
+	}
 
-		rgbaState := NewState(8, 4, 16, 16)
-		rgbaState.Backend = backend
-		var prior bytes.Buffer
-		if err := rgbaState.RenderStreamFrame(render.Frame{Img: rgba}, &prior); err != nil {
-			t.Fatalf("backend %d RGBA render: %v", backend, err)
-		}
-		if backend == BackendKitty {
-			if !bytes.Equal(native.Bytes(), prior.Bytes()) {
-				t.Errorf("Kitty native JPEG output differs from prior RGBA path")
-			}
-			continue
-		}
-		nativeImg, err := renderdecode.DecodeSixel(native.Bytes())
-		if err != nil {
-			t.Fatalf("decode native Sixel: %v", err)
-		}
-		priorImg, err := renderdecode.DecodeSixel(prior.Bytes())
-		if err != nil {
-			t.Fatalf("decode prior Sixel: %v", err)
-		}
-		if !nativeImg.Bounds().Eq(priorImg.Bounds()) {
-			t.Fatalf("Sixel native JPEG bounds = %v, want %v", nativeImg.Bounds(), priorImg.Bounds())
-		}
-		psnr := metrics.PSNR(priorImg, nativeImg)
-		ssim := metrics.SSIM(priorImg, nativeImg)
-		if psnr < 30 || ssim < 0.95 {
-			t.Fatalf("Sixel native JPEG quality versus RGBA path: PSNR=%f SSIM=%f", psnr, ssim)
-		}
+	rgbaState := NewState(8, 4, 16, 16)
+	rgbaState.Backend = BackendSixel
+	var prior bytes.Buffer
+	if err := rgbaState.RenderStreamFrame(render.Frame{Img: rgba}, &prior); err != nil {
+		t.Fatalf("RGBA render: %v", err)
+	}
+	nativeImg, err := renderdecode.DecodeSixel(native.Bytes())
+	if err != nil {
+		t.Fatalf("decode native Sixel: %v", err)
+	}
+	priorImg, err := renderdecode.DecodeSixel(prior.Bytes())
+	if err != nil {
+		t.Fatalf("decode prior Sixel: %v", err)
+	}
+	if !nativeImg.Bounds().Eq(priorImg.Bounds()) {
+		t.Fatalf("Sixel native JPEG bounds = %v, want %v", nativeImg.Bounds(), priorImg.Bounds())
+	}
+	psnr := metrics.PSNR(priorImg, nativeImg)
+	ssim := metrics.SSIM(priorImg, nativeImg)
+	if psnr < 30 || ssim < 0.95 {
+		t.Fatalf("Sixel native JPEG quality versus RGBA path: PSNR=%f SSIM=%f", psnr, ssim)
 	}
 }
 

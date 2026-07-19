@@ -127,8 +127,7 @@ func BenchmarkNativeSharedJPEG(b *testing.B) {
 	})
 }
 
-// BenchmarkDirectPNGKitty compares the former decode, RGBA conversion, RGB
-// pack, zlib, and base64 path with direct framing of the same CDP base64 PNG.
+// BenchmarkDirectPNGKitty measures direct validation and framing of a CDP PNG.
 func BenchmarkDirectPNGKitty(b *testing.B) {
 	src := tileTo(loadSourceRGBA(b), 2560, 2880)
 	var raw bytes.Buffer
@@ -137,25 +136,6 @@ func BenchmarkDirectPNGKitty(b *testing.B) {
 	}
 	data := base64.StdEncoding.EncodeToString(raw.Bytes())
 	e := &ChromiumEngine{backend: "kitty"}
-	b.Run("current-decoded", func(b *testing.B) {
-		enc := &renderkitty.LiveEncoder{}
-		if img, err := e.decodeLiveFrame(data); err != nil {
-			b.Fatal(err)
-		} else if err := enc.EncodeID(imageToRGBA(img), 1, io.Discard); err != nil {
-			b.Fatal(err)
-		}
-		b.ReportAllocs()
-		b.ResetTimer()
-		for range b.N {
-			img, err := e.decodeLiveFrame(data)
-			if err != nil {
-				b.Fatal(err)
-			}
-			if err := enc.EncodeID(imageToRGBA(img), 1, io.Discard); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
 	b.Run("direct", func(b *testing.B) {
 		enc := &renderkitty.LiveEncoder{}
 		if !e.directKittyPNG(data) {

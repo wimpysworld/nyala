@@ -559,8 +559,12 @@ func TestRenderFrameGraphics(t *testing.T) {
 
 	for _, b := range []Backend{BackendSixel, BackendKitty} {
 		s.Backend = b
+		frame := render.Frame{Img: src}
+		if b == BackendKitty {
+			frame = render.Frame{EncodedPNG: encodedPNG(t, src)}
+		}
 		var buf bytes.Buffer
-		if err := s.RenderStreamFrame(render.Frame{Img: src}, &buf); err != nil {
+		if err := s.RenderStreamFrame(frame, &buf); err != nil {
 			t.Fatalf("render backend %d: %v", b, err)
 		}
 		if buf.Len() == 0 {
@@ -593,7 +597,11 @@ func TestRenderFrameGraphicsFillsGrid(t *testing.T) {
 				s := NewState(c.cols, c.rows, c.imgW, c.imgH)
 				s.Backend = b
 				var buf bytes.Buffer
-				if err := s.RenderStreamFrame(render.Frame{Img: src}, &buf); err != nil {
+				frame := render.Frame{Img: src}
+				if b == BackendKitty {
+					frame = render.Frame{EncodedPNG: encodedPNG(t, src)}
+				}
+				if err := s.RenderStreamFrame(frame, &buf); err != nil {
 					t.Fatalf("render backend %d: %v", b, err)
 				}
 				out := buf.String()
@@ -610,6 +618,18 @@ func TestRenderFrameGraphicsFillsGrid(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRenderFrameKittyDropsImageOnlyFrame(t *testing.T) {
+	s := NewState(8, 4, 16, 16)
+	s.Backend = BackendKitty
+	var out bytes.Buffer
+	if err := s.RenderStreamFrame(render.Frame{Img: solidImage(color.RGBA{A: 0xff})}, &out); err != nil {
+		t.Fatalf("render image-only Kitty frame: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("image-only Kitty frame wrote %d bytes, want 0", out.Len())
 	}
 }
 

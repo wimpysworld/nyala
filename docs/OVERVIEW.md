@@ -79,12 +79,12 @@ second text or geometry channel is not planned for Stage 4. See `docs/STAGE-3.md
 JPEG normally crosses the engine/render seam as the decoder's `*image.YCbCr`.
 Block keeps that native layout. Sixel requests PNG for every frame and preserves the
 PNG decoder's native concrete pixel type into the encoder; this can be RGBA or NRGBA,
-so the encoder retains both fast paths. PNG also keeps its native layout on decoded
-fallback paths. Every live Kitty stream requests PNG and carries the owned CDP base64 string in
+so the encoder retains both fast paths. PNG also keeps its native layout when a
+queued Kitty frame reaches a pixel backend. Every live Kitty stream requests PNG and carries the owned CDP base64 string in
 `Frame.EncodedPNG`; the Kitty consumer rechunks it as `f=100,t=d,a=T` without base64
 decode, PNG decode, pixel packing, zlib, or base64 encode. A frame queued across a
-backend switch decodes that retained PNG at the new pixel consumer, so switching and
-resize remain safe.
+backend switch decodes that retained PNG at the new pixel consumer. In the opposite
+direction, Kitty drops queued pixel frames until the restarted PNG stream emits.
 
 The live format policy follows the consumer. Block requests JPEG quality 90. It
 improves fidelity over the former q80 default while the matched

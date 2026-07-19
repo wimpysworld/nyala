@@ -144,8 +144,8 @@ the cycle) or the kitty-to-sixel step looking identical.
 ### Theme 3 - Kitty renderer and the fit bug
 
 Current status: direct CDP PNG pass-through, protocol chunking, reusable framing
-buffers, single-write assembly, double-buffered IDs, SIMD base64, and fallback
-RGB/zlib tuning are complete. Framing p90 is 0.008 ms at 1920x1080 and 0.013 ms at
+buffers, single-write assembly, double-buffered IDs, and SIMD base64 are complete.
+The historical fallback RGB/zlib encoder has been removed. Framing p90 is 0.008 ms at 1920x1080 and 0.013 ms at
 2560x1600, with 10 allocations and unchanged payload and allocation classes. These
 are framing measurements, not terminal decode or draw measurements. The findings
 below record the older decoded encoder and the work that replaced it.
@@ -297,11 +297,11 @@ Nyala framing number does not prove a higher terminal frame rate.
 
 ## Sixel/Kitty library verdict
 
-**Kitty.** Live frames now bypass the decoded encoder. Nyala rechunks Chromium's
+**Kitty.** Live frames use only direct PNG. Nyala rechunks Chromium's
 owned base64 PNG as `f=100,t=d,a=T`, alternates image IDs, and deletes the previous
 ID after placement. The earlier `a=f,r=1,o=z` edit was tried and reverted because it
-rendered partially or black on target terminals. Keep the decoded RGB encoder for
-tests and existing fallback paths. A live JPEG fallback is not required: the owner's
+rendered partially or black on target terminals. The decoded RGB live encoder and
+its retained scratch have been removed. A live JPEG fallback is not required: the owner's
 measurement put direct PNG pass-through at about 1 ms. Reconsider it
 only if terminal-side PNG decoding or drawing becomes a measured bottleneck. Any
 future partial update must use a supported protocol path and beat direct PNG end to
@@ -435,9 +435,9 @@ Also landed on the load-time theme, beyond the ranked list:
    little on full motion because the whole frame changes each tick.
    Cumulative aquarium arc this session, all lossless and no downscale: 4.5 (stdlib zlib)
    -> 5.8 (klauspost) -> 8.5 fps (pipeline).
-   [DONE - current] Live Kitty now bypasses this decoded `f=24` path: every Kitty
-   stream requests PNG and rechunks the CDP base64 payload as `f=100`. Keep the
-   decoded encoder for existing fallback paths and tests. The owner's measurement put
+   [DONE - current] Live Kitty now uses only direct PNG: every Kitty stream requests
+   PNG and rechunks the CDP base64 payload as `f=100`. The historical decoded
+   encoder and its fallback path have been removed. The owner's measurement put
    direct PNG pass-through at about 1 ms, so a JPEG Kitty fallback is
    not required. Reconsider it only if terminal-side PNG decoding or drawing becomes
    a measured bottleneck. Backend optimisation is complete. Sustained Kitty,
@@ -1741,14 +1741,14 @@ estimated FPS is processing capacity, not observed display FPS.
 
 ### Sixel measurements
 
-During motion, q90 JPEG frames decode to decoder-native YCbCr. `State.graphicsPixels`
-then serially materialises a reusable full-frame RGBA buffer before
+During motion, q90 JPEG frames decoded to decoder-native YCbCr. The former Kitty
+consumer conversion helper then materialised a reusable full-frame RGBA buffer before
 `x/ansi/sixel` encodes it.
 
 | Production q90 State path | Median | Range | B/op | allocs/op |
 |---|---:|---:|---:|---:|
 | Base64 and JPEG decode, conversion, Sixel encode | 1.039 s | 1.009 to 1.055 s | 791,275,808 | 14,859,761 |
-| Isolated warm `graphicsPixels` conversion | 14.321 ms | 14.292 to 14.342 ms | 0 | 0 |
+| Isolated warm Kitty consumer conversion | 14.321 ms | 14.292 to 14.342 ms | 0 | 0 |
 
 The profile puts `imageutil.DrawYCbCr` at 1.50% flat CPU and
 `sixel.Encoder.Encode` at 95.17% cumulative CPU. Removing conversion entirely has
