@@ -179,7 +179,7 @@ func BenchmarkBlockDiff(b *testing.B) {
 
 // BenchmarkBlockOverlay isolates the overlay fold: a pristine composed grid is
 // copied into a work grid each pass (a Cells memmove), then the runs fold on. It
-// measures applyOverlay alone (grapheme segmentation, cell claiming, cellBGAverage,
+// measures applyOverlay alone (grapheme segmentation, cell claiming, cellBGAverageFrom,
 // boundary recompose), not the downsample, for both sizes. Runs carry cached
 // DisplayCells, the engine's decode-time shape.
 func BenchmarkBlockOverlay(b *testing.B) {
