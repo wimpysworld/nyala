@@ -37,7 +37,7 @@ func trueColourBenchFrame(cols, rows, phase int) render.Frame {
 }
 
 func trueColourBenchState(cols, rows int) *State {
-	s := NewState(cols, rows, cols*cellraster.CellPxW, rows*cellraster.CellPxH)
+	s := NewState(cols, rows)
 	s.SetEnabled([]Backend{BackendBlock})
 	s.SetDiff(&block.GridDiff{})
 	return &s

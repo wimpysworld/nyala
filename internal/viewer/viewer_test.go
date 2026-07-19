@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"io"
@@ -22,7 +23,7 @@ import (
 // TestCycleBackendOrder asserts the default cycle is best-first kitty -> sixel ->
 // block: the initial active backend is kitty and Tab steps down, wrapping.
 func TestCycleBackendOrder(t *testing.T) {
-	s := NewState(120, 40, 64, 64)
+	s := NewState(120, 40)
 	s.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
 	if s.Backend != BackendKitty {
 		t.Fatalf("initial backend = %d, want BackendKitty", s.Backend)
@@ -39,7 +40,7 @@ func TestCycleBackendOrder(t *testing.T) {
 // enabled set. With sixel disabled, configureBackends orders it kitty -> block,
 // so the initial active backend is kitty and Tab steps block -> kitty.
 func TestCycleBackendSkipsDisabled(t *testing.T) {
-	s := NewState(120, 40, 64, 64)
+	s := NewState(120, 40)
 	s.SetEnabled([]Backend{BackendKitty, BackendBlock})
 	if s.Backend != BackendKitty {
 		t.Fatalf("after SetEnabled, backend = %d, want BackendKitty", s.Backend)
@@ -55,7 +56,7 @@ func TestCycleBackendSkipsDisabled(t *testing.T) {
 // TestCycleBackendBlockOnly asserts CycleBackend stays on block when block is the
 // only enabled backend.
 func TestCycleBackendBlockOnly(t *testing.T) {
-	s := NewState(120, 40, 64, 64)
+	s := NewState(120, 40)
 	s.SetEnabled([]Backend{BackendBlock})
 	for i := range 3 {
 		if got := s.CycleBackend(); got != BackendBlock {
@@ -68,7 +69,7 @@ func TestCycleBackendBlockOnly(t *testing.T) {
 // kitty -> sixel -> block, wrapping, the same as the default cycle. The initial
 // active backend is the kitty ceiling.
 func TestCycleBackendAllThree(t *testing.T) {
-	s := NewState(120, 40, 64, 64)
+	s := NewState(120, 40)
 	s.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
 	if s.Backend != BackendKitty {
 		t.Fatalf("after SetEnabled, backend = %d, want BackendKitty", s.Backend)
@@ -98,7 +99,7 @@ func TestSetEnabledNominatesCeiling(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			s := NewState(120, 40, 64, 64)
+			s := NewState(120, 40)
 			s.SetEnabled(c.enabled)
 			if s.Backend != c.wantActive {
 				t.Fatalf("active backend = %d, want %d", s.Backend, c.wantActive)
@@ -143,26 +144,11 @@ func TestResolveScheme(t *testing.T) {
 	}
 }
 
-// TestResizeRefits asserts a resize changes the fit, so the viewer re-fits the
-// image to the new terminal size.
-func TestResizeRefits(t *testing.T) {
-	s := NewState(120, 40, 64, 64)
-	before := s.Fit()
-	s.Resize(40, 20)
-	after := s.Fit()
-	if before == after {
-		t.Fatalf("fit unchanged after resize: %+v", after)
-	}
-	if after.Cols != 40 || after.Rows != 20 {
-		t.Fatalf("fit grid = %dx%d, want 40x20", after.Cols, after.Rows)
-	}
-}
-
 // TestRendererSwapsBehindSeam asserts each backend yields a render.Renderer with
 // the matching Name, and that switching backend changes only the returned value:
 // the same Frame renders through every backend with no error.
 func TestRendererSwapsBehindSeam(t *testing.T) {
-	s := NewState(8, 4, 16, 16)
+	s := NewState(8, 4)
 	frame := render.Frame{Img: solidImage(color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})}
 
 	cases := []struct {
@@ -192,7 +178,7 @@ func TestRendererSwapsBehindSeam(t *testing.T) {
 // TestRendererConcreteTypes asserts each backend resolves to its concrete type,
 // confirming the swap is a renderer-value swap and nothing above the seam.
 func TestRendererConcreteTypes(t *testing.T) {
-	s := NewState(8, 4, 16, 16)
+	s := NewState(8, 4)
 
 	s.Backend = BackendBlock
 	if _, ok := s.Renderer().(*block.Renderer); !ok {
@@ -209,7 +195,7 @@ func TestRendererConcreteTypes(t *testing.T) {
 }
 
 func TestSixelRendererPersistsAcrossBackendSwitch(t *testing.T) {
-	s := NewState(8, 4, 16, 16)
+	s := NewState(8, 4)
 	s.Backend = BackendSixel
 	first := s.Renderer()
 	s.Backend = BackendBlock
@@ -223,7 +209,7 @@ func TestSixelRendererPersistsAcrossBackendSwitch(t *testing.T) {
 // TestHandleKey asserts the hotkey table: Tab cycles, 'q' and Ctrl-C quit, and
 // any other key (including the retired 's' and 'c' toggles) is an inert no-op.
 func TestHandleKey(t *testing.T) {
-	s := NewState(120, 40, 64, 64)
+	s := NewState(120, 40)
 	s.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
 	if s.Backend != BackendKitty {
 		t.Fatalf("initial backend = %d, want BackendKitty", s.Backend)
@@ -386,7 +372,7 @@ func TestStreamLoopQuitsAfterDownArrowWhenSendKeyBlocks(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			st := NewState(80, 24, 1, 1)
+			st := NewState(80, 24)
 			sendStarted := make(chan string, 1)
 			releaseSend := make(chan struct{})
 			e := streamTestEngine{
@@ -447,7 +433,7 @@ func TestWaitForNavigateQuitsWhileNavigatePending(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			st := NewState(80, 24, 1, 1)
+			st := NewState(80, 24)
 			s := &streamSession{eng: streamTestEngine{frames: make(chan render.Frame)}, st: &st}
 			keys := make(chan keyEvent, 1)
 			keys <- keyEvent{b: c.key}
@@ -473,7 +459,7 @@ func TestWaitForNavigateIgnoresBrowserKeysWhileNavigatePending(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			st := NewState(80, 24, 1, 1)
+			st := NewState(80, 24)
 			startBackend := st.Backend
 			var sentKeys []string
 			var backends []string
@@ -511,7 +497,7 @@ func TestWaitForNavigateIgnoresBrowserKeysWhileNavigatePending(t *testing.T) {
 // TestWaitForNavigateReturnsNavigateError keeps startup errors visible once
 // Navigate does finish, so browser launch failures still reach the caller.
 func TestWaitForNavigateReturnsNavigateError(t *testing.T) {
-	st := NewState(80, 24, 1, 1)
+	st := NewState(80, 24)
 	s := &streamSession{eng: streamTestEngine{frames: make(chan render.Frame)}, st: &st}
 	keys := make(chan keyEvent)
 	want := errors.New("navigate failed")
@@ -539,7 +525,7 @@ func TestRenderFrameBlockColourModes(t *testing.T) {
 		{name: "monochrome", mode: ColourMono, forbidSGRs: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := NewState(8, 4, 16, 16)
+			s := NewState(8, 4)
 			s.Colour = tc.mode
 			var d block.GridDiff
 			s.SetDiff(&d)
@@ -551,7 +537,7 @@ func TestRenderFrameBlockColourModes(t *testing.T) {
 			}
 			out := first.String()
 			for row := range s.Rows {
-				if move := cursorPosition(row, 0); !strings.Contains(out, move) {
+				if move := fmt.Sprintf("\x1b[%d;1H", row+1); !strings.Contains(out, move) {
 					t.Fatalf("first draw omitted row %d CUP %q", row, move)
 				}
 			}
@@ -574,9 +560,9 @@ func TestRenderFrameBlockColourModes(t *testing.T) {
 }
 
 // TestRenderFrameGraphics asserts the graphics backends emit a non-empty framed
-// payload through RenderStreamFrame for a fitted image.
+// payload through RenderStreamFrame for an engine-sized image.
 func TestRenderFrameGraphics(t *testing.T) {
-	s := NewState(8, 4, 16, 16)
+	s := NewState(8, 4)
 	src := solidImage(color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})
 
 	for _, b := range []Backend{BackendSixel, BackendKitty} {
@@ -597,9 +583,9 @@ func TestRenderFrameGraphics(t *testing.T) {
 
 // TestRenderFrameGraphicsFillsGrid asserts the graphics backends fill the whole
 // grid from the top-left and never emit a letterbox CUP move, whatever the image
-// aspect. The engine sizes the graphics bitmap to the full grid, so the identity
-// graphicsFit maps it one-to-one and the 1:2 FitImage stays out of the path; a
-// 1:2 fit would letterbox a non-1:2 grid and shift the bitmap off the corner. The
+// aspect. The engine sizes the graphics bitmap to the full grid, so the viewer
+// encodes it directly; an aspect-fit would letterbox a non-1:2 grid and shift the
+// bitmap off the corner. The
 // first kitty frame transmits under image id 1 (i=1) with no preceding delete, the
 // double-buffer start state.
 func TestRenderFrameGraphicsFillsGrid(t *testing.T) {
@@ -616,7 +602,7 @@ func TestRenderFrameGraphicsFillsGrid(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			src := solidImage(color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})
 			for _, b := range []Backend{BackendSixel, BackendKitty} {
-				s := NewState(c.cols, c.rows, c.imgW, c.imgH)
+				s := NewState(c.cols, c.rows)
 				s.Backend = b
 				var buf bytes.Buffer
 				frame := render.Frame{Img: src}
@@ -644,7 +630,7 @@ func TestRenderFrameGraphicsFillsGrid(t *testing.T) {
 }
 
 func TestRenderFrameKittyDropsImageOnlyFrame(t *testing.T) {
-	s := NewState(8, 4, 16, 16)
+	s := NewState(8, 4)
 	s.Backend = BackendKitty
 	var out bytes.Buffer
 	if err := s.RenderStreamFrame(render.Frame{Img: solidImage(color.RGBA{A: 0xff})}, &out); err != nil {
@@ -677,7 +663,7 @@ func cupPresent(out string) bool {
 // TestRenderFrameNoFit asserts a degenerate grid (zero cells) writes nothing and
 // does not error, so the viewer tolerates a collapsed terminal.
 func TestRenderFrameNoFit(t *testing.T) {
-	s := NewState(0, 0, 16, 16)
+	s := NewState(0, 0)
 	s.SetDiff(&block.GridDiff{})
 	var buf bytes.Buffer
 	if err := s.RenderStreamFrame(render.Frame{Img: solidImage(color.RGBA{A: 0xff})}, &buf); err != nil {
@@ -743,7 +729,7 @@ func TestConfigureBackendsSkipsHandshakeUnderMux(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
 
 	tty := newTempTTY(t)
-	st := NewState(80, 24, 64, 64)
+	st := NewState(80, 24)
 	if err := configureBackends(&st, tty, 80, 24, "auto"); err != nil {
 		t.Fatalf("configureBackends: %v", err)
 	}
@@ -764,7 +750,7 @@ func TestConfigureBackendsRunsHandshakeWithoutMux(t *testing.T) {
 	clearMuxEnv(t)
 
 	tty := newTempTTY(t)
-	st := NewState(80, 24, 64, 64)
+	st := NewState(80, 24)
 	if err := configureBackends(&st, tty, 80, 24, "auto"); err != nil {
 		t.Fatalf("configureBackends: %v", err)
 	}
@@ -807,7 +793,7 @@ func TestCellPxDefaultWhenGeometryAbsent(t *testing.T) {
 	if cellraster.CellPxW != 8 || cellraster.CellPxH != 16 {
 		t.Fatalf("raster default = %dx%d, want 8x16 (pinned Route A raster in docs/STAGE-0.md)", cellraster.CellPxW, cellraster.CellPxH)
 	}
-	st := NewState(80, 24, 64, 64)
+	st := NewState(80, 24)
 	if st.W != 8 || st.H != 16 {
 		t.Fatalf("default cell px = %dx%d, want 8x16", st.W, st.H)
 	}
@@ -1035,7 +1021,7 @@ func benchStreamFrame() render.Frame {
 // terminal bytes but still composes the grid. b.ReportAllocs reports allocs/op
 // and B/op. P2-8 must lower the unchanged-frame allocs/op against this baseline.
 func BenchmarkRenderStreamFrameUnchanged(b *testing.B) {
-	s := NewState(120, 40, 120*cellraster.CellPxW, 40*cellraster.CellPxH)
+	s := NewState(120, 40)
 	s.SetEnabled([]Backend{BackendBlock})
 	var d block.GridDiff
 	s.SetDiff(&d)
@@ -1061,7 +1047,7 @@ func BenchmarkRenderStreamFrameUnchanged(b *testing.B) {
 // a first-frame full repaint against a blank screen. It is not the P2-8 gate; it
 // frames the cost of the worst case beside the steady-state baseline.
 func BenchmarkRenderStreamFrameChanged(b *testing.B) {
-	s := NewState(120, 40, 120*cellraster.CellPxW, 40*cellraster.CellPxH)
+	s := NewState(120, 40)
 	s.SetEnabled([]Backend{BackendBlock})
 	var d block.GridDiff
 	s.SetDiff(&d)
@@ -1092,7 +1078,7 @@ func diffGridOf(cols, rows int, fill block.Cell) block.Grid {
 // bytes, the diff's defining behaviour, where a full rewrite would re-emit every
 // cell.
 func TestRenderStreamFrameRoutesThroughDiff(t *testing.T) {
-	s := NewState(8, 4, 16, 16)
+	s := NewState(8, 4)
 	s.SetEnabled([]Backend{BackendBlock})
 	var d block.GridDiff
 	s.SetDiff(&d)

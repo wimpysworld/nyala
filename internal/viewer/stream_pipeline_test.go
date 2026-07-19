@@ -185,7 +185,7 @@ func TestStreamLoopDropsStaleFramesUnderSlowWriter(t *testing.T) {
 	frames := make(chan render.Frame)
 	eng := &pipeEngine{frames: frames}
 
-	st := NewState(4, 2, 8, 8)
+	st := NewState(4, 2)
 	st.Backend = BackendBlock
 	diff := &block.GridDiff{}
 	st.SetDiff(diff)
@@ -227,7 +227,7 @@ func TestStreamLoopTeardownAfterTabAndWinch(t *testing.T) {
 	out := &syncBuf{}
 	eng := &tabCycleEngine{frames: make(chan render.Frame, 4)}
 
-	st := NewState(8, 4, 16, 16)
+	st := NewState(8, 4)
 	eng.kittyPNG = encodedPNG(t, image.NewRGBA(image.Rect(0, 0, 16, 16)))
 	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
 	diff := &block.GridDiff{}
@@ -343,7 +343,7 @@ func TestStreamLoopReturnsWriteError(t *testing.T) {
 	frames := make(chan render.Frame)
 	eng := &pipeEngine{frames: frames}
 
-	st := NewState(4, 2, 8, 8)
+	st := NewState(4, 2)
 	st.Backend = BackendBlock
 	diff := &block.GridDiff{}
 	st.SetDiff(diff)
@@ -376,7 +376,7 @@ func TestStreamLoopDropsStaleFramesWithFPSArmed(t *testing.T) {
 	frames := make(chan render.Frame)
 	eng := &pipeEngine{frames: frames}
 
-	st := NewState(4, 2, 8, 8)
+	st := NewState(4, 2)
 	st.Backend = BackendBlock
 	diff := &block.GridDiff{}
 	st.SetDiff(diff)
@@ -418,7 +418,7 @@ func TestStreamLoopControlFrameInterleaveUnderSlowTTY(t *testing.T) {
 	out := &slowWriter{delay: 500 * time.Microsecond}
 	eng := &tabCycleEngine{frames: make(chan render.Frame, 8)}
 
-	st := NewState(8, 4, 16, 16)
+	st := NewState(8, 4)
 	eng.kittyPNG = encodedPNG(t, image.NewRGBA(image.Rect(0, 0, 16, 16)))
 	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
 	diff := &block.GridDiff{}
@@ -503,7 +503,7 @@ func TestStreamLoopReturnsShortWriteError(t *testing.T) {
 	frames := make(chan render.Frame)
 	eng := &pipeEngine{frames: frames}
 
-	st := NewState(4, 2, 8, 8)
+	st := NewState(4, 2)
 	st.Backend = BackendBlock
 	diff := &block.GridDiff{}
 	st.SetDiff(diff)

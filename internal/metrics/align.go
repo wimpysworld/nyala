@@ -30,8 +30,8 @@ func Downscale(src image.Image, width, height int) *image.RGBA {
 }
 
 // DownscaleLiveInto resizes src into dst by area-averaging, returning the same dst.
-// Only the interactive diff'd block draw calls it; the FitGrid block path and the
-// graphics path still use Downscale (CatmullRom). Area-averaging is the correct
+// Only the interactive diff'd block draw calls it; the graphics path still uses
+// Downscale (CatmullRom). Area-averaging is the correct
 // high-quality method for the large reductions the live block draw performs (a full
 // page into an 80-column grid): each destination pixel is the mean of the source
 // pixels its footprint covers, so no aliasing or speckle survives, unlike a bilinear

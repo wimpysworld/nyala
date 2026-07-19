@@ -14,8 +14,8 @@ import (
 // the aspect-fit letterbox regression. The engine sizes the block frame to the
 // exact grid geometry (cols*cellW by rows*cellH device pixels) and bins each text
 // run in whole-cell coordinates, so the bitmap must map edge-to-edge across every
-// column. The old path routed the compose through FitImage, which assumed a 1:2
-// cell aspect and letterboxed the bitmap onto fewer columns whenever the real cell
+// column. The old path routed the compose through a 1:2 aspect fit, which
+// letterboxed the bitmap onto fewer columns whenever the real cell
 // aspect differed, blanking the margin columns while the overlay still used the
 // full grid. That sheared the text right of the bitmap by a factor that grew with
 // the column.
@@ -24,9 +24,9 @@ import (
 // RenderStreamFrame on the block backend, captures the composed grid, and asserts
 // no column is a blank letterbox margin: the leftmost and rightmost columns carry
 // the fill and the whole grid holds zero blank cells. The 8x16 leg is the 1:2 cell
-// aspect where the bug is invisible (FitImage fills the full width there); the
+// aspect where the bug is invisible (the former fit filled the full width); the
 // 16x33 and 13x27 legs are real non-1:2 terminal geometries where the letterbox
-// blanked the edge columns. Reverting renderBlock to the FitImage path fails the
+// blanked the edge columns. Restoring the retired aspect-fit path fails the
 // non-1:2 legs, whose edge columns then blank, while the 8x16 leg still passes.
 func TestRenderBlockComposesFullGridNoLetterbox(t *testing.T) {
 	fill := color.RGBA{R: 0xff, G: 0x40, B: 0x20, A: 0xff}
@@ -57,7 +57,7 @@ func TestRenderBlockComposesFullGridNoLetterbox(t *testing.T) {
 				}
 			}
 
-			st := NewState(c.cols, c.rows, src.Bounds().Dx(), src.Bounds().Dy())
+			st := NewState(c.cols, c.rows)
 			st.Backend = BackendBlock
 			st.SetDiff(&block.GridDiff{})
 

@@ -111,7 +111,7 @@ func TestStreamTabCyclesBackend(t *testing.T) {
 
 	eng := &tabCycleEngine{frames: make(chan render.Frame, 4)}
 
-	st := NewState(8, 4, 16, 16)
+	st := NewState(8, 4)
 	eng.kittyPNG = encodedPNG(t, image.NewRGBA(image.Rect(0, 0, 16, 16)))
 	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
 	diff := &block.GridDiff{}
@@ -163,7 +163,7 @@ func TestStreamTabCyclesBackend(t *testing.T) {
 }
 
 func TestBackendCycleUsesActiveFrameRepresentation(t *testing.T) {
-	st := NewState(8, 4, 16, 16)
+	st := NewState(8, 4)
 	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
 	st.SetDiff(&block.GridDiff{})
 	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
