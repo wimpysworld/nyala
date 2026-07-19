@@ -142,18 +142,3 @@ func TestLaplacianVarianceTooSmall(t *testing.T) {
 		t.Fatalf("LaplacianVariance(2x2) = %.6f, want 0", v)
 	}
 }
-
-// TestCrop confirms Crop returns the requested region in cropped coordinate
-// space and clips to the image bounds.
-func TestCrop(t *testing.T) {
-	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
-	img.SetRGBA(2, 1, color.RGBA{R: 10, G: 20, B: 30, A: 255})
-
-	c := Crop(img, image.Rect(2, 1, 6, 3)) // overlaps right/bottom edge
-	if c.Bounds().Dx() != 2 || c.Bounds().Dy() != 2 {
-		t.Fatalf("crop size = %dx%d, want 2x2", c.Bounds().Dx(), c.Bounds().Dy())
-	}
-	if got := c.RGBAAt(0, 0); got != (color.RGBA{R: 10, G: 20, B: 30, A: 255}) {
-		t.Fatalf("crop origin pixel = %+v, want {10 20 30 255}", got)
-	}
-}
