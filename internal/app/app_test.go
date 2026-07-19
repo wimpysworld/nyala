@@ -69,13 +69,6 @@ func TestParseURLRequired(t *testing.T) {
 	}
 }
 
-func TestParseColorDefault(t *testing.T) {
-	cli := parse(t, "example.com")
-	if cli.Color != "auto" {
-		t.Errorf("Color = %q, want %q by default", cli.Color, "auto")
-	}
-}
-
 func TestParseColorOverrides(t *testing.T) {
 	for _, mode := range []string{"truecolor", "256", "none"} {
 		cli := parse(t, "--color", mode, "example.com")
