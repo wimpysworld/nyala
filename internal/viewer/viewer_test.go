@@ -114,32 +114,27 @@ func TestSetEnabledNominatesCeiling(t *testing.T) {
 
 // TestResolveScheme asserts the interactive --blocks resolution: half and
 // quadrant map straight through, auto and sextant render sextant on a supported
-// terminal and degrade to quadrant on an unsupported one. It also pins the
-// engine-name mapping for each resolved scheme.
+// terminal and degrade to quadrant on an unsupported one.
 func TestResolveScheme(t *testing.T) {
 	supportedEnv := []string{"TERM=xterm-kitty"}
 	unsupportedEnv := []string{"TERM=xterm-256color"}
 	cases := []struct {
-		name    string
-		blocks  string
-		env     []string
-		scheme  block.Scheme
-		engName string
+		name   string
+		blocks string
+		env    []string
+		scheme block.Scheme
 	}{
-		{"quadrant", "quadrant", supportedEnv, block.SchemeQuadrant, "quadrant"},
-		{"half", "half", supportedEnv, block.SchemeHalfBlock, "half"},
-		{"auto supported", "auto", supportedEnv, block.SchemeSextant, "sextant"},
-		{"auto unsupported", "auto", unsupportedEnv, block.SchemeQuadrant, "quadrant"},
-		{"sextant supported", "sextant", supportedEnv, block.SchemeSextant, "sextant"},
-		{"sextant unsupported", "sextant", unsupportedEnv, block.SchemeQuadrant, "quadrant"},
+		{"quadrant", "quadrant", supportedEnv, block.SchemeQuadrant},
+		{"half", "half", supportedEnv, block.SchemeHalfBlock},
+		{"auto supported", "auto", supportedEnv, block.SchemeSextant},
+		{"auto unsupported", "auto", unsupportedEnv, block.SchemeQuadrant},
+		{"sextant supported", "sextant", supportedEnv, block.SchemeSextant},
+		{"sextant unsupported", "sextant", unsupportedEnv, block.SchemeQuadrant},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			if got := resolveScheme(c.blocks, c.env); got != c.scheme {
 				t.Errorf("resolveScheme(%q, env) = %d, want %d", c.blocks, got, c.scheme)
-			}
-			if got := schemeEngineName(c.scheme); got != c.engName {
-				t.Errorf("schemeEngineName(%d) = %q, want %q", c.scheme, got, c.engName)
 			}
 		})
 	}
@@ -949,8 +944,6 @@ func (e streamTestEngine) SetBackend(name string) {
 		e.setBackend(name)
 	}
 }
-
-func (e streamTestEngine) SetScheme(string) {}
 
 func (e streamTestEngine) SetCellPx(int, int) {}
 

@@ -14,7 +14,6 @@ require (
 	github.com/delthas/octreequant v0.0.0-20240724152321-2675d824f212
 	github.com/emmansun/base64 v0.10.0
 	github.com/ericpauley/go-quantize v0.0.0-20200331213906-ae555eb2afa4
-	github.com/fogleman/gg v1.3.0
 	github.com/gen2brain/jpegn v0.4.4
 	github.com/lucasb-eyer/go-colorful v1.4.0
 	github.com/mattn/go-runewidth v0.0.24

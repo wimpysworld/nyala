@@ -14,7 +14,7 @@
 //     channel, so palette collapse and banding show at a glance.
 //
 // The diff and heatmap use raf555/pixelmatch; the composite and the two cell
-// maps use fogleman/gg; the histogram uses gonum/plot. Every PNG is written
+// maps use image/draw; the histogram uses gonum/plot. Every PNG is written
 // through capture.EncodePNG, so no timestamp is embedded and the same inputs
 // yield byte-identical files. Channel order is RGBA throughout.
 package harness
@@ -23,11 +23,14 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"os"
 	"path/filepath"
 
-	"github.com/fogleman/gg"
 	pixelmatch "github.com/raf555/pixelmatch"
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/math/fixed"
 	"gonum.org/v1/plot"
 	"gonum.org/v1/plot/plotter"
 	"gonum.org/v1/plot/vg"
@@ -178,9 +181,8 @@ func compositeImage(reference, render, diff *image.RGBA) *image.RGBA {
 	totalW := w*3 + gutter*2
 	totalH := h + labelH
 
-	dc := gg.NewContext(totalW, totalH)
-	dc.SetRGB(1, 1, 1)
-	dc.Clear()
+	out := image.NewRGBA(image.Rect(0, 0, totalW, totalH))
+	draw.Draw(out, out.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
 
 	panels := []struct {
 		img   *image.RGBA
@@ -190,13 +192,17 @@ func compositeImage(reference, render, diff *image.RGBA) *image.RGBA {
 		{render, "render"},
 		{diff, "diff"},
 	}
-	dc.SetRGB(0, 0, 0)
 	for i, p := range panels {
 		x := i * (w + gutter)
-		dc.DrawImage(p.img, x, labelH)
-		dc.DrawString(p.label, float64(x)+2, float64(labelH)-4)
+		draw.Draw(out, image.Rect(x, labelH, x+w, labelH+h), p.img, p.img.Bounds().Min, draw.Src)
+		(&font.Drawer{
+			Dst:  out,
+			Src:  image.NewUniform(color.Black),
+			Face: basicfont.Face7x13,
+			Dot:  fixed.P(x+2, labelH-4),
+		}).DrawString(p.label)
 	}
-	return contextRGBA(dc)
+	return out
 }
 
 // cellErrorMap draws one tile per grid cell, shaded by the mean CIEDE2000 dE
@@ -205,22 +211,20 @@ func compositeImage(reference, render, diff *image.RGBA) *image.RGBA {
 // the error reads in cell space. Hotter (more red) means a larger dE.
 func cellErrorMap(reference, render *image.RGBA, g *block.Grid) *image.RGBA {
 	const tile = 8
-	dc := gg.NewContext(g.Cols*tile, g.Rows*tile)
-	dc.SetRGB(0, 0, 0)
-	dc.Clear()
+	out := image.NewRGBA(image.Rect(0, 0, g.Cols*tile, g.Rows*tile))
 
 	cw := render.Bounds().Dx() / max(g.Cols, 1)
 	ch := render.Bounds().Dy() / max(g.Rows, 1)
 	for row := range g.Rows {
 		for col := range g.Cols {
 			de := cellDeltaE(reference, render, col, row, cw, ch)
-			r, gg2 := heatColour(de / maxCellDeltaE)
-			dc.SetRGB(r, gg2, 0)
-			dc.DrawRectangle(float64(col*tile), float64(row*tile), tile, tile)
-			dc.Fill()
+			r, green := heatColour(de / maxCellDeltaE)
+			fill := color.NRGBA{R: uint8(r * 255), G: uint8(green * 255), A: 255}
+			rect := image.Rect(col*tile, row*tile, (col+1)*tile, (row+1)*tile)
+			draw.Draw(out, rect, image.NewUniform(fill), image.Point{}, draw.Src)
 		}
 	}
-	return contextRGBA(dc)
+	return out
 }
 
 // quantErrorMap draws one tile per grid cell, shaded by the CIEDE2000 dE between
@@ -234,22 +238,20 @@ func quantErrorMap(grid, ideal *block.Grid) (*image.RGBA, error) {
 			grid.Cols, grid.Rows, ideal.Cols, ideal.Rows)
 	}
 	const tile = 8
-	dc := gg.NewContext(grid.Cols*tile, grid.Rows*tile)
-	dc.SetRGB(0, 0, 0)
-	dc.Clear()
+	out := image.NewRGBA(image.Rect(0, 0, grid.Cols*tile, grid.Rows*tile))
 
 	for row := range grid.Rows {
 		for col := range grid.Cols {
 			gc := grid.At(col, row)
 			ic := ideal.At(col, row)
 			de := metrics.DeltaE2000(gc.FG.R, gc.FG.G, gc.FG.B, ic.FG.R, ic.FG.G, ic.FG.B)
-			r, gg2 := heatColour(de / maxCellDeltaE)
-			dc.SetRGB(r, gg2, 0)
-			dc.DrawRectangle(float64(col*tile), float64(row*tile), tile, tile)
-			dc.Fill()
+			r, green := heatColour(de / maxCellDeltaE)
+			fill := color.NRGBA{R: uint8(r * 255), G: uint8(green * 255), A: 255}
+			rect := image.Rect(col*tile, row*tile, (col+1)*tile, (row+1)*tile)
+			draw.Draw(out, rect, image.NewUniform(fill), image.Point{}, draw.Src)
 		}
 	}
-	return contextRGBA(dc), nil
+	return out, nil
 }
 
 // maxCellDeltaE is the dE that maps to the hottest map colour. CIEDE2000 dE runs
@@ -403,12 +405,6 @@ func writePNG(path string, img image.Image) error {
 	return f.Close()
 }
 
-// contextRGBA returns the gg context's image as an *image.RGBA, copying when
-// the context is not already RGBA-backed.
-func contextRGBA(dc *gg.Context) *image.RGBA {
-	return drawImageRGBA(dc.Image())
-}
-
 // drawImageRGBA returns img as an *image.RGBA, returning it directly when it
 // already is one and copying its pixels otherwise.
 func drawImageRGBA(img image.Image) *image.RGBA {
@@ -417,10 +413,6 @@ func drawImageRGBA(img image.Image) *image.RGBA {
 	}
 	b := img.Bounds()
 	out := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			out.Set(x-b.Min.X, y-b.Min.Y, img.At(x, y))
-		}
-	}
+	draw.Draw(out, out.Bounds(), img, b.Min, draw.Src)
 	return out
 }
