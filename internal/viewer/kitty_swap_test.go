@@ -120,7 +120,7 @@ func assertDelete(t *testing.T, cmd string, id string) {
 // id 2, so the placement always lands before the old image is freed and no frame
 // blanks the screen.
 func TestKittyDoubleBufferAlternatesIDs(t *testing.T) {
-	s := NewState(8, 4, 16, 16)
+	s := NewState(8, 4)
 	s.Backend = BackendKitty
 	img := solidImage(color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})
 
@@ -149,7 +149,7 @@ func TestKittyDoubleBufferAlternatesIDs(t *testing.T) {
 // frame still alternates the id and carries the new image dimensions, so the
 // double-buffer survives a live resize.
 func TestKittyDoubleBufferResize(t *testing.T) {
-	s := NewState(8, 4, 16, 16)
+	s := NewState(8, 4)
 	s.Backend = BackendKitty
 
 	f1 := renderKittyFrame(t, &s, solidImage(color.RGBA{A: 0xff}))
@@ -165,7 +165,7 @@ func TestKittyDoubleBufferResize(t *testing.T) {
 }
 
 func TestKittyDirectPNGUsesRawPayloadAndIDs(t *testing.T) {
-	s := NewState(8, 4, 16, 16)
+	s := NewState(8, 4)
 	s.Backend = BackendKitty
 	data := encodedPNG(t, solidImageSize(8, 8, color.RGBA{R: 0x31, G: 0x72, B: 0xb4, A: 0xff}))
 
@@ -201,7 +201,7 @@ func TestKittyDirectPNGUsesRawPayloadAndIDs(t *testing.T) {
 }
 
 func TestRetainedPNGFallsBackAfterBackendSwitch(t *testing.T) {
-	s := NewState(8, 4, 16, 16)
+	s := NewState(8, 4)
 	s.Backend = BackendSixel
 	data := encodedPNG(t, solidImageSize(8, 8, color.RGBA{G: 0xff, A: 0xff}))
 	var out bytes.Buffer
@@ -216,7 +216,7 @@ func TestRetainedPNGFallsBackAfterBackendSwitch(t *testing.T) {
 func TestRetainedPNGBlockFallbackMatchesDecodedPath(t *testing.T) {
 	img := solidImageSize(16, 16, color.RGBA{R: 0x21, G: 0x84, B: 0xc6, A: 0xff})
 	data := encodedPNG(t, img)
-	rawState := NewState(8, 4, 16, 16)
+	rawState := NewState(8, 4)
 	rawState.Backend = BackendBlock
 	rawState.SetDiff(&block.GridDiff{})
 	var rawOut bytes.Buffer
@@ -224,7 +224,7 @@ func TestRetainedPNGBlockFallbackMatchesDecodedPath(t *testing.T) {
 		t.Fatalf("render retained PNG through Block: %v", err)
 	}
 
-	decodedState := NewState(8, 4, 16, 16)
+	decodedState := NewState(8, 4)
 	decodedState.Backend = BackendBlock
 	decodedState.SetDiff(&block.GridDiff{})
 	var decodedOut bytes.Buffer
@@ -262,7 +262,7 @@ func TestInvalidDirectPNGRejectedBeforeOutput(t *testing.T) {
 	}
 	for name, data := range cases {
 		t.Run(name, func(t *testing.T) {
-			s := NewState(8, 4, 16, 16)
+			s := NewState(8, 4)
 			s.Backend = BackendKitty
 			var out bytes.Buffer
 			if err := s.RenderStreamFrame(render.Frame{Img: img, EncodedPNG: data}, &out); err == nil {
@@ -287,14 +287,14 @@ func TestNativeJPEGSixelOutputMatchesRGBAPath(t *testing.T) {
 	rgba := image.NewRGBA(yc.Bounds())
 	draw.Draw(rgba, rgba.Bounds(), yc, yc.Bounds().Min, draw.Src)
 
-	nativeState := NewState(8, 4, 16, 16)
+	nativeState := NewState(8, 4)
 	nativeState.Backend = BackendSixel
 	var native bytes.Buffer
 	if err := nativeState.RenderStreamFrame(render.Frame{Img: yc}, &native); err != nil {
 		t.Fatalf("native render: %v", err)
 	}
 
-	rgbaState := NewState(8, 4, 16, 16)
+	rgbaState := NewState(8, 4)
 	rgbaState.Backend = BackendSixel
 	var prior bytes.Buffer
 	if err := rgbaState.RenderStreamFrame(render.Frame{Img: rgba}, &prior); err != nil {
@@ -323,7 +323,7 @@ func TestNativeJPEGSixelOutputMatchesRGBAPath(t *testing.T) {
 // id 1 with no delete. The stream session calls it when Tab cycles away from
 // kitty.
 func TestKittyResetDeletesBothIDs(t *testing.T) {
-	s := NewState(8, 4, 16, 16)
+	s := NewState(8, 4)
 	s.Backend = BackendKitty
 	renderKittyFrame(t, &s, solidImage(color.RGBA{A: 0xff})) // places id 1
 
@@ -352,7 +352,7 @@ func TestKittyResetDeletesBothIDs(t *testing.T) {
 // TestKittyResetNoImageIsNoOp asserts resetKitty writes nothing when no kitty
 // image has been placed, so a Tab away from a never-drawn kitty backend is silent.
 func TestKittyResetNoImageIsNoOp(t *testing.T) {
-	s := NewState(8, 4, 16, 16)
+	s := NewState(8, 4)
 	var buf bytes.Buffer
 	if err := s.resetKitty(&buf); err != nil {
 		t.Fatalf("resetKitty: %v", err)

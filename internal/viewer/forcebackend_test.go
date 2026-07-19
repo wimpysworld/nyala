@@ -30,7 +30,7 @@ func TestValidateForcedBackend(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			s := NewState(120, 40, 64, 64)
+			s := NewState(120, 40)
 			s.SetEnabled(c.enabled)
 			err := ValidateForcedBackend(c.mode, s.Enabled)
 			if c.wantErr {
@@ -56,7 +56,7 @@ func TestValidateForcedBackend(t *testing.T) {
 // cycle to block only. auto must leave the detected cycle untouched.
 func TestApplyForcedBackendPinsNamedBackend(t *testing.T) {
 	t.Run("block forces block over detected kitty", func(t *testing.T) {
-		st := NewState(120, 40, 64, 64)
+		st := NewState(120, 40)
 		st.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
 		if st.Backend != BackendKitty {
 			t.Fatalf("detected active backend = %v, want kitty", st.Backend)
@@ -73,7 +73,7 @@ func TestApplyForcedBackendPinsNamedBackend(t *testing.T) {
 	})
 
 	t.Run("auto leaves the detected cycle", func(t *testing.T) {
-		st := NewState(120, 40, 64, 64)
+		st := NewState(120, 40)
 		st.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
 
 		applyForcedBackend(&st, ModeAuto)

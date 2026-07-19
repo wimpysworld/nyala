@@ -256,9 +256,7 @@ func setupViewer(eng Engine, tty *os.File, colourFlag string, scheme block.Schem
 		return 0, nil, nil, fmt.Errorf("viewer: raw mode: %w", err)
 	}
 
-	// The image size is unknown until the first frame; NewState seeds a square
-	// and each drawn frame updates ImgW/ImgH before Fit and the block compose.
-	state := NewState(cols, rows, 1, 1)
+	state := NewState(cols, rows)
 	// Set the resolved block glyph scheme, overriding the NewState quadrant default
 	// for this run. The caller resolves the --blocks mode; auto keeps quadrant as
 	// the production and corpus default.
@@ -511,15 +509,6 @@ func startupQuit(ev keyEvent) bool {
 // buffers; the producer owns it until the writer returns it on free.
 func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeMS float64, err error) {
 	buf.Reset()
-	if frame.Img != nil {
-		b := frame.Img.Bounds()
-		s.st.ImgW, s.st.ImgH = b.Dx(), b.Dy()
-	} else {
-		// Direct CDP PNG needs no dimensions in the Kitty command. Keep the state
-		// geometry aligned with the engine-sized graphics surface for resize and
-		// backend-cycle bookkeeping.
-		s.st.ImgW, s.st.ImgH = s.st.Cols*s.st.W, s.st.Rows*s.st.H
-	}
 	prefix := framePrefix(s.firstDrawn, s.diff)
 	buf.WriteString(beginSyncUpdate)
 	buf.WriteString(prefix)

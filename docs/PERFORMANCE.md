@@ -26,8 +26,8 @@ Nyala's three reported problems each have a clear, code-level root cause.
    `firstContentfulPaint` gate that would show text early is **capture-only and
    dead in production**, so the background paints fast but text waits for
    `networkAlmostIdle` plus a 250 ms debounce, trailing paint by seconds.
-2. **Graphics letterbox** is one wrong call: the graphics bitmap is already sized
-   to the full grid, then run through a 1:2-aspect `FitImage` that shrinks it.
+2. **Graphics letterbox** came from fitting a bitmap that was already sized to
+   the full grid through a retired 1:2-aspect path that shrank it.
 3. **Original slow, tearing graphics** came from a full re-encode and full re-transmit every
    frame, an unbuffered writer (~1800 syscalls/frame), no synchronised-output
    fencing, and, for Sixel, a per-frame palette rebuild that dominates the
@@ -150,15 +150,13 @@ The historical fallback RGB/zlib encoder has been removed. Framing p90 is 0.008 
 are framing measurements, not terminal decode or draw measurements. The findings
 below record the older decoded encoder and the work that replaced it.
 
-- KEY (the letterbox / item 6 "best fit"). `RenderStreamFrame` runs the graphics
-  bitmap through `block.FitImage` (`internal/viewer/viewer.go:341`, `:226-227`),
-  which assumes a 1:2 cell aspect (`internal/render/block/fit.go:6-9`). But the
-  engine already sizes that bitmap to `cols*cellW x rows*cellH`
+- KEY (the letterbox / item 6 "best fit"). The removed graphics placement path
+  assumed a 1:2 cell aspect. But the engine already sizes the bitmap to
+  `cols*cellW x rows*cellH`
   (`internal/engine/launch.go:73-78`, `internal/render/geometry.go:42-44`), so it
-  maps one-to-one onto the grid. On any non-1:2 cell (e.g. 16x33) `FitImage`
-  shrinks the columns and centres, letterboxing. Fix: give the graphics path an
-  identity fit (`OffsetCol=0, OffsetRow=0, FitCols=Cols, FitRows=Rows`) or drop the
-  fit call for graphics.
+  maps one-to-one onto the grid. On any non-1:2 cell (e.g. 16x33), the former fit
+  shrank and centred the columns, which letterboxed the view. The viewer now
+  encodes the engine-sized graphics bitmap directly from the top-left.
 - Per-pixel encode: `enc.Encode` loops `m.At(x,y).RGBA()` with a fresh 4-byte slice
   write per pixel (charmbracelet `kitty/encoder.go:42-52`), ~960k interface calls
   and allocs for a 1200x800 bitmap. `f.Img` is `*image.RGBA`

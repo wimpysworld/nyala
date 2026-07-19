@@ -1,15 +1,15 @@
 // Package viewer is the interactive raw-terminal frame viewer for Nyala.
 //
-// The viewer draws each frame an Engine pushes, fits it to the terminal, and
-// re-fits on resize. It cycles the render backend (block, sixel, kitty) behind
+// The viewer draws each frame an Engine pushes to the terminal. It cycles the
+// render backend (block, sixel, kitty) behind
 // the render.Renderer seam. The block glyph scheme (quadrant, half-block) is set
 // once from the --blocks flag and the colour depth from the --color flag, so
 // neither is a live toggle. Switching backend swaps only the Renderer value;
 // nothing above the seam changes.
 //
 // State holds the whole machine and is pure and testable without a live
-// terminal: every hotkey is a method that mutates State, and Fit and Renderer
-// derive their result from State alone. Stream wires State to a raw TTY and an
+// terminal: every hotkey is a method that mutates State, and Renderer derives
+// its result from State alone. Stream wires State to a raw TTY and an
 // Engine's pushed frames.
 package viewer
 
@@ -72,7 +72,7 @@ const (
 // State is the viewer's full state machine. It is pure: every field is data and
 // every hotkey method mutates only this struct, so the machine is exercised in a
 // unit test without a live terminal. Cols and Rows are the terminal size in
-// cells; ImgW and ImgH are the loaded image's pixel dimensions. Enabled lists the
+// cells. Enabled lists the
 // backends the Tab cycle steps through, in cycle order, highest-fidelity first
 // with block last; the embedded cellPx is the real terminal cell pixel size used
 // to scale the graphics backends.
@@ -82,8 +82,6 @@ type State struct {
 	Colour  ColourMode   // block colour depth; applies only to the block backend
 	Cols    int          // terminal width in cells
 	Rows    int          // terminal height in cells
-	ImgW    int          // loaded image width in pixels
-	ImgH    int          // loaded image height in pixels
 	Enabled []Backend    // backends in the Tab cycle, block first
 	cellPx               // terminal cell pixel size for graphics scaling
 
@@ -196,19 +194,17 @@ func (s *State) SetDiff(d *block.GridDiff) {
 }
 
 // NewState builds the initial state: block as the safe pre-detection backend, the
-// quadrant scheme, truecolour, sized to a cols x rows terminal showing an imgW x
-// imgH image. The cycle holds every backend highest-fidelity first and the cell
+// quadrant scheme, truecolour, and sized to a cols x rows terminal. The cycle
+// holds every backend highest-fidelity first and the cell
 // pixel size is the Route A default; configureBackends narrows the cycle, nominates
 // the best available backend, and sets the real cell size after the handshake.
-func NewState(cols, rows, imgW, imgH int) State {
+func NewState(cols, rows int) State {
 	return State{
 		Backend: BackendBlock,
 		Scheme:  block.SchemeQuadrant,
 		Colour:  ColourTrue,
 		Cols:    cols,
 		Rows:    rows,
-		ImgW:    imgW,
-		ImgH:    imgH,
 		Enabled: []Backend{BackendKitty, BackendSixel, BackendBlock},
 		cellPx:  cellPx{W: cellraster.CellPxW, H: cellraster.CellPxH},
 	}
@@ -245,18 +241,11 @@ func (s *State) CycleBackend() Backend {
 	return s.Backend
 }
 
-// Resize records a new terminal size in cells. The next Fit and Renderer reflect
-// the new size, so the viewer re-fits the image to the resized terminal.
+// Resize records a new terminal size in cells. The next Renderer reflects the
+// new size.
 func (s *State) Resize(cols, rows int) {
 	s.Cols = cols
 	s.Rows = rows
-}
-
-// Fit returns the fit-and-letterbox placement of the loaded image inside the
-// current terminal grid, preserving the image aspect at the 1:2 cell aspect. It
-// derives from State alone, so a resize changes the fit without other state.
-func (s *State) Fit() block.Fit {
-	return block.FitImage(s.ImgW, s.ImgH, s.Cols, s.Rows)
 }
 
 // Renderer returns the render.Renderer for the active backend. Switching backend
@@ -387,11 +376,10 @@ func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
 	if s.Backend == BackendBlock {
 		return s.renderBlock(img, frame.Text, w)
 	}
-	fit := s.graphicsFit()
-	if fit.FitCols <= 0 || fit.FitRows <= 0 {
+	if s.Cols <= 0 || s.Rows <= 0 {
 		return nil
 	}
-	return s.encodeGraphics(img, fit, w)
+	return s.encodeGraphics(img, w)
 }
 
 // decodeFramePNG materialises a retained CDP PNG only when a non-Kitty consumer
@@ -409,17 +397,6 @@ func decodeFramePNG(data string) (image.Image, error) {
 	return img, nil
 }
 
-// graphicsFit returns the identity placement for a graphics-backend bitmap: no
-// letterbox and no offset, so the engine-sized bitmap fills the whole Cols x Rows
-// grid. The engine sizes the graphics bitmap to exactly the terminal grid
-// geometry (cols*cellW by rows*cellH device pixels via render.GraphicsCaptureSize),
-// so it maps one-to-one onto the grid. The 1:2 FitImage would shrink the extent
-// and centre the bitmap onto fewer cells whenever the real terminal cell aspect
-// is not 1:2 (a 16x33 cell), letterboxing the view; the identity fit avoids that.
-func (s *State) graphicsFit() block.Fit {
-	return block.Fit{Cols: s.Cols, Rows: s.Rows, FitCols: s.Cols, FitRows: s.Rows}
-}
-
 // renderBlock composes the source onto the full Cols x Rows grid and writes it
 // as SGR cells, honouring the colour toggle: truecolour SGR or xterm-256 SGR.
 // text is the crisp DOM-text overlay folded onto the composed grid; a nil text
@@ -434,8 +411,8 @@ func (s *State) graphicsFit() block.Fit {
 // columns whenever the real terminal cell aspect differs (a 13x27 cell letterboxes
 // 195 columns onto 187), drifting the overlay right of the bitmap by a scale that
 // grows with the column. The graphics backends draw the same engine-sized full-grid
-// bitmap through the identity graphicsFit, so they fill the whole grid with no
-// letterbox either; the 1:2 FitImage stays out of both paths.
+// bitmap from the top-left, so they fill the whole grid without a placement
+// stage.
 func (s *State) renderBlock(src image.Image, text []render.GlyphRun, w io.Writer) error {
 	grid := s.ComposeBlockFrame(render.Frame{Img: src, Text: text})
 	if grid == nil {
@@ -480,17 +457,9 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 	return s.scratch.compose.ComposeInto(&br, &s.scratch.out, frame, s.scratch.pool)
 }
 
-// encodeGraphics positions the cursor at the fit offset and encodes img with the
-// active graphics backend. RenderStreamFrame passes the engine-sized bitmap and
-// the identity graphicsFit through, so the offset is (0,0) and the bitmap fills
-// the grid from the top-left. The fit parameter stays so a caller can still
-// centre a sub-grid image. Sixel draws the bitmap alone.
-func (s *State) encodeGraphics(img image.Image, fit block.Fit, w io.Writer) error {
-	if move := cursorPosition(fit.OffsetRow, fit.OffsetCol); move != "" {
-		if _, err := io.WriteString(w, move); err != nil {
-			return err
-		}
-	}
+// encodeGraphics encodes the engine-sized bitmap with the active graphics
+// backend from the top-left. Sixel draws the bitmap alone.
+func (s *State) encodeGraphics(img image.Image, w io.Writer) error {
 	return s.Renderer().Render(render.Frame{Img: img}, w)
 }
 
@@ -535,19 +504,6 @@ func (s *State) resetKitty(w io.Writer) error {
 	}
 	s.kittyID = 0
 	return nil
-}
-
-// cursorPosition returns the CUP escape (\x1b[<row>;<col>H) that moves the
-// cursor to a centred cell offset, taking row and col as 0-based cell offsets
-// and emitting 1-based coordinates. It returns the empty string when both
-// offsets are 0, so a frame that fills the grid keeps clean output. The graphics
-// backends use it to centre the bitmap at the same offset the block path bakes
-// into letterbox cells via block.Renderer.FitGrid.
-func cursorPosition(row, col int) string {
-	if row == 0 && col == 0 {
-		return ""
-	}
-	return fmt.Sprintf(cupFormat, row+1, col+1)
 }
 
 // schemePixels returns the source-pixel extent a cols x rows block grid samples
@@ -600,10 +556,6 @@ func bgSGRFunc(mode ColourMode) block.SGRFunc {
 		return block.AppendTrueColorBG
 	}
 }
-
-// cupFormat is the CUP escape that moves the cursor to a 1-based row;column
-// (ESC [ row ; col H). cursorPosition fills it with 1-based coordinates.
-const cupFormat = "\x1b[%d;%dH"
 
 // fg256Prefix and bg256Prefix are the xterm-256 foreground and background SGR
 // prefixes (ESC [ 38;5; and ESC [ 48;5;). appendSGR256 appends the palette index

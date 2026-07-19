@@ -620,7 +620,7 @@ func runCDPInteropCase(tc cdpInteropCase, caseDir string, result *cdpInteropResu
 		return err
 	}
 
-	state := NewState(cdpInteropCols, cdpInteropRows, result.SourceWidth, result.SourceHeight)
+	state := NewState(cdpInteropCols, cdpInteropRows)
 	state.Scheme = block.SchemeQuadrant
 	state.Colour = ColourTrue
 	state.Backend = cdpInteropBackend(tc.backend)
@@ -912,11 +912,6 @@ func materialiseCDPInteropFrame(frame render.Frame) (*image.RGBA, []byte, error)
 }
 
 func isolateCDPInteropSixel(stream []byte) ([]byte, error) {
-	expectedViewerPrefix := []byte(cursorPosition(0, 0))
-	if !bytes.HasPrefix(stream, expectedViewerPrefix) {
-		return nil, errors.New("terminal stream lacks the expected viewer placement prefix")
-	}
-	stream = stream[len(expectedViewerPrefix):]
 	if bytes.Count(stream, []byte("\x1bP")) != 1 || bytes.Count(stream, []byte("\x1b\\")) != 1 {
 		return nil, errors.New("terminal stream must contain exactly one complete Sixel DCS")
 	}

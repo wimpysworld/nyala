@@ -19,7 +19,7 @@ import (
 // exact grid consumed by the production writer.
 func TestBlockTerminalRoundTrip(t *testing.T) {
 	const cols, rows = 12, 5
-	state := NewState(cols, rows, cols*2, rows*4)
+	state := NewState(cols, rows)
 	state.Backend = BackendBlock
 	state.Colour = ColourTrue
 	state.SetDiff(&block.GridDiff{})

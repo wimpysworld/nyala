@@ -15,7 +15,7 @@ import (
 func TestRenderStreamFrameGraphicsNoSecondDownscale(t *testing.T) {
 	const cols, rows = 40, 20
 	const cellW, cellH = 8, 16
-	st := NewState(cols, rows, 1, 1)
+	st := NewState(cols, rows)
 	st.cellPx = cellPx{W: cellW, H: cellH}
 	st.SetEnabled([]Backend{BackendSixel, BackendBlock})
 	st.Backend = BackendSixel
@@ -26,8 +26,6 @@ func TestRenderStreamFrameGraphicsNoSecondDownscale(t *testing.T) {
 	for i := range img.Pix {
 		img.Pix[i] = 0xff
 	}
-	st.ImgW, st.ImgH = imgW, imgH
-
 	var out bytes.Buffer
 	if err := st.RenderStreamFrame(render.Frame{Img: img}, &out); err != nil {
 		t.Fatalf("RenderStreamFrame(sixel) = %v, want nil", err)
@@ -45,12 +43,48 @@ func TestRenderStreamFrameGraphicsNoSecondDownscale(t *testing.T) {
 	}
 }
 
+// TestRenderStreamFrameGraphicsZeroGrid asserts decoded graphics frames remain a
+// no-op when either grid dimension is zero. A direct Kitty PNG remains ahead of
+// this guard because it is already a complete terminal payload source.
+func TestRenderStreamFrameGraphicsZeroGrid(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	for _, grid := range []struct {
+		cols int
+		rows int
+	}{
+		{cols: 0, rows: 4},
+		{cols: 8, rows: 0},
+	} {
+		for _, backend := range []Backend{BackendKitty, BackendSixel} {
+			st := NewState(grid.cols, grid.rows)
+			st.Backend = backend
+			var out bytes.Buffer
+			if err := st.RenderStreamFrame(render.Frame{Img: img}, &out); err != nil {
+				t.Fatalf("RenderStreamFrame(%v, %dx%d) = %v, want nil", backend, grid.cols, grid.rows, err)
+			}
+			if out.Len() != 0 {
+				t.Errorf("RenderStreamFrame(%v, %dx%d) wrote %d bytes, want none", backend, grid.cols, grid.rows, out.Len())
+			}
+		}
+	}
+
+	st := NewState(0, 0)
+	st.Backend = BackendKitty
+	var out bytes.Buffer
+	if err := st.RenderStreamFrame(render.Frame{EncodedPNG: encodedPNG(t, img)}, &out); err != nil {
+		t.Fatalf("RenderStreamFrame(direct Kitty PNG, zero grid) = %v, want nil", err)
+	}
+	if out.Len() == 0 {
+		t.Fatal("direct Kitty PNG on zero grid wrote no protocol bytes")
+	}
+}
+
 // TestRenderStreamFrameDegenerateGuardBothBackends asserts that a zero-extent
 // frame is a no-op on both the block and graphics paths.
 func TestRenderStreamFrameDegenerateGuardBothBackends(t *testing.T) {
 	frame := render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 0, 0))}
 	for _, backend := range []Backend{BackendBlock, BackendSixel} {
-		st := NewState(40, 20, 1, 1)
+		st := NewState(40, 20)
 		st.SetEnabled([]Backend{BackendSixel, BackendBlock})
 		st.Backend = backend
 		if backend == BackendBlock {

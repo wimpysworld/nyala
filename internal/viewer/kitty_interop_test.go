@@ -19,7 +19,7 @@ import (
 // live viewer, decodes the Kitty APC stream with an independent terminal model,
 // and checks framing, chunk continuation, image replacement, and exact pixels.
 func TestKittyTerminalRoundTrip(t *testing.T) {
-	state := NewState(80, 24, 16, 32)
+	state := NewState(80, 24)
 	state.Backend = BackendKitty
 
 	small := kittyInteropFixture(8, 6, 1)
