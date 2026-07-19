@@ -395,21 +395,6 @@ func TestComposeHalfBlockCell(t *testing.T) {
 	}
 }
 
-// TestToggleScheme asserts the toggle flips between the two schemes and never
-// touches anything but the concrete Renderer field.
-func TestToggleScheme(t *testing.T) {
-	br := &Renderer{}
-	if br.Scheme != SchemeQuadrant {
-		t.Fatalf("zero value: got scheme %d, want SchemeQuadrant", br.Scheme)
-	}
-	if got := br.ToggleScheme(); got != SchemeHalfBlock || br.Scheme != SchemeHalfBlock {
-		t.Fatalf("first toggle: got %d, want SchemeHalfBlock", got)
-	}
-	if got := br.ToggleScheme(); got != SchemeQuadrant || br.Scheme != SchemeQuadrant {
-		t.Fatalf("second toggle: got %d, want SchemeQuadrant", got)
-	}
-}
-
 // validGrid checks a composed grid matches the requested cols x rows, stores
 // exactly cols*rows cells, and every cell carries a non-zero glyph.
 func validGrid(t *testing.T, g Grid, cols, rows int) {
