@@ -23,8 +23,8 @@ func init() {
 }
 
 // CellWidth measures the display width of one grapheme cluster, clamped to 1 or
-// 2. This is the shared Stage 2 width rule: a cluster of measured width 2 or
-// more claims two cells, everything else (including a width-0 standalone
+// 2. A cluster of measured width 2 or more claims two cells, while everything
+// else (including a width-0 standalone
 // combining mark) claims one. The clip budget and the cell binning both use it
 // so a width-2 cluster is never half-emitted.
 func CellWidth(grapheme string) int {
@@ -174,9 +174,8 @@ type Frame struct {
 	Text        []GlyphRun        // text overlay runs, empty when the page has none
 	Diagnostics *FrameDiagnostics // diagnostic data, nil on the production path
 
-	// layoutSlot preserves the baseline 72-byte frame header on 64-bit targets.
-	// It keeps the shared publication layout stable without adding work or an
-	// allocation.
+	// layoutSlot keeps the frame header at 72 bytes on 64-bit targets, preserving
+	// the shared publication layout without adding work or an allocation.
 	_ uintptr
 }
 

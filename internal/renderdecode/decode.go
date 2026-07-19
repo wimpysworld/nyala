@@ -28,10 +28,10 @@ const (
 
 // DecodeSixel decodes a complete Sixel DCS payload back to an *image.RGBA. It
 // accepts the framed bytes sixel.Renderer writes (ESC P, optional parameter
-// bytes, the q final byte, the encoder body, and ESC backslash) and reverses them with
-// mattn/go-sixel. The decoder reconstructs the encoder palette, so the result
-// reproduces the quantised palette the encoder chose, not the full-range input.
-// The returned image is in RGBA channel order.
+// bytes, the q final byte, the encoder body, and ESC backslash) and reverses
+// them with mattn/go-sixel. The decoder reconstructs the encoder palette, so
+// the result reproduces the quantised palette the encoder chose, not the
+// full-range input. The returned image is in RGBA channel order.
 func DecodeSixel(payload []byte) (*image.RGBA, error) {
 	if !hasSixelIntroducer(payload) {
 		return nil, errors.New("renderdecode: sixel payload missing DCS introducer ESC P ... q")

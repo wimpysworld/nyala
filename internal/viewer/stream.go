@@ -140,7 +140,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks strin
 
 	// The control goroutine runs the engine restarts (Resize, SetBackend) off the
 	// consumer loop, so a slow restartStream cannot freeze draw, keys, and quit
-	// (Decision 3). It stops when Stream returns and the deferred close(done) fires.
+	// handling. It stops when Stream returns and the deferred close(done) fires.
 	ctl := newControl(eng, done)
 
 	// The cell differ drives the live block paint: each draw emits only the cells
@@ -324,8 +324,8 @@ type streamSession struct {
 // key arrives, or an I/O error occurs. It draws each pushed frame, restarts the
 // stream on SIGWINCH at the recomputed grid, and forwards keys. It caches the
 // frame channel once: the engine keeps the channel stable across Resize and
-// SetBackend and replaces it only by Navigate, which is single-shot (invariant
-// V3), so a backend switch or a resize never strands this cached handle.
+// SetBackend and replaces it only by Navigate, which is single-shot, so a backend
+// switch or a resize never strands this cached handle.
 func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error {
 	frames := s.eng.Frames()
 	// Heartbeat the fps badge so an idle page decays it to a live 0 rather than
@@ -498,9 +498,8 @@ func startupQuit(ev keyEvent) bool {
 // the rendered frame with its crisp DOM-text overlay, the fps badge, and the DEC
 // 2026 close. Assembling the whole unit into one owned buffer keeps the atomic
 // present (the terminal never shows a torn partial frame) while the producer
-// encodes the next frame in parallel with the current frame's write. The bytes and
-// their order match the old serial draw exactly, so the block golden track is
-// unchanged; only the goroutine that writes the bytes differs.
+// encodes the next frame in parallel with the current frame's write. Byte order
+// remains identical for every frame, independent of which goroutine writes it.
 //
 // The first frame emits the full clearScreen (via framePrefix) to wipe the loading
 // cue; steady frames emit cursorHome only. It returns the encode time, the

@@ -160,8 +160,7 @@ func (e *ChromiumEngine) textOverlayBackend() bool {
 // Server and a Bypass are set, so a stray NO_PROXY without a proxy adds no flag.
 // When enableGPU is set it adds --enable-gpu: headless Chromium forces SwiftShader
 // (CPU) by default, and this flag turns that force off and reverts to normal driver
-// selection, so a GPU-backed Mesa driver can serve WebGL (docs/PERFORMANCE.md,
-// [S1][S2]).
+// selection, so a GPU-backed Mesa driver can serve WebGL.
 // When enableAudio is set it appends the bool false for mute-audio, overriding the
 // mute-audio=true that Headless sets: chromedp flags are last-write-wins by map key,
 // and this append lands after DefaultExecAllocatorOptions. The bool false emits no
@@ -307,11 +306,10 @@ func (e *ChromiumEngine) injectFontStylesheet(ctx context.Context) error {
 }
 
 // launch resolves the executable from flag, builds the allocator and the
-// chromedp context sized to the real CSS-pixel viewport (surfaceSize), fetches
+// chromedp context sized to the device-pixel surface, fetches
 // the browser window id, enables lifecycle events, then sizes the layout viewport
 // and the captured surface together. It stores the context, its cancel, and the
-// window id on the engine. The full navigate path that calls this lands in the
-// navigate rewrite.
+// window id on the engine.
 func (e *ChromiumEngine) launch(flag string) error {
 	if e.proxyErr != nil {
 		return e.proxyErr

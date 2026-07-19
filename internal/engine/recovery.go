@@ -137,12 +137,12 @@ type scrollRestore struct {
 // pre-loaderID events, matches the top frame, and finishes on the matched load
 // signal; lifecycle events are enabled per session so it can match. Running it
 // here, off the launch path, keeps startup non-blocking so the raw-mode viewer
-// keeps Ctrl-C live during launch (Decision 1). The waiter's completion is the
+// keeps Ctrl-C live during launch. The waiter's completion is the
 // bounded timeout backstop for the paint latch: watchPaint fires markPainted on
 // the firstContentfulPaint lifecycle event, and this navigate-return call is the
 // backstop so a page that never fires that event still closes the latch. A
 // navigate errorText renders the browser's own error page rather than tearing the
-// session down (Decision 1), so the supervisor never rebuilds on a failed URL.
+// session down, so the supervisor never rebuilds on a failed URL.
 func (e *ChromiumEngine) navigateAsync(ctx context.Context, url string, restore scrollRestore) {
 	_ = chromedp.Run(ctx, chromedp.Navigate(url))
 	// Restore the held scroll offset only after the load signal, so the document

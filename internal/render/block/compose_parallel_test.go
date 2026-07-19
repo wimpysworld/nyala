@@ -7,9 +7,9 @@ import (
 	"github.com/wimpysworld/nyala/internal/rowband"
 )
 
-// composeCases is the grid geometry sweep the byte-identity test runs for both
-// schemes: sizes that split evenly and unevenly into bands, a single-row grid, and
-// a sub-threshold grid that must fall back to serial.
+// composeCases is the grid geometry sweep the byte-identity test runs for every
+// scheme: sizes that split evenly and unevenly into bands, a single-row grid,
+// and a sub-threshold grid that must fall back to serial.
 var composeCases = []struct {
 	name       string
 	cols, rows int
@@ -23,12 +23,12 @@ var composeCases = []struct {
 }
 
 // TestParallelComposeByteIdentical proves the pool-split compose is byte-for-byte
-// identical to the serial Renderer.ComposeInto for both the quadrant and sextant
-// schemes, across grids that do and do not divide evenly into bands, a single-row
-// grid, and a sub-threshold grid. It runs both with and without a text overlay, so
-// the post-join overlay fold is covered too. Byte identity is the correctness
-// contract: the parallel binarise must never shift a single cell from the serial
-// path.
+// identical to the serial Renderer.ComposeInto for the quadrant, sextant, and
+// half-block schemes, across grids that do and do not divide evenly into bands,
+// a single-row grid, and a sub-threshold grid. It runs both with and without a
+// text overlay, so the post-join overlay fold is covered too. Byte identity is
+// the correctness contract: the parallel binarise must never shift a single
+// cell from the serial path.
 func TestParallelComposeByteIdentical(t *testing.T) {
 	// Force eight workers so any grid tall enough splits into several bands,
 	// exercising the parallel path even on a low-core test runner.

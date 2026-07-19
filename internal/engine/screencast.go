@@ -271,9 +271,9 @@ func (e *ChromiumEngine) ackFrame(ack int64) {
 }
 
 // ackPump drains the ack channel and runs page.ScreencastFrameAck on the live
-// context, off the ListenTarget event goroutine. It is the chromedp #920 fix:
-// the listener enqueues SessionID values and this single goroutine runs the
-// chromedp.Run that would deadlock if it ran on the event goroutine. It exits
+// context, off the ListenTarget event goroutine. The listener enqueues SessionID
+// values and this single goroutine runs the chromedp.Run that would deadlock on
+// the event goroutine (chromedp #920). It exits
 // when ctx is cancelled (session teardown), so it never leaks past a session.
 func (e *ChromiumEngine) ackPump(ctx context.Context, acks <-chan int64) {
 	if ctx == nil || acks == nil {

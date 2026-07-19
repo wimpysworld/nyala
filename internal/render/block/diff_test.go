@@ -30,8 +30,8 @@ func gridOf(cols, rows int, fill Cell) Grid {
 }
 
 // TestGridDiffCUPScratchByteIdentical compares the retained CUP scratch against
-// the former stack-buffer encoder across every row and column from 0 through
-// 999. This covers each decimal-width boundary used by practical terminal grids.
+// an independent stack-buffer encoder across every row and column from 0
+// through 999. This covers each decimal-width boundary used by practical grids.
 func TestGridDiffCUPScratchByteIdentical(t *testing.T) {
 	var d GridDiff
 	var got bytes.Buffer

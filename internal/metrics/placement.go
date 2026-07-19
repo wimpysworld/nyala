@@ -76,16 +76,16 @@ type PlacementBoxError struct {
 // Placement scores placement error for one frame's boxes at the given CSS-pixel
 // cell size on a cols-by-rows grid. cellW and cellH are the fractional CSS-pixel
 // cell so a scaled run (cell_px/Z) and the box geometry share units. For each box
-// it counts the run's display cells with the Stage 2 width rule (a width-2 cluster
-// counts 2), compares that against the box's fractional width W/cellW, and measures
-// how far the run's right edge misses the box's right edge. It also measures the
-// row error (Row versus Y/cellH), counts same-row cell-overlap collisions, and
-// counts runs snapped past the grid's horizontal bounds or to a negative coordinate
-// (Col < 0, Row < 0, Col >= cols). Row >= rows is not off-grid: the text map is
-// document-absolute, so below-fold content is legitimate on a page taller than the
-// viewport. The off-grid check is skipped when cols or rows is non-positive, so an
-// unknown grid never inflates the count. A non-positive cellW returns the zero
-// value.
+// it counts the run's display cells with the renderer's width rule (a width-2
+// cluster counts 2), compares that against the box's fractional width W/cellW,
+// and measures how far the run's right edge misses the box's right edge. It also
+// measures the row error (Row versus Y/cellH), counts same-row cell-overlap
+// collisions, and counts runs snapped past the grid's horizontal bounds or to a
+// negative coordinate (Col < 0, Row < 0, Col >= cols). Row >= rows is not
+// off-grid: the text map is document-absolute, so below-fold content is
+// legitimate on a page taller than the viewport. The off-grid check is skipped
+// when cols or rows is non-positive, so an unknown grid never inflates the
+// count. A non-positive cellW returns the zero value.
 func Placement(boxes []PlacementBox, cellW, cellH float64, cols, rows int) PlacementStats {
 	if cellW <= 0 {
 		return PlacementStats{}
@@ -153,7 +153,7 @@ func countCollisions(boxes []PlacementBox) int {
 }
 
 // displayCells counts the display cells a run occupies, summing each grapheme
-// cluster under the Stage 2 width rule: a cluster of display width 2 or more
+// cluster under the renderer's width rule: a cluster of display width 2 or more
 // counts 2, every other cluster counts 1. It mirrors the engine's cellWidth so
 // the metric and the renderer agree on how many cells a run fills.
 func displayCells(text string) int {

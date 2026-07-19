@@ -1,4 +1,4 @@
-// Command genruns deterministically generates the Stage 2 overlay run-set
+// Command genruns deterministically generates the overlay run-set
 // fixtures (testdata/overlay/*.runs) with contrasting foreground colours. For
 // each run it composes the page through the real overlay path, reads each
 // touched cell's bitmap background average, and picks the black or white

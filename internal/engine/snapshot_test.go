@@ -22,7 +22,7 @@ func walkRunAt(text string, col, row int, x, w float64) walkRun {
 	}
 }
 
-// TestDecodeWalkRunsTrustsCells pins the core Phase 3 contract: the client trusts
+// TestDecodeWalkRunsTrustsCells asserts that the client trusts
 // the page's integer Col and Row and never re-divides a pixel by a cell width. A run
 // the page placed at an arbitrary cell survives at exactly that cell, whatever its
 // box X implies, so a client-side origin snap cannot reintroduce advance drift.
@@ -42,7 +42,7 @@ func TestDecodeWalkRunsTrustsCells(t *testing.T) {
 
 // TestDecodeWalkRunsGridClip checks the surviving grid right-edge clip: a run whose
 // box right edge or the grid edge is nearer caps the run there, counting cells with
-// the Stage 2 width rule. The box width is a pure clip bound; a width-2 cluster past
+// the decoded run width. The box width is a pure clip bound; a width-2 cluster past
 // the budget drops whole rather than half-emitting.
 func TestDecodeWalkRunsGridClip(t *testing.T) {
 	cases := []struct {

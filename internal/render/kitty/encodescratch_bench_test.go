@@ -10,8 +10,8 @@ import (
 )
 
 // benchFrame builds a page-like RGBA frame: solid colour bands with a few noisy
-// blocks, opaque alpha, so zlib compresses roughly like a real web page rather
-// than worst-case noise. w*h near 2M matches the ~8ms base64 the owner reported.
+// blocks and opaque alpha, so zlib compresses roughly like a real web page rather
+// than worst-case noise. A 1920x1080 frame provides a representative workload.
 func benchFrame(w, h int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	for y := range h {
@@ -44,8 +44,8 @@ func benchFrame(w, h int) *image.RGBA {
 
 const benchW, benchH = 1920, 1080
 
-// BenchmarkBaselineUpstream models the old encode: the stateless Renderer, which
-// drives the upstream per-pixel encoder plus a fresh base64 destination per frame.
+// BenchmarkBaselineUpstream measures the stateless Renderer, which drives the
+// upstream per-pixel encoder plus a fresh base64 destination per frame.
 func BenchmarkBaselineUpstream(b *testing.B) {
 	img := benchFrame(benchW, benchH)
 	var r Renderer

@@ -4,10 +4,10 @@ import (
 	"time"
 )
 
-// snapshotReadTimeout bounds one in-page text-walk read. document layout can
+// snapshotReadTimeout bounds one in-page text-walk read. Document layout can
 // wedge, and the snapshot goroutine is the only one that decodes text, so a hung
-// read must not block it to session teardown. It matches fontCalibrationTimeout, the
-// other bounded layout read on this goroutine (fault F5).
+// read must not block session teardown. It matches fontCalibrationTimeout,
+// the other bounded layout read on this goroutine.
 const snapshotReadTimeout = 2 * time.Second
 
 // hiddenOpacityEps is the effective-opacity floor below which a text run is treated

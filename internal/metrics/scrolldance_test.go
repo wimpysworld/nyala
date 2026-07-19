@@ -81,7 +81,8 @@ func TestScrollDanceCleanScroll(t *testing.T) {
 // must not read a run as danced just because its viewport row rounds one cell off the
 // scroll's whole-cell median. The page scrolled 88 CSS px (5.5 cells). Two runs land
 // 5 viewport rows up, one lands 6, but every run's document Y is constant, so all are
-// glued. The old median-shift metric counted the 6-row run against the 5-row median.
+// glued. Per-run document positions keep runs with different scroll distances
+// independent instead of forcing them through one global shift.
 func TestScrollDanceFractionalScroll(t *testing.T) {
 	first := []ScrollRun{
 		{Text: "a", Col: 2, Row: 10, X: 16, Y: 168}, // docY 168

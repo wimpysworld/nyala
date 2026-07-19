@@ -17,7 +17,8 @@ const layoutScaleEps = 1e-9
 
 // TestLayoutScale checks the pure block-only device scale Z = max(1, cols*cellW /
 // layoutWidth). A grid at or under the target width keeps Z == 1; a wider grid
-// shrinks by the continuous ratio. The 120- and 240-column cases are the criterion.
+// shrinks by the continuous ratio. The 120- and 240-column cases cover both sides
+// of the target width.
 func TestLayoutScale(t *testing.T) {
 	cases := []struct {
 		name        string

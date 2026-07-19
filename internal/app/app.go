@@ -1,6 +1,6 @@
 // Package app holds the Nyala command-line surface and its dispatch. It owns one
 // CLI struct, parsed by kong in cmd/nyala, and routes a parsed run to the
-// engine and viewer. The dispatch is thin: it validates the URL and will drive
+// engine and viewer. The dispatch is thin: it validates the URL and drives
 // the live screencast loop. It holds no rendering logic of its own.
 package app
 

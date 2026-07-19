@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// Validation gate for the SSIM and MS-SSIM ports (tasks 4.2 and 4.3). It pins
-// the ported metrics to external references on one fixed BT.601-greyscale
+// This validation gate pins the SSIM and MS-SSIM implementations to external
+// references on one fixed BT.601-greyscale
 // fixture so any later drift in the structural core fails here, before any
 // threshold consumes it.
 //
@@ -27,14 +27,13 @@ import (
 //     MSSSIM. Both Python oracle scripts ran against the identical luma planes
 //     this fixture builds.
 //
-//   - ImageMagick and kornelski/dssim are the corroborating cross-checks named
-//     in the plan. They are skipped here, not committed as constants:
+//   - ImageMagick and kornelski/dssim are optional corroborating cross-checks.
+//     They are skipped here, not committed as constants:
 //     ImageMagick 7.1.2-23 `compare -metric SSIM` is broken on this build
 //     (identical inputs report 0, not 1; it also ignores compare:ssim-radius and
 //     compare:ssim-sigma), so it cannot agree even within a loose tolerance, and
-//     `dssim` is not available in the environment. See the Blocked note in the
-//     task report for the exact commands to regenerate both cross-checks once
-//     the tools are present.
+//     `dssim` is not available in the environment. The skipped tests below give
+//     the commands for running both cross-checks when the tools are present.
 
 const (
 	// ssimFixtureW and ssimFixtureH are the fixture dimensions. 64x48 fits three
@@ -55,8 +54,7 @@ const (
 	skMSSSIM       = 0.6149710947
 	skMSSSIMScales = 3
 
-	// ssimOracleTol is the validation tolerance the plan fixes for the
-	// scikit-image agreement.
+	// ssimOracleTol is the accepted difference from the scikit-image oracle.
 	ssimOracleTol = 1e-4
 )
 
@@ -113,8 +111,8 @@ func TestMSSSIMValidatesAgainstScikitImage(t *testing.T) {
 	}
 }
 
-// TestSSIMValidationCrossChecks records the ImageMagick and kornelski/dssim
-// cross-checks the plan names. Both are skipped with their reason and the exact
+// TestSSIMValidationCrossChecks records optional ImageMagick and kornelski/dssim
+// cross-checks. Both are skipped with their reason and the exact
 // regeneration command rather than committing values from a broken or absent
 // tool. Once the tools are present and agree within their documented tolerance,
 // turn these skips into asserts.

@@ -1,4 +1,4 @@
-// Package harness holds the Stage 0 metrics sweep, the golden track, and the
+// Package harness holds the diagnostics metrics sweep, the golden track, and the
 // report schema that ties them together.
 //
 // Report is the per-(page, mode, run) record the sweep emits. Its keys are flat
@@ -14,7 +14,7 @@ import "github.com/wimpysworld/nyala/internal/cellraster"
 // the JSON shape.
 const SchemaVersion = 2
 
-// Viewport is the fixed cell grid the sweep renders at. Stage 0 pins 120x40.
+// Viewport is the cell grid the sweep renders at.
 type Viewport struct {
 	Cols int `json:"cols"`
 	Rows int `json:"rows"`
@@ -98,7 +98,8 @@ type Artefacts struct {
 }
 
 // Report is one sweep record for a single (page, mode, run). It marshals to the
-// flat-key shape fixed in docs/STAGE-0.md, uniform across all three modes.
+// stable flat-key shape documented in docs/STAGE-0.md, uniform across all three
+// modes.
 type Report struct {
 	SchemaVersion   int             `json:"schemaVersion"`
 	Page            string          `json:"page"`

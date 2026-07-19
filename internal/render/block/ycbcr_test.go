@@ -47,9 +47,9 @@ func patternedPaddedYCbCr420(rect image.Rectangle, padding int) *image.YCbCr {
 	return src
 }
 
-// referenceYCbCrAverage materialises the legacy sub-cell RGBA image as an
-// independent test oracle. It uses the standard library's coordinate lookup,
-// rather than the direct composer's plane-index arithmetic.
+// referenceYCbCrAverage materialises a sub-cell RGBA image as an independent
+// test oracle. It uses the standard library's coordinate lookup rather than the
+// direct composer's plane-index arithmetic.
 func referenceYCbCrAverage(src *image.YCbCr, dw, dh int) *image.RGBA {
 	dst := image.NewRGBA(image.Rect(0, 0, dw, dh))
 	sb := src.Bounds()
@@ -104,7 +104,7 @@ func ycbcrTestRuns() []render.GlyphRun {
 }
 
 // TestComposeYCbCrMatchesIntermediateRGBA proves the direct path produces the
-// exact old fused grid for every Block scheme, every YCbCr subsampling ratio,
+// same fused grid for every Block scheme, every YCbCr subsampling ratio,
 // odd dimensions, non-zero bounds, and overlay boundary recomposition.
 func TestComposeYCbCrMatchesIntermediateRGBA(t *testing.T) {
 	ratios := []image.YCbCrSubsampleRatio{

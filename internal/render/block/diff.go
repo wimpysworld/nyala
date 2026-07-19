@@ -16,9 +16,9 @@ type SGRFunc func(dst []byte, c color.RGBA) []byte
 
 // GridDiff retains the last drawn grid and the last emitted foreground and
 // background SGR, so Emit writes only the cells that changed since the previous
-// frame. It is the live paint path's flicker fix: a full grid rewrite per frame
-// is replaced by a cell diff with CUP and SGR coalescing. The zero value is a
-// fresh differ that full-repaints its first frame.
+// frame. The cell diff avoids the flicker of a full grid rewrite and coalesces
+// CUP and SGR output. The zero value is a fresh differ that full-repaints its
+// first frame.
 type GridDiff struct {
 	prev    Grid       // last drawn grid; empty Cells means no previous frame
 	lastFG  []byte     // last emitted foreground SGR this frame, empty until set
@@ -36,13 +36,13 @@ type GridDiff struct {
 // drawn grid into grid, then retains grid as the new previous. fg and bg map a
 // cell colour to its SGR for the active colour mode.
 //
-// A cell is emitted only when its (Text, Wide, FG, BG) differ from the previous
-// grid. The cursor moves with a CUP (1-based) only when the next emitted cell is
-// not where the virtual cursor already sits, so a contiguous changed run costs
-// one CUP. After a cell the virtual cursor advances by the cell's column width
-// (2 for a Wide lead cell, 1 otherwise). The foreground and background SGR are
-// cached and re-emitted only on a colour change, so a same-colour run sends one
-// SGR pair.
+// A cell is emitted only when its (Text, Wide, Glyph, FG, BG) differ from the
+// previous grid. The cursor moves with a CUP (1-based) only when the next emitted
+// cell is not where the virtual cursor already sits, so a contiguous changed run
+// costs one CUP. After a cell the virtual cursor advances by the cell's column
+// width (2 for an overlay lead followed by a Wide trailing cell, 1 otherwise).
+// The foreground and background SGR are cached and re-emitted only on a colour
+// change, so a same-colour run sends one SGR pair.
 //
 // A cell whose overlay grapheme may render at a terminal width that differs from
 // our count (a non-ASCII grapheme or a wide lead cell) marks the virtual cursor
@@ -176,7 +176,7 @@ func (d *GridDiff) Reset() {
 // colour built) skips the rebuild entirely, the common run fast path; on a colour
 // change it rebuilds into the reused buffer and compares the bytes, so two colours
 // that collapse to the same escape (an xterm-256 palette collision, or monochrome
-// which emits nothing) still coalesce exactly as the old string cache did.
+// which emits nothing) still coalesce.
 func (d *GridDiff) writeColour(w io.Writer, c *Cell, fg, bg SGRFunc) error {
 	if c.FG != d.fgCol {
 		d.sgrBuf = fg(d.sgrBuf[:0], c.FG)
@@ -246,9 +246,8 @@ func overlayWidthUntrusted(c *Cell, advance int) bool {
 
 // cellUnchanged reports whether two cells draw the same bytes: matching Text,
 // Wide, Glyph, foreground, and background. A match lets Emit skip the cell. Glyph
-// joins the proposal's (Text, Wide, fg, bg) tuple because a bitmap cell whose
-// block glyph changes while its colours hold still draws differently, so omitting
-// Glyph would leave a stale glyph on the diff path.
+// must participate because a bitmap cell whose block glyph changes while its
+// colours hold still draws differently; omitting Glyph would leave stale output.
 func cellUnchanged(a, b *Cell) bool {
 	return a.Text == b.Text && a.Wide == b.Wide && a.Glyph == b.Glyph &&
 		a.FG == b.FG && a.BG == b.BG

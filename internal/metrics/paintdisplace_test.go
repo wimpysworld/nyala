@@ -114,11 +114,10 @@ func TestPaintDisplacementVerticalShift(t *testing.T) {
 	}
 }
 
-// TestPaintDisplacementVerticalDrift checks the vertical blind-spot fix: a run whose
-// painted ink sits three cells below its DOM-snapped row is now MEASURED as vdrift +3,
-// not skipped. The old tight half-cell band returned no-ink at this distance and the
-// run vanished from the score; the bounded nearest-first row window catches it. The DOM
-// says Row 3 but the paint lands at device y 96 (row 6).
+// TestPaintDisplacementVerticalDrift checks that the bounded nearest-first row
+// window finds ink three cells below its DOM-snapped row and reports vdrift +3
+// instead of excluding the run from the score. The DOM says Row 3 but the paint
+// lands at device y 96 (row 6).
 func TestPaintDisplacementVerticalDrift(t *testing.T) {
 	img := newPaintImage(120, 128)
 	dark := PaintColour{R: 51, G: 51, B: 51}
@@ -141,11 +140,10 @@ func TestPaintDisplacementVerticalDrift(t *testing.T) {
 	}
 }
 
-// TestPaintDisplacementLeftDrift checks the widened horizontal window: a run whose only
-// painted ink sits one cell LEFT of its DOM-snapped column is now MEASURED as hdrift
-// -1, not skipped. The old left pad reached only a fraction of a cell and let a
-// one-cell-left run escape; the symmetric nearest-first column window finds it. The DOM
-// says Col 3 but the paint lands at device x 16 (col 2).
+// TestPaintDisplacementLeftDrift checks that the symmetric nearest-first column
+// window finds ink one cell left of its DOM-snapped column and reports hdrift -1
+// instead of excluding the run from the score. The DOM says Col 3 but the paint
+// lands at device x 16 (col 2).
 func TestPaintDisplacementLeftDrift(t *testing.T) {
 	img := newPaintImage(120, 80)
 	dark := PaintColour{R: 51, G: 51, B: 51}
