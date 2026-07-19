@@ -2,7 +2,6 @@ package engine
 
 import (
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"image"
 	"image/draw"
@@ -45,9 +44,8 @@ var base64DecodeBufPool = sync.Pool{New: func() any { b := make([]byte, 0); retu
 // returning the raw bytes plus a release func the caller must call once the downstream
 // image decode has finished with the bytes. It prefers the SIMD emmansun Decode(dst,
 // src) form, which decodes into the reused pooled dst and so makes no per-call output
-// allocation, and falls back to stdlib DecodeString on any error so a declined input
-// decodes exactly as it does today (the fallback allocates fresh; its release is a
-// no-op).
+// allocation. A decode error is authoritative and returns the borrowed buffer to the
+// pool before reaching the caller.
 //
 // src is a read-only, zero-copy view of data via unsafe.Slice: the decoder only reads
 // src, never writes it, so aliasing the string's backing bytes is safe, and it avoids
@@ -74,14 +72,8 @@ func decodeBase64Pooled(data string) (raw []byte, release func(), err error) {
 	if derr == nil {
 		return buf[:n], func() { base64DecodeBufPool.Put(bp) }, nil
 	}
-	// Fallback: hand the pooled buffer back and decode fresh with stdlib on a declined
-	// input.
 	base64DecodeBufPool.Put(bp)
-	out, serr := base64.StdEncoding.DecodeString(data)
-	if serr != nil {
-		return nil, func() {}, serr
-	}
-	return out, func() {}, nil
+	return nil, nil, derr
 }
 
 // screencastQuality is the JPEG quality used by the live Block screencast.
