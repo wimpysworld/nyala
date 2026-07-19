@@ -32,9 +32,6 @@ func fullReport() Report {
 			DeltaEText:     f64(1.4),
 			DeltaEBitmap:   f64(2.9),
 			HistDivergence: f64(0.07),
-			OCRCER:         f64(0.03),
-			OCRWER:         f64(0.08),
-			MinLegiblePx:   pint(14),
 			ContrastMin:    f64(4.7),
 			Sharpness:      f64(184.2),
 		},
@@ -68,13 +65,13 @@ func fullReport() Report {
 	}
 }
 
-// TestSchemaVersionPinned pins the schema version to 1.
+// TestSchemaVersionPinned pins the schema version to 2.
 func TestSchemaVersionPinned(t *testing.T) {
-	if SchemaVersion != 1 {
-		t.Fatalf("SchemaVersion = %d, want 1", SchemaVersion)
+	if SchemaVersion != 2 {
+		t.Fatalf("SchemaVersion = %d, want 2", SchemaVersion)
 	}
-	if got := fullReport().SchemaVersion; got != 1 {
-		t.Fatalf("report schemaVersion = %d, want 1", got)
+	if got := fullReport().SchemaVersion; got != 2 {
+		t.Fatalf("report schemaVersion = %d, want 2", got)
 	}
 }
 
@@ -84,7 +81,7 @@ func TestMarshalShape(t *testing.T) {
 	got := marshalToMap(t, fullReport())
 
 	want := map[string]any{
-		"schemaVersion": float64(1),
+		"schemaVersion": float64(2),
 		"page":          "wikipedia-article",
 		"mode":          "block",
 		"viewport":      map[string]any{"cols": float64(120), "rows": float64(40)},
@@ -98,9 +95,6 @@ func TestMarshalShape(t *testing.T) {
 			"deltaEText":     1.4,
 			"deltaEBitmap":   2.9,
 			"histDivergence": 0.07,
-			"ocrCER":         0.03,
-			"ocrWER":         0.08,
-			"minLegiblePx":   float64(14),
 			"contrastMin":    4.7,
 			"sharpness":      184.2,
 		},

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "grid": {
     "cols": 120,
     "rows": 40
@@ -160,75 +160,5 @@
       "max": 196110
     }
   },
-  "sixelPsnrNoiseFloor": 0.0,
-  "ocrBuilt": true,
-  "cerBound": 0.15,
-  "ladder": [
-    {
-      "card": "synthetic-ladder",
-      "rungs": [
-        {
-          "sizePx": 8,
-          "cer": 0.23076923076923078,
-          "wer": 0.6666666666666666,
-          "legible": false
-        },
-        {
-          "sizePx": 10,
-          "cer": 0,
-          "wer": 0,
-          "legible": true
-        },
-        {
-          "sizePx": 12,
-          "cer": 0,
-          "wer": 0,
-          "legible": true
-        },
-        {
-          "sizePx": 14,
-          "cer": 0.14285714285714285,
-          "wer": 0.3333333333333333,
-          "legible": true
-        },
-        {
-          "sizePx": 16,
-          "cer": 0,
-          "wer": 0,
-          "legible": true
-        },
-        {
-          "sizePx": 18,
-          "cer": 0,
-          "wer": 0,
-          "legible": true
-        },
-        {
-          "sizePx": 20,
-          "cer": 0,
-          "wer": 0,
-          "legible": true
-        },
-        {
-          "sizePx": 22,
-          "cer": 0,
-          "wer": 0,
-          "legible": true
-        },
-        {
-          "sizePx": 24,
-          "cer": 0,
-          "wer": 0,
-          "legible": true
-        },
-        {
-          "sizePx": 28,
-          "cer": 0,
-          "wer": 0,
-          "legible": true
-        }
-      ],
-      "minLegiblePx": 10
-    }
-  ]
+  "sixelPsnrNoiseFloor": 0.0
 }

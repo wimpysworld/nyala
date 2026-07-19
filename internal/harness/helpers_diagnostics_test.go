@@ -1,4 +1,4 @@
-//go:build diagnostics || ocr
+//go:build diagnostics
 
 package harness
 
@@ -13,8 +13,8 @@ import (
 )
 
 // These helpers serve the heavy, rasteriser-driven tests behind the diagnostics
-// and ocr tags. They leave the default build, so the fast `just test` gate
-// neither compiles nor runs them.
+// tag. They leave the default build, so the fast `just test` gate neither
+// compiles nor runs them.
 
 // logProgress returns a Progress callback that streams each line live and also
 // records it on the test. Go's `-v` output buffers t.Log until the test returns,

@@ -11,8 +11,8 @@ package harness
 import "github.com/wimpysworld/nyala/internal/cellraster"
 
 // SchemaVersion is the report schema version. Bump it on any breaking change to
-// the JSON shape. Stage 0 pins it to 1.
-const SchemaVersion = 1
+// the JSON shape.
+const SchemaVersion = 2
 
 // Viewport is the fixed cell grid the sweep renders at. Stage 0 pins 120x40.
 type Viewport struct {
@@ -45,9 +45,6 @@ type Quality struct {
 	DeltaEText     *float64 `json:"deltaEText"`
 	DeltaEBitmap   *float64 `json:"deltaEBitmap"`
 	HistDivergence *float64 `json:"histDivergence"`
-	OCRCER         *float64 `json:"ocrCER"`
-	OCRWER         *float64 `json:"ocrWER"`
-	MinLegiblePx   *int     `json:"minLegiblePx"`
 	ContrastMin    *float64 `json:"contrastMin"`
 	Sharpness      *float64 `json:"sharpness"`
 }
