@@ -4,6 +4,7 @@
 package sixel
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -56,22 +57,26 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 	}
 	e.dropResizedScratch(bounds)
 	var paletted *image.Paletted
+	var rgba *image.RGBA
 	var exact bool
 	switch p := img.(type) {
 	case *image.Paletted:
 		if len(p.Palette) <= colours {
 			paletted = p
 			exact = true
+		} else {
+			rgba = e.toRGBA(p)
 		}
-	case *image.NRGBA:
-		paletted, exact = palettedFromOpaquePixelsInto(e.paletted, p.Bounds(), p.Pix, p.Stride, p.PixOffset, colours-1)
-		e.paletted = paletted
 	case *image.RGBA:
 		paletted, exact = palettedFromOpaquePixelsInto(e.paletted, p.Bounds(), p.Pix, p.Stride, p.PixOffset, colours-1)
 		e.paletted = paletted
+		rgba = p
+	case *image.YCbCr:
+		rgba = e.toRGBA(p)
+	default:
+		return fmt.Errorf("unsupported image type %T", img)
 	}
 	if !exact {
-		rgba := e.toRGBA(img)
 		palette := samplePalette(rgba, colours-1)
 		if paletted == nil {
 			paletted = reusablePaletted(e.paletted, rgba.Bounds(), palette)
@@ -310,20 +315,7 @@ func appendRun(dst []byte, ch byte, count int) []byte {
 	}
 }
 
-func toRGBA(img image.Image) *image.RGBA {
-	if rgba, ok := img.(*image.RGBA); ok {
-		return rgba
-	}
-	bounds := img.Bounds()
-	rgba := image.NewRGBA(bounds)
-	draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
-	return rgba
-}
-
 func (e *opaqueEncoder) toRGBA(img image.Image) *image.RGBA {
-	if rgba, ok := img.(*image.RGBA); ok {
-		return rgba
-	}
 	bounds := img.Bounds()
 	if e.rgba == nil || e.rgba.Bounds() != bounds || e.rgba.Stride != bounds.Dx()*4 || len(e.rgba.Pix) != bounds.Dx()*bounds.Dy()*4 {
 		e.rgba = image.NewRGBA(bounds)
@@ -446,7 +438,7 @@ func palettedFromOpaquePixels(bounds image.Rectangle, pix []byte, stride int, of
 
 func palettedFromOpaquePixelsInto(dst *image.Paletted, bounds image.Rectangle, pix []byte, stride int, offset func(int, int) int, maxColours int) (*image.Paletted, bool) {
 	palette := make(color.Palette, 1, maxColours+1)
-	palette[0] = color.NRGBA{}
+	palette[0] = color.RGBA{}
 	indexes := make(map[uint32]uint8, maxColours)
 	dst = reusablePaletted(dst, bounds, palette)
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
@@ -463,7 +455,7 @@ func palettedFromOpaquePixelsInto(dst *image.Paletted, bounds image.Rectangle, p
 				}
 				idx = uint8(len(palette)) //nolint:gosec // The 255-colour limit bounds the index.
 				indexes[key] = idx
-				palette = append(palette, color.NRGBA{R: row[base], G: row[base+1], B: row[base+2], A: 0xff})
+				palette = append(palette, color.RGBA{R: row[base], G: row[base+1], B: row[base+2], A: 0xff})
 			}
 			dst.Pix[dstOffset+x] = idx
 		}
