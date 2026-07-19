@@ -10,8 +10,8 @@ package harness
 
 import "github.com/wimpysworld/nyala/internal/cellraster"
 
-// SchemaVersion is the report schema version. Bump it on any breaking change to
-// the JSON shape.
+// SchemaVersion is shared by the report, thresholds, baseline, and calibration
+// JSON artefacts. Bump it when any of those shapes changes incompatibly.
 const SchemaVersion = 2
 
 // Viewport is the cell grid the sweep renders at.

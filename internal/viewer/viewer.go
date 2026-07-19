@@ -82,7 +82,7 @@ type State struct {
 	Colour  ColourMode   // block colour depth; applies only to the block backend
 	Cols    int          // terminal width in cells
 	Rows    int          // terminal height in cells
-	Enabled []Backend    // backends in the Tab cycle, block first
+	Enabled []Backend    // backends in the Tab cycle, highest-fidelity first
 	cellPx               // terminal cell pixel size for graphics scaling
 
 	// diff is the Block cell differ. The interactive stream session and Block
