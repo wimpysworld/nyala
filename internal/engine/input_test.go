@@ -103,7 +103,7 @@ func TestWheelNonBlockAlignsTarget(t *testing.T) {
 	e.SetCellPx(16, 33)
 	e.SetLayoutWidth(1280)
 	e.Resize(158, 86)
-	e.SetBackend("sixel")
+	e.SetBackend(backendSixel)
 
 	e.SendKey(Key{Code: "ArrowDown"})
 
@@ -136,7 +136,7 @@ func TestWheelBackendSwitchNoCorrectiveJump(t *testing.T) {
 	e.SendKey(Key{Code: "ArrowDown"})
 
 	// Switch to a graphics backend and scroll unquantised.
-	e.SetBackend("sixel")
+	e.SetBackend(backendSixel)
 	e.SendKey(Key{Code: "ArrowDown"})
 
 	e.mu.Lock()
@@ -144,7 +144,7 @@ func TestWheelBackendSwitchNoCorrectiveJump(t *testing.T) {
 	e.mu.Unlock()
 
 	// Return to block and scroll once more.
-	e.SetBackend("block")
+	e.SetBackend(backendBlock)
 	e.SendKey(Key{Code: "ArrowDown"})
 
 	e.mu.Lock()

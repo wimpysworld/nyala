@@ -16,7 +16,7 @@ func TestRunTextSyncSnapshotsOncePerPaint(t *testing.T) {
 	t.Parallel()
 	var snaps atomic.Int64
 	want := []render.GlyphRun{{Col: 2, Row: 1, Text: "hi"}}
-	e := &ChromiumEngine{backend: "block"}
+	e := &ChromiumEngine{backend: backendBlock}
 	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, scrollOffset, int64, overlayState) {
 		snaps.Add(1)
 		return want, scrollOffset{}, 0, overlayState{}
@@ -47,7 +47,7 @@ func TestRunTextSyncSnapshotsOncePerPaint(t *testing.T) {
 func TestRunDecodeCollectorReEmitsHeldFrameWithText(t *testing.T) {
 	t.Parallel()
 	bitmap := image.NewRGBA(image.Rect(0, 0, 2, 2))
-	e := &ChromiumEngine{backend: "block"}
+	e := &ChromiumEngine{backend: backendBlock}
 	ts := &textSync{}
 	decoded := make(chan decodedFrame, 1)
 	frames := make(chan render.Frame, 1)
@@ -197,7 +197,7 @@ func TestRunTextSyncScrollCadence(t *testing.T) {
 
 func TestRunDecodeCollectorPokesScrollOnOffsetChange(t *testing.T) {
 	t.Parallel()
-	e := &ChromiumEngine{backend: "block"}
+	e := &ChromiumEngine{backend: backendBlock}
 	decoded := make(chan decodedFrame, 3)
 	frames := make(chan render.Frame, 3)
 	scroll := make(chan struct{}, 1)
@@ -240,7 +240,7 @@ func TestRunDecodeCollectorPokesScrollOnOffsetChange(t *testing.T) {
 }
 
 func countingSnapshotEngine(snaps *atomic.Int64) *ChromiumEngine {
-	e := &ChromiumEngine{backend: "block"}
+	e := &ChromiumEngine{backend: backendBlock}
 	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, scrollOffset, int64, overlayState) {
 		snaps.Add(1)
 		return nil, scrollOffset{}, 0, overlayState{}

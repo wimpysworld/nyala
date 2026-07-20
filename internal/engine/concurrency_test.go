@@ -27,9 +27,9 @@ func TestEngineFieldsRaceFree(t *testing.T) {
 		for i := range iterations {
 			e.Resize(80+i%40, 24+i%20)
 			if i%2 == 0 {
-				e.SetBackend("block")
+				e.SetBackend(backendBlock)
 			} else {
-				e.SetBackend("sixel")
+				e.SetBackend(backendSixel)
 			}
 			e.SendKey(Key{Code: "ArrowDown"})
 			e.SendScroll(40)

@@ -35,21 +35,19 @@ import (
 	"github.com/wimpysworld/nyala/internal/rowband"
 )
 
-// Backend identifies one render backend in the cycle order. The Tab hotkey
-// advances through the enabled backends and wraps; configureBackends orders them
-// highest-fidelity first (kitty, then sixel) with block last as the floor.
-type Backend int
+// Backend identifies one render backend in the cycle order.
+type Backend = render.Backend
 
 const (
 	// BackendBlock is the owned-grid block-cell renderer; it honours the glyph
 	// scheme and colour mode. It is the floor backend, placed last in the cycle.
-	BackendBlock Backend = iota
+	BackendBlock = render.BackendBlock
 	// BackendSixel is the Sixel graphics backend. It ignores the scheme and
 	// colour mode, which apply only to the block backend.
-	BackendSixel
+	BackendSixel = render.BackendSixel
 	// BackendKitty is the Kitty graphics backend. It ignores the scheme and
 	// colour mode, which apply only to the block backend.
-	BackendKitty
+	BackendKitty = render.BackendKitty
 )
 
 // ColourMode selects the block backend's colour depth, resolved once from the

@@ -354,7 +354,7 @@ func TestProxyAuthDecisionTrackerFreshPerSession(t *testing.T) {
 func TestSurfaceSizeNonZeroFloor(t *testing.T) {
 	// A 0x0 grid (the agent shell reports no pixel size) must resolve to the
 	// non-zero floor, never a blank 0x0 surface Chromium cannot lay out.
-	e := &ChromiumEngine{backend: "block", cellW: 9, cellH: 18}
+	e := &ChromiumEngine{backend: backendBlock, cellW: 9, cellH: 18}
 
 	surfW, surfH := e.surfaceSize(0, 0)
 	if surfW < surfaceFloorPx || surfH < surfaceFloorPx {
@@ -406,7 +406,7 @@ func TestScreencastCapNeverExceedsSurface(t *testing.T) {
 	const cols, rows = 158, 86
 	const cellW, cellH = 16, 33
 	const layoutWidth = 1280
-	e := &ChromiumEngine{backend: "block", cellW: cellW, cellH: cellH, cols: cols, rows: rows, layoutWidth: layoutWidth}
+	e := &ChromiumEngine{backend: backendBlock, cellW: cellW, cellH: cellH, cols: cols, rows: rows, layoutWidth: layoutWidth}
 
 	surfW, surfH := e.surfaceSize(cols, rows)
 	capW, capH := e.screencastCap(cols, rows)
@@ -414,7 +414,7 @@ func TestScreencastCapNeverExceedsSurface(t *testing.T) {
 		t.Fatalf("screencastCap = (%d,%d) exceeds surfaceSize (%d,%d); Chromium would downscale", capW, capH, surfW, surfH)
 	}
 	// A graphics backend stays at Z == 1, so its cap equals the surface exactly.
-	g := &ChromiumEngine{backend: "sixel", cellW: cellW, cellH: cellH, cols: cols, rows: rows, layoutWidth: layoutWidth}
+	g := &ChromiumEngine{backend: backendSixel, cellW: cellW, cellH: cellH, cols: cols, rows: rows, layoutWidth: layoutWidth}
 	gSurfW, gSurfH := g.surfaceSize(cols, rows)
 	gCapW, gCapH := g.screencastCap(cols, rows)
 	if gCapW != gSurfW || gCapH != gSurfH {

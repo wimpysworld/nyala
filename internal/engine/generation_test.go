@@ -42,7 +42,7 @@ func TestLayoutGenExprCoercesUndefined(t *testing.T) {
 // bitmap alone rather than holding stale text past its bound. lastComposed is the
 // frame loop's carried hold state.
 func TestComposeFramePairsPublishedGeneration(t *testing.T) {
-	e := &ChromiumEngine{backend: "block", cols: 120, rows: 40, cellW: 8, cellH: 16, layoutWidth: 1280}
+	e := &ChromiumEngine{backend: backendBlock, cols: 120, rows: 40, cellW: 8, cellH: 16, layoutWidth: 1280}
 	ts := &textSync{}
 	want := []render.GlyphRun{{Col: 0, Row: 0, Text: "hi", X: 0, Y: 0}}
 	ts.store(want, 0, 5)
@@ -70,7 +70,7 @@ func TestComposeFramePairsPublishedGeneration(t *testing.T) {
 // CSS px past the snapshot moves every run up ten rows: a run at row 15 lands at row
 // 5 and a run at row 0 scrolls off the top and is dropped.
 func TestComposeFrameShiftsOnScrollMismatch(t *testing.T) {
-	e := &ChromiumEngine{backend: "block", cols: 120, rows: 40, cellW: 8, cellH: 16, layoutWidth: 1280}
+	e := &ChromiumEngine{backend: backendBlock, cols: 120, rows: 40, cellW: 8, cellH: 16, layoutWidth: 1280}
 	ts := &textSync{}
 	runs := []render.GlyphRun{
 		{Col: 0, Row: 15, Text: "keep", X: 0, Y: 15 * 16},

@@ -35,7 +35,7 @@ const (
 type internalRenderCase struct {
 	name          string
 	backend       Backend
-	engineBackend string
+	engineBackend Backend
 	width         int
 	height        int
 }
@@ -60,15 +60,15 @@ func TestInternalRenderingMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := []internalRenderCase{
-		{name: "block/1920x1080", backend: BackendBlock, engineBackend: "block", width: 1920, height: 1080},
-		{name: "kitty/1920x1080", backend: BackendKitty, engineBackend: "kitty", width: 1920, height: 1080},
-		{name: "sixel/1920x1080", backend: BackendSixel, engineBackend: "sixel", width: 1920, height: 1080},
-		{name: "block/2560x1600", backend: BackendBlock, engineBackend: "block", width: 2560, height: 1600},
-		{name: "kitty/2560x1600", backend: BackendKitty, engineBackend: "kitty", width: 2560, height: 1600},
-		{name: "sixel/2560x1600", backend: BackendSixel, engineBackend: "sixel", width: 2560, height: 1600},
-		{name: "block/2560x2880", backend: BackendBlock, engineBackend: "block", width: 2560, height: 2880},
-		{name: "kitty/2560x2880", backend: BackendKitty, engineBackend: "kitty", width: 2560, height: 2880},
-		{name: "sixel/2560x2880", backend: BackendSixel, engineBackend: "sixel", width: 2560, height: 2880},
+		{name: "block/1920x1080", backend: BackendBlock, engineBackend: BackendBlock, width: 1920, height: 1080},
+		{name: "kitty/1920x1080", backend: BackendKitty, engineBackend: BackendKitty, width: 1920, height: 1080},
+		{name: "sixel/1920x1080", backend: BackendSixel, engineBackend: BackendSixel, width: 1920, height: 1080},
+		{name: "block/2560x1600", backend: BackendBlock, engineBackend: BackendBlock, width: 2560, height: 1600},
+		{name: "kitty/2560x1600", backend: BackendKitty, engineBackend: BackendKitty, width: 2560, height: 1600},
+		{name: "sixel/2560x1600", backend: BackendSixel, engineBackend: BackendSixel, width: 2560, height: 1600},
+		{name: "block/2560x2880", backend: BackendBlock, engineBackend: BackendBlock, width: 2560, height: 2880},
+		{name: "kitty/2560x2880", backend: BackendKitty, engineBackend: BackendKitty, width: 2560, height: 2880},
+		{name: "sixel/2560x2880", backend: BackendSixel, engineBackend: BackendSixel, width: 2560, height: 2880},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -318,7 +318,7 @@ func TestWaitInternalRenderFrameFailureEvidence(t *testing.T) {
 	}
 
 	stats := render.IngestStats{Frames: 9, MeanFPS: 8, MinFPS: 7, MaxFPS: 10, MedianFPS: 9, WorstGapMS: 11, DecodeMeanMS: 12, DecodeMaxMS: 13}
-	_, err := waitInternalRenderFrame(frames, internalRenderCase{backend: BackendKitty, engineBackend: "kitty", width: 4, height: 3}, "scrolled", rejectHash, 0, 10*time.Millisecond, time.Second, func() render.IngestStats { return stats })
+	_, err := waitInternalRenderFrame(frames, internalRenderCase{backend: BackendKitty, engineBackend: BackendKitty, width: 4, height: 3}, "scrolled", rejectHash, 0, 10*time.Millisecond, time.Second, func() render.IngestStats { return stats })
 	if err == nil {
 		t.Fatal("waitInternalRenderFrame() error = nil")
 	}
@@ -338,7 +338,7 @@ func TestWaitInternalRenderFrameSuccessUnchanged(t *testing.T) {
 	want := render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 4, 3))}
 	frames := make(chan render.Frame, 1)
 	frames <- want
-	got, err := waitInternalRenderFrame(frames, internalRenderCase{backend: BackendSixel, engineBackend: "sixel", width: 4, height: 3}, "top", 0, 0, time.Second, time.Millisecond, func() render.IngestStats { return render.IngestStats{} })
+	got, err := waitInternalRenderFrame(frames, internalRenderCase{backend: BackendSixel, engineBackend: BackendSixel, width: 4, height: 3}, "top", 0, 0, time.Second, time.Millisecond, func() render.IngestStats { return render.IngestStats{} })
 	if err != nil {
 		t.Fatalf("waitInternalRenderFrame(): %v", err)
 	}

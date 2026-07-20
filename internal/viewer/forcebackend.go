@@ -3,10 +3,12 @@ package viewer
 import (
 	"fmt"
 	"slices"
+
+	"github.com/wimpysworld/nyala/internal/render"
 )
 
-// Backend mode strings the --backend flag accepts. They mirror the kong enum and
-// backendName: auto leaves detection in charge, block is the floor, and kitty and
+// Backend mode strings the --backend flag accepts. They mirror the kong enum:
+// auto leaves detection in charge, block is the floor, and kitty and
 // sixel force a graphics backend that detection must confirm.
 const (
 	// ModeAuto leaves the detected cycle in charge; the validator always passes it.
@@ -30,17 +32,12 @@ const (
 // otherwise it returns an unsupported-backend error naming the backend. An
 // unknown mode is an unsupported-backend error.
 func ValidateForcedBackend(mode string, enabled []Backend) error {
-	switch mode {
-	case ModeAuto, ModeBlock:
+	if mode == ModeAuto || mode == ModeBlock {
 		return nil
-	case ModeKitty:
-		if slices.Contains(enabled, BackendKitty) {
-			return nil
-		}
-	case ModeSixel:
-		if slices.Contains(enabled, BackendSixel) {
-			return nil
-		}
+	}
+	backend, err := render.ParseBackend(mode)
+	if err == nil && slices.Contains(enabled, backend) {
+		return nil
 	}
 	return fmt.Errorf("viewer: backend %q is not supported by this terminal", mode)
 }
@@ -49,16 +46,11 @@ func ValidateForcedBackend(mode string, enabled []Backend) error {
 // ok=false for ModeAuto and any unnamed mode, meaning no forcing: auto leaves
 // the detected cycle in charge. The three named modes map to their backend.
 func forcedBackend(mode string) (Backend, bool) {
-	switch mode {
-	case ModeBlock:
-		return BackendBlock, true
-	case ModeKitty:
-		return BackendKitty, true
-	case ModeSixel:
-		return BackendSixel, true
-	default:
-		return 0, false
+	if mode == ModeAuto {
+		return BackendBlock, false
 	}
+	backend, err := render.ParseBackend(mode)
+	return backend, err == nil
 }
 
 // applyForcedBackend pins the active backend and the Tab cycle to a named

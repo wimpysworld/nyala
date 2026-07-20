@@ -51,9 +51,9 @@ type ChromiumEngine struct {
 	cellW int // resolved cell width in pixels
 	cellH int // resolved cell height in pixels
 
-	layoutWidth int    // block-backend target layout width in CSS pixels
-	backend     string // active backend (block, sixel, kitty)
-	browserFlag string // --browser value, empty for env/PATH discovery
+	layoutWidth int            // block-backend target layout width in CSS pixels
+	backend     render.Backend // active terminal rendering backend
+	browserFlag string         // --browser value, empty for env/PATH discovery
 	// disableFrameRateLimit passes Chromium's launch-time
 	// --disable-frame-rate-limit switch. It is set before Navigate and remains
 	// false by default, preserving Chromium's normal frame scheduling.
@@ -228,7 +228,7 @@ type ChromiumEngine struct {
 func New(browserFlag string) *ChromiumEngine {
 	proxy, proxyErr := parseProxyEnv()
 	return &ChromiumEngine{
-		backend:     "block",
+		backend:     render.BackendBlock,
 		browserFlag: browserFlag,
 		closing:     make(chan struct{}),
 		proxy:       proxy,
@@ -395,7 +395,7 @@ func (e *ChromiumEngine) Frames() <-chan render.Frame {
 // cell-pixel bitmap. When the engine is already streaming it restarts the stream
 // at the new capture size, so the next frames arrive sized for the new backend.
 // The viewer push consumer calls it through its local interface on a Tab cycle.
-func (e *ChromiumEngine) SetBackend(backend string) {
+func (e *ChromiumEngine) SetBackend(backend render.Backend) {
 	e.screencastCtl.Lock()
 	defer e.screencastCtl.Unlock()
 	e.mu.Lock()
@@ -463,7 +463,7 @@ func (e *ChromiumEngine) dispatchWheel(dx, dy int) {
 	e.scrollX += dx
 	e.scrollYTarget += dy
 	dyDispatch := dy
-	if e.backend == "block" {
+	if e.backend.QuantisesScroll() {
 		if _, cellH := e.snapshotCellPx(); cellH > 0 {
 			cells := math.Round(float64(e.scrollYTarget) / cellH)
 			snapped := int(math.Round(cells * cellH))

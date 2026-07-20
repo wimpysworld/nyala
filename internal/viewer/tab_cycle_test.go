@@ -26,13 +26,13 @@ type tabCycleEngine struct {
 	names []string
 }
 
-func (e *tabCycleEngine) SetBackend(name string) {
+func (e *tabCycleEngine) SetBackend(backend Backend) {
 	e.mu.Lock()
-	e.names = append(e.names, name)
+	e.names = append(e.names, backend.String())
 	e.mu.Unlock()
 	// The real engine restarts the screencast with the selected backend's frame
 	// representation. Mirror that so the loop repaints through the production seam.
-	if name == "kitty" {
+	if backend == BackendKitty {
 		e.frames <- render.Frame{EncodedPNG: e.kittyPNG}
 		return
 	}

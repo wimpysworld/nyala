@@ -19,7 +19,7 @@ func newStreamControlTestEngine(t *testing.T) (*ChromiumEngine, context.Context)
 		ctx:               ctx,
 		cancel:            cancel,
 		rawQ:              newRawFrameQueue(1),
-		backend:           "sixel",
+		backend:           backendSixel,
 		cols:              80,
 		rows:              24,
 		cellW:             8,
@@ -68,7 +68,7 @@ func TestBackendRestartsUseFixedFormats(t *testing.T) {
 		starts = append(starts, format)
 		return nil
 	}
-	for _, backend := range []string{"block", "kitty", "sixel"} {
+	for _, backend := range []backend{backendBlock, backendKitty, backendSixel} {
 		e.SetBackend(backend)
 	}
 	want := []screencastFmt{
@@ -129,7 +129,7 @@ func TestInitialStartSerialisesWithBackendRestart(t *testing.T) {
 	backendDone := make(chan struct{})
 	go func() {
 		close(backendAttempted)
-		e.SetBackend("kitty")
+		e.SetBackend(backendKitty)
 		close(backendDone)
 	}()
 	<-backendAttempted
@@ -218,7 +218,7 @@ func TestResizeBeforeInitialStartDefersRestart(t *testing.T) {
 // and the single initial start must select the new backend's PNG policy.
 func TestBackendBeforeRebuildInitialStartDefersRestart(t *testing.T) {
 	e, ctx := newStreamControlTestEngine(t)
-	e.backend = "block"
+	e.backend = backendBlock
 	e.screencastFmt = screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality}
 	e.screencastStarted = false
 	paused := make(chan struct{})
@@ -252,7 +252,7 @@ func TestBackendBeforeRebuildInitialStartDefersRestart(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("rebuild initial start did not reach the pre-lock barrier")
 	}
-	e.SetBackend("kitty")
+	e.SetBackend(backendKitty)
 	if stops != 0 || sizes != 0 || starts != 0 {
 		t.Fatalf("pre-start backend change issued stops=%d sizes=%d starts=%d", stops, sizes, starts)
 	}
@@ -269,7 +269,7 @@ func TestBackendBeforeRebuildInitialStartDefersRestart(t *testing.T) {
 	e.mu.Lock()
 	backend, started := e.backend, e.screencastStarted
 	e.mu.Unlock()
-	if backend != "kitty" || !started {
+	if backend != backendKitty || !started {
 		t.Fatalf("replacement stream = backend %q started=%v, want Kitty started", backend, started)
 	}
 }
@@ -313,7 +313,7 @@ func TestRestartOperationFailureCancelsSession(t *testing.T) {
 			if tc.resize {
 				e.Resize(81, 24)
 			} else {
-				e.SetBackend("kitty")
+				e.SetBackend(backendKitty)
 			}
 			select {
 			case <-ctx.Done():
