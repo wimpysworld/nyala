@@ -42,7 +42,9 @@ type opaqueEncoder struct {
 	outScratch []byte
 	band       []bandScratch
 	rgba       *image.RGBA
+	sample     *image.RGBA
 	paletted   *image.Paletted
+	palette    color.Palette
 	lut        []uint8
 }
 
@@ -77,7 +79,8 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 		return fmt.Errorf("unsupported image type %T", img)
 	}
 	if !exact {
-		palette := samplePalette(rgba, colours-1)
+		e.palette, e.sample = samplePaletteInto(rgba, colours-1, e.palette, e.sample)
+		palette := e.palette
 		if paletted == nil {
 			paletted = reusablePaletted(e.paletted, rgba.Bounds(), palette)
 			e.paletted = paletted
@@ -325,7 +328,15 @@ func (e *opaqueEncoder) toRGBA(img image.Image) *image.RGBA {
 }
 
 func samplePalette(rgba *image.RGBA, maxColours int) color.Palette { //nolint:unparam // The fixed production limit remains explicit for test helpers.
+	palette, _ := samplePaletteInto(rgba, maxColours, nil, nil)
+	return palette
+}
+
+func samplePaletteInto(rgba *image.RGBA, maxColours int, dst color.Palette, sample *image.RGBA) (color.Palette, *image.RGBA) {
 	const budget = 1 << 16
+	if cap(dst) < maxColours {
+		dst = make(color.Palette, 0, maxColours)
+	}
 	bounds := rgba.Bounds()
 	src := image.Image(rgba)
 	if bounds.Dx()*bounds.Dy() > budget {
@@ -335,7 +346,10 @@ func samplePalette(rgba *image.RGBA, maxColours int) color.Palette { //nolint:un
 			step++
 			width, height = max(1, bounds.Dx()/step), max(1, bounds.Dy()/step)
 		}
-		sample := image.NewRGBA(image.Rect(0, 0, width, height))
+		sampleBounds := image.Rect(0, 0, width, height)
+		if sample == nil || sample.Bounds() != sampleBounds {
+			sample = image.NewRGBA(sampleBounds)
+		}
 		for y := range height {
 			dstOffset := sample.PixOffset(0, y)
 			for x := range width {
@@ -346,7 +360,7 @@ func samplePalette(rgba *image.RGBA, maxColours int) color.Palette { //nolint:un
 		}
 		src = sample
 	}
-	return median.Quantizer(0).Quantize(make(color.Palette, 0, maxColours), src)
+	return median.Quantizer(0).Quantize(dst[:0], src), sample
 }
 
 func newPaletteLUT(palette color.Palette) []uint8 {
