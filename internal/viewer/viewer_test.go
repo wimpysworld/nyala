@@ -817,9 +817,9 @@ type streamTestEngine struct {
 	setBackend func(string)
 }
 
-func (e streamTestEngine) SetBackend(name string) {
+func (e streamTestEngine) SetBackend(backend Backend) {
 	if e.setBackend != nil {
-		e.setBackend(name)
+		e.setBackend(backend.String())
 	}
 }
 

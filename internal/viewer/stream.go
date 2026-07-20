@@ -28,10 +28,10 @@ import (
 // forwards scroll keys by their code and wheel deltas in CSS pixels, and the
 // engine owns the offset.
 type Engine interface {
-	// SetBackend names the active backend (block, sixel, kitty) so the engine
+	// SetBackend sets the active backend so the engine
 	// sizes the capture: sub-cell for block, cell-pixel for the graphics
 	// backends. When streaming it restarts the stream at the new size.
-	SetBackend(name string)
+	SetBackend(backend render.Backend)
 	// SetCellPx sets the resolved terminal cell pixel size the engine uses to
 	// size the graphics capture and to bin DOM text boxes to cells.
 	SetCellPx(w, h int)
@@ -102,7 +102,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks strin
 	// setupViewer handed the engine the detected backend; re-notify it so the
 	// engine sizes its capture for the forced backend, not the detected one.
 	applyForcedBackend(st, mode)
-	eng.SetBackend(backendName(st.Backend))
+	eng.SetBackend(st.Backend)
 
 	if _, err := io.WriteString(tty, enterFullScreen); err != nil {
 		return err
@@ -240,7 +240,7 @@ func setupViewer(eng Engine, tty *os.File, colourFlag string, scheme block.Schem
 	// from them.
 	eng.SetCellPx(state.W, state.H)
 	eng.SetLayoutWidth(layoutWidth)
-	eng.SetBackend(backendName(state.Backend))
+	eng.SetBackend(state.Backend)
 	eng.Resize(cols, rows)
 
 	return fd, &state, func() { _ = cterm.Restore(fd, oldState) }, nil
@@ -606,8 +606,8 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		}
 		// Cycle the backend off the consumer loop: the engine restart runs on the
 		// control goroutine so a slow restartStream cannot freeze draw or quit.
-		name := backendName(s.st.Backend)
-		s.ctl.submit(func(eng Engine) { eng.SetBackend(name) })
+		backend := s.st.Backend
+		s.ctl.submit(func(eng Engine) { eng.SetBackend(backend) })
 	}
 	return false
 }
@@ -1079,20 +1079,6 @@ func renderScheme(s block.Scheme) render.BlockScheme {
 		return render.BlockSextant
 	default:
 		return render.BlockQuadrant
-	}
-}
-
-// backendName maps a Backend to the engine's backend string. The engine sizes
-// its capture from this name: sub-cell for block, cell-pixel for the graphics
-// backends.
-func backendName(b Backend) string {
-	switch b {
-	case BackendSixel:
-		return "sixel"
-	case BackendKitty:
-		return "kitty"
-	default:
-		return "block"
 	}
 }
 

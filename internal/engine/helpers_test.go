@@ -4,6 +4,16 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
+
+	"github.com/wimpysworld/nyala/internal/render"
+)
+
+type backend = render.Backend
+
+const (
+	backendBlock = render.BackendBlock
+	backendSixel = render.BackendSixel
+	backendKitty = render.BackendKitty
 )
 
 // decodeScreencastNative decodes one base64 screencast payload without forcing

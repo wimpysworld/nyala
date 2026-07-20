@@ -6,7 +6,7 @@ type fakeEngine struct {
 	frames chan render.Frame
 }
 
-func (e *fakeEngine) SetBackend(string)           {}
+func (e *fakeEngine) SetBackend(Backend)          {}
 func (e *fakeEngine) SetCellPx(int, int)          {}
 func (e *fakeEngine) SetLayoutWidth(int)          {}
 func (e *fakeEngine) Resize(int, int)             {}

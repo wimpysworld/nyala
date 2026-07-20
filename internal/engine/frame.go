@@ -115,7 +115,7 @@ func layoutScale(cols, cellW, layoutWidth int) float64 {
 // grid and needs the shrink, so it returns 1 for a graphics backend and the pure
 // layoutScale(cols, cellW, layoutWidth) for block.
 func (e *ChromiumEngine) layoutScale() float64 {
-	if e.backend != "block" {
+	if !e.backend.UsesLayoutScaling() {
 		return 1
 	}
 	return layoutScale(e.cols, e.cellW, e.layoutWidth)

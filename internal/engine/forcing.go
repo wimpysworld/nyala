@@ -31,7 +31,7 @@ import (
 // reconcile.
 func (e *ChromiumEngine) syncFontForcing(ctx context.Context) (enabled bool) {
 	e.mu.Lock()
-	desired := e.backend == "block"
+	desired := e.backend.UsesTextOverlay()
 	active := e.fontForcingID != ""
 	cellW, cellH := e.snapshotCellPx()
 	e.mu.Unlock()

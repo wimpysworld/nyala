@@ -103,7 +103,7 @@ func (e *ChromiumEngine) screencastCap(cols, rows int) (pxW, pxH int) {
 func (e *ChromiumEngine) textOverlayBackend() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.backend == "block"
+	return e.backend.UsesTextOverlay()
 }
 
 // newAllocator builds a chromedp ExecAllocator for the resolved executable,
@@ -278,7 +278,7 @@ func (e *ChromiumEngine) launch(flag string) error {
 	}
 	e.mu.Lock()
 	surfW, surfH := e.surfaceSize(e.cols, e.rows)
-	forcing := e.backend == "block"
+	forcing := e.backend.UsesTextOverlay()
 	z := e.layoutScale()
 	disableFrameRateLimit := e.disableFrameRateLimit
 	e.mu.Unlock()

@@ -82,7 +82,7 @@ func TestDecodePoolNeverPublishesStaleFrame(t *testing.T) {
 	t.Parallel()
 	// Sequence 1 decodes slowly, 2 fast: worker A grabs 1 and sleeps, worker B grabs 2
 	// and returns first, so 2 publishes before 1 finishes. 1 must then be dropped.
-	e := &ChromiumEngine{backend: "block", decode: seqDecode(func(seq int) time.Duration {
+	e := &ChromiumEngine{backend: backendBlock, decode: seqDecode(func(seq int) time.Duration {
 		if seq == 1 {
 			return 120 * time.Millisecond
 		}
@@ -129,7 +129,7 @@ func TestDecodePoolMonotonicUnderRace(t *testing.T) {
 	t.Parallel()
 	// Alternate slow and fast decodes so workers finish out of order and the seq gate is
 	// exercised on nearly every frame.
-	e := &ChromiumEngine{backend: "block", decode: seqDecode(func(seq int) time.Duration {
+	e := &ChromiumEngine{backend: backendBlock, decode: seqDecode(func(seq int) time.Duration {
 		if seq%2 == 0 {
 			return time.Millisecond
 		}
@@ -178,7 +178,7 @@ func TestDecodePoolMonotonicUnderRace(t *testing.T) {
 // session's viewer to consume.
 func TestTeardownSessionDropsCancelledCollectorFrames(t *testing.T) {
 	for range 64 {
-		e := &ChromiumEngine{backend: "block", frames: make(chan render.Frame, frameChannelBuffer)}
+		e := &ChromiumEngine{backend: backendBlock, frames: make(chan render.Frame, frameChannelBuffer)}
 		ctx, cancel := context.WithCancel(context.Background())
 		e.ctx, e.cancel = ctx, cancel
 		decoded := make(chan decodedFrame, 1)
@@ -300,7 +300,7 @@ func TestDecodePoolByteIdenticalToSerial(t *testing.T) {
 		t.Fatalf("serial decode failed: %v", err)
 	}
 
-	e := &ChromiumEngine{backend: "block"} // nil decode: workers use the native decoder
+	e := &ChromiumEngine{backend: backendBlock} // nil decode: workers use the native decoder
 	rawQ, frames, stop := drivePool(t, e, 3)
 	defer stop()
 
@@ -325,7 +325,7 @@ func TestDecodePoolKittyPassThroughAndStalePixels(t *testing.T) {
 	t.Run("PNG identity", func(t *testing.T) {
 		payload := pngPayload(t)
 		e := &ChromiumEngine{
-			backend:       "kitty",
+			backend:       backendKitty,
 			screencastFmt: screencastFmt{format: page.ScreencastFormatPng},
 		}
 		rawQ, frames, stop := drivePool(t, e, 1)
@@ -343,7 +343,7 @@ func TestDecodePoolKittyPassThroughAndStalePixels(t *testing.T) {
 
 	t.Run("stale non-PNG pixels", func(t *testing.T) {
 		payload := encodeBase64JPEG(t)
-		e := &ChromiumEngine{backend: "kitty"}
+		e := &ChromiumEngine{backend: backendKitty}
 		rawQ, frames, stop := drivePool(t, e, 1)
 		defer stop()
 		rawQ.put(seqRawFrame{seq: 1, data: payload})
@@ -381,7 +381,7 @@ func TestDirectKittyPNGRejectsInvalidRawData(t *testing.T) {
 			return corrupt
 		}()),
 	}
-	e := &ChromiumEngine{backend: "kitty"}
+	e := &ChromiumEngine{backend: backendKitty}
 	for name, data := range cases {
 		t.Run(name, func(t *testing.T) {
 			if e.directKittyPNG(data) {
@@ -389,11 +389,11 @@ func TestDirectKittyPNGRejectsInvalidRawData(t *testing.T) {
 			}
 		})
 	}
-	e.backend = "sixel"
+	e.backend = backendSixel
 	if e.directKittyPNG(valid) {
 		t.Fatal("pixel backend entered the direct Kitty path")
 	}
-	e.backend = "kitty"
+	e.backend = backendKitty
 	if !e.directKittyPNG(valid) {
 		t.Fatal("valid Kitty PNG missed the direct path")
 	}
@@ -491,7 +491,7 @@ func BenchmarkDecodePoolThroughput(b *testing.B) {
 	const perDecode = 5 * time.Millisecond
 	for _, workers := range []int{1, 2, 3, 4} {
 		b.Run("workers="+itoa(workers), func(b *testing.B) {
-			e := &ChromiumEngine{backend: "block", decode: seqDecode(func(int) time.Duration { return perDecode })}
+			e := &ChromiumEngine{backend: backendBlock, decode: seqDecode(func(int) time.Duration { return perDecode })}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			rawQ := newRawFrameQueue(b.N + workers + 1)

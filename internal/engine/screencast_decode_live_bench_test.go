@@ -98,7 +98,7 @@ func BenchmarkCDPScreencastDecode(b *testing.B) {
 		})
 
 		b.Run(payload.name+"/screencast-decode-native", func(b *testing.B) {
-			e := &ChromiumEngine{backend: "kitty"}
+			e := &ChromiumEngine{backend: backendKitty}
 			if _, err := e.decodeLiveFrame(payload.data); err != nil {
 				b.Fatal(err)
 			}
@@ -116,7 +116,7 @@ func BenchmarkCDPScreencastDecode(b *testing.B) {
 
 		b.Run(payload.name+"/block-decode+direct-compose-160x90", func(b *testing.B) {
 			e := &ChromiumEngine{
-				backend: "block",
+				backend: backendBlock,
 			}
 			pool := rowband.New()
 			defer pool.Close()
@@ -232,7 +232,7 @@ func benchmarkMatchedBlockCompose(b *testing.B, payload screencastBenchPayload, 
 func benchmarkMatchedBlockPool(b *testing.B, payload screencastBenchPayload, direct bool) {
 	b.Helper()
 	workers := defaultDecodeWorkers()
-	e := &ChromiumEngine{backend: "block", ingest: newIngestCounter()}
+	e := &ChromiumEngine{backend: backendBlock, ingest: newIngestCounter()}
 	if !direct {
 		e.decode = func(data string) (*image.RGBA, error) {
 			img, err := e.decodeLiveFrame(data)

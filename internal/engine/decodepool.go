@@ -95,9 +95,9 @@ type decodedFrame struct {
 // the viewer decodes the retained payload when the active consumer is not Kitty.
 func (e *ChromiumEngine) directKittyPNG(data string) bool {
 	e.mu.Lock()
-	kitty := e.backend == "kitty"
+	direct := e.backend.UsesDirectPayload()
 	e.mu.Unlock()
-	return kitty && renderkitty.ValidDirectPNGData(data)
+	return direct && renderkitty.ValidDirectPNGData(data)
 }
 
 // rawFrameQueue is the bounded, drop-oldest feed from the listener goroutine to the

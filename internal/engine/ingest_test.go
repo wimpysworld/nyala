@@ -123,7 +123,7 @@ func TestDecodeWorkerRecordsDecodeWhenArmed(t *testing.T) {
 	t.Parallel()
 	bitmap := image.NewRGBA(image.Rect(0, 0, 2, 2))
 	e := &ChromiumEngine{
-		backend: "block",
+		backend: backendBlock,
 		acks:    make(chan int64, ackBufferDepth),
 		ingest:  &ingestCounter{on: true, window: ingestWindow},
 		decode:  func(string) (*image.RGBA, error) { return bitmap, nil },

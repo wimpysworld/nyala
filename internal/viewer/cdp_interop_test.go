@@ -399,7 +399,7 @@ func startCorpusEngine(fixture string, geom cdpGeometry, paintText bool) (*engin
 	e.SetDiagnosticFrameMeta(true)
 	e.SetCellPx(geom.cellW, geom.cellH)
 	e.SetLayoutWidth(cdpInteropLayoutWidth)
-	e.SetBackend("block")
+	e.SetBackend(BackendBlock)
 	e.SetDiagnosticTextPaint(paintText)
 	e.Resize(geom.cols, geom.rows)
 	if err := e.Navigate((&url.URL{Scheme: "file", Path: path}).String()); err != nil {
@@ -649,7 +649,7 @@ func captureCDPInteropFrames(tc cdpInteropCase) ([]render.Frame, error) {
 	e := engine.New("")
 	e.SetCellPx(cdpInteropCellW, cdpInteropCellH)
 	e.SetLayoutWidth(cdpInteropLayoutWidth)
-	e.SetBackend(tc.backend)
+	e.SetBackend(cdpInteropBackend(tc.backend))
 	e.Resize(cdpInteropCols, cdpInteropRows)
 	if err := e.Navigate(fixtureURL); err != nil {
 		_ = e.Close()

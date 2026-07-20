@@ -22,6 +22,7 @@ func TestValidateForcedBackend(t *testing.T) {
 		{"auto passes block only", ModeAuto, []Backend{BackendBlock}, false, ""},
 		{"block passes block only", ModeBlock, []Backend{BackendBlock}, false, ""},
 		{"block passes with graphics", ModeBlock, []Backend{BackendKitty, BackendSixel, BackendBlock}, false, ""},
+		{"block passes without block capability", ModeBlock, []Backend{BackendKitty, BackendSixel}, false, ""},
 		{"kitty passes when detected", ModeKitty, []Backend{BackendKitty, BackendBlock}, false, ""},
 		{"kitty fails when not detected", ModeKitty, []Backend{BackendBlock}, true, "kitty"},
 		{"sixel passes when detected", ModeSixel, []Backend{BackendSixel, BackendBlock}, false, ""},

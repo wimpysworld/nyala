@@ -229,7 +229,7 @@ func (e *ChromiumEngine) startInitialScreencast(ctx context.Context) error {
 }
 
 func (e *ChromiumEngine) initialScreencastFormatLocked() screencastFmt {
-	if e.backend == "block" {
+	if e.backend.CaptureFormat() == render.CaptureJPEG {
 		return screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality}
 	}
 	return screencastFmt{format: page.ScreencastFormatPng}

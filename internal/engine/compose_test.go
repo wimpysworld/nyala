@@ -15,7 +15,7 @@ import (
 // TestComposeFrameCopiesMeta asserts composeFrame copies screencast metadata for
 // diagnostic consumers that opt in before navigation.
 func TestComposeFrameCopiesMeta(t *testing.T) {
-	e := &ChromiumEngine{backend: "block", diagnosticFrameMeta: true}
+	e := &ChromiumEngine{backend: backendBlock, diagnosticFrameMeta: true}
 	ts := cdp.TimeSinceEpoch(time.Unix(0, int64(1500*float64(time.Millisecond))))
 	pending := pendingFrame{
 		img: image.NewRGBA(image.Rect(0, 0, 2, 2)),
@@ -60,7 +60,7 @@ func TestScreencastMetaDoesNotAllocate(t *testing.T) {
 // itself. The snapshot is now decoupled onto its own goroutine; composeFrame only
 // reads the published set.
 func TestComposeFrameFoldsPublishedText(t *testing.T) {
-	e := &ChromiumEngine{backend: "block"}
+	e := &ChromiumEngine{backend: backendBlock}
 	ts := &textSync{}
 	want := decodedRuns
 	ts.store(want, 0, 0)
@@ -80,7 +80,7 @@ func TestComposeFrameFoldsPublishedText(t *testing.T) {
 func TestSnapshotRunsRecordsForBlockOnly(t *testing.T) {
 	// Graphics: runTextSync gates on textOverlayBackend, which must be false, so the
 	// snapshot is skipped for sixel and kitty.
-	for _, backend := range []string{"sixel", "kitty"} {
+	for _, backend := range []backend{backendSixel, backendKitty} {
 		ge := &ChromiumEngine{backend: backend}
 		if ge.textOverlayBackend() {
 			t.Errorf("backend %q reports textOverlayBackend true, want false (snapshot skipped)", backend)
@@ -132,7 +132,7 @@ func TestShiftRunsToBitmapScrollZeroDeltaIsFastPath(t *testing.T) {
 }
 
 func TestComposeFrameOmitsMetaInNormalFlow(t *testing.T) {
-	e := &ChromiumEngine{backend: "block"}
+	e := &ChromiumEngine{backend: backendBlock}
 	pending := pendingFrame{
 		img:  image.NewRGBA(image.Rect(0, 0, 2, 2)),
 		meta: &page.ScreencastFrameMetadata{ScrollOffsetY: 240},
@@ -151,7 +151,7 @@ func TestComposeFrameOmitsMetaInNormalFlow(t *testing.T) {
 var benchmarkComposedFrame render.Frame
 
 func BenchmarkComposeFrameProduction(b *testing.B) {
-	e := &ChromiumEngine{backend: "block"}
+	e := &ChromiumEngine{backend: backendBlock}
 	pending := pendingFrame{img: image.NewRGBA(image.Rect(0, 0, 2, 2))}
 	b.ReportAllocs()
 	b.ResetTimer()

@@ -52,11 +52,11 @@ func TestLayoutScale(t *testing.T) {
 func TestLayoutScaleBackendGate(t *testing.T) {
 	const cols, cellW, layoutWidth = 240, 8, 1280
 
-	block := &ChromiumEngine{backend: "block", cols: cols, cellW: cellW, layoutWidth: layoutWidth}
+	block := &ChromiumEngine{backend: backendBlock, cols: cols, cellW: cellW, layoutWidth: layoutWidth}
 	if got := block.layoutScale(); math.Abs(got-1.5) > layoutScaleEps {
 		t.Errorf("block layoutScale = %g, want 1.5", got)
 	}
-	for _, backend := range []string{"sixel", "kitty"} {
+	for _, backend := range []backend{backendSixel, backendKitty} {
 		g := &ChromiumEngine{backend: backend, cols: cols, cellW: cellW, layoutWidth: layoutWidth}
 		if got := g.layoutScale(); math.Abs(got-1) > layoutScaleEps {
 			t.Errorf("%s layoutScale = %g, want 1 (graphics stays at DSF 1)", backend, got)

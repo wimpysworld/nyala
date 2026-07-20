@@ -47,7 +47,7 @@ func BenchmarkCDPNativeFrame(b *testing.B) {
 
 func benchmarkSharedDecode(b *testing.B, payload screencastBenchPayload) {
 	b.Run(payload.name+"/shared/current-rgba", func(b *testing.B) {
-		e := &ChromiumEngine{backend: "kitty"}
+		e := &ChromiumEngine{backend: backendKitty}
 		if _, err := e.decodeLiveFrame(payload.data); err != nil {
 			b.Fatal(err)
 		}
@@ -104,7 +104,7 @@ func benchmarkKittyFrame(b *testing.B, payload screencastBenchPayload) {
 
 func benchmarkSixelFrame(b *testing.B, payload screencastBenchPayload) {
 	b.Run(payload.name+"/sixel/current-rgba", func(b *testing.B) {
-		e := &ChromiumEngine{backend: "sixel"}
+		e := &ChromiumEngine{backend: backendSixel}
 		r := &rendersixel.Renderer{}
 		img, err := e.decodeLiveFrame(payload.data)
 		if err != nil {
@@ -198,7 +198,7 @@ func (w *byteCountingWriter) Write(p []byte) (int, error) {
 func validateNativeFrameOutputs(tb testing.TB, payloads []screencastBenchPayload) {
 	tb.Helper()
 	for _, payload := range payloads {
-		e := &ChromiumEngine{backend: "kitty"}
+		e := &ChromiumEngine{backend: backendKitty}
 		current, err := e.decodeLiveFrame(payload.data)
 		if err != nil {
 			tb.Fatalf("%s current decode: %v", payload.name, err)

@@ -17,7 +17,7 @@ var nativeFrameBenchImage image.Image
 func TestDecodeLiveFrameKeepsNativeJPEGForBlock(t *testing.T) {
 	src := loadSourceRGBA(t)
 	raw := encodeBaseline420(t, src)
-	e := &ChromiumEngine{backend: "block"}
+	e := &ChromiumEngine{backend: backendBlock}
 	got, err := e.decodeLiveFrame(base64.StdEncoding.EncodeToString(raw))
 	if err != nil {
 		t.Fatalf("decodeLiveFrame() = %v", err)
@@ -37,7 +37,7 @@ func TestDecodeLiveFrameKeepsNativePNGForPixelConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeFrameImage() = %v", err)
 	}
-	e := &ChromiumEngine{backend: "sixel"}
+	e := &ChromiumEngine{backend: backendSixel}
 	got, err := e.decodeLiveFrame(data)
 	if err != nil {
 		t.Fatalf("decodeLiveFrame() = %v", err)
@@ -49,7 +49,7 @@ func TestDecodeLiveFrameKeepsNativePNGForPixelConsumer(t *testing.T) {
 
 func TestDecodePoolRetainsDirectKittyPNG(t *testing.T) {
 	data := pngPayload(t)
-	e := &ChromiumEngine{backend: "kitty"}
+	e := &ChromiumEngine{backend: backendKitty}
 	rawQ, frames, stop := drivePool(t, e, 1)
 	defer stop()
 	rawQ.put(seqRawFrame{seq: 1, data: data})
@@ -70,7 +70,7 @@ func TestDecodePoolDecodesPNGForSixel(t *testing.T) {
 	data := pngPayload(t)
 	for _, workers := range []int{1, defaultDecodeWorkers(), maxDecodeWorkers} {
 		t.Run(itoa(workers), func(t *testing.T) {
-			e := &ChromiumEngine{backend: "sixel"}
+			e := &ChromiumEngine{backend: backendSixel}
 			rawQ, frames, stop := drivePool(t, e, workers)
 			defer stop()
 			rawQ.put(seqRawFrame{seq: 1, data: data})
@@ -92,7 +92,7 @@ func TestDecodePoolDecodesPNGForSixel(t *testing.T) {
 func BenchmarkNativeSharedJPEG(b *testing.B) {
 	src := tileTo(loadSourceRGBA(b), 2560, 2880)
 	data := base64.StdEncoding.EncodeToString(encodeBaseline420(b, src))
-	e := &ChromiumEngine{backend: "kitty"}
+	e := &ChromiumEngine{backend: backendKitty}
 	b.Run("current-rgba", func(b *testing.B) {
 		if img, err := e.decodeLiveFrame(data); err != nil {
 			b.Fatal(err)
@@ -135,7 +135,7 @@ func BenchmarkDirectPNGKitty(b *testing.B) {
 		b.Fatal(err)
 	}
 	data := base64.StdEncoding.EncodeToString(raw.Bytes())
-	e := &ChromiumEngine{backend: "kitty"}
+	e := &ChromiumEngine{backend: backendKitty}
 	b.Run("direct", func(b *testing.B) {
 		enc := &renderkitty.LiveEncoder{}
 		if !e.directKittyPNG(data) {
