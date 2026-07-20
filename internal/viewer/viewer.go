@@ -26,11 +26,11 @@ import (
 	"strings"
 
 	cterm "github.com/charmbracelet/x/term"
-	woozypng "github.com/woozymasta/png"
 	"golang.org/x/sys/unix"
 
 	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/metrics"
+	"github.com/wimpysworld/nyala/internal/pngdecode"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 	"github.com/wimpysworld/nyala/internal/render/kitty"
@@ -390,7 +390,7 @@ func decodeFramePNG(data string) (image.Image, error) {
 	if err != nil {
 		return nil, fmt.Errorf("viewer: decode retained PNG base64: %w", err)
 	}
-	img, err := woozypng.Decode(bytes.NewReader(raw))
+	img, err := pngdecode.Decode(bytes.NewReader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("viewer: decode retained PNG: %w", err)
 	}

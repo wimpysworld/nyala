@@ -10,7 +10,8 @@ import (
 
 	emmb64 "github.com/emmansun/base64"
 	"github.com/gen2brain/jpegn"
-	woozypng "github.com/woozymasta/png"
+
+	"github.com/wimpysworld/nyala/internal/pngdecode"
 )
 
 // pngSignature is the 8-byte PNG file magic. decodeFrameImage sniffs it to route
@@ -27,7 +28,7 @@ var pngSignature = []byte("\x89PNG\r\n\x1a\n")
 // image.Decode dispatch init-order dependent.
 func decodeFrameImage(raw []byte) (image.Image, error) {
 	if bytes.HasPrefix(raw, pngSignature) {
-		return woozypng.Decode(bytes.NewReader(raw))
+		return pngdecode.Decode(bytes.NewReader(raw))
 	}
 	img, _, err := image.Decode(bytes.NewReader(raw))
 	return img, err
