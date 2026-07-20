@@ -22,7 +22,7 @@ import (
 // snapshot decode, frame sync, and launch logic live in their own files.
 type ChromiumEngine struct {
 	// mu guards the session and geometry fields read or written from both the
-	// viewer goroutine (Resize, SetBackend, SendKey, SendMouse, dispatchWheel)
+	// viewer goroutine (Resize, SetBackend, SendKey, SendScroll, dispatchWheel)
 	// and the supervisor goroutine (startSession, teardownSession, launch,
 	// rebuild): ctx, cancel, acks, text, frame, cols, rows, scrollX,
 	// scrollY, scrollYTarget, backend, cellW, cellH, layoutWidth, windowID,
@@ -431,15 +431,6 @@ func (e *ChromiumEngine) SendKey(k Key) {
 		WithCode(k.Code).
 		WithModifiers(input.Modifier(k.Mod))
 	e.dispatchInput(ctx, ev)
-}
-
-// SendMouse forwards a mouse event to the page. A wheel event routes to the
-// wheel transport with its CSS-pixel deltas; the engine updates its owned scroll
-// offset there.
-func (e *ChromiumEngine) SendMouse(m MouseEvent) {
-	if m.DeltaX != 0 || m.DeltaY != 0 {
-		e.dispatchWheel(m.DeltaX, m.DeltaY)
-	}
 }
 
 // SendScroll scrolls the page down by dy CSS pixels through the same wheel
