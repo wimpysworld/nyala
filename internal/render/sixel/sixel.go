@@ -21,17 +21,7 @@ const emptyPayload = "\x1bP0;0;8q\x1b\\"
 // safe for concurrent callers while keeping production serial.
 type Renderer struct {
 	mu  sync.Mutex
-	dst encoderWriter
 	enc *opaqueEncoder
-}
-
-type encoderWriter struct{ dst io.Writer }
-
-func (w *encoderWriter) Write(p []byte) (int, error) {
-	if w.dst == nil {
-		return 0, io.ErrClosedPipe
-	}
-	return w.dst.Write(p)
 }
 
 // Compile-time assertion that Renderer satisfies render.Renderer.
@@ -54,11 +44,11 @@ func (r *Renderer) Render(f render.Frame, w io.Writer) error {
 		return nil
 	}
 	if r.enc == nil {
-		r.enc = newOpaqueEncoder(&r.dst)
+		r.enc = newOpaqueEncoder(nil)
 	}
-	r.dst.dst = w
+	r.enc.w = w
 	err := r.enc.encode(f.Img)
-	r.dst.dst = nil
+	r.enc.w = nil
 	if err != nil {
 		return fmt.Errorf("sixel: encode image: %w", err)
 	}
