@@ -347,7 +347,7 @@ func TestRenderReusesEncoderAndRecoversFromWriterError(t *testing.T) {
 	if err := r.Render(knownFrame(t), errorWriter{}); !errors.Is(err, errTestWriter) {
 		t.Fatalf("Render() error = %v, want %v", err, errTestWriter)
 	}
-	if r.dst.dst != nil {
+	if r.enc.w != nil {
 		t.Fatal("renderer retained the failed writer")
 	}
 	enc := r.enc
@@ -365,7 +365,7 @@ func TestRenderReusesEncoderAndRecoversFromWriterError(t *testing.T) {
 	if r.enc != enc {
 		t.Fatal("renderer replaced its persistent encoder")
 	}
-	if r.dst.dst != nil {
+	if r.enc.w != nil {
 		t.Fatal("renderer retained the successful writer")
 	}
 	if !bytes.Equal(first.Bytes(), second.Bytes()) {
