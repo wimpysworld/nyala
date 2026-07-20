@@ -93,8 +93,8 @@ func waitFor(d time.Duration, fn func() bool) bool {
 // press and asserts the on-screen backend actually flips. It starts on kitty,
 // presses Tab, and checks that the engine received a SetBackend for the next
 // backend and that the state advanced to block. This locks the whole Tab-cycle
-// wiring the unit-level State tests do not cover: the streamSession.handleKey
-// path that submits the engine restart and repaints at the new backend.
+// wiring through streamSession.handleKey, including the engine restart and
+// repaint at the new backend.
 func TestStreamTabCyclesBackend(t *testing.T) {
 	pr, pw, err := os.Pipe()
 	if err != nil {
