@@ -55,7 +55,7 @@ func BenchmarkSixelYCbCrFrame(b *testing.B) {
 func sixelBenchBytes(b *testing.B, s *State, img image.Image) int64 {
 	b.Helper()
 	var count countingWriter
-	if err := s.Renderer().Render(render.Frame{Img: img}, &count); err != nil {
+	if err := s.RenderStreamFrame(render.Frame{Img: img}, &count); err != nil {
 		b.Fatal(err)
 	}
 	return count.n
