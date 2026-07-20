@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"image/color"
@@ -13,6 +14,18 @@ import (
 
 	"github.com/wimpysworld/nyala/internal/render"
 )
+
+const textWalkConfigPlaceholder = "__NYALA_TEXT_WALK_CONFIG__"
+
+//go:embed walk.js
+var textWalkSource string
+
+type textWalkConfig struct {
+	CellWidth          float64 `json:"cellWidth"`
+	CellHeight         float64 `json:"cellHeight"`
+	OpacityThreshold   float64 `json:"opacityThreshold"`
+	GenerationProperty string  `json:"generationProperty"`
+}
 
 // walkColour is one RGBA colour the in-page walk returns per run, each channel a
 // 0..255 integer. The walk resolves the computed color in the page and folds the
@@ -80,200 +93,20 @@ type walkResult struct {
 // generation alongside the runs. The whole walk is one expression evaluated per
 // decode.
 func buildTextWalkScript(cellW, cellH float64) string {
-	var b strings.Builder
-	b.WriteString("(function(){")
-	fmt.Fprintf(&b, "var cw=%g,ch=%g;", cellW, cellH)
-	b.WriteString("var runs=[];")
-	// gcs memoises getComputedStyle per element for the walk's lifetime. A single text
-	// node otherwise triggers getComputedStyle on its parent from hiddenStyle, rgba, and
-	// bgOf, plus one call per ancestor from the hiddenStyle opacity walk and the bgOf
-	// background walk, and again from an occlusion hit-test's bgOf. The walk never mutates
-	// layout, so a cached CSSStyleDeclaration reads the same values as a fresh fetch; the
-	// cache dedups the repeats without changing any run. The Map is keyed by element and
-	// lives only for this synchronous evaluate.
-	b.WriteString("var csCache=new Map();")
-	b.WriteString("function gcs(el){if(!csCache.has(el)){csCache.set(el,getComputedStyle(el));}return csCache.get(el);}")
-	// hiddenStyle folds the client-side computed-style drops into the page: a
-	// visibility of hidden or collapse, an effective opacity below the floor, or the
-	// screen-reader-only clip-offscreen pattern (absolute or fixed positioning with a
-	// collapsed clip rect, a collapsed inset clip-path, or a 1px-square overflow-hidden
-	// box). The clip-path test parses the inset shorthand and drops the box when its
-	// left+right or top+bottom percentages reach 100, so it catches the literal
-	// inset(50%) and Chrome's normalised inset(0px 100% 100% 0px) alike. The 1px
-	// overflow-hidden test catches the width:1px;height:1px;overflow:hidden variant of
-	// the same visually-hidden idiom. The opacity walks ancestors so an ancestor
-	// opacity:0 zeroes a child whose own opacity is 1, matching the blended text opacity
-	// the DOMSnapshot decode read.
-	b.WriteString("function collapsed(clip){")
-	b.WriteString("var m=/^rect\\((.+)\\)$/.exec(clip);if(!m)return false;")
-	b.WriteString("var f=m[1].split(/[ ,]+/);if(f.length!==4)return false;")
-	b.WriteString("function off(s){s=s.trim();if(s==='auto')return null;return parseFloat(s);}")
-	b.WriteString("var t=off(f[0]),r=off(f[1]),bo=off(f[2]),l=off(f[3]);")
-	b.WriteString("var hc=(r!==null&&l!==null&&r<=l);var vc=(bo!==null&&t!==null&&bo<=t);")
-	b.WriteString("return hc||vc;}")
-	// clipPathHidden parses an inset() clip-path shorthand (1 to 4 space-separated
-	// values, CSS expansion: 1=all, 2=t/b l/r, 3=t l/r b, 4=t r b l) and returns true
-	// when the insets collapse the box: left%+right%>=100 or top%+bottom%>=100. A
-	// percentage contributes its number; a non-percentage length contributes 0. This
-	// subsumes the literal inset(50%) and catches inset(0px 100% 100% 0px).
-	b.WriteString("function clipPathHidden(cp){")
-	b.WriteString("var m=/^inset\\(([^)]+)\\)$/.exec(cp);if(!m)return false;")
-	b.WriteString("var p=m[1].trim().split(/\\s+/);var ri=p.indexOf('round');if(ri>=0)p=p.slice(0,ri);")
-	b.WriteString("if(p.length<1||p.length>4)return false;")
-	b.WriteString("function pc(s){return /%$/.test(s)?(parseFloat(s)||0):0;}")
-	b.WriteString("var t,r,bo,l;")
-	b.WriteString("if(p.length===1){t=r=bo=l=pc(p[0]);}")
-	b.WriteString("else if(p.length===2){t=bo=pc(p[0]);r=l=pc(p[1]);}")
-	b.WriteString("else if(p.length===3){t=pc(p[0]);r=l=pc(p[1]);bo=pc(p[2]);}")
-	b.WriteString("else{t=pc(p[0]);r=pc(p[1]);bo=pc(p[2]);l=pc(p[3]);}")
-	b.WriteString("return (l+r>=100)||(t+bo>=100);}")
-	b.WriteString("function hiddenStyle(el){")
-	b.WriteString("var s=gcs(el);")
-	b.WriteString("if(s.visibility==='hidden'||s.visibility==='collapse')return true;")
-	b.WriteString("var pos=s.position;")
-	b.WriteString("if((pos==='absolute'||pos==='fixed')&&(clipPathHidden(s.clipPath)||collapsed(s.clip)||(s.overflow==='hidden'&&parseFloat(s.width)<=1&&parseFloat(s.height)<=1)))return true;")
-	b.WriteString("var op=1;for(var a=el;a;a=a.parentElement){var ao=parseFloat(gcs(a).opacity);if(!isNaN(ao))op*=ao;}")
-	fmt.Fprintf(&b, "if(op<%g)return true;", hiddenOpacityEps)
-	b.WriteString("return false;}")
-	b.WriteString("function rgba(el){var c=gcs(el).color;")
-	b.WriteString("var m=/rgba?\\(([^)]+)\\)/.exec(c);if(!m)return{r:0,g:0,b:0,a:255};")
-	b.WriteString("var p=m[1].split(/[ ,\\/]+/).filter(function(x){return x.length;});")
-	b.WriteString("var a=p.length>3?Math.round(Math.max(0,Math.min(1,parseFloat(p[3])))*255):255;")
-	b.WriteString("return{r:parseInt(p[0])||0,g:parseInt(p[1])||0,b:parseInt(p[2])||0,a:a};}")
-	// bgOf resolves the run's DOM effective background colour. It walks from the
-	// text node's element up through ancestors, composites each background layer
-	// front-to-back accumulating coverage, and stops at the first fully opaque
-	// layer. When no ancestor is opaque it falls back to the documentElement then
-	// body background. It un-premultiplies the accumulated channels by the coverage
-	// so the stored RGB is straight colour, and returns a=round(cov*255): a==255
-	// only when a fully opaque background was resolved, so the block overlay fills a
-	// covered cell with a solid colour only when it is safe. A fully transparent
-	// stack returns a==0, the "no opaque background" signal.
-	b.WriteString("function bgOf(el){")
-	b.WriteString("function parse(c){var m=/rgba?\\(([^)]+)\\)/.exec(c);if(!m)return null;")
-	b.WriteString("var p=m[1].split(/[ ,\\/]+/).filter(function(x){return x.length;});")
-	b.WriteString("var a=p.length>3?Math.max(0,Math.min(1,parseFloat(p[3]))):1;")
-	b.WriteString("return{r:parseInt(p[0])||0,g:parseInt(p[1])||0,b:parseInt(p[2])||0,a:a};}")
-	b.WriteString("var or=0,og=0,ob=0,cov=0;")
-	b.WriteString("for(var a=el;a;a=a.parentElement){var s=parse(gcs(a).backgroundColor);")
-	b.WriteString("if(!s||s.a<=0)continue;var w=s.a*(1-cov);")
-	b.WriteString("or+=s.r*w;og+=s.g*w;ob+=s.b*w;cov+=w;if(cov>=0.999)break;}")
-	b.WriteString("if(cov<0.999){var ds=parse(gcs(document.documentElement).backgroundColor)||parse(document.body?gcs(document.body).backgroundColor:'');")
-	b.WriteString("if(ds&&ds.a>0){var w=ds.a*(1-cov);or+=ds.r*w;og+=ds.g*w;ob+=ds.b*w;cov+=w;}}")
-	b.WriteString("if(cov<=0)return{r:0,g:0,b:0,a:0};")
-	b.WriteString("return{r:Math.round(or/cov),g:Math.round(og/cov),b:Math.round(ob/cov),a:Math.round(Math.min(1,cov)*255)};}")
-	// occluded is the browsh-style occlusion cull: it hit-tests the line box centre
-	// with elementFromPoint and drops the run when a different, opaque element covers
-	// it, so behind-text under an opaque cookie banner, sticky header, or modal no
-	// longer leaks through the first-writer-wins overlay. A null hit-test (off-screen)
-	// is not occluded, so the run survives. The run's own element, or an ancestor or
-	// descendant on top, is not occluded either. A covering element counts as opaque
-	// only when bgOf resolves a fully opaque background (a==255), so a translucent
-	// scrim (a modal dim layer) does not cull the text behind it.
-	b.WriteString("function occluded(el,x,y){")
-	b.WriteString("var top=document.elementFromPoint(x,y);if(!top)return false;")
-	b.WriteString("if(top===el||el.contains(top)||top.contains(el))return false;")
-	b.WriteString("return bgOf(top).a>=255;}")
-	// The tree walker visits every text node. A node with no non-whitespace content
-	// or no parent element is skipped. rejectHidden drops a whole subtree whose parent
-	// element is hidden, so the walk never descends into a hidden container.
-	b.WriteString("var w=document.createTreeWalker(document.body||document.documentElement,NodeFilter.SHOW_TEXT,null);")
-	b.WriteString("var node;while((node=w.nextNode())){")
-	b.WriteString("var el=node.parentElement;if(!el)continue;")
-	b.WriteString("if(!node.nodeValue||!node.nodeValue.trim())continue;")
-	b.WriteString("if(hiddenStyle(el))continue;")
-	b.WriteString("var fg=rgba(el);var bg=bgOf(el);")
-	// Keep the node's text in ordered visual fragments, each carrying that line's own
-	// origin. One whole-node Range.getClientRects call identifies the browser's
-	// fragments. Word and code-unit rects map to the containing fragment by centre,
-	// with the nearest fragment as a rounding fallback. Consecutive words with the
-	// same fragment identity stay together. A different identity starts a new run,
-	// even when both fragments snap to the same row. The forced line-height puts every
-	// line box top at an integer multiple of ch. The fast path measures
-	// each whitespace-delimited word with a single getClientRects call instead of one
-	// per code unit. A word whose rects all map to one visual fragment lies on one line
-	// box and buckets as a unit; the union of its non-empty rects gives the same ink left, top,
-	// right, and bottom the per-unit min/max produced (the range excludes the
-	// surrounding whitespace, so a leading indent or a collapsed soft-wrap space never
-	// shifts the origin right of the first inked glyph), and joining a line's words with
-	// single spaces reproduces the whitespace-collapsed, trimmed text. This drops the
-	// getClientRects count from characters to words on dense spaced text. A word that
-	// spans more than one line box (a soft-wrapped long word, a spaceless CJK run, or
-	// vertical/ruby text) marks the node complex, and the per-code-unit fallback below
-	// decodes the whole node exactly as before.
-	b.WriteString("var text=node.nodeValue;var lines=[];")
-	b.WriteString("var rng=document.createRange();rng.selectNodeContents(node);")
-	b.WriteString("var nodeRects=rng.getClientRects();var fragments=[];")
-	b.WriteString("for(var fi=0;fi<nodeRects.length;fi++){var fr=nodeRects[fi];if(fr.width<=0&&fr.height<=0)continue;")
-	b.WriteString("fragments.push({id:fragments.length,l:fr.left,t:fr.top,r:fr.left+fr.width,b:fr.top+fr.height});}")
-	b.WriteString("function fragmentOf(rr){")
-	b.WriteString("var cx=rr.left+rr.width/2,cy=rr.top+rr.height/2,best=-1,bestDist=Infinity;")
-	b.WriteString("for(var fi=0;fi<fragments.length;fi++){var fr=fragments[fi];")
-	b.WriteString("if(cx>=fr.l-0.01&&cx<=fr.r+0.01&&cy>=fr.t-0.01&&cy<=fr.b+0.01)return fr.id;")
-	b.WriteString("var dx=cx<fr.l?fr.l-cx:(cx>fr.r?cx-fr.r:0);var dy=cy<fr.t?fr.t-cy:(cy>fr.b?cy-fr.b:0);")
-	b.WriteString("var dist=dx*dx+dy*dy;if(dist<bestDist){bestDist=dist;best=fr.id;}}return best;}")
-	b.WriteString("function lineAt(frag,row){")
-	b.WriteString("var ln=lines.length?lines[lines.length-1]:null;")
-	b.WriteString("if(!ln||ln.frag!==frag||ln.row!==row){ln={frag:frag,row:row,left:Infinity,top:Infinity,right:-Infinity,bottom:-Infinity,chars:[]};lines.push(ln);}")
-	b.WriteString("return ln;}")
-	b.WriteString("var words=[];var complex=false;var wre=/\\S+/g;var wm;")
-	b.WriteString("while((wm=wre.exec(text))){")
-	b.WriteString("rng.setStart(node,wm.index);rng.setEnd(node,wm.index+wm[0].length);")
-	b.WriteString("var wc=rng.getClientRects();")
-	b.WriteString("var wl=Infinity,wt=Infinity,wrt=-Infinity,wb=-Infinity,wrow=null,wfrag=null,wmulti=false;")
-	b.WriteString("for(var j=0;j<wc.length;j++){var rr=wc[j];if(rr.width<=0&&rr.height<=0)continue;")
-	b.WriteString("var rw=Math.round(rr.top/ch),rf=fragmentOf(rr);")
-	b.WriteString("if(wrow===null){wrow=rw;wfrag=rf;}else if(wrow!==rw||wfrag!==rf){wmulti=true;break;}")
-	b.WriteString("if(rr.left<wl)wl=rr.left;if(rr.top<wt)wt=rr.top;")
-	b.WriteString("if(rr.left+rr.width>wrt)wrt=rr.left+rr.width;if(rr.top+rr.height>wb)wb=rr.top+rr.height;}")
-	b.WriteString("if(wmulti){complex=true;break;}")
-	b.WriteString("if(wrow===null)continue;")
-	b.WriteString("words.push({frag:wfrag,row:wrow,l:wl,t:wt,r:wrt,b:wb,x:wm[0]});}")
-	// The per-code-unit fallback runs only for a complex node. Each code unit gets its
-	// own client rect, maps it to the whole-node visual fragment, and updates the line
-	// ink bounds over non-whitespace units only. All units stay in order so inter-word spaces
-	// survive the later collapse. This is the original walk, so wrapped words, spaceless
-	// runs, and non-left-to-right order decode byte-for-byte as before.
-	b.WriteString("if(complex){")
-	b.WriteString("for(var i=0;i<text.length;i++){")
-	b.WriteString("rng.setStart(node,i);rng.setEnd(node,i+1);")
-	b.WriteString("var rc=rng.getClientRects();if(!rc.length)continue;")
-	b.WriteString("var rr=rc[0];if(rr.width<=0&&rr.height<=0)continue;")
-	b.WriteString("var row=Math.round(rr.top/ch);")
-	b.WriteString("var frag=fragmentOf(rr);")
-	b.WriteString("var ln=lineAt(frag,row);")
-	b.WriteString("var ink=/\\S/.test(text[i]);")
-	b.WriteString("if(ink){")
-	b.WriteString("if(rr.left<ln.left)ln.left=rr.left;")
-	b.WriteString("if(rr.top<ln.top)ln.top=rr.top;")
-	b.WriteString("if(rr.left+rr.width>ln.right)ln.right=rr.left+rr.width;")
-	b.WriteString("if(rr.top+rr.height>ln.bottom)ln.bottom=rr.top+rr.height;}")
-	b.WriteString("ln.chars.push(text[i]);}")
-	b.WriteString("}else{")
-	// The node's words each lie on a single line box: bucket each into its visual
-	// fragment, union its rect into the ink bounds, and separate consecutive words on a
-	// line with one space so the joined, collapsed text matches the per-unit reconstruction.
-	b.WriteString("for(var wi=0;wi<words.length;wi++){var wd=words[wi];")
-	b.WriteString("var ln=lineAt(wd.frag,wd.row);")
-	b.WriteString("if(wd.l<ln.left)ln.left=wd.l;if(wd.t<ln.top)ln.top=wd.t;")
-	b.WriteString("if(wd.r>ln.right)ln.right=wd.r;if(wd.b>ln.bottom)ln.bottom=wd.b;")
-	b.WriteString("if(ln.chars.length)ln.chars.push(' ');ln.chars.push(wd.x);}")
-	b.WriteString("}")
-	b.WriteString("for(var k=0;k<lines.length;k++){var ln=lines[k];")
-	b.WriteString("if(!isFinite(ln.left))continue;")
-	b.WriteString("var t=ln.chars.join('').replace(/\\s+/g,' ').replace(/^ | $/g,'');if(!t)continue;")
-	b.WriteString("var h=ln.bottom-ln.top;")
-	fmt.Fprintf(&b, "if(h<ch/4)continue;")
-	b.WriteString("var cx=(ln.left+ln.right)/2,cy=(ln.top+ln.bottom)/2;")
-	b.WriteString("if(occluded(el,cx,cy))continue;")
-	b.WriteString("runs.push({t:t,c:Math.round(ln.left/cw),r:Math.round(ln.top/ch),x:ln.left,y:ln.top,w:ln.right-ln.left,h:h,fg:fg,bg:bg});}")
-	b.WriteString("}")
-	b.WriteString("var gen=(window." + layoutGenProperty + "||0);")
-	b.WriteString("var de=document.documentElement||{};")
-	b.WriteString("var sx=(window.pageXOffset||de.scrollLeft||0);")
-	b.WriteString("var sy=(window.pageYOffset||de.scrollTop||0);")
-	b.WriteString("return JSON.stringify({gen:gen,sx:sx,sy:sy,runs:runs});})();")
-	return b.String()
+	return buildTextWalkScriptFromConfig(textWalkConfig{
+		CellWidth:          cellW,
+		CellHeight:         cellH,
+		OpacityThreshold:   hiddenOpacityEps,
+		GenerationProperty: layoutGenProperty,
+	})
+}
+
+func buildTextWalkScriptFromConfig(config textWalkConfig) string {
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		return textWalkSource
+	}
+	return strings.Replace(textWalkSource, textWalkConfigPlaceholder, string(encoded), 1)
 }
 
 // textWalk runs one in-page text walk under the snapshot read timeout, so a wedged
