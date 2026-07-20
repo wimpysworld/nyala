@@ -131,6 +131,25 @@ func TestSamplePaletteExtremeAspectRatio(t *testing.T) {
 	}
 }
 
+func TestSamplePaletteIntoReusesScratch(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 1024, 128))
+	for i := range src.Pix {
+		src.Pix[i] = uint8(i)
+	}
+	palette, sample := samplePaletteInto(src, paletteColours, nil, nil)
+	if sample == nil {
+		t.Fatal("samplePaletteInto() did not allocate sample scratch for an image over budget")
+	}
+	want := sample
+	palette, sample = samplePaletteInto(src, paletteColours, palette, sample)
+	if sample != want {
+		t.Fatal("samplePaletteInto() replaced same-size sample scratch")
+	}
+	if len(palette) == 0 || len(palette) > paletteColours {
+		t.Fatalf("samplePaletteInto() returned %d colours, want 1..%d", len(palette), paletteColours)
+	}
+}
+
 func TestSamplePalette64KPreservesExactColourPath(t *testing.T) {
 	src := image.NewRGBA(image.Rect(0, 0, 24, 24))
 	for y := range 24 {
