@@ -6,7 +6,7 @@ import (
 )
 
 // TestEngineFieldsRaceFree drives the viewer-facing methods that read and write
-// the session and geometry fields (Resize, SetBackend, SendKey, SendMouse,
+// the session and geometry fields (Resize, SetBackend, SendKey, SendScroll,
 // SetCellPx) concurrently with a goroutine that churns the same fields under the
 // engine mutex. It keeps ctx and
 // queue nil so no chromedp I/O fires, so the test stays browser-free; run under
@@ -32,7 +32,7 @@ func TestEngineFieldsRaceFree(t *testing.T) {
 				e.SetBackend("sixel")
 			}
 			e.SendKey(Key{Code: "ArrowDown"})
-			e.SendMouse(MouseEvent{DeltaY: 40})
+			e.SendScroll(40)
 			e.SetCellPx(8+i%4, 16+i%4)
 		}
 	}()

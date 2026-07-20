@@ -12,12 +12,3 @@ type Key struct {
 	Code string // the physical key code
 	Mod  int    // modifier bitmask
 }
-
-// MouseEvent is a mouse event forwarded to the page. The engine maps it to a
-// CDP input event. Scroll uses the wheel deltas in CSS pixels.
-type MouseEvent struct {
-	X, Y           int // cursor position in CSS pixels
-	DeltaX, DeltaY int // wheel deltas in CSS pixels
-	Buttons        int // pressed-buttons mask (Left=1, Right=2, Middle=4)
-	Mod            int // modifier bitmask
-}
