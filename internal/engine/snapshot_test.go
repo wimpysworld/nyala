@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"image/color"
 	"strings"
 	"testing"
@@ -166,7 +167,7 @@ func TestBuildTextWalkScriptContents(t *testing.T) {
 	wants := []struct {
 		desc, fragment string
 	}{
-		{"cell dims seeded", "var cw=8.1,ch=16.7;"},
+		{"cell dims read from config", "var cw=config.cellWidth,ch=config.cellHeight;"},
 		{"per-line client rects", "getClientRects()"},
 		{"origin column snap against cell", "c:Math.round(ln.left/cw)"},
 		{"origin row snap", "r:Math.round(ln.top/ch)"},
@@ -177,10 +178,10 @@ func TestBuildTextWalkScriptContents(t *testing.T) {
 		{"occlusion hit-test", "elementFromPoint("},
 		{"occlusion predicate", "if(occluded(el,cx,cy))continue;"},
 		{"1px overflow-hidden drop", "s.overflow==='hidden'&&parseFloat(s.width)<=1&&parseFloat(s.height)<=1"},
-		{"effective-opacity drop", "if(op<0.05)return true;"},
+		{"effective-opacity drop", "if(op<config.opacityThreshold)return true;"},
 		{"computed colour read", "gcs(el).color"},
 		{"computed-style cache", "function gcs(el){"},
-		{"layout generation read", "window." + layoutGenProperty},
+		{"layout generation read", "window[config.generationProperty]"},
 		{"scroll offset read", "window.pageYOffset"},
 		{"json envelope", "JSON.stringify("},
 	}
@@ -188,6 +189,46 @@ func TestBuildTextWalkScriptContents(t *testing.T) {
 		if !strings.Contains(script, w.fragment) {
 			t.Errorf("walk script missing %s: %q not found", w.desc, w.fragment)
 		}
+	}
+}
+
+// TestBuildTextWalkScriptIsSingleExpression guards the CDP seam: each snapshot
+// builds one self-contained expression for one runtime evaluation.
+func TestBuildTextWalkScriptIsSingleExpression(t *testing.T) {
+	script := buildTextWalkScript(8.1, 16.7)
+	t.Logf("generated expression size: %d bytes", len(script))
+	if !strings.HasPrefix(script, "(function(config){") || !strings.HasSuffix(script, ");\n") {
+		t.Fatalf("walk script is not one self-contained IIFE: %q", script)
+	}
+	if strings.Count(script, "(function(config){") != 1 {
+		t.Fatalf("walk script contains more than one outer IIFE")
+	}
+	if strings.Contains(script, textWalkConfigPlaceholder) {
+		t.Fatalf("walk script still contains the config placeholder")
+	}
+}
+
+// TestBuildTextWalkScriptEncodesConfiguration checks that configuration stays a
+// JSON value even when the generation property contains JavaScript punctuation.
+func TestBuildTextWalkScriptEncodesConfiguration(t *testing.T) {
+	config := textWalkConfig{
+		CellWidth:          8.125,
+		CellHeight:         16.25,
+		OpacityThreshold:   0.05,
+		GenerationProperty: `x");globalThis.injected=true;//<`,
+	}
+	script := buildTextWalkScriptFromConfig(config)
+	start := strings.LastIndex(script, "})(")
+	if start < 0 || !strings.HasSuffix(script, ");\n") {
+		t.Fatalf("walk script has no encoded configuration invocation")
+	}
+	encoded := script[start+3 : len(script)-3]
+	var got textWalkConfig
+	if err := json.Unmarshal([]byte(encoded), &got); err != nil {
+		t.Fatalf("decode embedded config: %v", err)
+	}
+	if got != config {
+		t.Fatalf("embedded config = %#v, want %#v", got, config)
 	}
 }
 
