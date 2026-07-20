@@ -70,7 +70,6 @@ type Engine interface {
     Navigate(url string) error
     Frames() <-chan render.Frame
     SendKey(code string)
-    SendScroll(dy int)
     Close() error
 }
 ```

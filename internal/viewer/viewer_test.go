@@ -839,8 +839,6 @@ func (e streamTestEngine) SendKey(code string) {
 	}
 }
 
-func (e streamTestEngine) SendScroll(int) {}
-
 func (e streamTestEngine) Close() error { return nil }
 
 // solidImage builds a 16 x 16 RGBA image filled with one colour.

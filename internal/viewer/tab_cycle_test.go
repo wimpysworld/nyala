@@ -51,7 +51,6 @@ func (e *tabCycleEngine) SetLayoutWidth(int)          {}
 func (e *tabCycleEngine) Resize(int, int)             {}
 func (e *tabCycleEngine) Navigate(string) error       { return nil }
 func (e *tabCycleEngine) SendKey(string)              {}
-func (e *tabCycleEngine) SendScroll(int)              {}
 func (e *tabCycleEngine) Close() error                { return nil }
 
 // syncBuf is a concurrency-safe sink for the pipe reader goroutine.

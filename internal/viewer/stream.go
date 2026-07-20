@@ -49,9 +49,6 @@ type Engine interface {
 	// Scroll keys route to the engine's wheel transport; the engine owns the
 	// offset.
 	SendKey(code string)
-	// SendScroll scrolls the page down by dy CSS pixels through the engine's wheel
-	// transport. Diagnostic tests use it to exercise scroll synchronisation.
-	SendScroll(dy int)
 	// Close tears down the engine and the browser process.
 	Close() error
 }

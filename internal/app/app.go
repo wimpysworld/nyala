@@ -94,11 +94,6 @@ func (a engineAdapter) SendKey(code string) {
 	a.ChromiumEngine.SendKey(engine.Key{Code: code})
 }
 
-// SendScroll passes diagnostic scroll requests to the engine's wheel transport.
-func (a engineAdapter) SendScroll(dy int) {
-	a.ChromiumEngine.SendScroll(dy)
-}
-
 // normaliseURL prepends https:// when raw carries no scheme, then accepts only
 // http, https, and file. It returns a clear error for any other scheme.
 func normaliseURL(raw string) (string, error) {
