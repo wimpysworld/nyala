@@ -69,8 +69,14 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 		} else {
 			rgba = e.toRGBA(p)
 		}
+	case *image.NRGBA:
+		paletted, exact = palettedFromOpaquePixelsInto(e.paletted, p.Bounds(), p.Pix, p.PixOffset, colours-1)
+		e.paletted = paletted
+		if !exact {
+			rgba = e.toRGBA(p)
+		}
 	case *image.RGBA:
-		paletted, exact = palettedFromOpaquePixelsInto(e.paletted, p.Bounds(), p.Pix, p.Stride, p.PixOffset, colours-1)
+		paletted, exact = palettedFromOpaquePixelsInto(e.paletted, p.Bounds(), p.Pix, p.PixOffset, colours-1)
 		e.paletted = paletted
 		rgba = p
 	case *image.YCbCr:
@@ -437,14 +443,14 @@ func mapPalettedRows(dst *image.Paletted, src *image.RGBA, lut []uint8, first, l
 }
 
 func palettedFromRGBA(img *image.RGBA, maxColours int) (*image.Paletted, bool) {
-	return palettedFromOpaquePixels(img.Bounds(), img.Pix, img.Stride, img.PixOffset, maxColours)
+	return palettedFromOpaquePixels(img.Bounds(), img.Pix, img.PixOffset, maxColours)
 }
 
-func palettedFromOpaquePixels(bounds image.Rectangle, pix []byte, stride int, offset func(int, int) int, maxColours int) (*image.Paletted, bool) {
-	return palettedFromOpaquePixelsInto(nil, bounds, pix, stride, offset, maxColours)
+func palettedFromOpaquePixels(bounds image.Rectangle, pix []byte, offset func(int, int) int, maxColours int) (*image.Paletted, bool) {
+	return palettedFromOpaquePixelsInto(nil, bounds, pix, offset, maxColours)
 }
 
-func palettedFromOpaquePixelsInto(dst *image.Paletted, bounds image.Rectangle, pix []byte, stride int, offset func(int, int) int, maxColours int) (*image.Paletted, bool) {
+func palettedFromOpaquePixelsInto(dst *image.Paletted, bounds image.Rectangle, pix []byte, offset func(int, int) int, maxColours int) (*image.Paletted, bool) {
 	palette := make(color.Palette, 1, maxColours+1)
 	palette[0] = color.RGBA{}
 	indexes := make(map[uint32]uint8, maxColours)
@@ -452,7 +458,7 @@ func palettedFromOpaquePixelsInto(dst *image.Paletted, bounds image.Rectangle, p
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 		srcOffset := offset(bounds.Min.X, y)
 		dstOffset := dst.PixOffset(bounds.Min.X, y)
-		row := pix[srcOffset : srcOffset+bounds.Dx()*4 : srcOffset+stride]
+		row := pix[srcOffset : srcOffset+bounds.Dx()*4]
 		for x := range bounds.Dx() {
 			base := x * 4
 			key := uint32(row[base])<<24 | uint32(row[base+1])<<16 | uint32(row[base+2])<<8 | 0xff

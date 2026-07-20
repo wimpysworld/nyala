@@ -328,11 +328,105 @@ func TestRenderNilImageEmitsEmptyFramedPayload(t *testing.T) {
 	}
 }
 
-func TestRenderRejectsNRGBA(t *testing.T) {
+func TestRenderAcceptsNRGBA(t *testing.T) {
 	var r Renderer
-	err := r.Render(render.Frame{Img: image.NewNRGBA(image.Rect(0, 0, 1, 1))}, io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "unsupported image type") {
-		t.Fatalf("Render() error = %v, want unsupported image type", err)
+	var out bytes.Buffer
+	if err := r.Render(render.Frame{Img: image.NewNRGBA(image.Rect(0, 0, 1, 1))}, &out); err != nil {
+		t.Fatalf("Render() error = %v, want nil", err)
+	}
+	if out.Len() == 0 {
+		t.Fatal("Render() produced no Sixel output")
+	}
+}
+
+func TestPalettedFromOpaqueNRGBAExactColourParity(t *testing.T) {
+	bounds := image.Rect(3, 5, 11, 9)
+	src := image.NewNRGBA(bounds)
+	colours := []color.NRGBA{
+		{R: 0xff, A: 0xff},
+		{G: 0xff, A: 0xff},
+		{B: 0xff, A: 0xff},
+		{R: 0x33, G: 0x66, B: 0x99, A: 0xff},
+	}
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			src.SetNRGBA(x, y, colours[(x+y)%len(colours)])
+		}
+	}
+	got, exact := palettedFromOpaquePixels(src.Bounds(), src.Pix, src.PixOffset, 255)
+	if !exact {
+		t.Fatal("opaque NRGBA palette was not exact")
+	}
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			if want, colour := src.NRGBAAt(x, y), color.NRGBAModel.Convert(got.At(x, y)).(color.NRGBA); colour != want {
+				t.Fatalf("pixel (%d,%d) = %#v, want %#v", x, y, colour, want)
+			}
+		}
+	}
+}
+
+func TestPalettedFromOpaqueNRGBAColourBoundary(t *testing.T) {
+	for _, test := range []struct {
+		colours int
+		exact   bool
+	}{
+		{colours: 255, exact: true},
+		{colours: 256, exact: false},
+	} {
+		t.Run(fmt.Sprintf("%d-colours", test.colours), func(t *testing.T) {
+			src := image.NewNRGBA(image.Rect(0, 0, test.colours, 1))
+			for x := range test.colours {
+				src.SetNRGBA(x, 0, color.NRGBA{R: uint8(x), A: 0xff}) //nolint:gosec // The fixture covers exactly 256 byte values.
+			}
+			got, exact := palettedFromOpaquePixels(src.Bounds(), src.Pix, src.PixOffset, 255)
+			if exact != test.exact {
+				t.Fatalf("exact = %t, want %t", exact, test.exact)
+			}
+			if test.exact && len(got.Palette) != 256 {
+				t.Fatalf("palette size = %d, want 256 including the reserved background", len(got.Palette))
+			}
+		})
+	}
+}
+
+func TestPalettedFromOpaqueBottomEdgeSubImages(t *testing.T) {
+	bounds := image.Rect(3, 2, 10, 8)
+	for _, test := range []struct {
+		name string
+		new  func() image.Image
+	}{
+		{name: "nrgba", new: func() image.Image {
+			return image.NewNRGBA(image.Rect(0, 0, 12, 8)).SubImage(bounds)
+		}},
+		{name: "rgba", new: func() image.Image {
+			return image.NewRGBA(image.Rect(0, 0, 12, 8)).SubImage(bounds)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			src := test.new()
+			want := color.RGBA{R: 0x33, G: 0x66, B: 0x99, A: 0xff}
+			draw.Draw(src.(draw.Image), bounds, image.NewUniform(want), image.Point{}, draw.Src)
+			var pix []byte
+			var offset func(int, int) int
+			switch src := src.(type) {
+			case *image.NRGBA:
+				pix, offset = src.Pix, src.PixOffset
+			case *image.RGBA:
+				pix, offset = src.Pix, src.PixOffset
+			}
+			got, exact := palettedFromOpaquePixels(bounds, pix, offset, 255)
+			if !exact {
+				t.Fatal("padded sub-image palette was not exact")
+			}
+			for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+				for x := bounds.Min.X; x < bounds.Max.X; x++ {
+					if got.At(x, y) != want {
+						t.Fatalf("pixel (%d,%d) differs", x, y)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -503,6 +597,8 @@ func TestOpaqueEncoderMatchesGoSixel(t *testing.T) {
 			})
 		}
 	}
+	nrgba := image.NewNRGBA(bounds)
+	draw.Draw(nrgba, bounds, rgba, bounds.Min, draw.Src)
 	var jpegBytes bytes.Buffer
 	if err := jpeg.Encode(&jpegBytes, rgba, &jpeg.Options{Quality: 90}); err != nil {
 		t.Fatal(err)
@@ -514,6 +610,7 @@ func TestOpaqueEncoderMatchesGoSixel(t *testing.T) {
 
 	for name, img := range map[string]image.Image{
 		"rgba":  rgba,
+		"nrgba": nrgba,
 		"ycbcr": ycbcr,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -935,6 +1032,40 @@ func BenchmarkOpaqueEncoderComparison(b *testing.B) {
 			}
 		}
 	})
+}
+
+func BenchmarkOpaqueEncoderNRGBA(b *testing.B) {
+	for _, test := range []struct {
+		name string
+		high bool
+	}{
+		{name: "low-colour"},
+		{name: "high-colour", high: true},
+	} {
+		b.Run(test.name, func(b *testing.B) {
+			img := image.NewNRGBA(image.Rect(0, 0, 64, 64))
+			for y := range 64 {
+				for x := range 64 {
+					colour := color.NRGBA{R: uint8((x % 2) * 255), G: uint8((y % 2) * 255), A: 0xff} //nolint:gosec // Modulo bounds both channels.
+					if test.high {
+						colour = color.NRGBA{R: uint8(x * 4), G: uint8(y * 4), B: uint8(x*17 + y*29), A: 0xff} //nolint:gosec // Wrapping creates more than 255 colours.
+					}
+					img.SetNRGBA(x, y, colour)
+				}
+			}
+			encoder := newOpaqueEncoder(io.Discard)
+			if err := encoder.encode(img); err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if err := encoder.encode(img); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
 
 func assertOpaque(tb testing.TB, img image.Image) {
