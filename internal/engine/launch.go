@@ -106,16 +106,28 @@ func (e *ChromiumEngine) textOverlayBackend() bool {
 	return e.backend.UsesTextOverlay()
 }
 
+type allocatorConfig struct {
+	execPath              string
+	surfaceWidth          int
+	surfaceHeight         int
+	scale                 float64
+	proxy                 ProxyConfig
+	enableGPU             bool
+	enableAudio           bool
+	disableFrameRateLimit bool
+}
+
 // newAllocator builds a chromedp ExecAllocator for the resolved executable,
-// sized to surfW x surfH, the real device-pixel surface (surfaceSize). It sets the
-// launch --window-size from the surface size and the device scale factor to z: the
-// block backend passes its continuous Z so the page lays out at surf/Z CSS pixels,
+// sized to the configured real device-pixel surface (surfaceSize). It sets the
+// launch --window-size from the surface size and the configured device scale factor:
+// the block backend passes its continuous Z so the page lays out at surf/Z CSS pixels,
 // and the graphics backends pass 1. The window size matters because
 // emulation.SetDeviceMetricsOverride resizes only the CSS viewport, not the
 // captured content area; the surface is then sized authoritatively with
-// Browser.SetContentsSize once the context and window id exist. When cfg has a
-// Server it adds --proxy-server; it adds --proxy-bypass-list only when both a
-// Server and a Bypass are set, so a stray NO_PROXY without a proxy adds no flag.
+// Browser.SetContentsSize once the context and window id exist. When
+// cfg.proxy.Server is set it adds --proxy-server; it adds --proxy-bypass-list only
+// when both cfg.proxy.Server and cfg.proxy.Bypass are set, so a stray NO_PROXY
+// without a proxy adds no flag.
 // When enableGPU is set it adds --enable-gpu: headless Chromium forces SwiftShader
 // (CPU) by default, and this flag turns that force off and reverts to normal driver
 // selection, so a GPU-backed Mesa driver can serve WebGL.
@@ -128,16 +140,16 @@ func (e *ChromiumEngine) textOverlayBackend() bool {
 // gesture, and Nyala has no input yet. The caller gates audio on a detected host
 // sink. disableFrameRateLimit appends Chromium's matching launch switch when
 // requested; false preserves the default allocator options.
-func newAllocator(parent context.Context, execPath string, surfW, surfH int, z float64, cfg ProxyConfig, enableGPU, enableAudio, disableFrameRateLimit bool) (context.Context, context.CancelFunc) {
+func newAllocator(parent context.Context, cfg allocatorConfig) (context.Context, context.CancelFunc) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.ExecPath(execPath),
-		chromedp.WindowSize(surfW, surfH),
-		chromedp.Flag("force-device-scale-factor", strconv.FormatFloat(z, 'g', -1, 64)),
+		chromedp.ExecPath(cfg.execPath),
+		chromedp.WindowSize(cfg.surfaceWidth, cfg.surfaceHeight),
+		chromedp.Flag("force-device-scale-factor", strconv.FormatFloat(cfg.scale, 'g', -1, 64)),
 	)
-	if enableGPU {
+	if cfg.enableGPU {
 		opts = append(opts, chromedp.Flag("enable-gpu", true))
 	}
-	if enableAudio {
+	if cfg.enableAudio {
 		opts = append(opts, chromedp.Flag("mute-audio", false))
 		// Chromium blocks audible autoplay until a user gesture. Nyala has no input
 		// yet, so audible media on a page would never start. Allow gesture-free
@@ -145,10 +157,10 @@ func newAllocator(parent context.Context, execPath string, surfW, surfH int, z f
 		// pairs with the unmute above and rides the same live-path gate.
 		opts = append(opts, chromedp.Flag("autoplay-policy", "no-user-gesture-required"))
 	}
-	for _, name := range frameRateLimitFlags(disableFrameRateLimit) {
+	for _, name := range frameRateLimitFlags(cfg.disableFrameRateLimit) {
 		opts = append(opts, chromedp.Flag(name, true))
 	}
-	for _, pair := range proxyFlags(cfg) {
+	for _, pair := range proxyFlags(cfg.proxy) {
 		opts = append(opts, chromedp.Flag(pair[0], pair[1]))
 	}
 	return chromedp.NewExecAllocator(parent, opts...)
@@ -284,7 +296,16 @@ func (e *ChromiumEngine) launch(flag string) error {
 	e.mu.Unlock()
 	enableGPU := true
 	enableAudio := audioAvailable()
-	allocCtx, allocCancel := newAllocator(context.Background(), execPath, surfW, surfH, z, e.proxy, enableGPU, enableAudio, disableFrameRateLimit)
+	allocCtx, allocCancel := newAllocator(context.Background(), allocatorConfig{
+		execPath:              execPath,
+		surfaceWidth:          surfW,
+		surfaceHeight:         surfH,
+		scale:                 z,
+		proxy:                 e.proxy,
+		enableGPU:             enableGPU,
+		enableAudio:           enableAudio,
+		disableFrameRateLimit: disableFrameRateLimit,
+	})
 	ctx, ctxCancel := chromedp.NewContext(allocCtx)
 	cancel := func() {
 		ctxCancel()
