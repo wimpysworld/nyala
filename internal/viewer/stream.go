@@ -575,10 +575,10 @@ func (s *streamSession) resize() error {
 	return s.emitControl([]byte(clearScreen))
 }
 
-// handleKey forwards one key to the engine or the state machine and reports
-// whether the user asked to quit. A scroll key forwards its code; the engine
-// owns the offset. Tab cycles the backend and restarts the stream at the new
-// capture size.
+// handleKey forwards one key to the engine or handles the viewer hotkeys and
+// reports whether the user asked to quit. A scroll key forwards its code; the
+// engine owns the offset. Tab cycles the backend and restarts the stream at the
+// new capture size.
 func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 	if ev.scroll != ScrollNone {
 		code := scrollKeyCode(ev.scroll)
@@ -589,12 +589,12 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		}
 		return false
 	}
-	wasKitty := s.st.Backend == BackendKitty
-	act := s.st.HandleKey(ev.b)
-	if act.Quit {
+	switch ev.b {
+	case 'q', 'Q', keyQuitCtrlC:
 		return true
-	}
-	if act.Redraw && ev.b == keyTab {
+	case keyTab:
+		wasKitty := s.st.Backend == BackendKitty
+		s.st.CycleBackend()
 		if wasKitty && s.st.Backend != BackendKitty {
 			// Free both double-buffer images when leaving kitty, so the terminal keeps
 			// no stale image and a later return rebuilds from id 1. Capture the reset

@@ -6,9 +6,8 @@
 // once from the --blocks flag and the colour depth from the --color flag, so
 // neither is a live toggle.
 //
-// State holds the whole machine and is pure and testable without a live
-// terminal: every hotkey is a method that mutates State. Stream wires State to
-// a raw TTY and an Engine's pushed frames.
+// State holds the viewer's render and backend state. Stream wires it to a raw
+// TTY, handles hotkeys, and draws an Engine's pushed frames.
 package viewer
 
 import (
@@ -67,13 +66,10 @@ const (
 	ColourMono
 )
 
-// State is the viewer's full state machine. It is pure: every field is data and
-// every hotkey method mutates only this struct, so the machine is exercised in a
-// unit test without a live terminal. Cols and Rows are the terminal size in
-// cells. Enabled lists the
-// backends the Tab cycle steps through, in cycle order, highest-fidelity first
-// with block last; the embedded cellPx is the real terminal cell pixel size used
-// to scale the graphics backends.
+// State is the viewer's render and backend state. Cols and Rows are the terminal
+// size in cells. Enabled lists the backends the Tab cycle steps through, in cycle
+// order, highest-fidelity first with block last; the embedded cellPx is the real
+// terminal cell pixel size used to scale the graphics backends.
 type State struct {
 	Backend Backend      // active backend in the cycle
 	Scheme  block.Scheme // block glyph scheme; applies only to the block backend
@@ -247,9 +243,8 @@ func (s *State) Resize(cols, rows int) {
 }
 
 // ScrollKey is a recognised scroll key. The viewer does not track scroll state
-// (the engine owns the offset); it surfaces the pressed scroll key on Action so
-// the push consumer (stream.go) forwards it to engine.SendKey. ScrollNone is the
-// zero value: no scroll key.
+// (the engine owns the offset); the push consumer forwards the pressed key to
+// engine.SendKey. ScrollNone is the zero value: no scroll key.
 type ScrollKey int
 
 const (
@@ -269,13 +264,6 @@ const (
 	ScrollPageDown
 )
 
-// Action is the outcome of feeding one key to the state machine: whether the
-// viewer should redraw and whether it should quit.
-type Action struct {
-	Redraw bool // the state changed; the caller should re-render
-	Quit   bool // the user asked to quit
-}
-
 // keyQuitCtrlC is the Ctrl-C byte; keyTab is the Tab byte; keyEsc is the escape
 // byte that opens a CSI sequence.
 const (
@@ -283,21 +271,6 @@ const (
 	keyTab       = 0x09
 	keyEsc       = 0x1b
 )
-
-// HandleKey applies one key byte to the state machine and reports the action.
-// Tab cycles the backend; 'q' or Ctrl-C quits. Any other key is ignored with no
-// redraw. It never touches the terminal, so it is unit-tested directly.
-func (s *State) HandleKey(b byte) Action {
-	switch b {
-	case keyTab:
-		s.CycleBackend()
-		return Action{Redraw: true}
-	case 'q', 'Q', keyQuitCtrlC:
-		return Action{Quit: true}
-	default:
-		return Action{}
-	}
-}
 
 // decodeCSI maps a CSI sequence body (the bytes after ESC [) to a scroll key. It
 // recognises the arrow finals A/B/C/D and the PageUp/PageDown sequences 5~/6~.

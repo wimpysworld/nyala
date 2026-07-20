@@ -121,48 +121,6 @@ func TestResolveScheme(t *testing.T) {
 	}
 }
 
-// TestHandleKey asserts the hotkey table: Tab cycles, 'q' and Ctrl-C quit, and
-// any other key (including the retired 's' and 'c' toggles) is an inert no-op.
-func TestHandleKey(t *testing.T) {
-	s := NewState(120, 40)
-	s.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
-	if s.Backend != BackendKitty {
-		t.Fatalf("initial backend = %d, want BackendKitty", s.Backend)
-	}
-
-	if act := s.HandleKey(keyTab); !act.Redraw || act.Quit {
-		t.Fatalf("Tab action = %+v, want redraw", act)
-	}
-	if s.Backend != BackendSixel {
-		t.Fatalf("Tab did not cycle backend: %d", s.Backend)
-	}
-
-	// The scheme and colour toggles are retired: 's' and 'c' are now inert, so
-	// they redraw nothing and leave the scheme and colour untouched.
-	for _, b := range []byte{'s', 'S', 'c', 'C'} {
-		if act := s.HandleKey(b); act.Redraw || act.Quit {
-			t.Fatalf("%q action = %+v, want inert no-op", b, act)
-		}
-	}
-	if s.Scheme != block.SchemeQuadrant {
-		t.Fatalf("scheme changed after retired toggle: %d", s.Scheme)
-	}
-	if s.Colour != ColourTrue {
-		t.Fatalf("colour changed after retired toggle: %d", s.Colour)
-	}
-
-	if act := s.HandleKey('z'); act.Redraw || act.Quit {
-		t.Fatalf("unknown key action = %+v, want no-op", act)
-	}
-
-	if act := s.HandleKey('q'); !act.Quit {
-		t.Fatalf("'q' action = %+v, want quit", act)
-	}
-	if act := s.HandleKey(keyQuitCtrlC); !act.Quit {
-		t.Fatalf("Ctrl-C action = %+v, want quit", act)
-	}
-}
-
 // TestDecodeCSI asserts the CSI body decoder maps the arrow finals A/B/C/D and
 // the PageUp/PageDown bodies 5~/6~ to their scroll keys, and rejects an
 // unrecognised body (here the Home key, ESC [ H).
@@ -283,6 +241,7 @@ func TestStreamLoopQuitsAfterDownArrowWhenSendKeyBlocks(t *testing.T) {
 		quit keyEvent
 	}{
 		{"q", keyEvent{b: 'q'}},
+		{"Q", keyEvent{b: 'Q'}},
 		{"ctrl-c", keyEvent{b: keyQuitCtrlC}},
 	}
 	for _, c := range cases {
