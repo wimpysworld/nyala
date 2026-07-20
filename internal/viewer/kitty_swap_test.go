@@ -203,13 +203,45 @@ func TestKittyDirectPNGUsesRawPayloadAndIDs(t *testing.T) {
 func TestRetainedPNGFallsBackAfterBackendSwitch(t *testing.T) {
 	s := NewState(8, 4)
 	s.Backend = BackendSixel
-	data := encodedPNG(t, solidImageSize(8, 8, color.RGBA{G: 0xff, A: 0xff}))
+	img := image.NewNRGBA(image.Rect(0, 0, 8, 8))
+	colours := []color.NRGBA{
+		{R: 0xff, A: 0xff},
+		{G: 0xff, A: 0xff},
+		{B: 0xff, A: 0xff},
+		{R: 0xff, G: 0xff, B: 0xff, A: 0xff},
+	}
+	for y := range 8 {
+		for x := range 8 {
+			img.SetNRGBA(x, y, colours[(x+y)%len(colours)])
+		}
+	}
+	img.Pix[3] = 0xfe // Keep an alpha channel in the encoded PNG.
+	data := encodedPNG(t, img)
+	decoded, err := decodeFramePNG(data)
+	if err != nil {
+		t.Fatalf("decode retained PNG: %v", err)
+	}
+	if _, ok := decoded.(*image.NRGBA); !ok {
+		t.Fatalf("decoded retained PNG = %T, want *image.NRGBA", decoded)
+	}
 	var out bytes.Buffer
 	if err := s.RenderStreamFrame(render.Frame{EncodedPNG: data}, &out); err != nil {
 		t.Fatalf("render retained PNG through Sixel: %v", err)
 	}
-	if !strings.HasPrefix(out.String(), "\x1bP0;0;8q") || !strings.HasSuffix(out.String(), "\x1b\\") {
-		t.Fatalf("fallback output is not a framed Sixel image")
+	roundTrip, err := renderdecode.DecodeSixel(out.Bytes())
+	if err != nil {
+		t.Fatalf("decode fallback Sixel: %v", err)
+	}
+	if roundTrip.Bounds() != img.Bounds() {
+		t.Fatalf("decoded bounds = %v, want %v", roundTrip.Bounds(), img.Bounds())
+	}
+	for y := range 8 {
+		for x := range 8 {
+			want, got := img.NRGBAAt(x, y), roundTrip.RGBAAt(x, y)
+			if got.R != want.R || got.G != want.G || got.B != want.B {
+				t.Fatalf("decoded pixel (%d,%d) = %#v, want RGB(%d,%d,%d)", x, y, got, want.R, want.G, want.B)
+			}
+		}
 	}
 }
 
