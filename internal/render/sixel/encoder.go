@@ -143,12 +143,10 @@ func (e *opaqueEncoder) appendBandsParallel(dst []byte, paletted *image.Paletted
 	var wg sync.WaitGroup
 	for worker := range workers {
 		lo, hi := completeBands*worker/workers, completeBands*(worker+1)/workers
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			scratch := &e.band[worker]
 			scratch.out = appendBandRange(scratch.out[:0], paletted, scratch, lo, hi)
-		}()
+		})
 	}
 	wg.Wait()
 	for worker := range workers {
@@ -380,9 +378,7 @@ func paletteLUT(lut []uint8, palette color.Palette) []uint8 {
 	var wg sync.WaitGroup
 	for worker := range workers {
 		lo, hi := len(lut)*worker/workers, len(lut)*(worker+1)/workers
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := lo; i < hi; i++ {
 				r := int32(i>>10&31<<3 | 4) //nolint:gosec // A 15-bit LUT index bounds this to 252.
 				g := int32(i>>5&31<<3 | 4)  //nolint:gosec // A 15-bit LUT index bounds this to 252.
@@ -396,7 +392,7 @@ func paletteLUT(lut []uint8, palette color.Palette) []uint8 {
 				}
 				lut[i] = uint8(best)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	return lut
@@ -416,11 +412,9 @@ func mapPaletted(dst *image.Paletted, src *image.RGBA, lut []uint8) {
 	for worker := range workers {
 		lo := bounds.Min.Y + bounds.Dy()*worker/workers
 		hi := bounds.Min.Y + bounds.Dy()*(worker+1)/workers
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			mapPalettedRows(dst, src, lut, lo, hi)
-		}()
+		})
 	}
 	wg.Wait()
 }
