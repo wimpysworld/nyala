@@ -1,16 +1,14 @@
 // Package viewer is the interactive raw-terminal frame viewer for Nyala.
 //
 // The viewer draws each frame an Engine pushes to the terminal. It cycles the
-// render backend (block, sixel, kitty) behind
-// the render.Renderer seam. The block glyph scheme (quadrant, half-block) is set
+// render backend (block, sixel, kitty). The block glyph scheme (quadrant,
+// half-block) is set
 // once from the --blocks flag and the colour depth from the --color flag, so
-// neither is a live toggle. Switching backend swaps only the Renderer value;
-// nothing above the seam changes.
+// neither is a live toggle.
 //
 // State holds the whole machine and is pure and testable without a live
-// terminal: every hotkey is a method that mutates State, and Renderer derives
-// its result from State alone. Stream wires State to a raw TTY and an
-// Engine's pushed frames.
+// terminal: every hotkey is a method that mutates State. Stream wires State to
+// a raw TTY and an Engine's pushed frames.
 package viewer
 
 import (
@@ -241,29 +239,11 @@ func (s *State) CycleBackend() Backend {
 	return s.Backend
 }
 
-// Resize records a new terminal size in cells. The next Renderer reflects the
-// new size.
+// Resize records a new terminal size in cells. The next frame reflects the new
+// size.
 func (s *State) Resize(cols, rows int) {
 	s.Cols = cols
 	s.Rows = rows
-}
-
-// Renderer returns the render.Renderer for the active backend. Switching backend
-// changes only this returned value; the Frame above the seam is identical across
-// backends. The block renderer carries the current scheme; the graphics backends
-// carry no scheme or colour state.
-func (s *State) Renderer() render.Renderer {
-	switch s.Backend {
-	case BackendSixel:
-		if s.sixelEnc == nil {
-			s.sixelEnc = &sixel.Renderer{}
-		}
-		return s.sixelEnc
-	case BackendKitty:
-		return &kitty.Renderer{}
-	default:
-		return &block.Renderer{Cols: s.Cols, Rows: s.Rows, Scheme: s.Scheme}
-	}
 }
 
 // ScrollKey is a recognised scroll key. The viewer does not track scroll state
@@ -379,7 +359,10 @@ func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
 	if s.Cols <= 0 || s.Rows <= 0 {
 		return nil
 	}
-	return s.encodeGraphics(img, w)
+	if s.sixelEnc == nil {
+		s.sixelEnc = &sixel.Renderer{}
+	}
+	return s.sixelEnc.Render(render.Frame{Img: img}, w)
 }
 
 // decodeFramePNG materialises a retained CDP PNG only when a non-Kitty consumer
@@ -455,12 +438,6 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 	}
 	frame.Img = s.scratch.downscale.DownscaleInto(s.scratch.downscaleDst(pxW, pxH), frame.Img, s.scratch.pool)
 	return s.scratch.compose.ComposeInto(&br, &s.scratch.out, frame, s.scratch.pool)
-}
-
-// encodeGraphics encodes the engine-sized bitmap with the active graphics
-// backend from the top-left. Sixel draws the bitmap alone.
-func (s *State) encodeGraphics(img image.Image, w io.Writer) error {
-	return s.Renderer().Render(render.Frame{Img: img}, w)
 }
 
 // encodeKittyPNG transmits a retained CDP PNG unchanged, then deletes the prior

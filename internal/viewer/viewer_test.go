@@ -16,8 +16,6 @@ import (
 	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
-	"github.com/wimpysworld/nyala/internal/render/kitty"
-	"github.com/wimpysworld/nyala/internal/render/sixel"
 	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
 
@@ -120,68 +118,6 @@ func TestResolveScheme(t *testing.T) {
 				t.Errorf("resolveScheme(%q, env) = %d, want %d", c.blocks, got, c.scheme)
 			}
 		})
-	}
-}
-
-// TestRendererSwapsBehindSeam asserts each backend yields a render.Renderer with
-// the matching Name, and that switching backend changes only the returned value:
-// the same Frame renders through every backend with no error.
-func TestRendererSwapsBehindSeam(t *testing.T) {
-	s := NewState(8, 4)
-	frame := render.Frame{Img: solidImage(color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})}
-
-	cases := []struct {
-		backend Backend
-		name    string
-	}{
-		{BackendBlock, "block"},
-		{BackendSixel, "sixel"},
-		{BackendKitty, "kitty"},
-	}
-	for _, c := range cases {
-		s.Backend = c.backend
-		r := s.Renderer()
-		if r.Name() != c.name {
-			t.Fatalf("backend %d name = %q, want %q", c.backend, r.Name(), c.name)
-		}
-		var buf bytes.Buffer
-		if err := r.Render(frame, &buf); err != nil {
-			t.Fatalf("render backend %q: %v", c.name, err)
-		}
-		if buf.Len() == 0 {
-			t.Fatalf("render backend %q: empty output", c.name)
-		}
-	}
-}
-
-// TestRendererConcreteTypes asserts each backend resolves to its concrete type,
-// confirming the swap is a renderer-value swap and nothing above the seam.
-func TestRendererConcreteTypes(t *testing.T) {
-	s := NewState(8, 4)
-
-	s.Backend = BackendBlock
-	if _, ok := s.Renderer().(*block.Renderer); !ok {
-		t.Fatalf("block backend = %T, want *block.Renderer", s.Renderer())
-	}
-	s.Backend = BackendSixel
-	if _, ok := s.Renderer().(*sixel.Renderer); !ok {
-		t.Fatalf("sixel backend = %T, want *sixel.Renderer", s.Renderer())
-	}
-	s.Backend = BackendKitty
-	if _, ok := s.Renderer().(*kitty.Renderer); !ok {
-		t.Fatalf("kitty backend = %T, want *kitty.Renderer", s.Renderer())
-	}
-}
-
-func TestSixelRendererPersistsAcrossBackendSwitch(t *testing.T) {
-	s := NewState(8, 4)
-	s.Backend = BackendSixel
-	first := s.Renderer()
-	s.Backend = BackendBlock
-	_ = s.Renderer()
-	s.Backend = BackendSixel
-	if second := s.Renderer(); second != first {
-		t.Fatal("Sixel renderer was replaced across a backend switch")
 	}
 }
 
