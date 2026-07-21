@@ -25,16 +25,18 @@ func msSince(start time.Time) float64 {
 // listener goroutine and hands to compose. It carries no ack id: the frame was
 // already acknowledged on receipt, before decode.
 type pendingFrame struct {
-	img  image.Image                   // decoded bitmap in its decoder-native layout
-	png  string                        // owned base64 PNG for direct live Kitty transmission
-	meta *page.ScreencastFrameMetadata // scroll offset and page scale for the sync
+	img      image.Image                   // decoded bitmap in its decoder-native layout
+	png      string                        // owned base64 PNG for direct live Kitty transmission
+	meta     *page.ScreencastFrameMetadata // scroll offset and page scale for the sync
+	afterFCP bool                          // received after main-frame first contentful paint
 }
 
 // handleScreencastFrameLive acknowledges a frame on receipt and queues it for
 // parallel decode, tagged with its arrival sequence for ordered publication.
 func (e *ChromiumEngine) handleScreencastFrameLive(q *rawFrameQueue, seq uint64, f *page.EventScreencastFrame) {
-	e.receiveScreencastFrame(f)
-	q.put(seqRawFrame{seq: seq, data: f.Data, meta: f.Metadata})
+	afterFCP := e.afterMainFrameFCP()
+	e.receiveScreencastFrame(f, afterFCP)
+	q.put(seqRawFrame{seq: seq, data: f.Data, meta: f.Metadata, afterFCP: afterFCP})
 }
 
 // receiveScreencastFrame counts true ingest before queue coalescing and
@@ -43,10 +45,11 @@ func (e *ChromiumEngine) handleScreencastFrameLive(q *rawFrameQueue, seq uint64,
 // once and decoupled from decode and any downstream stall. It runs on the chromedp
 // ListenTarget event goroutine, so it does no PNG decode and no chromedp.Run: the ack
 // is enqueued for ackPump to run off this goroutine (the #920-safe off-goroutine ack).
-func (e *ChromiumEngine) receiveScreencastFrame(f *page.EventScreencastFrame) {
+func (e *ChromiumEngine) receiveScreencastFrame(f *page.EventScreencastFrame, afterFCP ...bool) {
 	// Count true ingest for every delivered frame, before any coalescing or drop.
 	// Gated behind the armed check so an off run pays one bool check and no clock read.
-	if e.ingest.armed() {
+	count := len(afterFCP) == 0 || afterFCP[0]
+	if count && e.ingest.armed() {
 		e.ingest.record(time.Now())
 	}
 	// Ack on receive, before any decode. The enqueue is #920-safe: ackPump runs the
@@ -126,8 +129,9 @@ func (e *ChromiumEngine) runApplySizing(ctx context.Context, windowID browser.Wi
 
 // screencastTransition describes one lock-owned stream start or restart.
 type screencastTransition struct {
-	stop   bool
-	resize bool
+	stop              bool
+	resize            bool
+	skipUnchangedSize bool
 }
 
 // sameScreencastSession compares the cancellation channel that identifies one
@@ -160,6 +164,7 @@ func (e *ChromiumEngine) transitionScreencastLocked(ctx context.Context, change 
 	surfW, surfH := e.surfaceSize(e.cols, e.rows)
 	capW, capH := e.screencastCap(e.cols, e.rows)
 	z := e.layoutScale()
+	needsSizing := surfW != e.sizedSurfaceW || surfH != e.sizedSurfaceH || z != e.sizedScale
 	e.mu.Unlock()
 
 	if change.stop {
@@ -173,10 +178,15 @@ func (e *ChromiumEngine) transitionScreencastLocked(ctx context.Context, change 
 		}
 		e.mu.Unlock()
 	}
-	if change.resize {
+	if change.resize && (!change.skipUnchangedSize || needsSizing) {
 		if err := e.runApplySizing(ctx, windowID, surfW, surfH, z); err != nil {
 			return fmt.Errorf("engine: resize viewport: %w", err)
 		}
+		e.mu.Lock()
+		if sameScreencastSession(e.ctx, ctx) {
+			e.sizedSurfaceW, e.sizedSurfaceH, e.sizedScale = surfW, surfH, z
+		}
+		e.mu.Unlock()
 	}
 	if err := e.runStartScreencast(ctx, capW, capH, fmtSel); err != nil {
 		return fmt.Errorf("engine: start screencast: %w", err)
@@ -222,7 +232,7 @@ func (e *ChromiumEngine) startInitialScreencast(ctx context.Context) error {
 	}
 	e.screencastCtl.Lock()
 	defer e.screencastCtl.Unlock()
-	return e.transitionScreencastLocked(ctx, screencastTransition{resize: true})
+	return e.transitionScreencastLocked(ctx, screencastTransition{resize: true, skipUnchangedSize: true})
 }
 
 func (e *ChromiumEngine) initialScreencastFormatLocked() screencastFmt {
@@ -333,7 +343,13 @@ func (e *ChromiumEngine) ackPump(ctx context.Context, acks *ackQueue) {
 		default:
 		}
 		if ack, ok := acks.pop(); ok {
-			_ = e.runScreencastFrameAck(ctx, ack)
+			if err := e.runScreencastFrameAck(ctx, ack); err != nil {
+				// An acknowledgement command failure loses Chromium's screencast
+				// credit. Cancel this session so the supervisor rebuilds it; never
+				// retry the popped SessionID and risk a duplicate acknowledgement.
+				e.recoverScreencastTransition(ctx, err)
+				return
+			}
 			continue
 		}
 		select {
@@ -459,6 +475,7 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 	// no rebuild race with startSession's write. A nil timer is a valid disabled timer.
 	e.mu.Lock()
 	timer := e.timing
+	lifecycle := e.lifecycle
 	e.mu.Unlock()
 	var state overlayState
 	// lastCalCellW/H track the (cellW, cellH) pair the last calibration corrected
@@ -468,6 +485,13 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 	var lastCalCellW, lastCalCellH float64
 	if !e.waitForFirstSnapshot(ctx, ts) {
 		return
+	}
+	if lifecycle != nil {
+		select {
+		case <-lifecycle.fcp:
+		case <-ctx.Done():
+			return
+		}
 	}
 	// Reconcile font forcing to the active backend before the first publish. On the
 	// block path this is the no-op the launch injection already covered; on a
@@ -821,7 +845,12 @@ func (e *ChromiumEngine) composeFrame(pending pendingFrame, ts *textSync, lastCo
 	if lastComposed != nil {
 		*lastComposed = composed
 	}
-	frame := render.Frame{Img: pending.img, EncodedPNG: pending.png, Text: composed}
+	// A held bitmap re-emitted after the lifecycle event is also an after-FCP
+	// emission. This matters on static pages where the paint frame reaches the
+	// screencast listener just before the corresponding lifecycle event and no new
+	// image arrives afterwards.
+	afterFCP := pending.afterFCP || e.afterMainFrameFCP()
+	frame := render.Frame{Img: pending.img, EncodedPNG: pending.png, Text: composed, AfterFCP: afterFCP}
 	if e.diagnosticFrameMeta && pending.meta != nil {
 		e.mu.Lock()
 		serial := e.diagnosticCalibrationSerial

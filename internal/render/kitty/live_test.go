@@ -51,6 +51,9 @@ func TestLiveEncoderPNGPassThrough(t *testing.T) {
 			t.Errorf("first control %q missing %s", frames[0].control, opt)
 		}
 	}
+	if hasControlOpt(frames[0].control, "z=-1073741825") {
+		t.Fatal("ordinary live encode unexpectedly carries the FPS z-index")
+	}
 	for i := 1; i < len(frames)-1; i++ {
 		if frames[i].control != chunkMore {
 			t.Errorf("middle control %d = %q, want %q", i, frames[i].control, chunkMore)
@@ -79,6 +82,25 @@ func TestLiveEncoderPNGPassThrough(t *testing.T) {
 				t.Fatalf("decoded pixel (%d,%d) differs", x, y)
 			}
 		}
+	}
+
+	var layered bytes.Buffer
+	if err := e.EncodePNGIDAtZ(data, 7, -1073741825, &layered); err != nil {
+		t.Fatalf("EncodePNGIDAtZ() = %v", err)
+	}
+	layeredFrames := splitAPCFrames(t, layered.String())
+	if !hasControlOpt(layeredFrames[0].control, "z=-1073741825") {
+		t.Fatalf("first layered control %q missing negative z-index", layeredFrames[0].control)
+	}
+	var layeredPayload strings.Builder
+	for i, frame := range layeredFrames {
+		if i > 0 && strings.Contains(frame.control, "z=") {
+			t.Fatalf("continuation control %d carries z-index: %q", i, frame.control)
+		}
+		layeredPayload.WriteString(frame.body)
+	}
+	if layeredPayload.String() != data {
+		t.Fatal("layered chunked PNG payload differs from the supplied base64 bytes")
 	}
 }
 

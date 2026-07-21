@@ -2,8 +2,12 @@ package engine
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 
+	"github.com/chromedp/cdproto"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
@@ -35,9 +39,6 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	cy := float64(e.rows*e.cellH) / 2
 	e.mu.Unlock()
 
-	crashed = make(chan struct{})
-	e.watchCrash(crashed)
-	e.watchPaint()
 	// Feed a bounded, drop-oldest queue to a small pool of decode
 	// workers, so several frames decode in parallel and the block-backend frame rate is
 	// no longer capped by a single ~28 ms decode. A collector re-serialises the pool by
@@ -53,7 +54,7 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// reSnap, reflow, and scroll clock the snapshot goroutine off the page, not off
 	// frame delivery: reSnap fires an immediate re-snapshot on resize or backend
 	// switch (restartStream), reflow carries the debounced networkAlmostIdle late
-	// reflow (watchPaint), and scroll carries the debounced scroll-offset change the
+	// reflow (watchLifecycle), and scroll carries the debounced scroll-offset change the
 	// frame loop detects. Each is capacity 1 latest-wins, so a burst coalesces to one
 	// wake. All are goroutine-scoped to this session, so ctx cancellation stops the
 	// goroutines and the channels need no teardown reset beyond clearing the fields.
@@ -64,6 +65,7 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// frame loop, so a static page repaints with text once the snapshot publishes.
 	// Capacity 1 latest-wins, so a burst of publishes coalesces to one re-emit.
 	reEmit := make(chan struct{}, 1)
+	lifecycle := newSessionLifecycle()
 	e.mu.Lock()
 	e.rawQ = rawQ
 	e.acks = acks
@@ -73,10 +75,18 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	e.reflow = reflow
 	e.scroll = scroll
 	e.reEmit = reEmit
+	e.lifecycle = lifecycle
 	e.timing = timer
 	e.screencastFmt = screencastFmt{}
 	e.screencastStarted = false
 	e.mu.Unlock()
+
+	// Every listener, queue, worker, collector, and acknowledgement path is live
+	// before navigation. Page.navigate can commit and paint immediately, so no
+	// event or first post-commit frame may race plumbing construction.
+	crashed = make(chan struct{})
+	e.watchCrash(crashed)
+	e.watchLifecycle(ctx, lifecycle)
 	go func() {
 		defer close(ackPumpDone)
 		e.ackPump(ctx, acks)
@@ -86,12 +96,6 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// context, so registering here (not in startScreencast) keeps a backend switch
 	// or resize from leaking a second listener.
 	e.registerScreencastListener(ctx, rawQ)
-	if err = e.startInitialScreencast(ctx); err != nil {
-		e.teardownSession()
-		return nil, err
-	}
-	timer.mark(labelScreencastStarted)
-	go e.runTextSync(ctx, ts, reSnap, reflow, scroll, reEmit)
 	{
 		// Live: a pool of decode workers feeds one collector that re-serialises them by
 		// arrival sequence and owns the compose, the held-frame re-emit, the scroll
@@ -111,46 +115,88 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 		}()
 	}
 
-	// Navigate and the held-scroll restore run on one ordered path: navigateAsync
-	// drives the load waiter, then restores the held offset only after the load
-	// signal, so document-exists happens-before scroll-restore. A fresh navigate
-	// lands at the top, so a non-zero held offset is re-applied as one mouseWheel
-	// at the viewport centre by the held deltas.
-	go e.navigateAsync(ctx, url, scrollRestore{x: scrollX, y: scrollY, cx: cx, cy: cy})
+	// Dispatch raw Page.navigate and wait only for its matching main-frame commit.
+	// Capture starts after that commit, so about:blank can never enter the raw queue
+	// or clear the viewer's loading cue. Full load and held subresources do not gate
+	// progressive image delivery.
+	if err = e.navigateAndStartCapture(ctx, lifecycle, url); err != nil {
+		e.teardownSession()
+		return nil, err
+	}
+	timer.mark(labelScreencastStarted)
+	// Text sync starts only after the committed document exists. Its first
+	// snapshot separately waits for this main frame's first contentful paint.
+	go e.runTextSync(ctx, ts, reSnap, reflow, scroll, reEmit)
+	if scrollX != 0 || scrollY != 0 {
+		wheel := input.DispatchMouseEvent(input.MouseWheel, cx, cy).
+			WithDeltaX(float64(scrollX)).
+			WithDeltaY(float64(scrollY))
+		_ = chromedp.Run(ctx, wheel)
+	}
 	return crashed, nil
 }
 
-// scrollRestore is the held scroll offset re-applied after a navigate completes,
-// expressed as the wheel deltas and the viewport-centre coordinates the engine
-// dispatches one mouseWheel from. A zero offset restores nothing.
-type scrollRestore struct {
-	x, y   int     // held scroll deltas in CSS pixels
-	cx, cy float64 // viewport-centre coordinates for the mouseWheel dispatch
+// navigateAndStartCapture is the startup ordering seam: prepared plumbing first,
+// raw navigation second, matching commit third, and initial capture last.
+func (e *ChromiumEngine) navigateAndStartCapture(ctx context.Context, lifecycle *sessionLifecycle, url string) error {
+	if err := e.navigateToCommit(ctx, lifecycle, url); err != nil {
+		return err
+	}
+	return e.startCaptureAfterCommit(ctx, lifecycle)
 }
 
-// navigateAsync drives navigation through chromedp's full responseAction waiter
-// (chromedp.Navigate) on this goroutine, after the screencast and frame loop are
-// live. The waiter learns the loaderID from the "init" lifecycle event, buffers
-// pre-loaderID events, matches the top frame, and finishes on the matched load
-// signal; lifecycle events are enabled per session so it can match. Running it
-// here, off the launch path, keeps startup non-blocking so the raw-mode viewer
-// keeps Ctrl-C live during launch. The waiter's completion is the
-// bounded timeout backstop for the paint latch: watchPaint fires markPainted on
-// the firstContentfulPaint lifecycle event, and this navigate-return call is the
-// backstop so a page that never fires that event still closes the latch. A
-// navigate errorText renders the browser's own error page rather than tearing the
-// session down, so the supervisor never rebuilds on a failed URL.
-func (e *ChromiumEngine) navigateAsync(ctx context.Context, url string, restore scrollRestore) {
-	_ = chromedp.Run(ctx, chromedp.Navigate(url))
-	// Restore the held scroll offset only after the load signal, so the document
-	// exists before the wheel lands. This sequences navigate then scroll-restore on
-	// one ordered path and closes the navigate-vs-scroll race.
-	if restore.x != 0 || restore.y != 0 {
-		wheel := input.DispatchMouseEvent(input.MouseWheel, restore.cx, restore.cy).
-			WithDeltaX(float64(restore.x)).
-			WithDeltaY(float64(restore.y))
-		_ = chromedp.Run(ctx, wheel)
+// startCaptureAfterCommit starts capture at the navigation commit. Chromium can
+// briefly reject StartScreencast with "Not attached to an active page" while the
+// committed renderer becomes active. That specific state waits for the matching
+// main frame's DOMContentLoaded lifecycle event and retries once. This is an
+// event-driven readiness retry, not a load wait or timer; a held subresource does
+// not delay it.
+func (e *ChromiumEngine) startCaptureAfterCommit(ctx context.Context, lifecycle *sessionLifecycle) error {
+	err := e.startInitialScreencast(ctx)
+	if !pageNotActive(err) {
+		return err
 	}
+	select {
+	case <-lifecycle.domReady:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return e.startInitialScreencast(ctx)
+}
+
+func pageNotActive(err error) bool {
+	var cdpErr *cdproto.Error
+	return errors.As(err, &cdpErr) && cdpErr.Code == -32000 && cdpErr.Message == "Not attached to an active page"
+}
+
+// navigateToCommit dispatches raw Page.navigate and waits for the matching
+// main-frame EventFrameNavigated. It does not wait for DOMContentLoaded, load, or
+// network idle. ErrorText remains renderable: Chromium commits its error document
+// under the returned frame and loader, so it follows the same commit gate.
+func (e *ChromiumEngine) navigateToCommit(ctx context.Context, lifecycle *sessionLifecycle, url string) error {
+	frameID, loaderID, _, isDownload, err := e.runNavigate(ctx, url)
+	if err != nil {
+		return fmt.Errorf("engine: navigate: %w", err)
+	}
+	if isDownload {
+		return fmt.Errorf("engine: navigate: target became a download")
+	}
+	if _, err := lifecycle.waitForCommit(ctx, frameID, loaderID); err != nil {
+		return fmt.Errorf("engine: wait for navigation commit: %w", err)
+	}
+	return nil
+}
+
+// runNavigate executes raw Page.navigate or the deterministic test hook.
+func (e *ChromiumEngine) runNavigate(ctx context.Context, url string) (frameID cdp.FrameID, loaderID cdp.LoaderID, errorText string, isDownload bool, err error) {
+	if e.navigateOp != nil {
+		return e.navigateOp(ctx, url)
+	}
+	err = chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		frameID, loaderID, errorText, isDownload, err = page.Navigate(url).Do(ctx)
+		return err
+	}))
+	return
 }
 
 // finishStartup marks the supervisor as live after startup has a session. If
@@ -209,48 +255,143 @@ func (e *ChromiumEngine) watchCrash(crashed chan struct{}) {
 	})
 }
 
-// watchPaint registers a ListenTarget handler that watches the Page frame and
-// lifecycle event streams plus the Runtime binding stream. On a Page.frameNavigated
-// whose frame has no parent it records the main frame id, the gate for the paint arm.
-// On a "firstContentfulPaint" lifecycle event it fires markPainted, the primary
-// paint-gate fire source the snapshot goroutine reads as its first-snapshot clock,
-// but only when the event's frame is the main frame; a subframe (iframe) painting
-// first must not close the latch early. On that same main-frame paint it pokes the
-// reflow channel so the crisp overlay decodes promptly. On "networkAlmostIdle" it pokes the reflow
-// channel for a debounced late re-snapshot, catching a reflow that lands without
-// navigation or resize (web fonts loading, async content). On a Runtime.bindingCalled
-// for the layout-shift binding it pokes the same reflow channel, so a layout shift
-// that lands after the last trigger (a late web-font swap, an image loading and
-// reshaping a card) re-decodes the text and the overlay tracks the final layout; the
-// injected observer already thresholds the shift score, and the reflow debounce and
-// 1s cap rate-limit it. SetLifecycleEventsEnabled
-// is on per session (launch), so the lifecycle events are delivered. paintedOnce
-// latches the paint close, so a repeat event or the navigate-return backstop is a
-// no-op; the reflow poke is latest-wins and rate-capped on the snapshot goroutine,
-// so a chatty page cannot drive it. The listener attaches before navigation,
-// mirroring watchCrash, so no event is missed. It reads e.reflow at event time, not
-// at registration, because startSession sets the channel after this attaches. The
-// main frame's own frameNavigated fires before its firstContentfulPaint in practice;
-// if a paint event ever beats it the arm drops, and the navigate-return backstop
-// still closes the latch.
-func (e *ChromiumEngine) watchPaint() {
+// navigationCommit is the identity of one committed top-frame document.
+type navigationCommit struct {
+	frameID  cdp.FrameID
+	loaderID cdp.LoaderID
+}
+
+// sessionLifecycle retains navigation commits in an unbounded FIFO and latches
+// main-frame first contentful paint. The listener can therefore run before the
+// Page.navigate command without blocking or losing a commit that arrives before
+// the command response supplies its frame and loader identifiers.
+type sessionLifecycle struct {
+	mu         sync.Mutex
+	commits    []navigationCommit
+	head       int
+	ready      chan struct{}
+	mainFrame  cdp.FrameID
+	mainLoader cdp.LoaderID
+	fcp        chan struct{}
+	fcpOnce    sync.Once
+	afterFCP   atomic.Bool
+	domReady   chan struct{}
+	domOnce    sync.Once
+}
+
+func newSessionLifecycle() *sessionLifecycle {
+	return &sessionLifecycle{ready: make(chan struct{}, 1), fcp: make(chan struct{}), domReady: make(chan struct{})}
+}
+
+func (s *sessionLifecycle) recordDOMContentLoaded(frameID cdp.FrameID, loaderID cdp.LoaderID) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	mainFrame := s.mainFrame
+	mainLoader := s.mainLoader
+	s.mu.Unlock()
+	if mainFrame == "" || frameID != mainFrame || (loaderID != "" && mainLoader != "" && loaderID != mainLoader) {
+		return false
+	}
+	s.domOnce.Do(func() { close(s.domReady) })
+	return true
+}
+
+func (s *sessionLifecycle) recordCommit(frame *cdp.Frame) {
+	if s == nil || frame == nil || frame.ParentID != "" {
+		return
+	}
+	s.mu.Lock()
+	s.mainFrame = frame.ID
+	s.mainLoader = frame.LoaderID
+	s.commits = append(s.commits, navigationCommit{frameID: frame.ID, loaderID: frame.LoaderID})
+	s.mu.Unlock()
+	select {
+	case s.ready <- struct{}{}:
+	default:
+	}
+}
+
+func (s *sessionLifecycle) recordFCP(frameID cdp.FrameID, loaderID ...cdp.LoaderID) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	mainFrame := s.mainFrame
+	mainLoader := s.mainLoader
+	s.mu.Unlock()
+	eventLoader := cdp.LoaderID("")
+	if len(loaderID) > 0 {
+		eventLoader = loaderID[0]
+	}
+	if mainFrame == "" || frameID != mainFrame || (eventLoader != "" && mainLoader != "" && eventLoader != mainLoader) {
+		return false
+	}
+	s.afterFCP.Store(true)
+	s.fcpOnce.Do(func() { close(s.fcp) })
+	return true
+}
+
+func (s *sessionLifecycle) popMatching(frameID cdp.FrameID, loaderID cdp.LoaderID) (navigationCommit, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for s.head < len(s.commits) {
+		commit := s.commits[s.head]
+		s.head++
+		if (frameID == "" || commit.frameID == frameID) && (loaderID == "" || commit.loaderID == loaderID) {
+			if s.head == len(s.commits) {
+				s.commits = s.commits[:0]
+				s.head = 0
+			}
+			return commit, true
+		}
+	}
+	s.commits = s.commits[:0]
+	s.head = 0
+	return navigationCommit{}, false
+}
+
+func (s *sessionLifecycle) waitForCommit(ctx context.Context, frameID cdp.FrameID, loaderID cdp.LoaderID) (navigationCommit, error) {
+	if s == nil {
+		return navigationCommit{}, fmt.Errorf("no lifecycle tracker")
+	}
+	for {
+		if commit, ok := s.popMatching(frameID, loaderID); ok {
+			return commit, nil
+		}
+		select {
+		case <-s.ready:
+		case <-ctx.Done():
+			return navigationCommit{}, ctx.Err()
+		}
+	}
+}
+
+// afterMainFrameFCP reports the listener-ordered FCP state for a newly received
+// screencast frame. Tests without session lifecycle retain the historical true
+// default, while every live session installs a tracker before capture can start.
+func (e *ChromiumEngine) afterMainFrameFCP() bool {
 	e.mu.Lock()
-	ctx := e.ctx
+	lifecycle := e.lifecycle
 	e.mu.Unlock()
-	// mainFrame is closure-local and touched only from this listener. chromedp
-	// dispatches every ListenTarget callback for a target sequentially from one
-	// event goroutine, so the read and write need no extra locking.
-	var mainFrame cdp.FrameID
+	return lifecycle == nil || lifecycle.afterFCP.Load()
+}
+
+// watchLifecycle records top-frame commits, latches the matching main-frame FCP,
+// and retains the existing late-reflow and layout-shift triggers. It attaches
+// before raw navigation and before screencast start.
+func (e *ChromiumEngine) watchLifecycle(ctx context.Context, lifecycle *sessionLifecycle) {
 	chromedp.ListenTarget(ctx, func(ev any) {
 		switch t := ev.(type) {
 		case *page.EventFrameNavigated:
-			if t.Frame != nil && t.Frame.ParentID == "" {
-				mainFrame = t.Frame.ID
-			}
+			lifecycle.recordCommit(t.Frame)
 		case *page.EventLifecycleEvent:
 			switch t.Name {
+			case "DOMContentLoaded":
+				lifecycle.recordDOMContentLoaded(t.FrameID, t.LoaderID)
 			case "firstContentfulPaint":
-				if mainFrame != "" && t.FrameID == mainFrame {
+				if lifecycle.recordFCP(t.FrameID, t.LoaderID) {
 					e.pokeReflow()
 				}
 			case "networkAlmostIdle":
@@ -265,7 +406,7 @@ func (e *ChromiumEngine) watchPaint() {
 }
 
 // isLayoutShiftBinding reports whether a Runtime.bindingCalled name is the
-// layout-shift binding, so the watchPaint arm pokes the reflow channel only for the
+// layout-shift binding, so the lifecycle watcher pokes the reflow channel only for the
 // engine's own binding and ignores any other page-registered binding. It is the pure
 // match the listener runs, factored out so it is unit-tested without a browser.
 func isLayoutShiftBinding(name string) bool {
@@ -275,7 +416,7 @@ func isLayoutShiftBinding(name string) bool {
 // pokeReflow signals the snapshot goroutine for a debounced late re-snapshot. The
 // send is latest-wins (select-with-default on a capacity-1 channel), so a burst of
 // networkAlmostIdle events collapses to one pending wake and the event goroutine
-// never blocks. It reads e.reflow under mu because watchPaint may fire before
+// never blocks. It reads e.reflow under mu because watchLifecycle may fire before
 // startSession sets the channel and teardownSession clears it; a nil channel drops
 // the poke, which the no-backstop trigger tolerates.
 func (e *ChromiumEngine) pokeReflow() {
@@ -310,9 +451,11 @@ func (e *ChromiumEngine) teardownSession() {
 	e.ackPumpDone = nil
 	e.rawQ = nil
 	e.reSnap, e.reflow, e.scroll, e.reEmit = nil, nil, nil, nil
+	e.lifecycle = nil
 	e.framePublisherDone = nil
 	e.screencastFmt = screencastFmt{}
 	e.screencastStarted = false
+	e.sizedSurfaceW, e.sizedSurfaceH, e.sizedScale = 0, 0, 0
 	e.windowID = 0
 	e.fontForcingID = ""
 	e.layoutShiftID = ""

@@ -77,9 +77,10 @@ func decodeWorkerCount() int {
 // older frame after a newer one has already published is dropped by comparing seq.
 // It carries no ack id: the frame is acked on receive, before it enters the queue.
 type seqRawFrame struct {
-	seq  uint64                        // strictly increasing arrival sequence
-	data string                        // base64 screencast payload, decoded by a worker
-	meta *page.ScreencastFrameMetadata // scroll offset and page scale for the sync
+	seq      uint64                        // strictly increasing arrival sequence
+	data     string                        // base64 screencast payload, decoded by a worker
+	meta     *page.ScreencastFrameMetadata // scroll offset and page scale for the sync
+	afterFCP bool                          // received after main-frame first contentful paint
 }
 
 // decodedFrame is one decoded screencast frame a worker hands to the collector,
@@ -167,7 +168,7 @@ func (e *ChromiumEngine) runDecodeWorker(ctx context.Context, q *rawFrameQueue, 
 			if ingestArmed {
 				start = time.Now()
 			}
-			pending := pendingFrame{meta: raw.meta}
+			pending := pendingFrame{meta: raw.meta, afterFCP: raw.afterFCP}
 			switch {
 			case decode != nil:
 				img, derr := decode(raw.data)

@@ -303,6 +303,13 @@ func decodeCSI(body []byte) (ScrollKey, bool) {
 // one guard covers both the block and the graphics paths, so neither downscales to
 // a zero extent.
 func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
+	return s.renderStreamFrame(frame, w, false)
+}
+
+// renderStreamFrame draws a live frame and optionally places a Kitty page image
+// below terminal text. The option is private to the FPS-enabled stream path, so
+// public rendering, diagnostics, and non-FPS Kitty output retain their bytes.
+func (s *State) renderStreamFrame(frame render.Frame, w io.Writer, kittyBelowText bool) error {
 	if !frame.HasImage() {
 		return nil
 	}
@@ -310,7 +317,7 @@ func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
 		if frame.EncodedPNG == "" {
 			return nil
 		}
-		return s.encodeKittyPNG(frame.EncodedPNG, w)
+		return s.encodeKittyPNG(frame.EncodedPNG, w, kittyBelowText)
 	}
 	img := frame.Img
 	if img == nil {
@@ -413,12 +420,18 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 
 // encodeKittyPNG transmits a retained CDP PNG unchanged, then deletes the prior
 // double-buffer image.
-func (s *State) encodeKittyPNG(data string, w io.Writer) error {
+func (s *State) encodeKittyPNG(data string, w io.Writer, belowText bool) error {
 	next := nextKittyID(s.kittyID)
 	if s.kittyEnc == nil {
 		s.kittyEnc = &kitty.LiveEncoder{}
 	}
-	if err := s.kittyEnc.EncodePNGID(data, next, w); err != nil {
+	var err error
+	if belowText {
+		err = s.kittyEnc.EncodePNGIDAtZ(data, next, kittyFPSPageZ, w)
+	} else {
+		err = s.kittyEnc.EncodePNGID(data, next, w)
+	}
+	if err != nil {
 		return err
 	}
 	if s.kittyID != 0 {
@@ -429,6 +442,10 @@ func (s *State) encodeKittyPNG(data string, w io.Writer) error {
 	s.kittyID = next
 	return nil
 }
+
+// kittyFPSPageZ places the live page below glyphs and non-default cell
+// backgrounds, so Kitty can paint the terminal FPS badge above the image.
+const kittyFPSPageZ = -1073741825
 
 // nextKittyID returns the next double-buffer image id, alternating between 1 and
 // 2. A zero prev (no image placed yet) yields 1, so the first frame uses id 1.

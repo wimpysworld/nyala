@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
 	"github.com/wimpysworld/nyala/internal/render"
@@ -106,6 +107,12 @@ type ChromiumEngine struct {
 	// screencastFmt is the last successfully started screencast format and JPEG
 	// quality, guarded by e.mu. Block uses JPEG; Kitty and Sixel use PNG.
 	screencastFmt screencastFmt
+	// sizedSurface records the viewport sizing last applied to this session. The
+	// launch path seeds it, so the post-commit initial capture does not repeat
+	// Browser.SetContentsSize while the new document is becoming active.
+	sizedSurfaceW int
+	sizedSurfaceH int
+	sizedScale    float64
 	// screencastStarted distinguishes a published frame sink from a successful
 	// StartScreencast, guarded by e.mu. A resize or backend change in that publication
 	// window updates the held state but leaves the single initial start to apply it.
@@ -170,7 +177,12 @@ type ChromiumEngine struct {
 	startScreencastOp func(context.Context, int, int, screencastFmt) error
 	applySizingOp     func(context.Context, browser.WindowID, int, int, float64) error
 	ackScreencastOp   func(context.Context, int64) error
+	navigateOp        func(context.Context, string) (cdp.FrameID, cdp.LoaderID, string, bool, error)
 	beforeInitialLock func()
+
+	// lifecycle tracks navigation commits and main-frame first contentful paint for
+	// one session. It is installed before navigation and cleared on teardown.
+	lifecycle *sessionLifecycle
 
 	// ingest counts delivered screencast frames at the true ingest point
 	// before the live queue drops any, for the

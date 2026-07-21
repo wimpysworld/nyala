@@ -198,3 +198,62 @@ func TestBackendCycleUsesActiveFrameRepresentation(t *testing.T) {
 		t.Fatalf("restarted Kitty output lacks direct PNG under id 1: %q", kittyOut.String())
 	}
 }
+
+func TestFPSBlockToKittyClearsBeforeFrameAndResetsDiff(t *testing.T) {
+	st := NewState(8, 4)
+	st.SetEnabled([]Backend{BackendBlock, BackendKitty})
+	diff := &block.GridDiff{}
+	st.SetDiff(diff)
+	blockFrame := render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}
+	if err := st.RenderStreamFrame(blockFrame, io.Discard); err != nil {
+		t.Fatalf("seed Block diff: %v", err)
+	}
+	var unchanged bytes.Buffer
+	if err := st.RenderStreamFrame(blockFrame, &unchanged); err != nil {
+		t.Fatalf("render unchanged Block frame: %v", err)
+	}
+	if unchanged.Len() != 0 {
+		t.Fatalf("unchanged Block frame wrote %d bytes, want 0", unchanged.Len())
+	}
+
+	out := &syncBuf{}
+	eng := &pipeEngine{frames: make(chan render.Frame, 1)}
+	done := make(chan struct{})
+	ctl := newControl(eng, done)
+	writer := newStreamWriter(out)
+	s := &streamSession{
+		eng: eng, st: &st, tty: out, ctl: ctl, diff: diff, writer: writer,
+		fps: &fpsMeter{window: fpsWindow, start: time.Now()},
+	}
+	s.handleKey(keyEvent{b: keyTab})
+	if st.Backend != BackendKitty {
+		t.Fatalf("backend after Tab = %v, want Kitty", st.Backend)
+	}
+
+	kittyFrame := render.Frame{EncodedPNG: encodedPNG(t, image.NewRGBA(image.Rect(0, 0, 16, 16)))}
+	var assembled bytes.Buffer
+	if _, err := s.assemble(&assembled, kittyFrame); err != nil {
+		t.Fatalf("assemble Kitty frame after clear: %v", err)
+	}
+	if !strings.Contains(assembled.String(), "z=-1073741825") {
+		t.Fatal("Kitty frame after Block clear lacks FPS z-index")
+	}
+	writer.send(writeItem{buf: &assembled})
+	writer.stop()
+	s.writer = nil
+	got := out.String()
+	clearAt, kittyAt := strings.Index(got, clearScreen), strings.Index(got, "\x1b_G")
+	if clearAt < 0 || kittyAt < 0 || clearAt > kittyAt {
+		t.Fatalf("Block-to-Kitty order clear=%d Kitty=%d", clearAt, kittyAt)
+	}
+
+	st.Backend = BackendBlock
+	var repainted bytes.Buffer
+	if err := st.RenderStreamFrame(blockFrame, &repainted); err != nil {
+		t.Fatalf("render Block frame after reset: %v", err)
+	}
+	if repainted.Len() == 0 {
+		t.Fatal("Block diff was not reset before entering FPS Kitty")
+	}
+	close(done)
+}

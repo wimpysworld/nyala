@@ -246,12 +246,27 @@ type LiveEncoder struct {
 // placement cannot scroll the terminal, and chunks at the Kitty protocol limit.
 // A malformed or incomplete payload returns ErrInvalidPNGData before writing.
 func (e *LiveEncoder) EncodePNGID(data string, id int, w io.Writer) error {
+	return e.encodePNGID(data, id, 0, false, w)
+}
+
+// EncodePNGIDAtZ is EncodePNGID with an explicit Kitty placement z-index. The
+// z option is emitted only on the first APC chunk; continuation chunks retain
+// their protocol-only m control. The viewer uses this live-only variant when a
+// terminal text badge must remain above the page image.
+func (e *LiveEncoder) EncodePNGIDAtZ(data string, id, z int, w io.Writer) error {
+	return e.encodePNGID(data, id, z, true, w)
+}
+
+func (e *LiveEncoder) encodePNGID(data string, id, z int, withZ bool, w io.Writer) error {
 	if !ValidDirectPNGData(data) {
 		return ErrInvalidPNGData
 	}
 	control := "f=100,t=d,a=T,q=2,C=1"
 	if id > 0 {
 		control += fmt.Sprintf(",i=%d", id)
+	}
+	if withZ {
+		control += fmt.Sprintf(",z=%d", z)
 	}
 
 	e.frame = e.frame[:0]

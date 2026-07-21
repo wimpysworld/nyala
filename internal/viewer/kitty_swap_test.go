@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/render"
@@ -185,6 +186,9 @@ func TestKittyDirectPNGUsesRawPayloadAndIDs(t *testing.T) {
 			t.Errorf("direct PNG command %q missing %s", cmds[0], opt)
 		}
 	}
+	if strings.Contains(cmds[0], "z=") {
+		t.Fatalf("non-FPS direct PNG command %q carries a z-index", cmds[0])
+	}
 	_, body, ok := strings.Cut(strings.TrimSuffix(strings.TrimPrefix(first.String(), "\x1b_G"), "\x1b\\"), ";")
 	if !ok || body != data {
 		t.Fatal("direct PNG terminal body differs from retained CDP payload")
@@ -201,6 +205,63 @@ func TestKittyDirectPNGUsesRawPayloadAndIDs(t *testing.T) {
 	}
 	assertTransmit(t, cmds[0], "2")
 	assertDelete(t, cmds[1], "1")
+}
+
+// TestFPSKittyFrameOrder checks the FPS-enabled live path transmits the page at
+// the text-safe z-index, deletes the old image, paints the absolute-positioned
+// badge, and only then closes the synchronised update. The retained PNG body
+// remains byte-for-byte unchanged.
+func TestFPSKittyFrameOrder(t *testing.T) {
+	st := NewState(8, 4)
+	st.Backend = BackendKitty
+	diff := &block.GridDiff{}
+	st.SetDiff(diff)
+	s := &streamSession{
+		st:   &st,
+		diff: diff,
+		fps:  &fpsMeter{window: fpsWindow, start: time.Now()},
+	}
+	data := encodedPNG(t, solidImageSize(8, 8, color.RGBA{R: 0x31, G: 0x72, B: 0xb4, A: 0xff}))
+	frame := render.Frame{EncodedPNG: data}
+
+	var first bytes.Buffer
+	if _, err := s.assemble(&first, frame); err != nil {
+		t.Fatalf("assemble first FPS Kitty frame: %v", err)
+	}
+	var second bytes.Buffer
+	if _, err := s.assemble(&second, frame); err != nil {
+		t.Fatalf("assemble second FPS Kitty frame: %v", err)
+	}
+	out := second.String()
+	transmit := strings.Index(out, "\x1b_Gf=100")
+	deleteOld := strings.Index(out, "a=d")
+	badge := strings.Index(out, "\x1b[1;1H\x1b[0;7m")
+	syncClose := strings.LastIndex(out, endSyncUpdate)
+	if transmit < 0 || deleteOld < 0 || badge < 0 || syncClose < 0 {
+		t.Fatalf("FPS Kitty output lacks an ordered element: transmit=%d delete=%d badge=%d sync-close=%d", transmit, deleteOld, badge, syncClose)
+	}
+	if transmit >= deleteOld || deleteOld >= badge || badge >= syncClose {
+		t.Fatalf("FPS Kitty order transmit=%d delete=%d badge=%d sync-close=%d", transmit, deleteOld, badge, syncClose)
+	}
+	commands := kittyCommands(out)
+	if len(commands) != 2 {
+		t.Fatalf("second FPS Kitty frame emitted %d commands, want transmit and delete", len(commands))
+	}
+	if !hasOpt(commands[0], "z=-1073741825") {
+		t.Fatalf("FPS Kitty transmit %q missing negative z-index", commands[0])
+	}
+	if strings.Contains(out, "\x1b7") || strings.Contains(out, "\x1b8") {
+		t.Fatal("FPS Kitty frame consumed a saved-cursor slot")
+	}
+	if !strings.Contains(out, "\x1b[0m\x1b[1;1H"+endSyncUpdate) {
+		t.Fatal("FPS Kitty badge did not return home before synchronised close")
+	}
+	apc := out[transmit:]
+	end := strings.Index(apc, "\x1b\\")
+	_, body, ok := strings.Cut(apc[:end], ";")
+	if !ok || body != data {
+		t.Fatal("FPS Kitty terminal body differs from retained CDP payload")
+	}
 }
 
 func TestRetainedPNGFallsBackAfterBackendSwitch(t *testing.T) {
