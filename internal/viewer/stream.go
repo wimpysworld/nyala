@@ -631,8 +631,20 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	if timed {
 		encodeStart = time.Now()
 	}
+	// DECSDM makes Sixel placement non-scrolling and cursor-neutral. Without it,
+	// a terminal may advance a full-height image below the bottom margin before
+	// any following cursor restore can run, shifting the viewport up by one row.
+	// Keep the mode wrap in the live placement seam so the renderer and
+	// diagnostics continue to exchange a bare, decodable DCS payload.
+	nonScrollingSixel := s.st.Backend == BackendSixel && frame.HasImage()
+	if nonScrollingSixel {
+		buf.WriteString(beginSixelDisplayMode)
+	}
 	if rerr := s.st.renderStreamFrame(frame, buf, timed); rerr != nil {
 		return 0, rerr
+	}
+	if nonScrollingSixel {
+		buf.WriteString(endSixelDisplayMode)
 	}
 	if timed {
 		encodeMS = msSince(encodeStart)

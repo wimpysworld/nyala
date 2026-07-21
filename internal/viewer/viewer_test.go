@@ -65,11 +65,11 @@ func TestCycleBackendBlockOnly(t *testing.T) {
 }
 
 // TestExitTerminal pins the shared backend exit contract: reset SGR, move below
-// a rendered full-height frame with exactly one CRLF, then restore auto-wrap and
-// reveal the cursor. An exit before the first frame restores terminal modes in
-// place, without scrolling unrelated content.
+// a rendered full-height frame with exactly one CRLF, then reset Sixel display
+// mode, restore auto-wrap, and reveal the cursor. An exit before the first frame
+// restores terminal modes in place, without scrolling unrelated content.
 func TestExitTerminal(t *testing.T) {
-	const want = "\x1b[0m\x1b[24;1H\r\n\x1b[?7h\x1b[?25h"
+	const want = "\x1b[0m\x1b[24;1H\r\n\x1b[?80l\x1b[?7h\x1b[?25h"
 	for _, backend := range []Backend{BackendBlock, BackendKitty, BackendSixel} {
 		t.Run(backend.String(), func(t *testing.T) {
 			if got := exitTerminal(24, true); got != want {
@@ -78,7 +78,7 @@ func TestExitTerminal(t *testing.T) {
 		})
 	}
 
-	const restoreInPlace = "\x1b[0m\x1b[?7h\x1b[?25h"
+	const restoreInPlace = "\x1b[0m\x1b[?80l\x1b[?7h\x1b[?25h"
 	if got := exitTerminal(24, false); got != restoreInPlace {
 		t.Fatalf("startup exit = %q, want %q", got, restoreInPlace)
 	}
