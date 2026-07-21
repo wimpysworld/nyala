@@ -6,7 +6,6 @@ import (
 	"image"
 	"math"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/chromedp/cdproto/browser"
@@ -119,12 +118,11 @@ type ChromiumEngine struct {
 	rawQ *rawFrameQueue
 	// acks carries screencast frame SessionID values from the listener goroutine
 	// to the ack-pump goroutine, which runs page.ScreencastFrameAck off the event
-	// goroutine. Running the ack inside the ListenTarget callback is the chromedp
-	// #920 self-deadlock; the pump breaks it. It is buffered so the listener and
-	// the slot's displaced-frame ack never block on a transient pump stall, and the
-	// enqueue is select-with-default so a full channel or a torn-down session drops
-	// the ack rather than parking the event goroutine.
-	acks chan int64
+	// goroutine. Its unbounded FIFO keeps the listener independent of a slow CDP
+	// command without dropping or reordering acknowledgements. ackPumpDone joins the
+	// session pump during teardown. Both reset per session.
+	acks        *ackQueue
+	ackPumpDone chan struct{}
 	// text is the per-session overlay publisher: the snapshot goroutine stores the
 	// latest decoded runs, the frame loop reads them. It decouples the DOM snapshot
 	// from the frame-emit goroutine. Reset per session by teardownSession.
@@ -165,24 +163,14 @@ type ChromiumEngine struct {
 	// production, where consumers keep decoder-native pixels or direct Kitty PNG.
 	decode func(string) (*image.RGBA, error)
 
-	// The screencast operation hooks are nil in production. Stream-control tests replace
-	// them with deterministic barriers and failures without launching Chromium.
+	// The screencast operation hooks are nil in production. Stream-control and
+	// acknowledgement tests replace them with deterministic barriers and failures
+	// without launching Chromium.
 	stopScreencastOp  func(context.Context) error
 	startScreencastOp func(context.Context, int, int, screencastFmt) error
 	applySizingOp     func(context.Context, browser.WindowID, int, int, float64) error
+	ackScreencastOp   func(context.Context, int64) error
 	beforeInitialLock func()
-
-	// recvNano is the wall-clock nanoseconds of the last screencast frame received on
-	// the listener goroutine, or zero before the first. lastSession is that frame's
-	// SessionID, the id the watchdog re-acks to re-couple a wedged stream. stallPoked
-	// marks that the watchdog already re-acked for the current silent gap, so it
-	// re-couples at most once per gap and a fresh frame clears it. All three are
-	// lock-free (set on the receive path, read on the watchdog goroutine) and always
-	// on, independent of the NYALA_FPS_TIMING ingest counter. startSession resets them
-	// so a rebuild does not treat a stale timestamp as a stall.
-	recvNano    atomic.Int64
-	lastSession atomic.Int64
-	stallPoked  atomic.Bool
 
 	// ingest counts delivered screencast frames at the true ingest point
 	// before the live queue drops any, for the

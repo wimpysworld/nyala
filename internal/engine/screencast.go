@@ -37,21 +37,18 @@ func (e *ChromiumEngine) handleScreencastFrameLive(q *rawFrameQueue, seq uint64,
 	q.put(seqRawFrame{seq: seq, data: f.Data, meta: f.Metadata})
 }
 
-// receiveScreencastFrame counts true ingest before queue coalescing, stamps the
-// stuck-state watchdog, and acknowledges the frame. The
+// receiveScreencastFrame counts true ingest before queue coalescing and
+// acknowledges the frame. The
 // ack lands on receive, before any decode, so Chrome's in-flight credit is released at
 // once and decoupled from decode and any downstream stall. It runs on the chromedp
 // ListenTarget event goroutine, so it does no PNG decode and no chromedp.Run: the ack
 // is enqueued for ackPump to run off this goroutine (the #920-safe off-goroutine ack).
 func (e *ChromiumEngine) receiveScreencastFrame(f *page.EventScreencastFrame) {
-	now := time.Now()
 	// Count true ingest for every delivered frame, before any coalescing or drop.
 	// Gated behind the armed check so an off run pays one bool check and no clock read.
 	if e.ingest.armed() {
-		e.ingest.record(now)
+		e.ingest.record(time.Now())
 	}
-	// Stamp the receive for the stuck-state watchdog (always on, lock-free).
-	e.markFrameReceived(now, f.SessionID)
 	// Ack on receive, before any decode. The enqueue is #920-safe: ackPump runs the
 	// chromedp.Run off this event goroutine. Whether this frame is later decoded or
 	// dropped, it is acked exactly once, here.
@@ -235,113 +232,116 @@ func (e *ChromiumEngine) initialScreencastFormatLocked() screencastFmt {
 	return screencastFmt{format: page.ScreencastFormatPng}
 }
 
-// ackFrame enqueues one frame's SessionID onto the pump channel for ackPump to run
+// ackQueue is a session-scoped, unbounded FIFO between the screencast listener and
+// the acknowledgement pump. push holds its mutex only while appending, so a slow
+// CDP acknowledgement command cannot park the listener. ready coalesces wake-ups;
+// the queue itself retains every SessionID in order.
+type ackQueue struct {
+	mu      sync.Mutex
+	pending []int64
+	head    int
+	stopped bool
+	ready   chan struct{}
+}
+
+func newAckQueue() *ackQueue {
+	return &ackQueue{ready: make(chan struct{}, 1)}
+}
+
+func (q *ackQueue) push(ack int64) bool {
+	if q == nil {
+		return false
+	}
+	q.mu.Lock()
+	if q.stopped {
+		q.mu.Unlock()
+		return false
+	}
+	q.pending = append(q.pending, ack)
+	q.mu.Unlock()
+	select {
+	case q.ready <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+func (q *ackQueue) pop() (int64, bool) {
+	if q == nil {
+		return 0, false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.head == len(q.pending) {
+		return 0, false
+	}
+	ack := q.pending[q.head]
+	q.head++
+	if q.head == len(q.pending) {
+		q.pending = q.pending[:0]
+		q.head = 0
+	}
+	return ack, true
+}
+
+func (q *ackQueue) stop() {
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	q.stopped = true
+	q.pending = nil
+	q.head = 0
+	q.mu.Unlock()
+}
+
+// ackFrame enqueues one frame's SessionID onto the pump queue for ackPump to run
 // as page.ScreencastFrameAck off the ListenTarget event goroutine. The listener calls
-// it once per delivered frame; the watchdog calls it to re-couple a stalled stream.
+// it once per delivered frame.
 // It never runs the ack inline because chromedp.Run on the event goroutine causes
 // the chromedp #920 self-deadlock.
-// The enqueue is select-with-default so a full channel or a torn-down session (a nil
-// acks channel) drops the ack rather than parking the caller. Chrome self-throttles
-// the screencast to at most a few frames in flight, so the buffered pump keeps pace
-// and the drop branch stays unreached under normal cadence.
+// The unbounded FIFO has no full state, so every live-session enqueue is retained in
+// arrival order. A nil or stopped queue means the session is already torn down.
 func (e *ChromiumEngine) ackFrame(ack int64) {
 	e.mu.Lock()
 	acks := e.acks
 	e.mu.Unlock()
-	if acks == nil {
-		return
-	}
-	select {
-	case acks <- ack:
-	default:
-	}
+	acks.push(ack)
 }
 
-// ackPump drains the ack channel and runs page.ScreencastFrameAck on the live
+// runScreencastFrameAck runs the production CDP acknowledgement or its test hook.
+func (e *ChromiumEngine) runScreencastFrameAck(ctx context.Context, ack int64) error {
+	if e.ackScreencastOp != nil {
+		return e.ackScreencastOp(ctx, ack)
+	}
+	return chromedp.Run(ctx, page.ScreencastFrameAck(ack))
+}
+
+// ackPump drains the ack queue and runs page.ScreencastFrameAck on the live
 // context, off the ListenTarget event goroutine. The listener enqueues SessionID
 // values and this single goroutine runs the chromedp.Run that would deadlock on
-// the event goroutine (chromedp #920). It exits
-// when ctx is cancelled (session teardown), so it never leaks past a session.
-func (e *ChromiumEngine) ackPump(ctx context.Context, acks <-chan int64) {
+// the event goroutine (chromedp #920). It exits when ctx is cancelled, and session
+// teardown joins it before releasing the queue.
+func (e *ChromiumEngine) ackPump(ctx context.Context, acks *ackQueue) {
 	if ctx == nil || acks == nil {
 		return
 	}
 	for {
 		select {
-		case ack := <-acks:
-			_ = chromedp.Run(ctx, page.ScreencastFrameAck(ack))
 		case <-ctx.Done():
 			return
+		default:
 		}
-	}
-}
-
-// screencastWatchdogInterval is how often the stuck-state watchdog checks the
-// stream. It matches casty's 5s cadence: long enough to leave a healthy idle page
-// alone (at most one re-couple per silent gap), short enough to recover a wedge
-// quickly.
-const screencastWatchdogInterval = 5 * time.Second
-
-// screencastStallThreshold is how long the stream must be silent (no frame
-// received) before the watchdog treats the silence as a possible wedge and
-// re-couples once. It equals the check interval, so a genuine stall is recovered
-// within about two intervals.
-const screencastStallThreshold = 5 * time.Second
-
-// markFrameReceived stamps the wall time and SessionID of a delivered screencast
-// frame for the stuck-state watchdog, and clears the per-gap poke guard so a fresh
-// frame re-arms recovery. The listener calls it
-// for every delivered frame, before any decode. It is lock-free (atomics), so it
-// adds only three atomic stores to the hot receive path and is always on,
-// independent of the NYALA_FPS_TIMING ingest counter.
-func (e *ChromiumEngine) markFrameReceived(now time.Time, session int64) {
-	e.recvNano.Store(now.UnixNano())
-	e.lastSession.Store(session)
-	e.stallPoked.Store(false)
-}
-
-// runScreencastWatchdog recovers a wedged screencast without disturbing a healthy
-// idle page. It ticks every screencastWatchdogInterval and, when the stream has
-// received at least one frame but none within screencastStallThreshold, re-acks the
-// last frame's SessionID once per silent gap. The re-ack restores Chrome's in-flight
-// credit if an ack was ever lost (the wedge) and is a no-op on a genuinely idle
-// page, which has no pending compositor frame to send regardless of credit. Silence
-// alone cannot tell idle from wedge, so the watchdog uses only this conservative
-// re-couple, never a stream reset. It runs per session and exits when ctx is
-// cancelled.
-func (e *ChromiumEngine) runScreencastWatchdog(ctx context.Context) {
-	if ctx == nil {
-		return
-	}
-	t := time.NewTicker(screencastWatchdogInterval)
-	defer t.Stop()
-	for {
+		if ack, ok := acks.pop(); ok {
+			_ = e.runScreencastFrameAck(ctx, ack)
+			continue
+		}
 		select {
+		case <-acks.ready:
 		case <-ctx.Done():
 			return
-		case now := <-t.C:
-			e.watchdogRecoverIfStalled(now)
 		}
 	}
-}
-
-// watchdogRecoverIfStalled re-acks once when the stream looks stalled: it received a
-// frame before (recvNano set) but none within screencastStallThreshold, and it has
-// not already re-acked for this silent gap (stallPoked). It is factored out so the
-// decision is unit-tested without a ticker, and returns true when it re-acked.
-func (e *ChromiumEngine) watchdogRecoverIfStalled(now time.Time) bool {
-	recv := e.recvNano.Load()
-	if recv == 0 {
-		return false // never streamed: nothing to recover
-	}
-	if now.Sub(time.Unix(0, recv)) < screencastStallThreshold {
-		return false // a frame arrived recently: healthy
-	}
-	if e.stallPoked.Swap(true) {
-		return false // already re-acked for this silent gap
-	}
-	e.ackFrame(e.lastSession.Load())
-	return true
 }
 
 // overlayState is the text-sync state the snapshot goroutine threads across its

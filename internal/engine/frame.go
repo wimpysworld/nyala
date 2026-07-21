@@ -87,13 +87,6 @@ const blockScreencastQuality = 90
 // raw queue already bounds upstream backpressure, so a couple of results are enough.
 const frameChannelBuffer = 2
 
-// ackBufferDepth is the buffer size of the ack channel the ack pump drains. Every
-// delivered frame is acked once on receive, and Chrome self-throttles the screencast
-// to at most a few frames in flight, so only a few acks are ever pending at once; a
-// few slots of headroom keep the listener's select-with-default enqueue from ever
-// dropping a real ack under normal cadence.
-const ackBufferDepth = 8
-
 // layoutScale is the pure, block-only continuous device scale Z. It returns
 // max(1, cols*cellW / layoutWidth), so a grid wider than the target layout width
 // shrinks by Z and lays out at the target; a grid at or under the target keeps
