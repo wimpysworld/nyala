@@ -183,6 +183,47 @@ func TestStreamWriterDrainsFrameBeforeTerminalExit(t *testing.T) {
 	}
 }
 
+// TestAssembleSixelUsesNonScrollingDisplayMode pins the live DECSDM placement
+// wrap. A cursor restore after the DCS is too late: a scrolling full-height
+// Sixel has already shifted the viewport before that restore is processed.
+func TestAssembleSixelUsesNonScrollingDisplayMode(t *testing.T) {
+	st := NewState(1, 1)
+	st.Backend = BackendSixel
+	s := &streamSession{st: &st}
+	frame := render.Frame{Img: solidImageSize(8, 16, color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})}
+
+	var assembled bytes.Buffer
+	if _, err := s.assemble(&assembled, frame); err != nil {
+		t.Fatalf("assemble Sixel frame: %v", err)
+	}
+	out := assembled.Bytes()
+	if bytes.Count(out, []byte("\x1bP")) != 1 || bytes.Count(out, []byte("\x1b\\")) != 1 {
+		t.Fatalf("assembled frame does not contain exactly one Sixel DCS: %q", out)
+	}
+	wantPrefix := beginSyncUpdate + clearScreen + beginSixelDisplayMode + "\x1bP"
+	if !bytes.HasPrefix(out, []byte(wantPrefix)) {
+		t.Fatalf("Sixel frame does not enter display mode before its DCS: %q", out)
+	}
+	dcsStart := bytes.Index(out, []byte("\x1bP"))
+	dcsEndOffset := bytes.Index(out[dcsStart:], []byte("\x1b\\"))
+	if dcsEndOffset < 0 {
+		t.Fatalf("Sixel DCS has no terminator: %q", out)
+	}
+	dcsEnd := dcsStart + dcsEndOffset + len("\x1b\\")
+	if len(out) < dcsEnd+len(endSixelDisplayMode) || string(out[dcsEnd:dcsEnd+len(endSixelDisplayMode)]) != endSixelDisplayMode {
+		t.Fatalf("Sixel DCS is not followed by the DECSDM reset: %q", out)
+	}
+	if !bytes.HasSuffix(out, []byte(endSixelDisplayMode+endSyncUpdate)) {
+		t.Fatalf("Sixel display-mode reset is not immediately before the synchronised-update close: %q", out)
+	}
+	if bytes.ContainsAny(out, "\r\n") {
+		t.Fatalf("assembled Sixel frame contains a newline: %q", out)
+	}
+	if bytes.Contains(out, []byte("\x1b7")) || bytes.Contains(out, []byte("\x1b8")) {
+		t.Fatalf("assembled Sixel frame relies on cursor save/restore: %q", out)
+	}
+}
+
 // TestEmitControlFlushesAssembledFirst pins the Tab/resize sequencing: a control
 // write (a resize clear or a kitty reset) flushes the in-flight assembled frame
 // before its own bytes, so the two never interleave and the frame lands first.

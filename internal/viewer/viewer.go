@@ -758,6 +758,15 @@ const clearScreen = "\x1b[H\x1b[2J"
 // stale remains after the overwrite.
 const cursorHome = "\x1b[H"
 
+// beginSixelDisplayMode and endSixelDisplayMode bracket a live Sixel image with
+// DECSDM. Set mode 80 selects fixed display placement: the image starts at the
+// screen origin without moving the text cursor or scrolling the viewport. Reset
+// returns the terminal to its normal scrolling Sixel mode after the payload.
+const (
+	beginSixelDisplayMode = "\x1b[?80h"
+	endSixelDisplayMode   = "\x1b[?80l"
+)
+
 // beginSyncUpdate and endSyncUpdate bracket a frame in a DEC 2026 synchronised
 // update (ESC [ ? 2026 h and ESC [ ? 2026 l), so the terminal presents the whole
 // frame atomically and never scans out a partial frame while the render bytes
@@ -775,15 +784,17 @@ const (
 const enterFullScreen = "\x1b[?7l\x1b[?25l"
 
 // exitTerminal returns the teardown sequence for the interactive viewer. It
-// resets SGR attributes, restores auto-wrap, and shows the cursor. After a frame
-// has drawn, it first moves to column one of the final rendered row and emits one
-// CRLF. The necessary single-line scroll leaves the complete browser area above
-// a clean row for an FPS summary or the shell prompt, independent of the cursor
-// position left by Block, Sixel, or Kitty. Before the first frame it preserves
-// the cursor position, so a startup failure does not displace terminal content.
+// resets SGR attributes and Sixel display mode, restores auto-wrap, and shows
+// the cursor. Resetting DECSDM here also covers an interrupted Sixel write that
+// did not reach its per-frame reset. After a frame has drawn, it first moves to
+// column one of the final rendered row and emits one CRLF. The necessary
+// single-line scroll leaves the complete browser area above a clean row for an
+// FPS summary or the shell prompt, independent of the cursor position left by
+// Block, Sixel, or Kitty. Before the first frame it preserves the cursor
+// position, so a startup failure does not displace terminal content.
 func exitTerminal(rows int, drawn bool) string {
 	const reset = "\x1b[0m"
-	const restore = "\x1b[?7h\x1b[?25h"
+	const restore = endSixelDisplayMode + "\x1b[?7h\x1b[?25h"
 	if !drawn || rows <= 0 {
 		return reset + restore
 	}
