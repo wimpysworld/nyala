@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/vt"
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
@@ -132,6 +133,44 @@ func TestFPSMeterBadgeInOut(t *testing.T) {
 	b = outOnly.badge(base)
 	if strings.Contains(b, "In:") || !strings.Contains(b, "Out:") {
 		t.Fatalf("badge %q should be Out-only with no reporter", b)
+	}
+}
+
+// TestFPSMeterShortBadgeClearsPreviousWidth decodes a long badge followed by an
+// idle badge through a VT. Every cell in the old footprint must carry the new
+// badge or a reverse-video space, with no old glyph or style left at the tail.
+func TestFPSMeterShortBadgeClearsPreviousWidth(t *testing.T) {
+	const cols = 48
+	base := time.Unix(0, 0)
+	m := &fpsMeter{window: time.Second, ingest: fakeIngest{fps: 123.4}}
+	m.tick(base, true)
+	m.tick(base.Add(100*time.Millisecond), true)
+
+	terminal := vt.NewEmulator(cols, 1)
+	if _, err := terminal.Write([]byte(m.badge(base.Add(100 * time.Millisecond)))); err != nil {
+		t.Fatalf("write long badge: %v", err)
+	}
+	longWidth := m.badgeWidth
+
+	m.ingest = fakeIngest{}
+	shortBody := " In: -- / Out: -- fps "
+	if longWidth <= len(shortBody) {
+		t.Fatalf("long badge width = %d, want more than short width %d", longWidth, len(shortBody))
+	}
+	if _, err := terminal.Write([]byte(m.refresh(base.Add(4 * time.Second)))); err != nil {
+		t.Fatalf("write short badge: %v", err)
+	}
+
+	wantText := shortBody + strings.Repeat(" ", longWidth-len(shortBody))
+	wantStyle := terminal.CellAt(0, 0).Style
+	for col, want := range []byte(wantText) {
+		cell := terminal.CellAt(col, 0)
+		if cell.Content != string(want) {
+			t.Errorf("cell %d content = %q, want %q", col, cell.Content, string(want))
+		}
+		if !cell.Style.Equal(&wantStyle) {
+			t.Errorf("cell %d style = %+v, want %+v", col, cell.Style, wantStyle)
+		}
 	}
 }
 

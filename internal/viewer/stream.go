@@ -767,9 +767,10 @@ type fpsMeter struct {
 	writeSum    float64
 	writeMax    float64
 
-	badgeStr  string    // cached escape-wrapped badge, rebuilt at most once per interval
-	badgeAt   time.Time // instant badgeStr was last rebuilt
-	haveBadge bool      // set once badgeStr holds a real string
+	badgeStr   string    // cached escape-wrapped badge, rebuilt at most once per interval
+	badgeAt    time.Time // instant badgeStr was last rebuilt
+	haveBadge  bool      // set once badgeStr holds a real string
+	badgeWidth int       // widest badge body emitted, so shorter values clear its full span
 
 	peaks []fpsSample // trailing fpsPeakHold window of In/Out samples, for the badge peak
 
@@ -908,9 +909,19 @@ func (m *fpsMeter) badge(now time.Time) string {
 func (m *fpsMeter) formatBadge(now time.Time) string {
 	in, out := m.peakRates()
 	if m.ingest != nil {
-		m.badgeStr = fmt.Sprintf("\x1b7\x1b[1;1H\x1b[0;7m In: %s / Out: %s fps \x1b[0m\x1b8", fpsField(in), fpsField(out))
+		inField, outField := fpsField(in), fpsField(out)
+		width := len(" In:  / Out:  fps ") + len(inField) + len(outField)
+		if width > m.badgeWidth {
+			m.badgeWidth = width
+		}
+		m.badgeStr = fmt.Sprintf("\x1b7\x1b[1;1H\x1b[0;7m In: %s / Out: %s fps %*s\x1b[0m\x1b8", inField, outField, m.badgeWidth-width, "")
 	} else {
-		m.badgeStr = fmt.Sprintf("\x1b7\x1b[1;1H\x1b[0;7m Out: %s fps \x1b[0m\x1b8", fpsField(out))
+		outField := fpsField(out)
+		width := len(" Out:  fps ") + len(outField)
+		if width > m.badgeWidth {
+			m.badgeWidth = width
+		}
+		m.badgeStr = fmt.Sprintf("\x1b7\x1b[1;1H\x1b[0;7m Out: %s fps %*s\x1b[0m\x1b8", outField, m.badgeWidth-width, "")
 	}
 	m.badgeAt = now
 	m.haveBadge = true
