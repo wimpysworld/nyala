@@ -458,19 +458,18 @@ func equalU64(a, b []uint64) bool {
 // with its arrival sequence, preserving the ack-exactly-once contract.
 func TestHandleScreencastFrameLiveAcksAndEnqueues(t *testing.T) {
 	t.Parallel()
-	acks := make(chan int64, ackBufferDepth)
+	acks := newAckQueue()
 	e := &ChromiumEngine{acks: acks}
 	q := newRawFrameQueue(4)
 
 	e.handleScreencastFrameLive(q, 7, &page.EventScreencastFrame{Data: "payload", SessionID: 9})
 
-	select {
-	case got := <-acks:
-		if got != 9 {
-			t.Fatalf("acked SessionID %d, want 9", got)
-		}
-	default:
+	got, ok := acks.pop()
+	if !ok {
 		t.Fatal("live arm did not ack on receive")
+	}
+	if got != 9 {
+		t.Fatalf("acked SessionID %d, want 9", got)
 	}
 	select {
 	case f := <-q.items:

@@ -124,7 +124,7 @@ func TestDecodeWorkerRecordsDecodeWhenArmed(t *testing.T) {
 	bitmap := image.NewRGBA(image.Rect(0, 0, 2, 2))
 	e := &ChromiumEngine{
 		backend: backendBlock,
-		acks:    make(chan int64, ackBufferDepth),
+		acks:    newAckQueue(),
 		ingest:  &ingestCounter{on: true, window: ingestWindow},
 		decode:  func(string) (*image.RGBA, error) { return bitmap, nil },
 	}
@@ -135,13 +135,12 @@ func TestDecodeWorkerRecordsDecodeWhenArmed(t *testing.T) {
 	go e.runDecodeWorker(ctx, queue, decoded)
 
 	e.handleScreencastFrameLive(queue, 1, &page.EventScreencastFrame{Data: "payload", SessionID: 1})
-	select {
-	case ack := <-e.acks:
-		if ack != 1 {
-			t.Fatalf("acknowledged SessionID %d, want 1", ack)
-		}
-	default:
+	ack, ok := e.acks.pop()
+	if !ok {
 		t.Fatal("live receive did not acknowledge before decode completed")
+	}
+	if ack != 1 {
+		t.Fatalf("acknowledged SessionID %d, want 1", ack)
 	}
 	select {
 	case got := <-decoded:

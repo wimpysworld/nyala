@@ -44,12 +44,11 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// arrival sequence, so the live screen stays monotonic.
 	workers := decodeWorkerCount()
 	rawQ := newRawFrameQueue(workers + 1)
-	// acks is the buffered ack channel the ack pump drains. It is created before
-	// startScreencast so the listener's first enqueue lands, and the pump runs off
-	// the event goroutine to avoid the chromedp #920 deadlock. The buffer is sized
-	// to a few in-flight frames so a transient pump stall never blocks the listener
-	// or frame acknowledgement.
-	acks := make(chan int64, ackBufferDepth)
+	// acks is the unbounded FIFO the ack pump drains. The pump starts before
+	// StartScreencast, so the first delivered frame can release Chromium's in-flight
+	// credit at once without running a CDP command on the event goroutine.
+	acks := newAckQueue()
+	ackPumpDone := make(chan struct{})
 	ts := &textSync{}
 	// reSnap, reflow, and scroll clock the snapshot goroutine off the page, not off
 	// frame delivery: reSnap fires an immediate re-snapshot on resize or backend
@@ -68,6 +67,7 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	e.mu.Lock()
 	e.rawQ = rawQ
 	e.acks = acks
+	e.ackPumpDone = ackPumpDone
 	e.text = ts
 	e.reSnap = reSnap
 	e.reflow = reflow
@@ -77,23 +77,20 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	e.screencastFmt = screencastFmt{}
 	e.screencastStarted = false
 	e.mu.Unlock()
+	go func() {
+		defer close(ackPumpDone)
+		e.ackPump(ctx, acks)
+	}()
 	// Register the frame listener once, on this fresh session context, before the
 	// first startScreencast. restartStream re-issues startScreencast on the same
 	// context, so registering here (not in startScreencast) keeps a backend switch
 	// or resize from leaking a second listener.
 	e.registerScreencastListener(ctx, rawQ)
-	// Reset the stuck-state watchdog for this session, so a rebuild does not read the
-	// previous session's receive timestamp or SessionID as a live stall.
-	e.recvNano.Store(0)
-	e.lastSession.Store(0)
-	e.stallPoked.Store(false)
 	if err = e.startInitialScreencast(ctx); err != nil {
 		e.teardownSession()
 		return nil, err
 	}
 	timer.mark(labelScreencastStarted)
-	go e.ackPump(ctx, acks)
-	go e.runScreencastWatchdog(ctx)
 	go e.runTextSync(ctx, ts, reSnap, reflow, scroll, reEmit)
 	{
 		// Live: a pool of decode workers feeds one collector that re-serialises them by
@@ -305,9 +302,12 @@ func (e *ChromiumEngine) pokeReflow() {
 func (e *ChromiumEngine) teardownSession() {
 	e.mu.Lock()
 	cancel := e.cancel
+	acks := e.acks
+	ackPumpDone := e.ackPumpDone
 	publisherDone := e.framePublisherDone
 	frames := e.frames
 	e.ctx, e.cancel, e.acks, e.text = nil, nil, nil, nil
+	e.ackPumpDone = nil
 	e.rawQ = nil
 	e.reSnap, e.reflow, e.scroll, e.reEmit = nil, nil, nil, nil
 	e.framePublisherDone = nil
@@ -317,8 +317,12 @@ func (e *ChromiumEngine) teardownSession() {
 	e.fontForcingID = ""
 	e.layoutShiftID = ""
 	e.mu.Unlock()
+	acks.stop()
 	if cancel != nil {
 		cancel()
+	}
+	if ackPumpDone != nil {
+		<-ackPumpDone
 	}
 	if publisherDone != nil {
 		<-publisherDone
