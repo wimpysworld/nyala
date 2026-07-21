@@ -123,6 +123,11 @@ type IngestStats struct {
 	DecodeMeanMS float64
 	// DecodeMaxMS is the slowest single worker decode in milliseconds.
 	DecodeMaxMS float64
+	// AckRTTMeanMS is the mean screencast acknowledgement command round trip in
+	// milliseconds, measured on the ack pump.
+	AckRTTMeanMS float64
+	// AckRTTMaxMS is the slowest single acknowledgement round trip in milliseconds.
+	AckRTTMaxMS float64
 }
 
 // ScreencastMeta is neutral screencast frame metadata: the scroll offset, page
@@ -173,6 +178,15 @@ type Frame struct {
 	EncodedPNG  string            // owned base64 PNG payload for direct live Kitty transmission
 	Text        []GlyphRun        // text overlay runs, empty when the page has none
 	Diagnostics *FrameDiagnostics // diagnostic data, nil on the production path
+
+	// Release returns the frame's pooled pixel plane to the engine's plane
+	// pool. The engine sets it only on kitty-shm decoded frames, where Img is
+	// a pooled RGBA plane; it is nil on every other path. The frame's final
+	// owner calls it exactly once, when the frame is dropped or its pixels
+	// have been consumed (painted or copied out). A nil Release needs no
+	// call, so consumers guard with a nil check and existing paths are
+	// unaffected.
+	Release func()
 
 	// AfterFCP reports that this frame arrived after the main frame's first
 	// contentful paint lifecycle event. The viewer uses it as the backend-neutral

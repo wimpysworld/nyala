@@ -7,6 +7,7 @@ import (
 	"errors"
 	"image"
 	"image/png"
+	"io"
 	"strings"
 	"testing"
 
@@ -101,6 +102,74 @@ func TestLiveEncoderPNGPassThrough(t *testing.T) {
 	}
 	if layeredPayload.String() != data {
 		t.Fatal("layered chunked PNG payload differs from the supplied base64 bytes")
+	}
+}
+
+// TestLiveEncoderSHMRaw checks the raw shared-memory path emits exactly one
+// unchunked f=32 t=s escape carrying the base64 object name, with the caller's
+// dimensions, image id, optional z-index, and quiet mode, and never an m= key.
+func TestLiveEncoderSHMRaw(t *testing.T) {
+	const name = "/nyala-99-7"
+	payload := base64.StdEncoding.EncodeToString([]byte(name))
+
+	var e LiveEncoder
+	cases := []struct {
+		label  string
+		encode func(w *bytes.Buffer) error
+		want   string
+	}{
+		{
+			label:  "q=2",
+			encode: func(w *bytes.Buffer) error { return e.EncodeSHMID(name, 128, 72, 7, 2, w) },
+			want:   apcIntro + "f=32,t=s,s=128,v=72,a=T,C=1,i=7,q=2;" + payload + st,
+		},
+		{
+			label:  "q=1",
+			encode: func(w *bytes.Buffer) error { return e.EncodeSHMID(name, 128, 72, 7, 1, w) },
+			want:   apcIntro + "f=32,t=s,s=128,v=72,a=T,C=1,i=7,q=1;" + payload + st,
+		},
+		{
+			label: "z and q=2",
+			encode: func(w *bytes.Buffer) error {
+				return e.EncodeSHMIDAtZ(name, 128, 72, 7, -1073741825, 2, w)
+			},
+			want: apcIntro + "f=32,t=s,s=128,v=72,a=T,C=1,i=7,z=-1073741825,q=2;" + payload + st,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.label, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := tc.encode(&out); err != nil {
+				t.Fatalf("encode shm frame: %v", err)
+			}
+			if out.String() != tc.want {
+				t.Fatalf("escape = %q, want %q", out.String(), tc.want)
+			}
+			frames := splitAPCFrames(t, out.String())
+			if len(frames) != 1 {
+				t.Fatalf("shm path emitted %d escapes, want 1", len(frames))
+			}
+			for opt := range strings.SplitSeq(frames[0].control, ",") {
+				if strings.HasPrefix(opt, "m=") {
+					t.Fatalf("shm control %q carries chunking key %q", frames[0].control, opt)
+				}
+			}
+		})
+	}
+}
+
+// TestLiveEncoderSHMRawAllocs checks the shm encode reuses its frame buffer
+// and allocates nothing per call at steady state.
+func TestLiveEncoderSHMRawAllocs(t *testing.T) {
+	const name = "/nyala-99-8"
+	var e LiveEncoder
+	allocs := testing.AllocsPerRun(100, func() {
+		if err := e.EncodeSHMID(name, 2560, 1440, 2, 1, io.Discard); err != nil {
+			t.Fatalf("EncodeSHMID() = %v", err)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("EncodeSHMID allocated %.1f objects per run, want 0", allocs)
 	}
 }
 

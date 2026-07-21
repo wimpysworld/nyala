@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
+	emmb64 "github.com/emmansun/base64"
 	"golang.org/x/sys/unix"
 
 	"github.com/wimpysworld/nyala/internal/cellraster"
@@ -15,10 +16,20 @@ import (
 // probeResult is the outcome of the startup terminal handshake: which graphics
 // backends the terminal supports and the real terminal cell pixel size.
 type probeResult struct {
-	Sixel  bool // the terminal answered DA1 with the sixel attribute (element "4")
-	Kitty  bool // the terminal answered the kitty graphics query
-	cellPx      // resolved cell pixel size
+	Sixel    bool   // the terminal answered DA1 with the sixel attribute (element "4")
+	Kitty    bool   // the terminal answered the kitty direct graphics query with OK
+	KittySHM bool   // the terminal answered the kitty shm transport query with OK for its image id
+	TermID   string // XTVERSION reply text, e.g. "kitty 0.40.1"; empty when the terminal ignores the query
+	cellPx          // resolved cell pixel size
 }
+
+// kittyDirectID and kittySHMID are the image ids of the two kitty graphics
+// probes. Distinct ids let the per-id reply parser attribute each ";OK" to the
+// transport that earned it.
+const (
+	kittyDirectID = "31"
+	kittySHMID    = "32"
+)
 
 // da1Prefix introduces a DA1 reply; da1Terminator ends it. The handshake reads
 // until this terminator arrives, because DA1 is the fence: a terminal answers it
@@ -36,15 +47,23 @@ const probeTimeout = 200 * time.Millisecond
 // rechecks the cumulative deadline often.
 const probePollTimeout = 120 * time.Millisecond
 
-// queryBytes builds the single handshake write: the kitty graphics query, the
-// three cell-size queries, then the DA1 fence. The kitty query stores nothing
-// (a=q); DA1 is last so its reply marks the end of the batch.
-func queryBytes() []byte {
+// queryBytes builds the single handshake write: the kitty direct graphics
+// query, the kitty shm transport query when shmName names a prepared POSIX
+// shared-memory object holding a 1x1 f=24 pixel, the three cell-size queries,
+// the XTVERSION identity query, then the DA1 fence. The kitty queries store
+// nothing (a=q); DA1 is last so its reply marks the end of the batch. Terminals
+// that ignore a query stay silent, and the DA1 fence still bounds the read.
+func queryBytes(shmName string) []byte {
 	var b bytes.Buffer
-	b.WriteString(ansi.KittyGraphics([]byte("AAAA"), "i=31", "s=1", "v=1", "a=q", "t=d", "f=24"))
+	b.WriteString(ansi.KittyGraphics([]byte("AAAA"), "i="+kittyDirectID, "s=1", "v=1", "a=q", "t=d", "f=24"))
+	if shmName != "" {
+		payload := emmb64.StdEncoding.EncodeToString([]byte(shmName))
+		b.WriteString(ansi.KittyGraphics([]byte(payload), "i="+kittySHMID, "s=1", "v=1", "a=q", "t=s", "f=24"))
+	}
 	b.WriteString("\x1b[16t")
 	b.WriteString("\x1b[14t")
 	b.WriteString("\x1b[18t")
+	b.WriteString("\x1b[>0q")
 	b.WriteString(ansi.RequestPrimaryDeviceAttributes)
 	return b.Bytes()
 }
@@ -58,15 +77,27 @@ func queryBytes() []byte {
 func probeTerminal(tty *os.File, cols, rows int) probeResult {
 	res := probeResult{cellPx: cellPx{W: cellraster.CellPxW, H: cellraster.CellPxH}}
 
-	if _, err := tty.Write(queryBytes()); err != nil {
+	shmName, shmErr := createProbeSHM()
+	if shmErr == nil {
+		// A kitty-like terminal unlinks the object itself after reading it;
+		// this deferred unlink covers every other terminal and the timeout and
+		// error paths, so the probe never leaks an shm object.
+		defer unlinkProbeSHM(shmName)
+	} else {
+		shmName = ""
+	}
+
+	if _, err := tty.Write(queryBytes(shmName)); err != nil {
 		return res
 	}
 
 	fd := int(tty.Fd())
 	buf := readUntilDA1(fd)
 
-	res.Kitty = parseKittySupport(buf)
+	res.Kitty = parseKittySupport(buf, kittyDirectID)
+	res.KittySHM = shmName != "" && parseKittySupport(buf, kittySHMID)
 	res.Sixel = parseDA1Sixel(buf)
+	res.TermID = parseXTVersion(buf)
 	if px, ok := parseCellPixels(buf, cols, rows); ok {
 		res.cellPx = px
 	}
@@ -126,20 +157,64 @@ func hasDA1Terminator(buf []byte) bool {
 	return bytes.IndexByte(buf[i+len(da1Prefix):], da1Terminator) >= 0
 }
 
-// parseKittySupport reports whether the buffer holds a kitty graphics reply. The
-// terminal answers the kitty query with an APC introduced by "\x1b_G"; a
-// supporting terminal includes ";OK" in that APC.
-func parseKittySupport(buf []byte) bool {
-	i := bytes.Index(buf, []byte("\x1b_G"))
+// parseKittySupport reports whether the buffer holds a kitty graphics reply
+// carrying ";OK" for the probe with the given image id. The terminal answers
+// each a=q query with an APC introduced by "\x1b_G" whose control data echoes
+// the probe's i= key. It matches the id as a whole comma-separated element, so
+// id "32" never matches "320". An error reply or no reply for the id yields
+// false.
+func parseKittySupport(buf []byte, id string) bool {
+	search := buf
+	for {
+		i := bytes.Index(search, []byte("\x1b_G"))
+		if i < 0 {
+			return false
+		}
+		rest := search[i+3:]
+		body := rest
+		next := len(rest)
+		if end := bytes.Index(rest, []byte("\x1b\\")); end >= 0 {
+			body = rest[:end]
+			next = end + 2
+		}
+		control := body
+		if sep := bytes.IndexByte(body, ';'); sep >= 0 {
+			control = body[:sep]
+		}
+		if kittyControlHasID(control, id) && bytes.Contains(body, []byte(";OK")) {
+			return true
+		}
+		search = rest[next:]
+	}
+}
+
+// kittyControlHasID reports whether the comma-separated APC control data holds
+// an element exactly equal to "i=<id>".
+func kittyControlHasID(control []byte, id string) bool {
+	want := []byte("i=" + id)
+	for _, p := range bytes.Split(control, []byte(",")) {
+		if bytes.Equal(p, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseXTVersion extracts the terminal identity from an XTVERSION reply, a DCS
+// introduced by "\x1bP>|" and ended by the ST "\x1b\\". It returns the text
+// between them, e.g. "kitty 0.40.1", or an empty string when no reply is
+// present. When the ST is missing it cuts at the next escape byte, so a
+// following DA1 reply never bleeds into the identity.
+func parseXTVersion(buf []byte) string {
+	i := bytes.Index(buf, []byte("\x1bP>|"))
 	if i < 0 {
-		return false
+		return ""
 	}
-	rest := buf[i:]
-	end := bytes.Index(rest, []byte("\x1b\\"))
-	if end < 0 {
-		end = len(rest)
+	rest := buf[i+4:]
+	if end := bytes.IndexByte(rest, '\x1b'); end >= 0 {
+		rest = rest[:end]
 	}
-	return bytes.Contains(rest[:end], []byte(";OK"))
+	return string(rest)
 }
 
 // parseDA1Sixel reports whether the DA1 reply lists the sixel attribute. It

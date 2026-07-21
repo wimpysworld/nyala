@@ -618,6 +618,20 @@ min, max, median, and worst gap, plus `in_decode_*_ms` (PNG decode on the worker
 `out_encode_*_ms` / `out_write_*_ms` (our terminal encode vs the tty flush). `just fps
 <url>` wires it.
 
+Field semantics, for reading a summary line correctly. `in_*` is stamped at
+receive on the listener goroutine, before any queue or drop; `out_*` is stamped
+per assembled paint after first contentful paint. Each `*_mean` is
+whole-session, `(frames-1)/span`. `*_min`, `*_max`, and `*_median` are
+instantaneous, from single inter-frame gaps: one worst gap sets the min, one
+back-to-back pair sets the max, so neither is a sustained rate. `out_encode`
+is Nyala's framing cost. Under the pipelined writer, `out_write` measures the
+terminal's true ingest rate, not Nyala work (recommendation 5's nuance above).
+A gap between in and out frame counts is the latest-wins coalescer working as
+designed: a frame superseded before assembly is never painted. The later
+`ack_rtt_mean_ms` and `ack_rtt_max_ms` fields time the screencast ack round
+trip in the engine's ack pump; they matter only when the rtt approaches half
+the frame interval.
+
 MEASURED (bbc.co.uk, kitty, pgup/pgdn): In median ~40 fps, peak ~59; Out 2 to 6 fps.
 At that point, paint was the binding constraint on screen, not ingest. The historical
 paint split was decisive:
@@ -1482,6 +1496,286 @@ faults by construction: no shared mutable state, and it targets the dominant sta
 - goperf false sharing and field alignment: https://goperf.dev/01-common-patterns/fields-alignment/
 - DXT range-fit vs cluster-fit (two-colour block pick): https://www.sjbrown.co.uk/posts/dxt-compression-techniques/
 - BC1 endpoint refinement: https://www.ludicon.com/castano/blog/2022/11/bc1-compression-revisited/
+
+---
+
+## Kitty in-band ceiling research (2026-07-21)
+
+Why the direct `t=d` path capped at 12.7 fps on the live aquarium, and what the
+terminal and Chromium can each sustain. This research motivated the transport
+benchmark and the shm transport in the next two sections.
+
+### Live direct baseline (aquarium)
+
+`NYALA_FPS_TIMING=1 just debug-run 'https://webglsamples.org/aquarium/aquarium.html'
+--backend=kitty`, Kitty maximised on a 2560x1600 display:
+
+```
+in_mean=23.4 in_median=39.4 in_worst_gap_ms=119.9 in_decode_mean_ms=0.6
+out_mean=12.7 out_encode_mean_ms=1.3 out_write_mean_ms=78.9
+```
+
+Verdict: Nyala was not the bottleneck; both walls were external. Nyala's
+framing cost 1.3 ms per frame. The 78.9 ms write was pty backpressure while
+Kitty parsed, base64-decoded, and PNG-decoded each frame on its main thread.
+Ingest was Chromium-side frame production: ~39 fps steady state with tail
+stalls to 120 ms dragging the mean to 23.4. For comparison, puppeteer users
+report ~25-31 fps from its JPEG default-viewport screencast; a 39 fps median
+at four times the pixels in PNG is in line. The 683-frame in/out gap (1484
+against 801) died at the viewer's latest-wins coalescing by design: frames
+arrived every 25-43 ms while a paint took 79 ms, so roughly every second frame
+was superseded before assembly.
+
+Arithmetic on the write: a ~1.25 MB PNG at 2560x1500, times 4/3 for base64, is
+~1.67 MB per frame; 1.67 MB over 78.9 ms is ~21 MB/s terminal ingest. Chunk
+envelope overhead is ~0.2%, negligible. 801 frames at 78.9 ms matches the
+63.1 s wall clock, so the writer was busy the whole session and the pipeline
+fully exposed the terminal as the wall.
+
+### Kitty's in-band cost model and hard ceiling
+
+Kitty's IO thread reads the pty into a 1 MiB parse buffer; the main thread
+then SIMD-scans escapes, SIMD base64-decodes chunks, accumulates them, and
+runs libpng inflate before texture upload (`vt-parser.c`, `graphics.c`). When
+the parse buffer nears full, the IO thread stops reading, the ~64 KiB kernel
+pty buffer fills, and the client's `write()` blocks, so a slow terminal decode
+stalls the sender directly. At 3.84 Mpx, single-threaded PNG inflate dominates
+at an estimated 40-70 ms, with base64 and chunk parsing adding 10-15 ms; 79 ms
+per frame was the expected cost, not a fault.
+
+The hard ceiling: Kitty's own `kitten __benchmark__` measured the post-SIMD
+parser at ~270 MB/s on its Images workload. Raw RGBA at 2560x1500 is 20.5 MB
+of base64 per frame; 270 MB/s gives ~13 fps. The in-band channel tops out
+where the direct path already sat, and no pixel-format tweak escapes it.
+
+### What Kitty is capable of
+
+- In-band, measured by others: tpix sustains 60 fps truecolour at 720p and
+  30 fps at 1280p; mpv manages 24 fps at 1080p over direct transmission.
+  Nobody publishes high fps at 2560x1500 in-band; the parser arithmetic above
+  says nobody will.
+- Out-of-band, `t=s` POSIX shm is the designed fast path: the client writes
+  pixels to an shm object and sends a tiny escape; Kitty mmap-reads and
+  unlinks the object. No base64, no chunk parse, no pty backpressure on
+  megabytes. Field proof: mpv dropped frames at high resolution over direct
+  transmission and stopped dropping with `--vo-kitty-use-shm=yes`. Same-host
+  only. PNG over shm still pays libpng inflate on Kitty's main thread, so shm
+  alone removes only the transport share, not the decode wall.
+- Atomic same-id replacement: retransmitting with the same image id replaces
+  data and placements without flicker (`a=T`, fixed `i`, `q=2`). Nyala keeps
+  the double-buffered id swap instead. The animation edit path (`a=f,r=1`)
+  stays rejected as non-portable (black frames on kitty and WezTerm).
+- notcurses cut bandwidth 99.9% with the animation protocol, evidence of the
+  headroom that avoiding full-frame retransmission buys where it is portable.
+- Config caps: `repaint_delay` (10 ms) and `input_delay` (3 ms) are irrelevant
+  below ~60-100 fps and are user-config only; `sync_to_monitor` caps at the
+  monitor refresh rate.
+
+### Chromium screencast facts (source-verified)
+
+- Capture is damage-driven: frames arrive only on visual change.
+- The rate cap on current Chromium is 100 fps (10 ms minimum capture period);
+  the old 10 fps hard cap is historical.
+- The ack budget allows up to 3 frames between capture and acknowledgement.
+  While the budget is exhausted, frames are dropped, not queued, so a late ack
+  becomes a gap rather than latency.
+- Screencast PNG takes a fast-encode path on a worker thread. The DevTools
+  front end itself screencasts as JPEG quality 80.
+- `maxWidth`/`maxHeight` scale GPU-side in the capturer, before readback.
+
+### GPU verification (2026-07-21)
+
+`just debug-run 'https://webglreport.com/?v=2' --backend=kitty` confirmed the
+GPU active inside Nyala's Chromium: unmasked renderer ANGLE (AMD Radeon 8060S
+Graphics, radeonsi, OpenGL ES 3.2). A silent SwiftShader fallback is ruled out
+as the ingest-tail cause. The remaining tail suspects are PNG encode spikes on
+busy frames and the 3-frame ack window.
+
+### Decision trail
+
+The operator first chose PNG-over-shm for simplicity, with raw-over-shm
+deferred, and kept the raw benchmark variants as the escalation baseline: a
+sub-2x shm-PNG gain would reopen the payload question. The benchmark below
+fired exactly that gate, so raw `f=32` over shm shipped instead, with direct
+PNG unchanged as the universal fallback.
+
+### Sources
+
+- Kitty graphics protocol (mediums, formats, chunking, animation): https://sw.kovidgoyal.net/kitty/graphics-protocol/
+- Kitty performance and config (`repaint_delay`, `input_delay`, `sync_to_monitor`): https://sw.kovidgoyal.net/kitty/performance/ and https://sw.kovidgoyal.net/kitty/conf/
+- Parser ~270 MB/s on the Images workload after the SIMD rewrite: https://github.com/kovidgoyal/kitty/issues/7005
+- Main-thread parse and PNG decode path: https://github.com/kovidgoyal/kitty/blob/master/kitty/graphics.c and https://github.com/kovidgoyal/kitty/blob/f13c8cd4/kitty/vt-parser.c
+- Same-id atomic replacement recipe: https://github.com/kovidgoyal/kitty/issues/8701
+- tpix 60 fps at 720p, 30 fps at 1280p: https://github.com/kovidgoyal/kitty/discussions/5660
+- mpv shm fix for high-resolution drops: https://github.com/mpv-player/mpv/issues/13285 and https://github.com/mpv-player/mpv/blob/1ac687d7/video/out/vo_kitty.c
+- mpv 2 to 24 fps at 1080p direct after the strlen fix: https://github.com/mpv-player/mpv/pull/15766
+- notcurses animation protocol cut bandwidth 99.9%: https://github.com/dankamongmen/notcurses/discussions/1898
+- Chromium ack window, drop-not-queue, fast PNG encode: https://chromium.googlesource.com/chromium/src/+/refs/heads/main/content/browser/devtools/protocol/page_handler.cc
+- Chromium 10 ms minimum capture period: https://chromium.googlesource.com/chromium/src/+/refs/heads/main/content/browser/devtools/devtools_video_consumer.cc
+- Damage-driven capture oracle and GPU-side scaling: https://chromium.googlesource.com/chromium/src/+/refs/heads/main/components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.h
+- DevTools front end screencasts as JPEG q80: https://chromium.googlesource.com/devtools/devtools-frontend/+/a6e6344c2ad021c594e2962d61db87621a2f8987/front_end/screencast/ScreencastView.ts
+- Puppeteer screencast ~25-31 fps reports: https://github.com/puppeteer/puppeteer/issues/15112
+
+---
+
+## Kitty transport benchmark (2026-07-21)
+
+`just kitty-transport-bench` sent the same 2560x1500 fixture frame to a live,
+maximised Kitty terminal (2560x1600 display, AMD Radeon 8060S) 30 times per
+variant. The PNG payload was 1.09 MB and the raw `f=32` payload 15.36 MB. Direct
+variants time the tty write alone; file and shm variants time the write plus the
+terminal's acknowledgement.
+
+| Variant | Payload | Timed span | Mean ms | Median ms | Min ms | Max ms |
+|---|---:|---|---:|---:|---:|---:|
+| `t=d` PNG | 1.09 MB | write | 16.07 | 16.22 | 2.66 | 20.03 |
+| `t=f` PNG | 1.09 MB | write+ack | 16.54 | 16.13 | 15.06 | 27.33 |
+| `t=s` PNG | 1.09 MB | write+ack | 16.14 | 15.71 | 15.23 | 19.82 |
+| `t=s` raw `f=32` | 15.36 MB | write+ack | 10.74 | 10.57 | 9.44 | 12.64 |
+| `t=d` raw `f=32` | 15.36 MB | write | 54.88 | 54.55 | 41.86 | 76.37 |
+
+shm-PNG shows no gain over direct (16.14 against 16.07 ms mean). At 1 MB the
+transport share is negligible and Kitty's PNG decode dominates the span, so
+moving the same PNG bytes through shared memory buys nothing. The plan's
+escalation gate (an shm-PNG improvement under 2x reopens the payload question)
+fired. Raw `f=32` over shm is the only variant that beats direct, 10.74 against
+16.07 ms, because it removes the terminal's PNG decode as well as the in-band
+transport. In-band raw at 54.88 ms for 15.36 MB confirms the escape-parser
+throughput wall for large payloads. Verdict: raw-over-shm is promoted to the
+fast path shipped in the next section; the direct fallback stays PNG.
+
+Caveat: the gradient-plus-noise fixture writes in 16 ms over direct, far below
+the 78.9 ms live aquarium baseline in [the ceiling research
+above](#kitty-in-band-ceiling-research-2026-07-21). Real high-entropy content
+decodes slower, so the fixture understates terminal-side PNG decode, and the
+live before-and-after aquarium comparison remains the definitive gain
+measurement.
+
+---
+
+## Kitty shm transport (2026-07-21)
+
+The raw-over-shm promotion from [the transport benchmark
+above](#kitty-transport-benchmark-2026-07-21) shipped as a runtime-detected
+fast path. The direct `t=d` PNG pass-through is unchanged and remains the
+default for Konsole, SSH, sandboxes, probe failure, and runtime demotion.
+
+**Detection.** The DA1-fenced startup handshake in `internal/viewer/detect.go`
+gained an icat-style shm probe: an `a=q` query carrying a real 1x1 `f=24`
+payload in a real `/dev/shm` object, so it adds no round trip and self-handles
+SSH, private `/dev/shm`, and terminals without shm support. Terminal identity
+comes from an XTVERSION query in the same batch.
+
+**Decision order** (`internal/viewer/transport.go`, resolved once per run):
+user override (`--kitty-transport=auto|direct|shm`) > deny list > probe result
+> allow list > direct fallback. The allow list covers terminals that support
+shm but stay silent on the probe; the deny list covers terminals whose shm
+path is broken. Seeds: allow WezTerm on Linux (supports `t=s` but never acks
+the probe), deny WezTerm on macOS (renders `t=s` wrongly). Live terminal
+testing populates both lists. Operator scoping decision (2026-07-21):
+terminal-emulator validation runs on Kitty only for now, as the golden
+reference implementation; the broader matrix (Ghostty, WezTerm, Konsole,
+st-graphics) follows once Kitty is satisfactory.
+
+**Fast path.** The engine decodes each CDP PNG frame into a pooled RGBA plane
+(`internal/pngdecode.DecodeInto`, zero per-frame plane allocations). The
+viewer's writer goroutine copies the plane into a per-frame POSIX shm object
+(`internal/render/kitty.SHMWriter`) and emits one ~100-byte `f=32,t=s` escape
+with double-buffered image ids. The terminal mmap-reads and unlinks the
+objects it consumes; the writer unlinks the rest on close. Each shm object
+carries one complete transmission, never chunked: `m=1` shm updates do not
+display on Ghostty. The engine-decode-then-viewer-copy split is a recorded
+deviation from the promotion design notes, which had the decode land directly
+in the shm object: decoding into pooled engine-owned planes and copying the
+plane into the shm mapping at write time costs one ~15 MB memcpy (1-2 ms, on
+the writer goroutine) and keeps the engine-viewer seams clean.
+
+**Codecs.** Hot paths pin the optimised third-party codecs already in the
+module: base64 via `github.com/emmansun/base64`, PNG decode via
+`internal/pngdecode` wrapping `github.com/woozymasta/png`, JPEG via
+`github.com/gen2brain/jpegn`. Stdlib `encoding/base64` and `image/png` are
+acceptable only in tests and goldens.
+
+**Pacing.** The tiny escape removes the pty backpressure that paces the direct
+writer, so the shm path bounds frames in flight to one: the next frame waits
+for the terminal's OK reply (sent with `q=0`) or a 40 ms deadline, whichever
+comes first, so a lost reply cannot stall the stream.
+
+**Demotion.** Any shm failure, from object creation through a terminal error
+reply, demotes the session to the direct PNG path, one way.
+
+The fixture benchmark above predicts the per-frame write falling from 16.07 to
+10.74 ms and understates the live gain (see its caveat). The live
+before-and-after aquarium measurement ran on the same maximised 2560x1600
+Kitty with the shm transport active:
+
+```
+warmup_ms=938 in_frames=713 in_mean=24.6 in_min=9.4 in_max=272.0 in_median=40.4 in_worst_gap_ms=106.7 in_decode_mean_ms=96.9 in_decode_max_ms=165.5 out_frames=705 wall=28.87s out_mean=24.4 out_median=39.0 out_min=7.7 out_max=89.6 out_worst_gap_ms=129.6 out_encode_mean_ms=4.6 out_encode_max_ms=6.5 out_write_mean_ms=0.0 out_write_max_ms=0.0 ack_rtt_mean_ms=11.7 ack_rtt_max_ms=46.1
+```
+
+| Metric | Direct baseline | shm | Change |
+|---|---:|---:|---|
+| `out_mean` fps | 12.7 | 24.4 | +92% |
+| `out_write_mean_ms` | 78.9 | 0.0 | eliminated |
+| `in_mean` fps | 23.4 | 24.6 | unchanged |
+| `in_median` fps | 39.4 | 40.4 | unchanged |
+
+The terminal write wall is gone and output now tracks ingest: 705 of 713
+frames painted, `out_median` 39.0 against `in_median` 40.4. The remaining
+ceiling is Chromium frame production, median ~40 fps with tail gaps to
+~107 ms from PNG encode spikes on busy frames. `ack_rtt_mean_ms` at 11.7
+confirms the ack path is not the cap. The new cost is the engine-side PNG
+plane decode, `in_decode_mean_ms` 96.9. Pooled workers pipeline it, so it
+does not cap throughput, but it adds ~100 ms of latency.
+
+Open follow-ups:
+
+- JPEG q90 capture in shm mode. Chromium's JPEG encode is cheaper than its
+  PNG encode on busy frames, and the GPU-verified aquarium run with JPEG
+  capture ingested `In: 60.3`, so the estimate is ~55-60 fps out. It needs a
+  jpegn YCbCr-to-RGBA decode into the pooled plane and an shm-mode capture
+  format switch in the engine. The decision rests with the operator.
+- Upstream `DecodeInto` to `woozymasta/png` as a pull request; it is carried
+  as a minimal in-package fork of the row loop in `internal/pngdecode`.
+- Populate the transport allow and deny lists from live terminal testing,
+  under the Kitty-first scoping decision above.
+
+### Terminal support for raw-RGB-over-shm (research, 2026-07-21)
+
+`t=s` is safe on Kitty, Ghostty, WezTerm (Linux and Windows), and current
+st-graphics. Konsole is direct-only by design. The `t=d` PNG path stays the
+universal fallback.
+
+| Terminal | `t=s` shm | `t=f`/`t=t` file | Raw `f=24`/`f=32` | `f=100` PNG | Notes |
+|---|---|---|---|---|---|
+| Kitty | Yes | Yes | Yes | Yes | Error reply (`EBADF`/`EINVAL`) on failure |
+| Ghostty | Yes (2024-08, PR #2064) | Yes | Yes | Yes | Chunked (`m=1`) shm updates do not display; send one complete transmission per object |
+| WezTerm | Yes on Linux/Windows (2022-04, PR #1810); broken on macOS (#7631) | Yes | Yes | Yes | Sends no APC ack for `t=s`, so detection relies on the DA1 timeout |
+| Konsole | No | No | Yes (direct) | Yes | Direct-only by deliberate design (MR 594) |
+| st (kitty-graphics patch) | Yes (2025-12-30 diff) | Yes | Yes | Yes | The earlier 2024 diff lacked shm |
+| wayst / Warp | Unverified | Unverified | Unverified | Presumed yes | Protocol support announced, mediums undocumented |
+| tmux | Pass-through | Pass-through | Pass-through | Pass-through | Native relay since 2026-03 (`ENABLE_KITTY`); works when client and outer terminal share the host |
+
+Detection is defined by the protocol and proven by Kitty's own icat kitten
+(`kittens/icat/detect.go`): send an `a=q` probe per medium, each with a real
+1x1 payload (a real shm object for `t=s`), then `CSI c` (DA1). An `OK` reply
+for the probe's image id marks the medium supported; an error or silence
+before the DA1 answer means fallback. A short timeout covers WezTerm's
+missing ack.
+
+Remote and sandbox behaviour: `t=s` and `t=f` fail whenever the client and
+terminal do not share a filesystem or shm namespace (SSH, containers with a
+private `/dev/shm`). The probe handles this automatically because the
+terminal-side open fails. Kitty's docs state file and memory modes will not
+work over remote sessions.
+
+Matrix sources: https://github.com/ghostty-org/ghostty/pull/2064,
+https://github.com/wezterm/wezterm/pull/1810,
+https://github.com/wezterm/wezterm/issues/7631,
+https://invent.kde.org/utilities/konsole/-/merge_requests/594,
+https://st.suckless.org/patches/kitty-graphics-protocol/,
+https://github.com/kovidgoyal/kitty/blob/master/kittens/icat/detect.go,
+https://github.com/tmux/tmux/commit/cf6cbe430cb18eabeb39a1cac807dece48eac33a.
 
 ---
 

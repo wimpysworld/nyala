@@ -85,9 +85,14 @@ JPEG normally crosses the engine/render seam as the decoder's `*image.YCbCr`.
 Block keeps that native layout. Sixel requests PNG for every frame and preserves the
 PNG decoder's native concrete pixel type into the encoder; this can be RGBA or NRGBA,
 so the encoder retains both fast paths. PNG also keeps its native layout when a
-queued Kitty frame reaches a pixel backend. Every live Kitty stream requests PNG and carries the owned CDP base64 string in
+queued Kitty frame reaches a pixel backend. Every live Kitty stream requests PNG.
+On the direct transport the frame carries the owned CDP base64 string in
 `Frame.EncodedPNG`; the Kitty consumer rechunks it as `f=100,t=d,a=T` without base64
-decode, PNG decode, pixel packing, zlib, or base64 encode. A frame queued across a
+decode, PNG decode, pixel packing, zlib, or base64 encode. On the runtime-detected
+shm transport the engine decodes the PNG into a pooled RGBA plane and the viewer
+sends raw `f=32` pixels through a per-frame POSIX shared-memory object with a
+~100-byte escape; `docs/PERFORMANCE.md` records the probe, decision order, pacing,
+and the benchmark that chose raw over PNG. A frame queued across a
 backend switch decodes that retained PNG at the new pixel consumer. In the opposite
 direction, Kitty drops queued pixel frames until the restarted PNG stream emits.
 
@@ -122,7 +127,8 @@ and tearing remain to be validated.
 2. Downsample pixel frames to terminal resolution; render block cells, quadrant (2x2)
    by default with half-block (`▄`) as the floor (the half-block cell sets background =
    top pixel, foreground = bottom pixel, two square pixels per cell). On graphics
-   terminals Sixel encodes decoded pixels, while Kitty frames the direct PNG.
+   terminals Sixel encodes decoded pixels, while Kitty frames the direct PNG or
+   writes raw pixels to shared memory.
 3. Composite the text layer over the bitmap so glyphs render as real Unicode where
    text exists, bitmap elsewhere. This is the primary quality differentiator.
 4. Diff Block cells against the previous frame. Sixel and Kitty emit a full image for
@@ -590,7 +596,7 @@ enhancements gated behind capability detection.
 - Does KMSCON honour synchronized output (mode 2026) and mode 2027, and tolerate the renderer's cursor-positioning sequences without artefacts? Resolved: the colour half closed in Stage 1; the mode half closes here. KMSCON/libtsm ignores mode 2026 and mode 2027 harmlessly: an unknown DEC private mode hits the parser `default:` branch (debug-log and `continue`), consuming the whole sequence with no grid leak, verified in libtsm v4.4.2 (the version kmscon ships) and main. CUP/HVP, DECSC/DECRC, and SGR truecolour are all supported without artefacts. `DECRQM` (`CSI ?2026$p`) is a stub on KMSCON, so do not probe for 2026 at runtime; assume 2026/2027 absent. Fallback for tear reduction on KMSCON: bracket each frame with cursor hide/show (`CSI ?25l` ... `CSI ?25h`, DECTCEM mode 25), which KMSCON honours, and write each whole frame in one syscall with absolute CUP per row. Send `CSI ?2026h/l` anyway for Kitty/foot/Ghostty, since KMSCON drops it cleanly.
 - On graphics-capable emulators, after writing a Kitty/Sixel image, where does the cursor land, and can Nyala reposition so the next diff does not smear the image? Resolved for Kitty: place with `C=1` (do not move the cursor), then issue an explicit absolute `CSI <row>;<col> H` before the next frame; the default `C=0` position is undefined at screen edges and differs across terminals (kitty vs wezterm), which is what smears a following diff. Position via explicit CUP, not DECSC/DECRC, so it does not fight the Bubble Tea chrome cursor. For Sixel, wrap each frame `ESC 7` (DECSC), `CSI <row>;<col> H`, sixel, `ESC 8` (DECRC). Stage 3 spike: confirm `C=1` is honoured on the shipped wezterm/ghostty; if ignored, the explicit per-frame CUP already covers it.
 - Per-frame Kitty strategy: fixed ID or ping-pong IDs? Resolved: alternate two image IDs, transmit-and-put the next image, then delete the previous image. This avoids a blank between frames on Kitty and WezTerm. Use `q=2` to suppress replies in the loop; query with `q=0` only at startup.
-- Best local transmission medium: raw pixels, PNG, or shared memory? Resolved for live CDP frames: request PNG and reuse Chromium's base64 payload as direct Kitty `f=100,t=d,a=T` data. Rechunking the owned payload costs 0.014 ms in the focused 2560x2880 benchmark and avoids Nyala's decode and re-encode. Shared memory would require decoded pixels and an extra transport object, so it is no longer the default. Measure terminal-side PNG decode and draw before adding another Kitty transport.
+- Best local transmission medium: raw pixels, PNG, or shared memory? Resolved for live CDP frames: request PNG and reuse Chromium's base64 payload as direct Kitty `f=100,t=d,a=T` data. Rechunking the owned payload costs 0.014 ms in the focused 2560x2880 benchmark and avoids Nyala's decode and re-encode. Revised 2026-07-21: with terminal-side decode on the clock, the transport benchmark showed Kitty's PNG decode dominates at this size, so a runtime-detected raw `f=32` POSIX shared-memory fast path now sits above this direct PNG fallback. `docs/PERFORMANCE.md` records the probe, decision order, pacing, and measurements.
 - Confirm which Kitty placement modes render on current wezterm and ghostty; unicode placeholders are unsupported in several terminals. Resolved: use classic cursor-anchored placement (`a=T`/`a=p`); it renders on current kitty, ghostty, and the wezterm GUI. Unicode placeholders (`U=1`, `U+10EEEE`) render only on kitty (and Terminal.app) as of mid-2026; ghostty 1.3.1 and iTerm2 do not render them, and wezterm has them only in an unmerged fork (issue #986). Reserve placeholders for kitty-only tmux passthrough. Stage 3 spike: re-test placeholder render status on the exact ghostty and wezterm builds shipped.
 - Cell pixel geometry: query CSI 16t for cell width/height to map the CDP pixel viewport to cells without distortion. Define the fallback when terminals omit it (per-terminal defaults). (Resolved in Stage 1 (see `docs/STAGE-1.md`): resolve via `TIOCGWINSZ`, then `CSI 16t`, then `14t`/`18t`, else default to 8x16 px (aspect 1:2), with a winsize sanity bound rejecting derived cell px outside ~4..32 wide or 8..64 tall.)
 - Will Nyala drive the Block screencast at the exact sampled sub-cell resolution? On

@@ -19,6 +19,7 @@ import (
 	"image/color"
 	"io"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -102,10 +103,103 @@ type State struct {
 	// aliases. It stays nil on the block and sixel paths.
 	kittyEnc *kitty.LiveEncoder
 
+	// kittySHM creates the shared-memory objects the Kitty t=s fast path
+	// transmits. It is lazily built on the first shm frame and driven from the
+	// single draw goroutine. resetKitty and demoteKittySHM close it, unlinking
+	// any objects the terminal never consumed. It stays nil on the direct path.
+	kittySHM kittySHMWriter
+
+	// kittyShmDemoted marks the one-way runtime fallback from the shm
+	// transport to direct PNG. An shm create or write failure sets it for the
+	// rest of the session, so a flaky /dev/shm cannot fail every frame.
+	kittyShmDemoted bool
+
+	// kittyShmDemoteErr holds the error that demoted the shm transport until
+	// the stream session collects it with takeKittySHMDemotion for its
+	// one-shot log and engine decode toggle.
+	kittyShmDemoteErr error
+
+	// kittyWroteSHM records that the frame just rendered went out as an shm
+	// transmit. The stream session reads and clears it per frame with
+	// takeKittySHMWrote to drive the one-in-flight pacing gate.
+	kittyWroteSHM bool
+
 	// sixelEnc is the reused Sixel renderer. It retains encoder scratch across
 	// moving frames and switches its output through an internal writer proxy.
 	// The viewer draw path is serial, so one renderer owns the whole stream.
 	sixelEnc *sixel.Renderer
+
+	// kittyTransport is the effective Kitty transmission medium, resolved once
+	// by configureBackends from the --kitty-transport override, the deny list,
+	// the startup shm probe, and the allow list. It is always direct or shm.
+	kittyTransport KittyTransport
+}
+
+// KittyTransport returns the effective Kitty transmission medium resolved by
+// configureBackends: direct or shm, never auto.
+func (s *State) KittyTransport() KittyTransport {
+	return s.kittyTransport
+}
+
+// kittySHMWriter is the shared-memory writer seam encodeKittySHM drives. The
+// production value is *kitty.SHMWriter; a test stub forces create failures to
+// exercise the runtime demotion to the direct path.
+type kittySHMWriter interface {
+	// Create makes a new size-byte object for the given double-buffer image
+	// id, mapped for writing, unlinking the unconsumed predecessor.
+	Create(id, size int) (*kitty.SHMObject, error)
+	// Close unlinks every tracked object the terminal never consumed.
+	Close() error
+}
+
+// kittySHMLive reports whether live Kitty frames should travel over shared
+// memory: the resolved transport is shm and the session has not demoted to
+// direct.
+func (s *State) kittySHMLive() bool {
+	return s.kittyTransport == KittyTransportSHM && !s.kittyShmDemoted
+}
+
+// demoteKittySHM records the one-way runtime fallback from the shm transport
+// to direct PNG and closes the shm writer, unlinking unconsumed objects. The
+// first error wins; later calls are no-ops. The stream session collects the
+// recorded error with takeKittySHMDemotion.
+func (s *State) demoteKittySHM(err error) {
+	if s.kittyShmDemoted {
+		return
+	}
+	s.kittyShmDemoted = true
+	s.kittyShmDemoteErr = err
+	s.closeKittySHM()
+}
+
+// takeKittySHMDemotion returns the error that demoted the shm transport, once,
+// and clears it, so the session logs the fallback a single time. It returns
+// nil when no demotion is pending.
+func (s *State) takeKittySHMDemotion() error {
+	err := s.kittyShmDemoteErr
+	s.kittyShmDemoteErr = nil
+	return err
+}
+
+// takeKittySHMWrote reports whether the frame just rendered went out as an shm
+// transmit and clears the flag, so the session's pacing gate arms once per shm
+// frame.
+func (s *State) takeKittySHMWrote() bool {
+	wrote := s.kittyWroteSHM
+	s.kittyWroteSHM = false
+	return wrote
+}
+
+// closeKittySHM unlinks any shared-memory objects the terminal never consumed
+// and drops the writer, so no /dev/shm entry outlives the kitty session. The
+// unlink is best-effort: a failure leaves at most a stale tmpfs entry, which
+// must not abort a backend switch or teardown.
+func (s *State) closeKittySHM() {
+	if s.kittySHM == nil {
+		return
+	}
+	_ = s.kittySHM.Close()
+	s.kittySHM = nil
 }
 
 // frameScratch is the Block path's reusable per-frame buffers. Each draw
@@ -310,10 +404,28 @@ func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
 // below terminal text. The option is private to the FPS-enabled stream path, so
 // public rendering, diagnostics, and non-FPS Kitty output retain their bytes.
 func (s *State) renderStreamFrame(frame render.Frame, w io.Writer, kittyBelowText bool) error {
+	// The frame's pooled pixel plane, when present, returns to the engine on
+	// every exit: painted, copied into shared memory, or dropped. Release is
+	// nil-safe and exactly-once, so non-plane frames pay only a nil check.
+	defer releaseFrame(frame)
 	if !frame.HasImage() {
 		return nil
 	}
 	if s.Backend == BackendKitty {
+		if plane, ok := frame.Img.(*image.RGBA); ok && s.kittySHMLive() {
+			err := s.encodeKittySHM(plane, w, kittyBelowText)
+			if err == nil {
+				return nil
+			}
+			// One-way runtime demotion: the direct PNG path takes over for
+			// the rest of the session. This frame still paints when it
+			// carries a retained payload; a plane-only frame is dropped and
+			// its plane released by the deferred hook.
+			s.demoteKittySHM(err)
+		}
+		// A retained-payload frame in shm mode (a mode-change race) and every
+		// demoted or direct-transport frame takes the direct encode. A plane
+		// frame with no payload after demotion falls out here and is dropped.
 		if frame.EncodedPNG == "" {
 			return nil
 		}
@@ -443,6 +555,89 @@ func (s *State) encodeKittyPNG(data string, w io.Writer, belowText bool) error {
 	return nil
 }
 
+// kittySHMQuiet is the response-quiet key the shm path transmits. Zero keeps
+// the terminal's per-transmit acknowledgement (q=1 would suppress the OK and
+// q=2 every response), because the stream session paces the shm path on that
+// reply: the tiny t=s escape carries no pty backpressure, so without the ack
+// gate latency could build in the pty. The direct path keeps q=2.
+const kittySHMQuiet = 0
+
+// encodeKittySHM copies one decoded RGBA plane into a fresh shared-memory
+// object and transmits the single unchunked f=32,t=s escape under the next
+// double-buffer image id, then deletes the prior id, mirroring
+// encodeKittyPNG's transmit-then-delete ordering so the swap never blanks the
+// screen. The copy is the one ~15 MB memcpy the transport promotion budgeted;
+// the caller releases the frame's plane after this returns. Kitty unlinks the
+// object once it consumes it; the tracked writer unlinks the rest. A
+// zero-extent plane writes nothing. Any error is an shm transport failure the
+// caller answers with runtime demotion.
+func (s *State) encodeKittySHM(img *image.RGBA, w io.Writer, belowText bool) error {
+	b := img.Bounds()
+	width, height := b.Dx(), b.Dy()
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	next := nextKittyID(s.kittyID)
+	if s.kittyEnc == nil {
+		s.kittyEnc = &kitty.LiveEncoder{}
+	}
+	if s.kittySHM == nil {
+		s.kittySHM = kitty.NewSHMWriter()
+	}
+	obj, err := s.kittySHM.Create(next, 4*width*height)
+	if err != nil {
+		return err
+	}
+	copyRGBAPlane(obj.Data(), img)
+	if err := obj.Close(); err != nil {
+		return err
+	}
+	if belowText {
+		err = s.kittyEnc.EncodeSHMIDAtZ(obj.Name(), width, height, next, kittyFPSPageZ, kittySHMQuiet, w)
+	} else {
+		err = s.kittyEnc.EncodeSHMID(obj.Name(), width, height, next, kittySHMQuiet, w)
+	}
+	if err != nil {
+		return err
+	}
+	if s.kittyID != 0 {
+		if _, err := io.WriteString(w, kitty.DeleteImage(s.kittyID)); err != nil {
+			return err
+		}
+	}
+	s.kittyID = next
+	s.kittyWroteSHM = true
+	return nil
+}
+
+// copyRGBAPlane copies img's pixels into dst as tightly packed RGBA rows, the
+// raw f=32 layout the Kitty shm escape references. Pooled engine planes are
+// tightly packed at origin, so the steady state is one straight copy; the row
+// loop covers any other stride or sub-rectangle.
+func copyRGBAPlane(dst []byte, img *image.RGBA) {
+	b := img.Bounds()
+	width, height := b.Dx(), b.Dy()
+	rowBytes := 4 * width
+	if img.Stride == rowBytes && b.Min == (image.Point{}) {
+		copy(dst, img.Pix[:rowBytes*height])
+		return
+	}
+	for y := range height {
+		off := img.PixOffset(b.Min.X, b.Min.Y+y)
+		copy(dst[y*rowBytes:(y+1)*rowBytes], img.Pix[off:off+rowBytes])
+	}
+}
+
+// releaseFrame returns a frame's pooled pixel plane to the engine, if any. The
+// engine sets Release only on kitty-shm decoded frames and makes it
+// exactly-once, so every other path pays a nil check and a double call is a
+// safe no-op.
+func releaseFrame(f render.Frame) {
+	if f.Release != nil {
+		f.Release()
+	}
+}
+
 // kittyFPSPageZ places the live page below glyphs and non-default cell
 // backgrounds, so Kitty can paint the terminal FPS badge above the image.
 const kittyFPSPageZ = -1073741825
@@ -458,9 +653,12 @@ func nextKittyID(prev int) int {
 
 // resetKitty deletes both double-buffer image ids and frees their data, then
 // clears the tracked id so a later return to the kitty backend rebuilds from a
-// clean slate with id 1. It is a no-op when no kitty image has been placed. The
-// stream session calls it when Tab cycles the backend away from kitty.
+// clean slate with id 1. It also closes the shm writer, unlinking any
+// shared-memory objects the terminal never consumed. It is a no-op when no
+// kitty image has been placed and no shm object exists. The stream session
+// calls it when Tab cycles the backend away from kitty.
 func (s *State) resetKitty(w io.Writer) error {
+	s.closeKittySHM()
 	if s.kittyID == 0 {
 		return nil
 	}
@@ -600,8 +798,10 @@ func exitTerminal(rows int, drawn bool) string {
 // every path, because it is multiplexer-agnostic, so it must not strand at the
 // NewState default behind an early return. A NYALA_CELL_PX override (a diagnostic
 // and harness knob) takes precedence over the ioctl and handshake cell; a
-// malformed override returns an error so the run fails loudly.
-func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag string) error {
+// malformed override returns an error so the run fails loudly. transportFlag is
+// the --kitty-transport intent; the effective transport resolves here, once,
+// from the flag and the probe result, and lands on st for the kitty draw path.
+func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, transportFlag string) error {
 	detected := detectColour(os.Environ(), cterm.IsTerminal(tty.Fd()))
 	st.Colour = resolveColour(colourFlag, os.Environ(), detected)
 
@@ -620,6 +820,10 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag strin
 	}
 
 	if multiplexed() {
+		// No handshake runs under a multiplexer, so the transport resolves
+		// with no identity and no probe: an explicit override still wins and
+		// auto falls back to direct.
+		st.kittyTransport = resolveKittyTransport(transportFlag, "", false, runtime.GOOS)
 		st.SetEnabled([]Backend{BackendBlock})
 		return nil
 	}
@@ -628,6 +832,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag strin
 	if !overrideOK && !winOK {
 		st.cellPx = res.cellPx
 	}
+	st.kittyTransport = resolveKittyTransport(transportFlag, res.TermID, res.KittySHM, runtime.GOOS)
 
 	enabled := []Backend{}
 	if res.Kitty {
@@ -744,13 +949,14 @@ func parseCellPxOverride(value string, set bool) (cellPx, bool, error) {
 	return cellPx{W: pxW, H: pxH}, true, nil
 }
 
-// keyEvent is one parsed key from the reader: either a single byte (b, with
-// scroll == ScrollNone) or a recognised scroll key (scroll set, b unused). The
-// reader resolves CSI escape sequences into scroll keys so the consumer handles
-// whole keys, not raw bytes.
+// keyEvent is one parsed key from the reader: a single byte (b, with scroll ==
+// ScrollNone), a recognised scroll key (scroll set), or a Kitty graphics
+// response (apc set). The reader resolves escape sequences so the consumer
+// handles whole events, not raw bytes.
 type keyEvent struct {
 	b      byte      // the single key byte when scroll is ScrollNone
 	scroll ScrollKey // the recognised scroll key, or ScrollNone for a byte
+	apc    string    // Kitty graphics response body after ESC _ G, e.g. "i=1;OK"; "" otherwise
 }
 
 // readKeys reads keys from r and sends them on the returned channel, closing it
@@ -789,9 +995,12 @@ func readKeys(r io.Reader, done <-chan struct{}) <-chan keyEvent {
 // nextEvent turns one read byte into a keyEvent. A non-escape byte is a byte
 // event. An ESC that opens a CSI sequence (next byte '[') is read to its final
 // byte (0x40..0x7e) and decoded; a recognised sequence is a scroll event, an
-// unrecognised one is dropped (emit false). A bare ESC, or ESC not followed by
-// '[', is passed through as a byte event so it is not swallowed. It reads only
-// the bytes the sequence needs, so it does not block on the next key.
+// unrecognised one is dropped (emit false). An ESC that opens an APC (next
+// byte '_') is read to its String Terminator; a Kitty graphics response (body
+// leading with 'G') emits an apc event for the shm pacing gate, any other APC
+// is dropped. A bare ESC, or ESC not followed by '[' or '_', is passed through
+// as a byte event so it is not swallowed. It reads only the bytes the sequence
+// needs, so it does not block on the next key.
 func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 	if b != keyEsc {
 		return keyEvent{b: b}, true
@@ -799,6 +1008,13 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 	next, err := br.ReadByte()
 	if err != nil {
 		return keyEvent{b: b}, true
+	}
+	if next == '_' {
+		body, ok := readAPCBody(br)
+		if !ok || len(body) == 0 || body[0] != 'G' {
+			return keyEvent{}, false
+		}
+		return keyEvent{apc: string(body[1:])}, true
 	}
 	if next != '[' {
 		_ = br.UnreadByte()
@@ -820,4 +1036,35 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 		return keyEvent{scroll: k}, true
 	}
 	return keyEvent{}, false
+}
+
+// maxAPCBody bounds an APC body read, so garbage input that opens an APC but
+// never terminates it cannot grow the buffer without limit. A Kitty graphics
+// response is a few dozen bytes.
+const maxAPCBody = 4096
+
+// readAPCBody reads an APC body up to its String Terminator (ESC backslash)
+// and returns the bytes between the introducer and the terminator. ok is false
+// on a read error or an over-long body, and the event is dropped.
+func readAPCBody(br *bufio.Reader) ([]byte, bool) {
+	var body []byte
+	for len(body) <= maxAPCBody {
+		c, err := br.ReadByte()
+		if err != nil {
+			return nil, false
+		}
+		if c != keyEsc {
+			body = append(body, c)
+			continue
+		}
+		n, err := br.ReadByte()
+		if err != nil {
+			return nil, false
+		}
+		if n == '\\' {
+			return body, true
+		}
+		body = append(body, c, n)
+	}
+	return nil, false
 }

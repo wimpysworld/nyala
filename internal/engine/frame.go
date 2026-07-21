@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/jpeg" // register the JPEG decoder for the image.Decode JPEG fallback
@@ -34,11 +35,32 @@ func decodeFrameImage(raw []byte) (image.Image, error) {
 	return img, err
 }
 
+// b64Buf is one pooled base64 output buffer plus its once-built release
+// closure, so a steady-state decode allocates neither the buffer nor the
+// closure per frame.
+type b64Buf struct {
+	buf     []byte
+	release func()
+}
+
 // base64DecodeBufPool pools the decoded-bytes output buffer for decodeBase64Pooled,
 // so the ~188 KB output allocation each screencast frame makes is reused across frames
 // instead of allocated fresh. sync.Pool is safe under the concurrent live decode-pool
-// workers: each Get hands one worker its own buffer.
-var base64DecodeBufPool = sync.Pool{New: func() any { b := make([]byte, 0); return &b }}
+// workers: each Get hands one worker its own buffer. New is set in init because
+// newB64Buf refers back to the pool, which a var initialiser would reject as an
+// initialisation cycle.
+var base64DecodeBufPool sync.Pool
+
+func init() { base64DecodeBufPool.New = newB64Buf }
+
+// newB64Buf builds one pool entry with its release closure. The closure reads
+// the pool variable at call time, so a test-swapped pool still receives the
+// returned entry.
+func newB64Buf() any {
+	b := &b64Buf{}
+	b.release = func() { base64DecodeBufPool.Put(b) }
+	return b
+}
 
 // decodeBase64Pooled decodes one base64 screencast payload into a pooled output buffer,
 // returning the raw bytes plus a release func the caller must call once the downstream
@@ -58,8 +80,8 @@ var base64DecodeBufPool = sync.Pool{New: func() any { b := make([]byte, 0); retu
 // collector or the emitted frame.
 func decodeBase64Pooled(data string) (raw []byte, release func(), err error) {
 	decLen := emmb64.StdEncoding.DecodedLen(len(data))
-	bp, _ := base64DecodeBufPool.Get().(*[]byte)
-	buf := *bp
+	bp, _ := base64DecodeBufPool.Get().(*b64Buf)
+	buf := bp.buf
 	if cap(buf) < decLen {
 		buf = make([]byte, decLen)
 	} else {
@@ -68,11 +90,11 @@ func decodeBase64Pooled(data string) (raw []byte, release func(), err error) {
 	// Read-only zero-copy view of the string bytes; the decoder never writes src.
 	src := unsafe.Slice(unsafe.StringData(data), len(data))
 	n, derr := emmb64.StdEncoding.Decode(buf, src)
-	*bp = buf
+	bp.buf = buf
 	if derr == nil {
-		return buf[:n], func() { base64DecodeBufPool.Put(bp) }, nil
+		return buf[:n], bp.release, nil
 	}
-	base64DecodeBufPool.Put(bp)
+	bp.release()
 	return nil, nil, derr
 }
 
@@ -141,6 +163,41 @@ func decodeJPEGFast(raw []byte) (image.Image, error) {
 		return img, nil
 	}
 	return decodeFrameImage(raw)
+}
+
+// planeReaderPool recycles the bytes.Reader each kitty-shm plane decode wraps
+// around its pooled payload bytes, so the hot path allocates no reader.
+var planeReaderPool = sync.Pool{New: func() any { return new(bytes.Reader) }}
+
+// errNotPNGPlane reports a kitty-shm payload whose decoded bytes carry no PNG
+// signature, a format-switch race the caller drops like any failed decode.
+var errNotPNGPlane = errors.New("engine: kitty plane frame is not a PNG")
+
+// decodeKittyPlane is the kitty-shm decode: it base64-decodes one screencast
+// payload into the pooled scratch and decodes the PNG into a pooled RGBA
+// plane, so the steady state allocates no plane per frame. The caller owns
+// the returned plane through its release hook.
+func (e *ChromiumEngine) decodeKittyPlane(data string) (*framePlane, error) {
+	raw, release, err := decodeBase64Pooled(data)
+	if err != nil {
+		return nil, fmt.Errorf("engine: base64-decode frame: %w", err)
+	}
+	defer release()
+	w, h, ok := pngdecode.Dimensions(raw)
+	if !ok {
+		return nil, errNotPNGPlane
+	}
+	fp := livePlanePool().get(w, h)
+	br, _ := planeReaderPool.Get().(*bytes.Reader)
+	br.Reset(raw)
+	_, _, derr := pngdecode.DecodeInto(br, fp.img.Pix)
+	br.Reset(nil) // drop the pooled payload reference before returning the reader
+	planeReaderPool.Put(br)
+	if derr != nil {
+		fp.release()
+		return nil, fmt.Errorf("engine: decode kitty plane: %w", derr)
+	}
+	return fp, nil
 }
 
 // decodeLiveFrame is the live decode-pool's pixel decode. It keeps the decoder's

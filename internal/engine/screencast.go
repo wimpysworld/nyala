@@ -27,8 +27,18 @@ func msSince(start time.Time) float64 {
 type pendingFrame struct {
 	img      image.Image                   // decoded bitmap in its decoder-native layout
 	png      string                        // owned base64 PNG for direct live Kitty transmission
+	release  func()                        // returns the pooled kitty-shm plane img wraps; nil elsewhere
 	meta     *page.ScreencastFrameMetadata // scroll offset and page scale for the sync
 	afterFCP bool                          // received after main-frame first contentful paint
+}
+
+// releasePlane returns the frame's pooled kitty-shm plane at an engine-side
+// drop point. It is nil-safe: frames off the kitty-shm path carry no release
+// hook and are unaffected.
+func (p pendingFrame) releasePlane() {
+	if p.release != nil {
+		p.release()
+	}
 }
 
 // handleScreencastFrameLive acknowledges a frame on receipt and queues it for
@@ -343,7 +353,17 @@ func (e *ChromiumEngine) ackPump(ctx context.Context, acks *ackQueue) {
 		default:
 		}
 		if ack, ok := acks.pop(); ok {
-			if err := e.runScreencastFrameAck(ctx, ack); err != nil {
+			// Time the acknowledgement round trip only when NYALA_FPS_TIMING armed
+			// the ingest counter, so an off run reads no clock here.
+			var start time.Time
+			if e.ingest.armed() {
+				start = time.Now()
+			}
+			err := e.runScreencastFrameAck(ctx, ack)
+			if !start.IsZero() {
+				e.ingest.recordAck(float64(time.Since(start)) / float64(time.Millisecond))
+			}
+			if err != nil {
 				// An acknowledgement command failure loses Chromium's screencast
 				// credit. Cancel this session so the supervisor rebuilds it; never
 				// retry the popped SessionID and risk a duplicate acknowledgement.
@@ -772,6 +792,9 @@ func (e *ChromiumEngine) emitFrame(ctx context.Context, frames chan render.Frame
 	case frames <- frame:
 		return true
 	case <-ctx.Done():
+		// Send-failure drop point: the frame never reaches the viewer, so
+		// return its pooled plane (nil-safe off the kitty-shm path).
+		pending.releasePlane()
 		return false
 	}
 }
@@ -850,7 +873,7 @@ func (e *ChromiumEngine) composeFrame(pending pendingFrame, ts *textSync, lastCo
 	// screencast listener just before the corresponding lifecycle event and no new
 	// image arrives afterwards.
 	afterFCP := pending.afterFCP || e.afterMainFrameFCP()
-	frame := render.Frame{Img: pending.img, EncodedPNG: pending.png, Text: composed, AfterFCP: afterFCP}
+	frame := render.Frame{Img: pending.img, EncodedPNG: pending.png, Text: composed, AfterFCP: afterFCP, Release: pending.release}
 	if e.diagnosticFrameMeta && pending.meta != nil {
 		e.mu.Lock()
 		serial := e.diagnosticCalibrationSerial

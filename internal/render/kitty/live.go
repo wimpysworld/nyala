@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"unsafe"
@@ -281,6 +282,54 @@ func (e *LiveEncoder) encodePNGID(data string, id, z int, withZ bool, w io.Write
 		}
 		e.frame = appendStringFrame(e.frame, chunkLast, data)
 	}
+	if _, err := w.Write(e.frame); err != nil {
+		return fmt.Errorf("kitty: write APC payload: %w", err)
+	}
+	return nil
+}
+
+// EncodeSHMID frames a POSIX shared-memory object name as one unchunked Kitty
+// raw-pixel command: f=32 RGBA pixels of the given width and height, read by
+// the terminal from the named object (t=s). The whole frame travels in a
+// single escape, never chunked, because chunked shm transmission fails on
+// Ghostty, so no m= key is ever emitted on this path. The quiet key controls
+// terminal responses: q=1 keeps OK acknowledgements for pacing, q=2 suppresses
+// every response; the caller chooses per session.
+func (e *LiveEncoder) EncodeSHMID(name string, width, height, id, quiet int, w io.Writer) error {
+	return e.encodeSHMID(name, width, height, id, 0, false, quiet, w)
+}
+
+// EncodeSHMIDAtZ is EncodeSHMID with an explicit Kitty placement z-index, the
+// shm counterpart of EncodePNGIDAtZ for placements that must sit below a
+// terminal text badge.
+func (e *LiveEncoder) EncodeSHMIDAtZ(name string, width, height, id, z, quiet int, w io.Writer) error {
+	return e.encodeSHMID(name, width, height, id, z, true, quiet, w)
+}
+
+func (e *LiveEncoder) encodeSHMID(name string, width, height, id, z int, withZ bool, quiet int, w io.Writer) error {
+	e.frame = e.frame[:0]
+	e.frame = append(e.frame, apcIntro...)
+	e.frame = append(e.frame, "f=32,t=s,s="...)
+	e.frame = strconv.AppendInt(e.frame, int64(width), 10)
+	e.frame = append(e.frame, ",v="...)
+	e.frame = strconv.AppendInt(e.frame, int64(height), 10)
+	e.frame = append(e.frame, ",a=T,C=1,i="...)
+	e.frame = strconv.AppendInt(e.frame, int64(id), 10)
+	if withZ {
+		e.frame = append(e.frame, ",z="...)
+		e.frame = strconv.AppendInt(e.frame, int64(z), 10)
+	}
+	e.frame = append(e.frame, ",q="...)
+	e.frame = strconv.AppendInt(e.frame, int64(quiet), 10)
+	e.frame = append(e.frame, ';')
+
+	// Protocol payloads are base64. The object name encodes in place at the
+	// end of the reused frame buffer; the zero-copy string view mirrors
+	// ValidDirectPNGData, so the steady state allocates nothing per frame.
+	off := len(e.frame)
+	e.frame = append(e.frame, make([]byte, emmb64.StdEncoding.EncodedLen(len(name)))...)
+	emmb64.StdEncoding.Encode(e.frame[off:], unsafe.Slice(unsafe.StringData(name), len(name)))
+	e.frame = append(e.frame, st...)
 	if _, err := w.Write(e.frame); err != nil {
 		return fmt.Errorf("kitty: write APC payload: %w", err)
 	}

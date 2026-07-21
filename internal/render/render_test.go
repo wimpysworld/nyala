@@ -7,7 +7,7 @@ import (
 )
 
 func TestFrameHeaderMatchesBaselineSize(t *testing.T) {
-	if got, want := unsafe.Sizeof(Frame{}), uintptr(72); got != want {
+	if got, want := unsafe.Sizeof(Frame{}), uintptr(80); got != want {
 		t.Fatalf("Frame size = %d bytes, want baseline %d", got, want)
 	}
 }

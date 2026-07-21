@@ -47,6 +47,11 @@ type CLI struct {
 	// not control terminal or display synchronisation.
 	DisableFrameRateLimit bool `help:"Disable Chromium's browser frame-rate limit." name:"disable-frame-rate-limit"`
 
+	// KittyTransport selects the Kitty graphics transmission medium: auto
+	// resolves it from the startup probe and the allow and deny lists, direct
+	// forces the in-band PNG path, and shm forces the shared-memory fast path.
+	KittyTransport string `help:"Kitty graphics transport: auto, direct, or shm." name:"kitty-transport" default:"auto" enum:"auto,direct,shm"`
+
 	// LayoutWidth is the target CSS-pixel width the block backend lays out at. A
 	// terminal wider than this shrinks its device scale so the page fits the target.
 	// It must be positive; Validate rejects a non-positive value. It defaults to
@@ -79,7 +84,7 @@ func Run(cli CLI, tty *os.File) error {
 	chromium := engine.New(cli.Browser)
 	chromium.SetDisableFrameRateLimit(cli.DisableFrameRateLimit)
 	eng := engineAdapter{chromium}
-	return viewer.Stream(eng, target, tty, cli.Color, cli.Backend, cli.Blocks, cli.LayoutWidth)
+	return viewer.Stream(eng, target, tty, cli.Color, cli.Backend, cli.Blocks, cli.KittyTransport, cli.LayoutWidth)
 }
 
 // engineAdapter wraps a ChromiumEngine to satisfy viewer.Engine. The viewer

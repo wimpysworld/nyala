@@ -58,6 +58,58 @@ func TestAckPumpFailureCancelsSessionWithoutDuplicate(t *testing.T) {
 	}
 }
 
+// TestAckPumpRecordsAckRTTWhenArmed checks the pump times each acknowledgement
+// round trip into the armed ingest counter, so the quit summary reports the mean
+// and max ack RTT.
+func TestAckPumpRecordsAckRTTWhenArmed(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	acks := newAckQueue()
+	ran := make(chan struct{}, 2)
+	e := &ChromiumEngine{
+		acks:   acks,
+		ingest: &ingestCounter{on: true, window: ingestWindow},
+		ackScreencastOp: func(context.Context, int64) error {
+			ran <- struct{}{}
+			return nil
+		},
+	}
+	done := make(chan struct{})
+	go func() {
+		e.ackPump(ctx, acks)
+		close(done)
+	}()
+	acks.push(1)
+	acks.push(2)
+	for range 2 {
+		select {
+		case <-ran:
+		case <-time.After(time.Second):
+			t.Fatal("ack pump did not run the acknowledgement")
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ack pump did not stop after cancel")
+	}
+	e.ingest.record(time.Unix(0, 0)) // one frame, so summary reports
+	stats := e.ingest.summary()
+	if got := ingestAckCount(e.ingest); got != 2 {
+		t.Fatalf("pump recorded %d ack round trips, want 2", got)
+	}
+	if stats.AckRTTMaxMS < stats.AckRTTMeanMS {
+		t.Fatalf("ack_rtt_max_ms %.3f below ack_rtt_mean_ms %.3f", stats.AckRTTMaxMS, stats.AckRTTMeanMS)
+	}
+}
+
+func ingestAckCount(c *ingestCounter) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ackFrames
+}
+
 func TestAckFrameNilQueueDoesNotBlock(t *testing.T) {
 	t.Parallel()
 	e := &ChromiumEngine{}

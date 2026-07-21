@@ -30,7 +30,12 @@ func (p bufferPool) Put(buf []byte) {
 	}
 }
 
-var decoder = woozypng.Decoder{BufferPool: make(bufferPool, poolDepth)}
+// rowPool is the shared production row-buffer pool. Decode hands it to the
+// upstream decoder; DecodeInto borrows its current and previous row buffers
+// from it directly.
+var rowPool = make(bufferPool, poolDepth)
+
+var decoder = woozypng.Decoder{BufferPool: rowPool}
 
 // Decode reads a PNG image using the shared production row-buffer pool.
 func Decode(r io.Reader) (image.Image, error) {

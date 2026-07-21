@@ -281,6 +281,18 @@ palette-bench:
             go test -run '^TestPaletteBenchmark$' -v -count=1 ./internal/render/sixel/
     done
 
+# Interactive tty only: run it inside a Kitty graphics terminal. Frames per
+# variant come from NYALA_KITTY_BENCH_FRAMES (default 30).
+# Benchmark Kitty transports (t=d, t=f, t=s; PNG and raw) in ms/frame on the live terminal.
+kitty-transport-bench:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! { [ -t 0 ] && [ -t 1 ]; }; then
+        printf 'just kitty-transport-bench: needs an interactive terminal; the benchmark times writes to the live terminal.\n' >&2
+        exit 1
+    fi
+    NYALA_KITTY_BENCH=1 go test -tags kittybench -run '^TestKittyTransportBenchmark$' -v -count=1 ./internal/viewer/
+
 # Tidy Go modules
 tidy:
     @go mod tidy

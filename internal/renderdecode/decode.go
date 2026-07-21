@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"image"
 	"image/draw"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/x/ansi/kitty"
@@ -69,7 +70,9 @@ func hasSixelIntroducer(payload []byte) bool {
 // the first frame's options to learn the format, the zlib compression, and the
 // pixel dimensions, concatenates the base64 bodies, base64-decodes the result,
 // then reverses the payload with charmbracelet/x/ansi/kitty plus stdlib.
-// Driving the decoder from the transmitted options makes the round trip measure
+// A shared-memory frame (t=s) carries the POSIX object name as its payload;
+// the pixel bytes are read from that named /dev/shm object instead. Driving
+// the decoder from the transmitted options makes the round trip measure
 // render error, not a decoder assumption. The returned image is in RGBA channel
 // order.
 func DecodeKitty(payload []byte) (*image.RGBA, error) {
@@ -88,6 +91,13 @@ func DecodeKitty(payload []byte) (*image.RGBA, error) {
 		return nil, fmt.Errorf("renderdecode: decode kitty base64: %w", err)
 	}
 
+	if opts.Transmission == kitty.SharedMemory {
+		raw, err = readSHMPayload(string(raw))
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	format := opts.Format
 	if format == 0 {
 		format = kitty.RGBA
@@ -103,6 +113,24 @@ func DecodeKitty(payload []byte) (*image.RGBA, error) {
 		return nil, fmt.Errorf("renderdecode: decode kitty image: %w", err)
 	}
 	return toRGBA(img), nil
+}
+
+// readSHMPayload reads a t=s frame's pixel payload from the named POSIX
+// shared-memory object, the leading-slash form the escape carries (for example
+// /nyala-1234-7). It is a decoder concern only: it fetches the bytes the
+// escape references so the round trip can verify them, and it neither unlinks
+// the object nor composes anything. A name that is empty or escapes the flat
+// /dev/shm namespace is rejected.
+func readSHMPayload(name string) ([]byte, error) {
+	trimmed := strings.TrimPrefix(name, "/")
+	if trimmed == "" || strings.Contains(trimmed, "/") || strings.Contains(trimmed, "..") {
+		return nil, fmt.Errorf("renderdecode: invalid shm object name %q", name)
+	}
+	raw, err := os.ReadFile("/dev/shm/" + trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("renderdecode: read shm object %q: %w", name, err)
+	}
+	return raw, nil
 }
 
 // reassembleKittyFrames scans s for consecutive Kitty graphics frames and
