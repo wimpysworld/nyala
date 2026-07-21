@@ -607,12 +607,14 @@ func startupQuit(ev keyEvent) bool {
 }
 
 // assemble builds one frame's whole terminal byte sequence into buf, ready for the
-// writer to present with a single io.Write: the DEC 2026 open, the cursor prefix,
-// the rendered frame with its crisp DOM-text overlay, the fps badge, and the DEC
-// 2026 close. Assembling the whole unit into one owned buffer keeps the atomic
-// present (the terminal never shows a torn partial frame) while the producer
-// encodes the next frame in parallel with the current frame's write. Byte order
-// remains identical for every frame, independent of which goroutine writes it.
+// writer to present with a single io.Write: the optional DEC 2026 open, the cursor
+// prefix, the rendered frame with its crisp DOM-text overlay, the fps badge, and
+// the optional DEC 2026 close. Foot Sixel omits only the synchronised-update
+// markers; every other backend and terminal keeps them. Assembling the whole unit
+// into one owned buffer keeps the atomic present where DEC 2026 is active while
+// the producer encodes the next frame in parallel with the current frame's write.
+// Byte order remains identical for every frame, independent of which goroutine
+// writes it.
 //
 // The first frame emits the full clearScreen (via framePrefix) to wipe the loading
 // cue; steady frames emit cursorHome only. It returns the encode time, the
@@ -622,7 +624,10 @@ func startupQuit(ev keyEvent) bool {
 func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeMS float64, err error) {
 	buf.Reset()
 	prefix := framePrefix(s.firstDrawn, s.diff)
-	buf.WriteString(beginSyncUpdate)
+	syncUpdates := s.st.syncUpdatesEnabled()
+	if syncUpdates {
+		buf.WriteString(beginSyncUpdate)
+	}
 	buf.WriteString(prefix)
 	s.firstDrawn = true
 
@@ -654,8 +659,8 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	s.assembledSHM = s.st.takeKittySHMWrote()
 	s.applyKittySHMDemotion()
 
-	// Fold the fps badge into the same buffer so each atomic present carries it,
-	// gated behind NYALA_FPS_TIMING. It sits inside the DEC 2026 bracket: painted
+	// Fold the fps badge into the same buffer so every frame carries it, gated behind
+	// NYALA_FPS_TIMING. Where DEC 2026 is active it sits inside the bracket: painted
 	// after the close it flickered out during a scroll, when back-to-back frames each
 	// present the grid alone before the un-synced badge lands. The badge is a
 	// cursor-positioned overlay, so it never enters the block grid the differ tracks
@@ -676,7 +681,9 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 			buf.WriteString(s.fps.badge(now))
 		}
 	}
-	buf.WriteString(endSyncUpdate)
+	if syncUpdates {
+		buf.WriteString(endSyncUpdate)
+	}
 	return encodeMS, nil
 }
 

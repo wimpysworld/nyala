@@ -129,6 +129,12 @@ type State struct {
 	// The viewer draw path is serial, so one renderer owns the whole stream.
 	sixelEnc *sixel.Renderer
 
+	// sixelSyncUpdatesDisabled records the narrow terminal compatibility policy
+	// resolved from XTVERSION. Foot clears a completed Sixel grid refresh when the
+	// next back-to-back DEC 2026 update begins, so only Foot Sixel frames omit that
+	// fence. The zero value keeps synchronised updates enabled everywhere else.
+	sixelSyncUpdatesDisabled bool
+
 	// kittyTransport is the effective Kitty transmission medium, resolved once
 	// by configureBackends from the --kitty-transport override, the deny list,
 	// the startup shm probe, and the allow list. It is always direct or shm.
@@ -139,6 +145,20 @@ type State struct {
 // configureBackends: direct or shm, never auto.
 func (s *State) KittyTransport() KittyTransport {
 	return s.kittyTransport
+}
+
+// syncUpdatesEnabled reports whether the active backend keeps DEC 2026 around
+// its live frame. The Foot compatibility policy is scoped to Sixel, so a backend
+// cycle to Block or Kitty restores the normal fence without changing detection.
+func (s *State) syncUpdatesEnabled() bool {
+	return s.Backend != BackendSixel || !s.sixelSyncUpdatesDisabled
+}
+
+// setTerminalIdentity applies terminal-specific compatibility decisions from the
+// XTVERSION reply. Keeping this assignment behind one seam lets startup detection
+// and tests drive the same policy state.
+func (s *State) setTerminalIdentity(termID string) {
+	s.sixelSyncUpdatesDisabled = disableSixelSyncUpdates(termID)
 }
 
 // kittySHMWriter is the shared-memory writer seam encodeKittySHM drives. The
@@ -770,8 +790,8 @@ const (
 // beginSyncUpdate and endSyncUpdate bracket a frame in a DEC 2026 synchronised
 // update (ESC [ ? 2026 h and ESC [ ? 2026 l), so the terminal presents the whole
 // frame atomically and never scans out a partial frame while the render bytes
-// land. A terminal without DEC 2026 ignores the private mode, so the live draw
-// path emits them unconditionally.
+// land. A terminal without DEC 2026 ignores the private mode. The live path emits
+// the markers for every frame except the detected Foot Sixel compatibility case.
 const (
 	beginSyncUpdate = "\x1b[?2026h"
 	endSyncUpdate   = "\x1b[?2026l"
@@ -844,6 +864,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 		st.cellPx = res.cellPx
 	}
 	st.kittyTransport = resolveKittyTransport(transportFlag, res.TermID, res.KittySHM, runtime.GOOS)
+	st.setTerminalIdentity(res.TermID)
 
 	enabled := []Backend{}
 	if res.Kitty {
