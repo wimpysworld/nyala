@@ -98,9 +98,27 @@ func TestIngestCounterDecodeBudget(t *testing.T) {
 	}
 }
 
+// TestIngestCounterAckRTT checks the acknowledgement round-trip timings accumulate
+// into the summary mean and max.
+func TestIngestCounterAckRTT(t *testing.T) {
+	t.Parallel()
+	c := &ingestCounter{on: true, window: time.Second}
+	c.record(time.Unix(0, 0)) // one frame, so summary reports
+	for _, ms := range []float64{2, 5, 14} {
+		c.recordAck(ms)
+	}
+	stats := c.summary()
+	if !approxEq(stats.AckRTTMeanMS, 7, 0.001) {
+		t.Fatalf("ack_rtt_mean_ms = %.3f, want 7 (mean of 2,5,14)", stats.AckRTTMeanMS)
+	}
+	if !approxEq(stats.AckRTTMaxMS, 14, 0.001) {
+		t.Fatalf("ack_rtt_max_ms = %.3f, want 14", stats.AckRTTMaxMS)
+	}
+}
+
 // TestIngestCounterGatedOffSilent checks a disabled counter records nothing (frames,
-// gaps, and decode all no-op) and the summary is the zero value, so an off run is
-// silent on the hot path and the seam.
+// gaps, decode, and ack all no-op) and the summary is the zero value, so an off run
+// is silent on the hot path and the seam.
 func TestIngestCounterGatedOffSilent(t *testing.T) {
 	t.Parallel()
 	c := &ingestCounter{window: time.Second} // on is false
@@ -110,6 +128,7 @@ func TestIngestCounterGatedOffSilent(t *testing.T) {
 	c.record(time.Unix(0, 0))
 	c.record(time.Unix(0, int64(100*time.Millisecond)))
 	c.recordDecode(9)
+	c.recordAck(3)
 	stats := c.summary()
 	if stats != (render.IngestStats{}) {
 		t.Fatalf("disabled summary = %+v, want the zero value", stats)

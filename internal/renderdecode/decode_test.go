@@ -2,8 +2,11 @@ package renderdecode
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
+	"os"
+	"runtime"
 	"testing"
 
 	"github.com/wimpysworld/nyala/internal/render"
@@ -53,6 +56,55 @@ func TestDecodeKittyRoundTripMSEZero(t *testing.T) {
 	}
 	if mse := mseRGBA(in, got); mse != 0 {
 		t.Fatalf("kitty round-trip MSE = %v, want 0 (lossless transport)", mse)
+	}
+}
+
+// TestDecodeKittySHMRawRGBA asserts DecodeKitty reads a t=s frame's raw f=32
+// payload from the named /dev/shm object and reproduces the pixels exactly in
+// RGBA channel order, so the shm transport round trip is lossless like the
+// direct one.
+func TestDecodeKittySHMRawRGBA(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("shm objects live in /dev/shm on Linux only")
+	}
+	f := frameFixture()
+	in := f.Img.(*image.RGBA)
+	name := fmt.Sprintf("/nyala-renderdecode-%d", os.Getpid())
+	path := "/dev/shm/" + name[1:]
+	if err := os.WriteFile(path, in.Pix, 0o600); err != nil {
+		t.Fatalf("write shm object: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
+
+	var buf bytes.Buffer
+	enc := &kitty.LiveEncoder{}
+	b := in.Bounds()
+	if err := enc.EncodeSHMID(name, b.Dx(), b.Dy(), 7, 0, &buf); err != nil {
+		t.Fatalf("EncodeSHMID: %v", err)
+	}
+
+	got, err := DecodeKitty(buf.Bytes())
+	if err != nil {
+		t.Fatalf("DecodeKitty: %v", err)
+	}
+	if got.Bounds() != in.Bounds() {
+		t.Fatalf("decoded bounds = %v, want %v", got.Bounds(), in.Bounds())
+	}
+	if mse := mseRGBA(in, got); mse != 0 {
+		t.Fatalf("shm round-trip MSE = %v, want 0 (lossless transport)", mse)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("decoder must not unlink the object, stat: %v", err)
+	}
+}
+
+// TestDecodeKittySHMRejectsBadName asserts a t=s payload naming a path outside
+// the flat /dev/shm namespace is rejected instead of read.
+func TestDecodeKittySHMRejectsBadName(t *testing.T) {
+	for _, name := range []string{"", "/", "/../etc/passwd", "/nested/name"} {
+		if _, err := readSHMPayload(name); err == nil {
+			t.Fatalf("readSHMPayload(%q) accepted an invalid name", name)
+		}
 	}
 }
 

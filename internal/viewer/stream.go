@@ -53,6 +53,29 @@ type Engine interface {
 	Close() error
 }
 
+// kittyDecodeSetter is the optional engine capability the viewer toggles when
+// the Kitty shm transport is in play. ChromiumEngine implements it; a fake
+// engine that does not simply keeps sending direct PNG frames. The viewer
+// type-asserts the Engine against it, so the Engine seam and all fakes stay
+// unchanged.
+type kittyDecodeSetter interface {
+	// SetKittyDecode selects the kitty-shm decode mode: on, frames arrive as
+	// pooled RGBA planes with a Release hook; off, as direct PNG payloads.
+	SetKittyDecode(on bool)
+}
+
+// syncEngineKittyDecode aligns the engine's kitty-shm decode mode with the
+// viewer state: on only while the active backend is Kitty and the shm
+// transport is live (resolved shm, not demoted). It runs at startup after the
+// backend settles, on every Tab cycle, and on runtime demotion.
+func syncEngineKittyDecode(eng Engine, st *State) {
+	d, ok := eng.(kittyDecodeSetter)
+	if !ok {
+		return
+	}
+	d.SetKittyDecode(st.Backend == BackendKitty && st.kittySHMLive())
+}
+
 // Stream runs the interactive viewer on tty, drawing the live frames eng pushes,
 // until the user quits. It puts the terminal into raw mode, detects which
 // backends the terminal supports, hands the resolved backend and cell px to the
@@ -68,9 +91,11 @@ type Engine interface {
 // glyph scheme; Stream resolves it with resolveScheme against os.Environ(), so
 // auto and sextant render sextant on a supported terminal and quadrant otherwise,
 // quadrant forces quadrant, and half renders half-block.
-// layoutWidth is the block-backend target layout
+// kittyTransport is the --kitty-transport intent (auto, direct, or shm);
+// configureBackends resolves it against the probe result and the allow and
+// deny lists. layoutWidth is the block-backend target layout
 // width in CSS pixels, handed to the engine before Navigate.
-func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks string, layoutWidth int) (err error) {
+func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kittyTransport string, layoutWidth int) (err error) {
 	scheme := resolveScheme(blocks, os.Environ())
 	// The live fps meter counts every drawn frame for the badge and the quit
 	// summary. Its printSummary defer is registered before setupViewer's restore
@@ -88,7 +113,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks strin
 		}
 	}
 	defer fps.printSummary(os.Stdout)
-	fd, st, restore, err := setupViewer(eng, tty, colourFlag, scheme, layoutWidth)
+	fd, st, restore, err := setupViewer(eng, tty, colourFlag, kittyTransport, scheme, layoutWidth)
 	if err != nil {
 		return err
 	}
@@ -103,6 +128,11 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks strin
 	// engine sizes its capture for the forced backend, not the detected one.
 	applyForcedBackend(st, mode)
 	eng.SetBackend(st.Backend)
+	// The backend is final now, so arm the engine's kitty-shm decode when the
+	// resolved transport is shm and the session starts on Kitty. Unlink any
+	// unconsumed shm objects when the session ends, however it ends.
+	syncEngineKittyDecode(eng, st)
+	defer st.closeKittySHM()
 
 	if _, err := io.WriteString(tty, enterFullScreen); err != nil {
 		return err
@@ -213,8 +243,9 @@ func (c *control) run() {
 // Navigate so the engine sizes its screencast capture and block device scale. It
 // returns the tty fd, the State, and a restore closure the caller must defer to
 // leave raw mode. Scheme is the resolved block glyph scheme; it is set directly
-// on State. The caller resolves it through detection.
-func setupViewer(eng Engine, tty *os.File, colourFlag string, scheme block.Scheme, layoutWidth int) (fd uintptr, st *State, restore func(), err error) {
+// on State. The caller resolves it through detection. kittyTransport is the
+// --kitty-transport intent, resolved inside configureBackends.
+func setupViewer(eng Engine, tty *os.File, colourFlag, kittyTransport string, scheme block.Scheme, layoutWidth int) (fd uintptr, st *State, restore func(), err error) {
 	fd = tty.Fd()
 	if !cterm.IsTerminal(fd) {
 		return 0, nil, nil, fmt.Errorf("viewer: %s is not a terminal", tty.Name())
@@ -237,7 +268,7 @@ func setupViewer(eng Engine, tty *os.File, colourFlag string, scheme block.Schem
 
 	// Detection runs in raw mode but before the full-screen switch and the key
 	// reader, so the handshake replies are not consumed by the key goroutine.
-	if err := configureBackends(&state, tty, cols, rows, colourFlag); err != nil {
+	if err := configureBackends(&state, tty, cols, rows, colourFlag, kittyTransport); err != nil {
 		_ = cterm.Restore(fd, oldState)
 		return 0, nil, nil, err
 	}
@@ -286,6 +317,15 @@ type streamSession struct {
 	assembled         *bytes.Buffer
 	assembledEncodeMS float64
 	assembledTimed    bool // the assembled frame passed the FCP measurement gate
+	// assembledSHM marks the assembled frame as a Kitty shm transmit, so the
+	// handoff to the writer arms the one-in-flight pacing gate. Producer only.
+	assembledSHM bool
+	// kittyShmAwait is true while one shm transmit awaits the terminal's
+	// acknowledgement; kittyShmDeadline bounds the wait so a terminal that
+	// stays silent degrades to a conservative self-pace instead of stalling.
+	// Both are producer-goroutine only.
+	kittyShmAwait    bool
+	kittyShmDeadline time.Time
 	// fps is the live fps counter, non-nil only when NYALA_FPS_TIMING is set. When
 	// set, assemble stamps each frame and folds a rolling usable-fps badge into the
 	// frame buffer (rebuilt at most once per second); when nil the draw path pays
@@ -337,12 +377,21 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 		pending     render.Frame
 		havePending bool
 	)
+	// Return an undrawn pending frame's pooled plane to the engine at loop
+	// exit, so a quit mid-stream cannot strand a kitty-shm plane.
+	defer func() {
+		if havePending {
+			releaseFrame(pending)
+		}
+	}()
 
 	for {
 		// Encode the newest pending frame into a spare buffer when one is free and
 		// nothing already waits to hand off. Holding only one assembled frame at a
-		// time bounds the in-flight buffers to two.
-		if s.assembled == nil && havePending && len(avail) > 0 {
+		// time bounds the in-flight buffers to two. The kitty-shm ack gate holds
+		// the encode back while one shm transmit is unacknowledged, so at most
+		// one shm frame is in flight and pty latency cannot build.
+		if s.assembled == nil && havePending && len(avail) > 0 && !s.kittySHMGated() {
 			buf := avail[len(avail)-1]
 			avail = avail[:len(avail)-1]
 			encodeMS, err := s.assemble(buf, pending)
@@ -364,9 +413,20 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			item = writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed}
 		}
 
+		// While the ack gate alone holds back a pending frame, wake at the
+		// gate deadline so a lost acknowledgement releases the frame without
+		// needing another event. A nil channel never fires.
+		var gateC <-chan time.Time
+		if s.assembled == nil && havePending && len(avail) > 0 && s.kittyShmAwait {
+			gateC = time.After(time.Until(s.kittyShmDeadline))
+		}
+
 		select {
 		case readyC <- item:
 			s.assembled = nil
+			s.markKittySHMHandoff()
+		case <-gateC:
+			// The deadline passed; the next kittySHMGated call clears the gate.
 		case <-winch:
 			if err := s.resize(); err != nil {
 				return err
@@ -398,6 +458,11 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 				})
 				continue
 			}
+			// Latest-wins: the overwritten pending frame is dropped, so its
+			// pooled plane goes back to the engine now.
+			if havePending {
+				releaseFrame(pending)
+			}
 			pending = frame
 			havePending = true
 		case fi := <-w.free:
@@ -410,6 +475,10 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 		case ev, ok := <-keys:
 			if !ok {
 				return nil
+			}
+			if ev.apc != "" {
+				s.handleKittyResponse(ev.apc)
+				continue
 			}
 			if s.handleKey(ev) {
 				return nil
@@ -424,9 +493,11 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 
 // drainFrames keeps only the newest immediately-available frame, given the one
 // already received. It pulls any further queued frames non-blocking and returns
-// the last, coalescing a burst to one paint. The bool is false when the channel
-// closed mid-drain, so the caller stops the loop the same way the main receive
-// does; otherwise it is true with the newest frame.
+// the last, coalescing a burst to one paint; each superseded frame's pooled
+// plane, when present, is released back to the engine as it is dropped. The
+// bool is false when the channel closed mid-drain, so the caller stops the
+// loop the same way the main receive does; otherwise it is true with the
+// newest frame.
 func drainFrames(frames <-chan render.Frame, latest render.Frame) (render.Frame, bool) {
 	for {
 		select {
@@ -434,11 +505,75 @@ func drainFrames(frames <-chan render.Frame, latest render.Frame) (render.Frame,
 			if !ok {
 				return latest, false
 			}
+			releaseFrame(latest)
 			latest = f
 		default:
 			return latest, true
 		}
 	}
+}
+
+// kittySHMAckTimeout bounds the wait for one shm transmit's acknowledgement.
+// It is the conservative self-pace fallback: a terminal that renders t=s but
+// never replies (the reply-quiet key is q=0, so a conforming terminal answers
+// every transmit) still advances at 1/timeout fps at worst, and a lost reply
+// cannot wedge the stream.
+const kittySHMAckTimeout = 40 * time.Millisecond
+
+// kittySHMGated reports whether the shm one-in-flight pacing gate holds the
+// next frame back. The gate opens (and clears its state) once the transmit is
+// acknowledged, the deadline passes, the backend leaves Kitty, or the shm
+// transport stops being live. Producer goroutine only.
+func (s *streamSession) kittySHMGated() bool {
+	if !s.kittyShmAwait {
+		return false
+	}
+	if s.st.Backend != BackendKitty || !s.st.kittySHMLive() || !time.Now().Before(s.kittyShmDeadline) {
+		s.kittyShmAwait = false
+		return false
+	}
+	return true
+}
+
+// markKittySHMHandoff arms the shm pacing gate when the frame just handed to
+// the writer was an shm transmit: the next shm frame waits for the terminal's
+// acknowledgement or the conservative deadline. Producer goroutine only.
+func (s *streamSession) markKittySHMHandoff() {
+	if !s.assembledSHM {
+		return
+	}
+	s.assembledSHM = false
+	s.kittyShmAwait = true
+	s.kittyShmDeadline = time.Now().Add(kittySHMAckTimeout)
+}
+
+// handleKittyResponse consumes one Kitty graphics response from the input
+// stream. Any response settles the in-flight shm transmit, so the pacing gate
+// opens. A failure response (no ";OK") while the shm transport is live means
+// the terminal could not read the object, so the session demotes to direct.
+func (s *streamSession) handleKittyResponse(body string) {
+	s.kittyShmAwait = false
+	if strings.Contains(body, ";OK") {
+		return
+	}
+	if !s.st.kittySHMLive() {
+		return
+	}
+	s.st.demoteKittySHM(fmt.Errorf("terminal rejected shm transmit: %s", body))
+	s.applyKittySHMDemotion()
+}
+
+// applyKittySHMDemotion runs the session side of a pending shm demotion: it
+// logs the fallback once and turns off the engine's kitty-shm decode, so the
+// following frames arrive as direct PNG payloads again. It is a no-op when no
+// demotion is pending, so the assemble path calls it unconditionally.
+func (s *streamSession) applyKittySHMDemotion() {
+	err := s.st.takeKittySHMDemotion()
+	if err == nil {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "nyala: kitty shm transport disabled, falling back to direct: %v\n", err)
+	syncEngineKittyDecode(s.eng, s.st)
 }
 
 // waitForNavigate keeps the raw-mode controls live while engine startup runs.
@@ -502,6 +637,10 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	if timed {
 		encodeMS = msSince(encodeStart)
 	}
+	// Tag an shm transmit for the pacing gate and settle any shm failure the
+	// render just recorded: one log line, then direct PNG for the session.
+	s.assembledSHM = s.st.takeKittySHMWrote()
+	s.applyKittySHMDemotion()
 
 	// Fold the fps badge into the same buffer so each atomic present carries it,
 	// gated behind NYALA_FPS_TIMING. It sits inside the DEC 2026 bracket: painted
@@ -538,6 +677,7 @@ func (s *streamSession) flushAssembled() {
 	}
 	s.writer.send(writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed})
 	s.assembled = nil
+	s.markKittySHMHandoff()
 }
 
 // emitControl routes a one-off terminal write (a resize clear, a kitty reset, or an
@@ -634,6 +774,11 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 			}
 			_ = s.emitControl([]byte(clearScreen))
 		}
+		// Align the engine's kitty-shm decode with the new backend before the
+		// restart, so frames after the switch arrive in the right form: planes
+		// while Kitty runs the shm transport, direct PNG otherwise. The toggle
+		// is a cheap flag write, safe on the consumer loop.
+		syncEngineKittyDecode(s.eng, s.st)
 		// Cycle the backend off the consumer loop: the engine restart runs on the
 		// control goroutine so a slow restartStream cannot freeze draw or quit.
 		backend := s.st.Backend
@@ -1046,8 +1191,10 @@ func (m *fpsMeter) refreshPositioned(now time.Time, atHome bool) string {
 // per frame: out_encode_mean_ms and out_encode_max_ms (rendering the frame into the
 // buffer, our terminal-byte encode) and out_write_mean_ms and out_write_max_ms
 // (flushing that buffer to the tty). The split localises where each paint's time
-// goes: our encode versus the terminal write. When no ingest reporter is wired the
-// In fields read zero. A session whose gate never opened reports
+// goes: our encode versus the terminal write. The trailing ack_rtt_mean_ms and
+// ack_rtt_max_ms report the engine's screencast acknowledgement command round
+// trip, so a slow ack loop that starves Chromium's frame credit shows up here.
+// When no ingest reporter is wired the In and ack fields read zero. A session whose gate never opened reports
 // warmup_ms=unavailable and no invented duration. A nil meter stays silent.
 func (m *fpsMeter) printSummary(w io.Writer) {
 	if m == nil {
@@ -1082,10 +1229,10 @@ func (m *fpsMeter) printSummary(w io.Writer) {
 	if m.ingest != nil {
 		in = m.ingest.IngestSummary()
 	}
-	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f in_frames=%d in_mean=%.1f in_min=%.1f in_max=%.1f in_median=%.1f in_worst_gap_ms=%.1f in_decode_mean_ms=%.1f in_decode_max_ms=%.1f out_frames=%d wall=%.2fs out_mean=%.1f out_median=%.1f out_min=%.1f out_max=%.1f out_worst_gap_ms=%.1f out_encode_mean_ms=%.1f out_encode_max_ms=%.1f out_write_mean_ms=%.1f out_write_max_ms=%.1f\n",
+	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f in_frames=%d in_mean=%.1f in_min=%.1f in_max=%.1f in_median=%.1f in_worst_gap_ms=%.1f in_decode_mean_ms=%.1f in_decode_max_ms=%.1f out_frames=%d wall=%.2fs out_mean=%.1f out_median=%.1f out_min=%.1f out_max=%.1f out_worst_gap_ms=%.1f out_encode_mean_ms=%.1f out_encode_max_ms=%.1f out_write_mean_ms=%.1f out_write_max_ms=%.1f ack_rtt_mean_ms=%.1f ack_rtt_max_ms=%.1f\n",
 		warmupMS, in.Frames, in.MeanFPS, in.MinFPS, in.MaxFPS, in.MedianFPS, in.WorstGapMS, in.DecodeMeanMS, in.DecodeMaxMS,
 		m.frames, wall, mean, medianFPS(m.gaps), minInst, maxInst, worstGapMS,
-		encodeMean, m.encodeMax, writeMean, m.writeMax)
+		encodeMean, m.encodeMax, writeMean, m.writeMax, in.AckRTTMeanMS, in.AckRTTMaxMS)
 }
 
 // medianFPS returns the median instantaneous fps from the collected inter-frame

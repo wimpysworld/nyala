@@ -134,10 +134,10 @@ func TestDecodeBase64PooledEquivalence(t *testing.T) {
 // and restores the borrowed buffer pointer to the pool before returning.
 func TestDecodeBase64PooledMalformed(t *testing.T) {
 	const bad = "!!!!"
-	base64DecodeBufPool = sync.Pool{New: func() any { b := make([]byte, 0); return &b }}
-	seed := make([]byte, 0, emmb64.StdEncoding.DecodedLen(len(bad)))
-	seedPtr := &seed
-	base64DecodeBufPool.Put(seedPtr)
+	base64DecodeBufPool = sync.Pool{New: newB64Buf}
+	seed, _ := newB64Buf().(*b64Buf)
+	seed.buf = make([]byte, 0, emmb64.StdEncoding.DecodedLen(len(bad)))
+	base64DecodeBufPool.Put(seed)
 
 	wantBuf := make([]byte, emmb64.StdEncoding.DecodedLen(len(bad)))
 	_, wantErr := emmb64.StdEncoding.Decode(wantBuf, []byte(bad))
@@ -148,11 +148,16 @@ func TestDecodeBase64PooledMalformed(t *testing.T) {
 	if raw != nil || release != nil {
 		t.Fatalf("error result has raw=%t release=%t, want both false", raw != nil, release != nil)
 	}
-	reusedPtr, _ := base64DecodeBufPool.Get().(*[]byte)
-	if reusedPtr != seedPtr {
-		t.Fatalf("pool returned buffer pointer %p, want borrowed pointer %p", reusedPtr, seedPtr)
+	if raceEnabled {
+		// The race-enabled sync.Pool intentionally drops random Put calls, so
+		// the borrowed-pointer round trip cannot be asserted under -race.
+		return
 	}
-	base64DecodeBufPool.Put(reusedPtr)
+	reused, _ := base64DecodeBufPool.Get().(*b64Buf)
+	if reused != seed {
+		t.Fatalf("pool returned buffer %p, want borrowed buffer %p", reused, seed)
+	}
+	base64DecodeBufPool.Put(reused)
 }
 
 func benchB64Stdlib(b *testing.B, s string) {

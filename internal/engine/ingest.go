@@ -62,6 +62,13 @@ type ingestCounter struct {
 	decodeFrames int
 	decodeTotal  float64
 	decodeMax    float64
+
+	// ackFrames/ackTotal/ackMax accumulate the acknowledgement round-trip budget:
+	// the count and sum give the mean, ackMax the slowest single round trip. Fed by
+	// recordAck from the ack pump goroutine only when armed.
+	ackFrames int
+	ackTotal  float64
+	ackMax    float64
 }
 
 // newIngestCounter returns a counter armed when NYALA_FPS_TIMING is set, or a
@@ -127,6 +134,24 @@ func (c *ingestCounter) recordDecode(ms float64) {
 	c.mu.Unlock()
 }
 
+// recordAck adds one acknowledgement command round trip in milliseconds: the
+// count and running sum feed the mean, and it tracks the slowest single round
+// trip. The ack pump calls it per completed acknowledgement, gated on the armed
+// check, so an off run reads no clock and does no work here. A nil or disabled
+// counter returns at once.
+func (c *ingestCounter) recordAck(ms float64) {
+	if !c.armed() {
+		return
+	}
+	c.mu.Lock()
+	c.ackFrames++
+	c.ackTotal += ms
+	if ms > c.ackMax {
+		c.ackMax = ms
+	}
+	c.mu.Unlock()
+}
+
 // fps prunes the trailing window to now and returns the rolling ingest rate over
 // it, so an idle page (no fresh frames) decays the rate to 0. F instants in the
 // window leave F-1 intervals over their span, so the rate is (F-1)/span. It is
@@ -156,8 +181,9 @@ func (c *ingestCounter) fps(now time.Time) float64 {
 
 // summary returns the session ingest statistics: the frame count, the mean fps over
 // the ingest span (first to last frame), the min/max/median instantaneous fps and
-// the worst inter-arrival gap from the collected gaps, and the worker decode mean and
-// max. It is read once at quit on the viewer draw goroutine. It sorts the gap slice
+// the worst inter-arrival gap from the collected gaps, the worker decode mean and
+// max, and the acknowledgement round-trip mean and max. It is read once at quit on
+// the viewer draw goroutine. It sorts the gap slice
 // once here, off the hot path, for the median. A nil or disabled counter, or a
 // session with no frame, reports the zero value.
 func (c *ingestCounter) summary() render.IngestStats {
@@ -186,6 +212,10 @@ func (c *ingestCounter) summary() render.IngestStats {
 	if c.decodeFrames > 0 {
 		stats.DecodeMeanMS = c.decodeTotal / float64(c.decodeFrames)
 		stats.DecodeMaxMS = c.decodeMax
+	}
+	if c.ackFrames > 0 {
+		stats.AckRTTMeanMS = c.ackTotal / float64(c.ackFrames)
+		stats.AckRTTMaxMS = c.ackMax
 	}
 	return stats
 }

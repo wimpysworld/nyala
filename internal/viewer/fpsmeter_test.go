@@ -91,6 +91,7 @@ func TestFPSMeterWarmupGate(t *testing.T) {
 	m.ingest = fakeIngest{stats: render.IngestStats{
 		Frames: 40, MeanFPS: 23.6, MinFPS: 6.8, MaxFPS: 59.4,
 		MedianFPS: 50.1, WorstGapMS: 147.4, DecodeMeanMS: 8.2, DecodeMaxMS: 21.0,
+		AckRTTMeanMS: 3.4, AckRTTMaxMS: 12.6,
 	}}
 	var b strings.Builder
 	m.printSummary(&b)
@@ -100,6 +101,7 @@ func TestFPSMeterWarmupGate(t *testing.T) {
 		"in_min=6.8", "in_max=59.4", "in_median=50.1", "in_worst_gap_ms=147.4",
 		"in_decode_mean_ms=8.2", "in_decode_max_ms=21.0",
 		"out_frames=4", "wall=0.30s", "out_worst_gap_ms=100.0", "out_median=10.0",
+		"ack_rtt_mean_ms=3.4", "ack_rtt_max_ms=12.6",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("summary %q missing %q", out, want)

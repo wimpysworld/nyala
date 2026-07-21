@@ -165,6 +165,12 @@ type ChromiumEngine struct {
 	// the layout generation read in the same sequence, and the updated hold state.
 	snapshot func(context.Context, overlayState) ([]render.GlyphRun, scrollOffset, int64, overlayState)
 
+	// kittyDecode selects the kitty-shm decode mode, guarded by e.mu. When true
+	// and the active backend takes direct payloads, decode workers decode each
+	// PNG screencast frame into a pooled RGBA plane (pendingFrame.release owns
+	// its return) instead of passing the encoded payload through. The viewer
+	// sets it through SetKittyDecode when it selects the shm transport.
+	kittyDecode bool
 	// decode is the decoded-RGBA test override. Frame-loop and decode-pool tests swap
 	// in a fake so they can drive queued frames without image payloads. It is nil in
 	// production, where consumers keep decoder-native pixels or direct Kitty PNG.
@@ -264,9 +270,10 @@ func (e *ChromiumEngine) IngestFPS(now time.Time) float64 {
 }
 
 // IngestSummary returns the session ingest statistics for the fps quit summary: the
-// frame count, mean/min/max/median ingest fps, worst inter-arrival gap, and the
-// worker decode mean and max. It returns the zero value when NYALA_FPS_TIMING is
-// unset. It is the ingestReporter capability the viewer fps meter reads.
+// frame count, mean/min/max/median ingest fps, worst inter-arrival gap, the
+// worker decode mean and max, and the acknowledgement round-trip mean and max. It
+// returns the zero value when NYALA_FPS_TIMING is unset. It is the ingestReporter
+// capability the viewer fps meter reads.
 func (e *ChromiumEngine) IngestSummary() render.IngestStats {
 	return e.ingest.summary()
 }

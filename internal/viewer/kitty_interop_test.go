@@ -9,10 +9,14 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"os"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/wimpysworld/nyala/internal/kittyinterop"
 	"github.com/wimpysworld/nyala/internal/render"
+	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
 
 // TestKittyTerminalRoundTrip sends successive frames through the production
@@ -86,6 +90,107 @@ func TestKittyTerminalRoundTrip(t *testing.T) {
 		t.Fatalf("final terminal state = last id %d with %d stored images, want id 1 only", terminal.LastPlaced, len(terminal.Images))
 	}
 	assertKittyInteropImage(t, terminal.Images[1], largeSecondPNG)
+
+	// The shm transport runs as a subtest so the kitty-interop gate covers
+	// both transports under its one entry point.
+	t.Run("SHMTransport", testKittySHMTerminalRoundTrip)
+}
+
+// testKittySHMTerminalRoundTrip sends successive plane frames through the
+// production live viewer with the shm transport resolved, decodes each t=s
+// escape by reading the named shared-memory object like a terminal would, and
+// checks exact pixels, double-buffer id alternation, plane release, and object
+// cleanup. The synthetic terminal side never unlinks, so the reset must.
+func testKittySHMTerminalRoundTrip(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("kitty shm transport is Linux-only")
+	}
+	state := NewState(80, 24)
+	state.Backend = BackendKitty
+	state.kittyTransport = KittyTransportSHM
+
+	first := kittyInteropFixture(64, 48, 5)
+	second := kittyInteropFixture(64, 48, 6)
+
+	released := 0
+	var stream bytes.Buffer
+	if err := state.RenderStreamFrame(render.Frame{Img: first, Release: func() { released++ }}, &stream); err != nil {
+		t.Fatalf("RenderStreamFrame 1: %v", err)
+	}
+	if released != 1 {
+		t.Fatalf("frame 1 released the plane %d times, want 1 (after the copy)", released)
+	}
+	firstName := kittySHMEscapeName(t, stream.String(), "i=1")
+	got, err := renderdecode.DecodeKitty(stream.Bytes())
+	if err != nil {
+		t.Fatalf("DecodeKitty frame 1: %v", err)
+	}
+	assertKittyInteropImage(t, got, first)
+
+	stream.Reset()
+	if err := state.RenderStreamFrame(render.Frame{Img: second}, &stream); err != nil {
+		t.Fatalf("RenderStreamFrame 2: %v", err)
+	}
+	secondName := kittySHMEscapeName(t, stream.String(), "i=2")
+	got, err = renderdecode.DecodeKitty(stream.Bytes())
+	if err != nil {
+		t.Fatalf("DecodeKitty frame 2: %v", err)
+	}
+	assertKittyInteropImage(t, got, second)
+	cmds := kittyCommands(stream.String())
+	if len(cmds) != 2 {
+		t.Fatalf("frame 2 emitted %d commands, want 2 (transmit then delete)", len(cmds))
+	}
+	assertDelete(t, cmds[1], "1")
+
+	var reset bytes.Buffer
+	if err := state.resetKitty(&reset); err != nil {
+		t.Fatalf("resetKitty: %v", err)
+	}
+	for _, name := range []string{firstName, secondName} {
+		if _, err := os.Stat("/dev/shm/" + strings.TrimPrefix(name, "/")); err == nil {
+			t.Fatalf("unconsumed shm object %s outlived resetKitty", name)
+		}
+	}
+}
+
+// kittySHMEscapeName checks the first APC envelope is the single unchunked
+// f=32,t=s transmit under the wanted image id and returns the POSIX object
+// name its payload carries.
+func kittySHMEscapeName(t *testing.T, out, wantID string) string {
+	t.Helper()
+	rest, ok := strings.CutPrefix(out, "\x1b_G")
+	if !ok {
+		t.Fatalf("output does not start with a Kitty APC: %q", out)
+	}
+	body, _, ok := strings.Cut(rest, "\x1b\\")
+	if !ok {
+		t.Fatal("APC envelope missing its String Terminator")
+	}
+	control, payload, ok := strings.Cut(body, ";")
+	if !ok {
+		t.Fatal("APC envelope missing the options/payload separator")
+	}
+	for _, opt := range []string{"f=32", "t=s", "a=T", "C=1", "q=0", wantID} {
+		found := false
+		for _, field := range strings.Split(control, ",") {
+			if field == opt {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("shm transmit %q missing %s", control, opt)
+		}
+	}
+	if strings.Contains(control, "m=") {
+		t.Fatalf("shm transmit %q is chunked, want a single unchunked escape", control)
+	}
+	name, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		t.Fatalf("decode shm object name: %v", err)
+	}
+	return string(name)
 }
 
 func kittyInteropFixture(width, height int, seed uint32) *image.RGBA {

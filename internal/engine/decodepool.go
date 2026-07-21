@@ -2,9 +2,12 @@ package engine
 
 import (
 	"context"
+	"image"
 	"os"
 	"runtime"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chromedp/cdproto/page"
@@ -101,6 +104,96 @@ func (e *ChromiumEngine) directKittyPNG(data string) bool {
 	return direct && renderkitty.ValidDirectPNGData(data)
 }
 
+// SetKittyDecode selects the kitty-shm decode mode. When on, frames that would
+// travel as direct Kitty PNG payloads instead decode into pooled RGBA planes
+// (render.Frame.Img plus a Release hook) so the viewer can copy raw pixels
+// into a shared-memory object at write time. The viewer calls this when it
+// resolves the shm transport and clears it on runtime demotion to direct; the
+// viewer must then call Frame.Release exactly once per plane frame at its
+// drop and post-paint points. It follows the backend seam: workers read the
+// mode per frame, so a toggle mid-stream is safe.
+func (e *ChromiumEngine) SetKittyDecode(on bool) {
+	e.mu.Lock()
+	e.kittyDecode = on
+	e.mu.Unlock()
+}
+
+// kittyShmDecodeEnabled reads the kitty-shm decode mode at worker time, like
+// the directKittyPNG backend gate.
+func (e *ChromiumEngine) kittyShmDecodeEnabled() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.kittyDecode
+}
+
+// framePlane is one pooled RGBA plane. Its release closure is built once per
+// entry, so releasing and reusing a plane allocates nothing per frame.
+type framePlane struct {
+	img      image.RGBA
+	release  func()
+	released atomic.Bool
+}
+
+// planePool is the bounded recycler for kitty-shm RGBA planes. It is a
+// buffered channel: get pops a free plane or grows a new one, put returns a
+// plane and drops it for the GC when the pool is already full, so the retained
+// set never exceeds the configured depth.
+type planePool struct {
+	items chan *framePlane
+}
+
+// newPlanePool returns a pool retaining at most depth planes.
+func newPlanePool(depth int) *planePool {
+	if depth < 1 {
+		depth = 1
+	}
+	return &planePool{items: make(chan *framePlane, depth)}
+}
+
+// get returns a plane shaped w by h, reusing a pooled backing array when its
+// capacity suffices. The plane is tightly packed RGBA (stride 4*w).
+func (p *planePool) get(w, h int) *framePlane {
+	var fp *framePlane
+	select {
+	case fp = <-p.items:
+	default:
+		fp = &framePlane{}
+		fp.release = func() { p.put(fp) }
+	}
+	need := 4 * w * h
+	if cap(fp.img.Pix) < need {
+		fp.img.Pix = make([]byte, need)
+	}
+	fp.img.Pix = fp.img.Pix[:need]
+	fp.img.Stride = 4 * w
+	fp.img.Rect = image.Rect(0, 0, w, h)
+	fp.released.Store(false)
+	return fp
+}
+
+// put returns a plane to the pool. The released flag makes the release hook
+// exactly-once: a second call is a no-op, so a lifecycle bug can never hand
+// the same plane to two frames.
+func (p *planePool) put(fp *framePlane) {
+	if fp.released.Swap(true) {
+		return
+	}
+	select {
+	case p.items <- fp:
+	default: // pool at its ceiling: drop the plane, the GC reclaims it
+	}
+}
+
+// livePlanePool returns the process-wide kitty-shm plane pool, created on
+// first use. Its depth is the in-flight plane ceiling, derived from the
+// decode-pool constants: one plane per decode worker, the raw-queue depth
+// (workers+1, headroom only, since queued frames are still encoded), the
+// frames channel buffer, plus one pending and one drawing at the viewer.
+var livePlanePool = sync.OnceValue(func() *planePool {
+	workers := decodeWorkerCount()
+	return newPlanePool(workers + (workers + 1) + frameChannelBuffer + 2)
+})
+
 // rawFrameQueue is the bounded, drop-oldest feed from the listener goroutine to the
 // live decode pool. Several decode workers pull from it in parallel, so it holds a
 // small backlog. When full it drops the OLDEST undecoded frame, never the
@@ -123,7 +216,8 @@ func newRawFrameQueue(depth int) *rawFrameQueue {
 // put enqueues the newest frame, dropping the oldest when the queue is full. It never
 // blocks the caller (the listener goroutine): a full queue drops one oldest frame and
 // retries the non-blocking send. The listener is the only producer, so after a drop
-// the retry always has room. A frame dropped here is already acked on receive.
+// the retry always has room. A frame dropped here is already acked on receive, and it
+// is still encoded, so it holds no pooled plane and needs no release.
 func (q *rawFrameQueue) put(f seqRawFrame) {
 	for {
 		select {
@@ -177,9 +271,22 @@ func (e *ChromiumEngine) runDecodeWorker(ctx context.Context, q *rawFrameQueue, 
 				}
 				pending.img = img
 			case e.directKittyPNG(raw.data):
-				// Strings are immutable and the event owns this value, so retaining it in
-				// the held frame gives re-emits and queued draws stable bytes.
-				pending.png = raw.data
+				if e.kittyShmDecodeEnabled() {
+					// kitty-shm mode: decode into a pooled RGBA plane the viewer
+					// copies into shared memory. The release hook is single-owner
+					// and travels with the frame. A failed decode drops the frame,
+					// like the pixel decodes below (it was acked on receive).
+					fp, derr := e.decodeKittyPlane(raw.data)
+					if derr != nil {
+						continue
+					}
+					pending.img = &fp.img
+					pending.release = fp.release
+				} else {
+					// Strings are immutable and the event owns this value, so retaining
+					// it in the held frame gives re-emits and queued draws stable bytes.
+					pending.png = raw.data
+				}
 			default:
 				img, derr := e.decodeLiveFrame(raw.data)
 				if derr != nil {
@@ -193,6 +300,9 @@ func (e *ChromiumEngine) runDecodeWorker(ctx context.Context, q *rawFrameQueue, 
 			select {
 			case out <- decodedFrame{seq: raw.seq, pending: pending}:
 			case <-ctx.Done():
+				// Teardown drop point: the frame never reaches the collector,
+				// so return its pooled plane (nil-safe off the kitty-shm path).
+				pending.releasePlane()
 				return
 			}
 		}
@@ -254,13 +364,24 @@ func (e *ChromiumEngine) runDecodeCollector(ctx context.Context, in <-chan decod
 			}
 			timer.markFrame()
 		case d := <-in:
-			// Monotonic publish gate: drop a stale out-of-order decode.
+			// Monotonic publish gate: drop a stale out-of-order decode, returning
+			// its pooled plane (nil-safe off the kitty-shm path).
 			if d.seq <= lastPublishedSeq {
+				d.pending.releasePlane()
 				continue
 			}
 			lastPublishedSeq = d.seq
 			pending := d.pending
-			held, haveHeld = pending, true
+			if pending.release != nil {
+				// A pooled plane is single-owner: the viewer releases it after
+				// paint or on drop, so the collector must not retain it for
+				// re-emit. Kitty ignores the text overlay, so losing the re-emit
+				// repaint costs nothing on the kitty-shm path; clearing the hold
+				// also stops a poke from re-pushing an older non-plane frame.
+				held, haveHeld = pendingFrame{}, false
+			} else {
+				held, haveHeld = pending, true
+			}
 			off, offOK := frameScrollOffset(pending)
 			if offOK {
 				if !haveScroll || off != lastScroll {

@@ -641,7 +641,7 @@ func TestConfigureBackendsSkipsHandshakeUnderMux(t *testing.T) {
 
 	tty := newTempTTY(t)
 	st := NewState(80, 24)
-	if err := configureBackends(&st, tty, 80, 24, "auto"); err != nil {
+	if err := configureBackends(&st, tty, 80, 24, "auto", "auto"); err != nil {
 		t.Fatalf("configureBackends: %v", err)
 	}
 
@@ -662,7 +662,7 @@ func TestConfigureBackendsRunsHandshakeWithoutMux(t *testing.T) {
 
 	tty := newTempTTY(t)
 	st := NewState(80, 24)
-	if err := configureBackends(&st, tty, 80, 24, "auto"); err != nil {
+	if err := configureBackends(&st, tty, 80, 24, "auto", "auto"); err != nil {
 		t.Fatalf("configureBackends: %v", err)
 	}
 
