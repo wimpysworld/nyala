@@ -1785,10 +1785,13 @@ ingest gap from 106.7 to 45.0 ms. `ack_rtt_mean_ms` at 0.6 shows the ack
 path idle. Progression on this page: 12.7 fps out direct, 24.4 shm PNG,
 59.8 shm JPEG, a 4.7x overall gain.
 
-Open regression: screencast start moved from ~890 ms to ~3054 ms. The
-suspected cause is the mid-startup `SetKittyDecode` restart, where the
-stream starts as PNG and restarts as JPEG. The fix candidate is resolving
-the transport before the first screencast start. Investigation pending.
+Startup note (closed 2026-07-21): the 3054 ms screencast start in this run
+was load variance, not a code regression. Investigation confirmed no
+PNG-to-JPEG restart exists at startup: the viewer resolves the transport
+and sets the engine decode mode before `Navigate`, so the single initial
+screencast start already selects JPEG q90.
+`TestKittySHMPreStartResolveStartsOnce` pins the one-start behaviour.
+Later runs on identical code started at 1286 ms and 926 ms.
 
 Uncapped datapoint (2026-07-21, same setup, Chromium started with
 `--disable-frame-rate-limit`):
@@ -1807,10 +1810,9 @@ Kitty's per-frame raw upload (~10-13 ms, `ack_rtt_max_ms` 13.5). The 60 cap
 stays the default: frames beyond the display refresh waste browser CPU and
 GPU, the instantaneous minimum fell to 9.5, and the worst gaps did not
 improve. A pass-through for extra Chromium flags is a possible future
-convenience. Screencast start was 1286 ms here against 3054 ms above, so
-the earlier figure was mostly load variance, with ~400 ms attributable to
-the PNG-to-JPEG restart; the resolve-transport-before-first-start fix stays
-pending.
+convenience. Screencast start was 1286 ms here against 3054 ms above,
+confirming the earlier figure was load variance (see the closed startup
+note above; no startup restart exists).
 
 Torture test (2026-07-21, 2560x2880 Kitty, aquarium WebGL page, shm JPEG
 path):

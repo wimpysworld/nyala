@@ -149,6 +149,48 @@ func TestKittyDecodeToggleOffKittyIssuesNoRestart(t *testing.T) {
 	}
 }
 
+// TestKittySHMPreStartResolveStartsOnce pins the startup ordering the viewer
+// relies on: the shm transport resolves and SetKittyDecode lands before
+// Navigate publishes the frame sink, so the session issues exactly one
+// StartScreencast, already at JPEG q90, with no PNG start and no stop/start
+// pair.
+func TestKittySHMPreStartResolveStartsOnce(t *testing.T) {
+	e, ctx := newStreamControlTestEngine(t)
+	e.backend = backendKitty
+	e.screencastFmt = screencastFmt{}
+	e.screencastStarted = false
+	sink := e.rawQ
+	e.rawQ = nil // Navigate has not published the frame sink yet
+	stops := 0
+	e.stopScreencastOp = func(context.Context) error {
+		stops++
+		return nil
+	}
+	e.applySizingOp = func(context.Context, browser.WindowID, int, int, float64) error { return nil }
+	var starts []screencastFmt
+	e.startScreencastOp = func(_ context.Context, _, _ int, format screencastFmt) error {
+		starts = append(starts, format)
+		return nil
+	}
+
+	// The viewer resolves the transport and arms the decode before Navigate,
+	// so the toggle is a flag write with no stream control.
+	e.SetKittyDecode(true)
+	if stops != 0 || len(starts) != 0 {
+		t.Fatalf("pre-start toggle issued stops=%d starts=%d, want none", stops, len(starts))
+	}
+
+	// startSession publishes the sink, then issues the single initial start.
+	e.rawQ = sink
+	if err := e.startInitialScreencast(ctx); err != nil {
+		t.Fatalf("initial start: %v", err)
+	}
+	want := []screencastFmt{{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality}}
+	if stops != 0 || !slices.Equal(starts, want) {
+		t.Fatalf("initial start issued stops=%d starts=%v, want no stop and %v", stops, starts, want)
+	}
+}
+
 // TestInitialStartSerialisesWithBackendRestart holds the initial StartScreencast
 // operation open while a backend switch begins. The switch cannot stop or restart
 // until the initial start releases the shared control lock.
