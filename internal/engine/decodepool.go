@@ -105,25 +105,37 @@ func (e *ChromiumEngine) directKittyPNG(data string) bool {
 }
 
 // SetKittyDecode selects the kitty-shm decode mode. When on, frames that would
-// travel as direct Kitty PNG payloads instead decode into pooled RGBA planes
+// travel as direct Kitty PNG payloads instead decode into RGBA planes
 // (render.Frame.Img plus a Release hook) so the viewer can copy raw pixels
 // into a shared-memory object at write time. The viewer calls this when it
 // resolves the shm transport and clears it on runtime demotion to direct; the
 // viewer must then call Frame.Release exactly once per plane frame at its
-// drop and post-paint points. It follows the backend seam: workers read the
-// mode per frame, so a toggle mid-stream is safe.
+// drop and post-paint points (Release is nil-safe, and a JPEG plane carries
+// none). It follows the backend seam: workers read the mode per frame, so a
+// toggle mid-stream is safe. The capture format follows the transport: shm
+// requests JPEG q90 and direct requests PNG, so a toggle that changes the
+// effective format restarts the running stream through the same control seam
+// Resize and SetBackend use.
 func (e *ChromiumEngine) SetKittyDecode(on bool) {
+	e.screencastCtl.Lock()
+	defer e.screencastCtl.Unlock()
 	e.mu.Lock()
 	e.kittyDecode = on
+	restart := e.screencastStartedLocked() && e.initialScreencastFormatLocked() != e.screencastFmt
 	e.mu.Unlock()
+	if restart {
+		_ = e.restartStreamLocked()
+	}
 }
 
-// kittyShmDecodeEnabled reads the kitty-shm decode mode at worker time, like
-// the directKittyPNG backend gate.
-func (e *ChromiumEngine) kittyShmDecodeEnabled() bool {
+// kittyPlaneMode reports whether the worker decodes payloads into RGBA planes
+// for the kitty-shm transport: the active backend takes direct payloads and
+// the viewer selected shm decode. Read at worker time under one lock, like the
+// directKittyPNG backend gate, so a toggle mid-stream is safe.
+func (e *ChromiumEngine) kittyPlaneMode() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.kittyDecode
+	return e.kittyDecode && e.backend.UsesDirectPayload()
 }
 
 // framePlane is one pooled RGBA plane. Its release closure is built once per
@@ -270,23 +282,24 @@ func (e *ChromiumEngine) runDecodeWorker(ctx context.Context, q *rawFrameQueue, 
 					continue
 				}
 				pending.img = img
-			case e.directKittyPNG(raw.data):
-				if e.kittyShmDecodeEnabled() {
-					// kitty-shm mode: decode into a pooled RGBA plane the viewer
-					// copies into shared memory. The release hook is single-owner
-					// and travels with the frame. A failed decode drops the frame,
-					// like the pixel decodes below (it was acked on receive).
-					fp, derr := e.decodeKittyPlane(raw.data)
-					if derr != nil {
-						continue
-					}
-					pending.img = &fp.img
-					pending.release = fp.release
-				} else {
-					// Strings are immutable and the event owns this value, so retaining
-					// it in the held frame gives re-emits and queued draws stable bytes.
-					pending.png = raw.data
+			case e.kittyPlaneMode():
+				// kitty-shm mode: decode into an RGBA plane the viewer copies
+				// into shared memory, sniffing the payload signature so both the
+				// JPEG capture format and a PNG in flight across a format
+				// restart convert. A pooled PNG plane's release hook is
+				// single-owner and travels with the frame; a JPEG plane carries
+				// none. A failed decode drops the frame, like the pixel decodes
+				// below (it was acked on receive).
+				img, release, derr := e.decodeKittyPlane(raw.data)
+				if derr != nil {
+					continue
 				}
+				pending.img = img
+				pending.release = release
+			case e.directKittyPNG(raw.data):
+				// Strings are immutable and the event owns this value, so retaining
+				// it in the held frame gives re-emits and queued draws stable bytes.
+				pending.png = raw.data
 			default:
 				img, derr := e.decodeLiveFrame(raw.data)
 				if derr != nil {

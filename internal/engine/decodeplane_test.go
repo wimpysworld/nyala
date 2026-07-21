@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"image"
+	"image/jpeg"
 	"image/png"
 	"sync"
 	"sync/atomic"
@@ -72,6 +74,103 @@ func TestKittyShmDecodeOffKeepsDirectPath(t *testing.T) {
 	}
 	if got.Img != nil || got.Release != nil {
 		t.Fatal("direct Kitty frame gained a plane or a Release hook")
+	}
+}
+
+// TestKittyShmDecodeJPEGPlane proves the shm-mode JPEG capture path: a JPEG
+// payload decodes through the pool into an *image.RGBA in RGBA byte order with
+// no Release hook (the JPEG plane is not pooled, so the GC owns it), and its
+// pixels match the stdlib JPEG decode of the same fixture within JPEG
+// tolerance.
+func TestKittyShmDecodeJPEGPlane(t *testing.T) {
+	t.Parallel()
+	payload := encodeBase64JPEG(t)
+	raw, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		t.Fatalf("decode fixture base64: %v", err)
+	}
+	stdImg, err := jpeg.Decode(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("stdlib decode fixture: %v", err)
+	}
+	want := imageToRGBA(stdImg)
+
+	e := &ChromiumEngine{backend: backendKitty}
+	e.SetKittyDecode(true)
+	rawQ, frames, stop := drivePool(t, e, 1)
+	defer stop()
+	rawQ.put(seqRawFrame{seq: 1, data: payload})
+
+	got := recvFrame(t, frames)
+	if got.EncodedPNG != "" {
+		t.Fatal("kitty-shm JPEG frame retained a direct payload")
+	}
+	if got.Release != nil {
+		t.Fatal("kitty-shm JPEG frame carries a Release hook; the JPEG plane is not pooled")
+	}
+	rgba, ok := got.Img.(*image.RGBA)
+	if !ok {
+		t.Fatalf("kitty-shm JPEG frame image is %T, want *image.RGBA", got.Img)
+	}
+	if !rgba.Rect.Eq(want.Rect) {
+		t.Fatalf("plane bounds = %v, want %v", rgba.Rect, want.Rect)
+	}
+	// The fixture is solid R=200 G=10 B=20, so the distinct channel values pin
+	// the RGBA byte order; the tolerance absorbs decoder rounding differences.
+	const tol = 3
+	for y := range rgba.Rect.Dy() {
+		for x := range rgba.Rect.Dx() {
+			i := y*rgba.Stride + 4*x
+			j := y*want.Stride + 4*x
+			for c := range 4 {
+				d := int(rgba.Pix[i+c]) - int(want.Pix[j+c])
+				if d < -tol || d > tol {
+					t.Fatalf("pixel (%d,%d) channel %d = %d, stdlib %d; beyond JPEG tolerance %d (RGBA order)",
+						x, y, c, rgba.Pix[i+c], want.Pix[j+c], tol)
+				}
+			}
+			if rgba.Pix[i+3] != 255 {
+				t.Fatalf("pixel (%d,%d) alpha = %d, want 255", x, y, rgba.Pix[i+3])
+			}
+		}
+	}
+}
+
+// TestDecodeKittyPlaneRejectsUnknownFormat proves the signature sniff: a
+// payload that is neither PNG nor JPEG fails with errUnknownPlaneFormat so the
+// worker drops the frame.
+func TestDecodeKittyPlaneRejectsUnknownFormat(t *testing.T) {
+	t.Parallel()
+	e := &ChromiumEngine{}
+	payload := base64.StdEncoding.EncodeToString([]byte("neither a PNG signature nor a JPEG start-of-image marker"))
+	if _, _, err := e.decodeKittyPlane(payload); !errors.Is(err, errUnknownPlaneFormat) {
+		t.Fatalf("decodeKittyPlane error = %v, want errUnknownPlaneFormat", err)
+	}
+}
+
+// TestKittyDemotionInFlightJPEGDrops proves the shm-to-direct demotion safety:
+// a JPEG frame still in flight after the format restarts to PNG never reaches
+// the direct pass-through. ValidDirectPNGData rejects it (directKittyPNG is
+// false), so the frame emerges with no EncodedPNG and the direct Kitty writer
+// emits nothing for it.
+func TestKittyDemotionInFlightJPEGDrops(t *testing.T) {
+	t.Parallel()
+	payload := encodeBase64JPEG(t)
+	e := &ChromiumEngine{backend: backendKitty}
+	e.SetKittyDecode(false)
+	if e.directKittyPNG(payload) {
+		t.Fatal("JPEG payload passed the direct PNG validation")
+	}
+	rawQ, frames, stop := drivePool(t, e, 1)
+	defer stop()
+	rawQ.put(seqRawFrame{seq: 1, data: payload})
+
+	got := recvFrame(t, frames)
+	if got.EncodedPNG != "" {
+		t.Fatal("in-flight JPEG reached the direct Kitty pass-through")
+	}
+	if got.Release != nil {
+		t.Fatal("in-flight JPEG frame gained a Release hook off the plane path")
 	}
 }
 
@@ -170,16 +269,16 @@ func BenchmarkDecodeKittyPlane(b *testing.B) {
 	e := &ChromiumEngine{}
 	// Warm the base64, reader, decode-state, and plane pools so the loop
 	// measures steady state, not the one-time pool fills.
-	if fp, err := e.decodeKittyPlane(payload); err == nil {
-		fp.release()
+	if _, release, err := e.decodeKittyPlane(payload); err == nil {
+		release()
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		fp, err := e.decodeKittyPlane(payload)
+		_, release, err := e.decodeKittyPlane(payload)
 		if err != nil {
 			b.Fatal(err)
 		}
-		fp.release()
+		release()
 	}
 }
 
@@ -194,12 +293,12 @@ func TestKittyPlaneDecodeSteadyStateAllocs(t *testing.T) {
 	payload := pngPayload(t)
 	var decodeErr error
 	run := func() {
-		fp, err := e.decodeKittyPlane(payload)
+		_, release, err := e.decodeKittyPlane(payload)
 		if err != nil {
 			decodeErr = err
 			return
 		}
-		fp.release()
+		release()
 	}
 	run() // warm the base64, reader, decode-state, and plane pools
 	allocs := testing.AllocsPerRun(50, run)

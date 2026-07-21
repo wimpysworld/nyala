@@ -169,35 +169,65 @@ func decodeJPEGFast(raw []byte) (image.Image, error) {
 // around its pooled payload bytes, so the hot path allocates no reader.
 var planeReaderPool = sync.Pool{New: func() any { return new(bytes.Reader) }}
 
-// errNotPNGPlane reports a kitty-shm payload whose decoded bytes carry no PNG
-// signature, a format-switch race the caller drops like any failed decode.
-var errNotPNGPlane = errors.New("engine: kitty plane frame is not a PNG")
+// errUnknownPlaneFormat reports a kitty-shm payload whose decoded bytes carry
+// neither a PNG signature nor a JPEG start-of-image marker, a corrupt frame the
+// caller drops like any failed decode.
+var errUnknownPlaneFormat = errors.New("engine: kitty plane frame is neither PNG nor JPEG")
+
+// jpegSOI is the two-byte JPEG start-of-image marker decodeKittyPlane sniffs to
+// route a JPEG payload to the jpegn RGBA decode.
+var jpegSOI = []byte{0xFF, 0xD8}
+
+// kittyPlaneJPEGOpts forces the jpegn decode to emit RGBA directly, so a JPEG
+// kitty-shm plane lands in the project's RGBA byte order without a second
+// conversion pass. Shared across workers: jpegn only reads the options.
+var kittyPlaneJPEGOpts = &jpegn.Options{ToRGBA: true}
 
 // decodeKittyPlane is the kitty-shm decode: it base64-decodes one screencast
-// payload into the pooled scratch and decodes the PNG into a pooled RGBA
-// plane, so the steady state allocates no plane per frame. The caller owns
-// the returned plane through its release hook.
-func (e *ChromiumEngine) decodeKittyPlane(data string) (*framePlane, error) {
+// payload into the pooled scratch and decodes the image into an RGBA plane,
+// routing by file signature. A PNG (the direct-transport format still in flight
+// across a restart) decodes into a pooled plane, so the steady state allocates
+// no plane per frame; the caller owns that plane through the returned release
+// hook. A JPEG (the shm-mode capture format) decodes through jpegn with ToRGBA
+// set; jpegn exposes no decode-into seam, so the JPEG path accepts one fresh
+// *image.RGBA per decode, the same per-frame allocation production Block
+// already pays at 60 fps, and returns a nil release because the plane is not
+// pooled and the GC reclaims it.
+func (e *ChromiumEngine) decodeKittyPlane(data string) (image.Image, func(), error) {
 	raw, release, err := decodeBase64Pooled(data)
 	if err != nil {
-		return nil, fmt.Errorf("engine: base64-decode frame: %w", err)
+		return nil, nil, fmt.Errorf("engine: base64-decode frame: %w", err)
 	}
 	defer release()
-	w, h, ok := pngdecode.Dimensions(raw)
-	if !ok {
-		return nil, errNotPNGPlane
+	if w, h, ok := pngdecode.Dimensions(raw); ok {
+		fp := livePlanePool().get(w, h)
+		br, _ := planeReaderPool.Get().(*bytes.Reader)
+		br.Reset(raw)
+		_, _, derr := pngdecode.DecodeInto(br, fp.img.Pix)
+		br.Reset(nil) // drop the pooled payload reference before returning the reader
+		planeReaderPool.Put(br)
+		if derr != nil {
+			fp.release()
+			return nil, nil, fmt.Errorf("engine: decode kitty plane: %w", derr)
+		}
+		return &fp.img, fp.release, nil
 	}
-	fp := livePlanePool().get(w, h)
+	if !bytes.HasPrefix(raw, jpegSOI) {
+		return nil, nil, errUnknownPlaneFormat
+	}
 	br, _ := planeReaderPool.Get().(*bytes.Reader)
 	br.Reset(raw)
-	_, _, derr := pngdecode.DecodeInto(br, fp.img.Pix)
+	img, derr := jpegn.Decode(br, kittyPlaneJPEGOpts)
 	br.Reset(nil) // drop the pooled payload reference before returning the reader
 	planeReaderPool.Put(br)
 	if derr != nil {
-		fp.release()
-		return nil, fmt.Errorf("engine: decode kitty plane: %w", derr)
+		return nil, nil, fmt.Errorf("engine: decode kitty plane: %w", derr)
 	}
-	return fp, nil
+	rgba, ok := img.(*image.RGBA)
+	if !ok {
+		return nil, nil, fmt.Errorf("engine: decode kitty plane: jpegn returned %T, want *image.RGBA", img)
+	}
+	return rgba, nil, nil
 }
 
 // decodeLiveFrame is the live decode-pool's pixel decode. It keeps the decoder's

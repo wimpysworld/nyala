@@ -27,7 +27,7 @@ func msSince(start time.Time) float64 {
 type pendingFrame struct {
 	img      image.Image                   // decoded bitmap in its decoder-native layout
 	png      string                        // owned base64 PNG for direct live Kitty transmission
-	release  func()                        // returns the pooled kitty-shm plane img wraps; nil elsewhere
+	release  func()                        // returns the pooled kitty-shm PNG plane img wraps; nil elsewhere, including GC-owned JPEG planes
 	meta     *page.ScreencastFrameMetadata // scroll offset and page scale for the sync
 	afterFCP bool                          // received after main-frame first contentful paint
 }
@@ -245,8 +245,14 @@ func (e *ChromiumEngine) startInitialScreencast(ctx context.Context) error {
 	return e.transitionScreencastLocked(ctx, screencastTransition{resize: true, skipUnchangedSize: true})
 }
 
+// initialScreencastFormatLocked selects the wire format for the next
+// StartScreencast, read under the caller's e.mu hold. JPEG q90 serves the
+// backends that decode every frame: Block by its capture format, and Kitty in
+// shm mode, where the plane decode converts either format and JPEG halves the
+// payload and decodes about four times faster than PNG on real content. PNG
+// serves Sixel and direct Kitty, whose pass-through needs the PNG bytes.
 func (e *ChromiumEngine) initialScreencastFormatLocked() screencastFmt {
-	if e.backend.CaptureFormat() == render.CaptureJPEG {
+	if e.backend.CaptureFormat() == render.CaptureJPEG || (e.kittyDecode && e.backend.UsesDirectPayload()) {
 		return screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality}
 	}
 	return screencastFmt{format: page.ScreencastFormatPng}
