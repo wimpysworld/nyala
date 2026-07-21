@@ -112,6 +112,9 @@ func encodeKittyInteropPNG(t *testing.T, img image.Image) []byte {
 
 func assertKittyInteropChunks(t *testing.T, chunks []kittyinterop.Chunk, chunked bool) {
 	t.Helper()
+	if len(chunks) == 0 || chunks[0].Options["C"] != "1" {
+		t.Fatal("Kitty placement can move the cursor, want C=1 on the first chunk")
+	}
 	if !chunked {
 		if len(chunks) != 1 {
 			t.Fatalf("single-frame transmission has %d chunks, want 1", len(chunks))

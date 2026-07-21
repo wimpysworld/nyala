@@ -142,7 +142,7 @@ func largeFrame(t *testing.T) render.Frame {
 	return render.Frame{Img: img}
 }
 
-func TestRenderEmitsDisplayAction(t *testing.T) {
+func TestRenderEmitsDisplayActionWithoutMovingCursor(t *testing.T) {
 	var r Renderer
 	var buf bytes.Buffer
 	if err := r.Render(knownFrame(t), &buf); err != nil {
@@ -150,6 +150,9 @@ func TestRenderEmitsDisplayAction(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "a=T") {
 		t.Errorf("output missing display action key a=T: %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "C=1") {
+		t.Errorf("output missing do-not-move-cursor key C=1: %q", buf.String())
 	}
 }
 
