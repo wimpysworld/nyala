@@ -6,22 +6,28 @@ import (
 	"github.com/chromedp/cdproto/page"
 )
 
-// TestInitialScreencastFormatBackendMatrix pins the fixed backend-format policy:
-// Block runs JPEG q90, and Kitty and Sixel always run PNG.
+// TestInitialScreencastFormatBackendMatrix pins the format policy per backend
+// and kitty-shm decode mode: Block runs JPEG q90, Kitty runs JPEG q90 in shm
+// mode and PNG in direct mode, and Sixel always runs PNG (a stale shm flag
+// cannot reach it because Sixel takes no direct payload).
 func TestInitialScreencastFormatBackendMatrix(t *testing.T) {
 	cases := []struct {
-		name       string
-		backend    backend
-		wantFormat page.ScreencastFormat
-		wantQual   int
+		name        string
+		backend     backend
+		kittyDecode bool
+		wantFormat  page.ScreencastFormat
+		wantQual    int
 	}{
-		{"block", backendBlock, page.ScreencastFormatJpeg, blockScreencastQuality},
-		{"kitty", backendKitty, page.ScreencastFormatPng, 0},
-		{"sixel", backendSixel, page.ScreencastFormatPng, 0},
+		{"block", backendBlock, false, page.ScreencastFormatJpeg, blockScreencastQuality},
+		{"block shm flag", backendBlock, true, page.ScreencastFormatJpeg, blockScreencastQuality},
+		{"kitty direct", backendKitty, false, page.ScreencastFormatPng, 0},
+		{"kitty shm", backendKitty, true, page.ScreencastFormatJpeg, blockScreencastQuality},
+		{"sixel", backendSixel, false, page.ScreencastFormatPng, 0},
+		{"sixel stale shm flag", backendSixel, true, page.ScreencastFormatPng, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			e := &ChromiumEngine{backend: tc.backend}
+			e := &ChromiumEngine{backend: tc.backend, kittyDecode: tc.kittyDecode}
 			got := e.initialScreencastFormat()
 			if got.format != tc.wantFormat || got.quality != tc.wantQual {
 				t.Fatalf("format = {%s %d}, want {%s %d}", got.format, got.quality, tc.wantFormat, tc.wantQual)

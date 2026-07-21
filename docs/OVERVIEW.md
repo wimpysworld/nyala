@@ -85,14 +85,15 @@ JPEG normally crosses the engine/render seam as the decoder's `*image.YCbCr`.
 Block keeps that native layout. Sixel requests PNG for every frame and preserves the
 PNG decoder's native concrete pixel type into the encoder; this can be RGBA or NRGBA,
 so the encoder retains both fast paths. PNG also keeps its native layout when a
-queued Kitty frame reaches a pixel backend. Every live Kitty stream requests PNG.
+queued Kitty frame reaches a pixel backend. The direct Kitty transport requests PNG;
+the shm transport captures JPEG q90.
 On the direct transport the frame carries the owned CDP base64 string in
 `Frame.EncodedPNG`; the Kitty consumer rechunks it as `f=100,t=d,a=T` without base64
 decode, PNG decode, pixel packing, zlib, or base64 encode. On the runtime-detected
-shm transport the engine decodes the PNG into a pooled RGBA plane and the viewer
+shm transport the engine decodes each frame into an RGBA plane and the viewer
 sends raw `f=32` pixels through a per-frame POSIX shared-memory object with a
 ~100-byte escape; `docs/PERFORMANCE.md` records the probe, decision order, pacing,
-and the benchmark that chose raw over PNG. A frame queued across a
+the benchmark that chose raw over PNG, and the JPEG q90 shm capture decision. A frame queued across a
 backend switch decodes that retained PNG at the new pixel consumer. In the opposite
 direction, Kitty drops queued pixel frames until the restarted PNG stream emits.
 

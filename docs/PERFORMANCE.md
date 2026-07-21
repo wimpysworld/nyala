@@ -1730,15 +1730,106 @@ does not cap throughput, but it adds ~100 ms of latency.
 
 Open follow-ups:
 
-- JPEG q90 capture in shm mode. Chromium's JPEG encode is cheaper than its
-  PNG encode on busy frames, and the GPU-verified aquarium run with JPEG
-  capture ingested `In: 60.3`, so the estimate is ~55-60 fps out. It needs a
-  jpegn YCbCr-to-RGBA decode into the pooled plane and an shm-mode capture
-  format switch in the engine. The decision rests with the operator.
 - Upstream `DecodeInto` to `woozymasta/png` as a pull request; it is carried
   as a minimal in-package fork of the row loop in `internal/pngdecode`.
 - Populate the transport allow and deny lists from live terminal testing,
   under the Kitty-first scoping decision above.
+
+### JPEG q90 shm capture (2026-07-21)
+
+Operator decision (2026-07-21): JPEG q90 is the screencast capture format
+whenever the shm fast path is active, with no CLI flag. This closes the JPEG
+q90 follow-up from the shm promotion.
+
+Shipped behaviour (`internal/engine/screencast.go`,
+`internal/engine/decodepool.go`, `internal/engine/frame.go`): the engine
+requests JPEG at Block's q90 when the Kitty backend is active and shm decode
+is on, and PNG otherwise. A toggle that changes the effective format restarts
+a running screencast through the same control seam resize and backend changes
+use. The plane decode sniffs the payload signature: PNG keeps the pooled
+zero-allocation `DecodeInto` path, and JPEG routes through jpegn with
+`ToRGBA`, accepting one plane allocation per decode (the same per-frame cost
+production Block pays) and a nil `Release`. On demotion the capture returns
+to PNG, and in-flight JPEG frames drop at the direct writer because
+`EncodedPNG` is empty.
+
+Codec benchmark (2026-07-21, 2560x1500 fixture, 30 iterations):
+
+| Codec | Payload bytes | Payload-to-plane mean |
+|---|---:|---:|
+| PNG | 1,091,682 | 15.53 ms |
+| JPEG q90 | 480,812 (44% of PNG) | 23.38 ms upper bound |
+
+The JPEG figure is an upper bound from an unoptimised test conversion;
+production decodes through jpegn `ToRGBA`. The fixture flatters PNG: the live
+aquarium measurement above put the PNG plane path at 96.9 ms
+(`in_decode_mean_ms`), while JPEG decode cost is content-stable, so JPEG wins
+about 4x on real pages. It also halves websocket bytes, relieving Chromium
+encode, the current ingest ceiling. Live verification on Kitty is done,
+below.
+
+Live verification (2026-07-21, same maximised 2560x1600 Kitty, aquarium
+WebGL page):
+
+```
+warmup_ms=3102 in_frames=1637 in_mean=59.9 in_min=22.2 in_max=508.7 in_median=60.0 in_worst_gap_ms=45.0 in_decode_mean_ms=17.2 in_decode_max_ms=25.8 out_frames=1635 wall=27.32s out_mean=59.8 out_median=62.3 out_min=21.4 out_max=92.2 out_worst_gap_ms=46.7 out_encode_mean_ms=4.8 out_encode_max_ms=6.8 out_write_mean_ms=0.0 out_write_max_ms=0.2 ack_rtt_mean_ms=0.6 ack_rtt_max_ms=8.0
+```
+
+Load timings: process spawned +184.3 ms, screencast started +3053.9 ms,
+first frame emitted +3094.4 ms.
+
+Ingest and output both lock to 60 fps, the monitor refresh ceiling:
+`in_mean` 59.9, `out_mean` 59.8, 1635 of 1637 frames painted. Against the
+shm PNG run above, plane decode fell from 96.9 to 17.2 ms and the worst
+ingest gap from 106.7 to 45.0 ms. `ack_rtt_mean_ms` at 0.6 shows the ack
+path idle. Progression on this page: 12.7 fps out direct, 24.4 shm PNG,
+59.8 shm JPEG, a 4.7x overall gain.
+
+Open regression: screencast start moved from ~890 ms to ~3054 ms. The
+suspected cause is the mid-startup `SetKittyDecode` restart, where the
+stream starts as PNG and restarts as JPEG. The fix candidate is resolving
+the transport before the first screencast start. Investigation pending.
+
+Uncapped datapoint (2026-07-21, same setup, Chromium started with
+`--disable-frame-rate-limit`):
+
+```
+warmup_ms=1328 in_frames=3062 in_mean=74.6 in_min=9.5 in_max=3006.4 in_median=82.6 in_worst_gap_ms=104.7 in_decode_mean_ms=20.3 in_decode_max_ms=30.4 out_frames=2699 wall=41.01s out_mean=65.8 out_median=72.9 out_min=9.4 out_max=90.3 out_worst_gap_ms=106.6 out_encode_mean_ms=5.5 out_encode_max_ms=9.9 out_write_mean_ms=0.0 out_write_max_ms=0.6 ack_rtt_mean_ms=1.0 ack_rtt_max_ms=13.5
+```
+
+Load timings: process spawned +165.4 ms, screencast started +1286.2 ms,
+first frame emitted +1319.6 ms.
+
+The 60 fps above is Chromium's frame-rate cap, not a pipeline limit:
+uncapped, ingest median reaches 82.6 and output median 72.9. The output
+shortfall against ingest is the one-frame-in-flight pacing gate waiting on
+Kitty's per-frame raw upload (~10-13 ms, `ack_rtt_max_ms` 13.5). The 60 cap
+stays the default: frames beyond the display refresh waste browser CPU and
+GPU, the instantaneous minimum fell to 9.5, and the worst gaps did not
+improve. A pass-through for extra Chromium flags is a possible future
+convenience. Screencast start was 1286 ms here against 3054 ms above, so
+the earlier figure was mostly load variance, with ~400 ms attributable to
+the PNG-to-JPEG restart; the resolve-transport-before-first-start fix stays
+pending.
+
+Torture test (2026-07-21, 2560x2880 Kitty, aquarium WebGL page, shm JPEG
+path):
+
+```
+warmup_ms=1347 in_frames=2682 in_mean=49.2 in_min=9.4 in_max=1131.5 in_median=56.6 in_worst_gap_ms=106.0 in_decode_mean_ms=32.9 in_decode_max_ms=47.9 out_frames=2471 wall=54.48s out_mean=45.3 out_median=47.2 out_min=9.0 out_max=59.8 out_worst_gap_ms=110.8 out_encode_mean_ms=9.8 out_encode_max_ms=13.6 out_write_mean_ms=0.0 out_write_max_ms=0.7 ack_rtt_mean_ms=0.8 ack_rtt_max_ms=16.7
+```
+
+Load timings: process spawned +209.4 ms, screencast started +925.8 ms,
+first frame emitted +1335.2 ms.
+
+Output holds 45.3 fps at the size where the direct decoded path measured
+its `4.5 -> 5.8 -> 8.5` fps arc (2568x2880, above): 5.3x the best prior
+figure and 10x the original. Costs scale linearly with the 1.92x pixel
+count against the 2560x1600 run: plane decode `17.2 -> 32.9 ms`,
+plane-to-shm encode `4.8 -> 9.8 ms`. The output ceiling is the
+one-frame-in-flight pacing gate waiting on Kitty's raw upload of each
+~29.5 MB frame, ~17-21 ms (`ack_rtt_max_ms` 16.7), as designed. Screencast
+start at 926 ms confirms the earlier 3054 ms figure was load variance.
 
 ### Terminal support for raw-RGB-over-shm (research, 2026-07-21)
 

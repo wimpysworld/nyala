@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/color"
 	"image/draw"
+	stdjpeg "image/jpeg"
 	"image/png"
 	"math"
 	"os"
@@ -17,6 +19,7 @@ import (
 
 	cterm "github.com/charmbracelet/x/term"
 	emmb64 "github.com/emmansun/base64"
+	"github.com/gen2brain/jpegn"
 	"golang.org/x/sys/unix"
 
 	"github.com/wimpysworld/nyala/internal/pngdecode"
@@ -51,22 +54,29 @@ const (
 // hanging the run.
 const benchAckTimeout = 10 * time.Second
 
+// benchJPEGQuality is the q90 candidate quality for the shm-mode codec
+// decision the codec leg informs.
+const benchJPEGQuality = 90
+
 // benchFixture holds the one frame every variant transmits: the PNG bytes,
-// their base64 form for the in-band paths, and the decoded RGBA pixels with
-// their base64 form for the raw paths.
+// their base64 form for the in-band paths, the decoded RGBA pixels with
+// their base64 form for the raw paths, and the JPEG q90 bytes with their
+// base64 form for the codec-comparison leg.
 type benchFixture struct {
-	pngBytes []byte
-	pngB64   string
-	rawPix   []byte
-	rawB64   string
+	pngBytes  []byte
+	pngB64    string
+	rawPix    []byte
+	rawB64    string
+	jpegBytes []byte
+	jpegB64   string
 }
 
 // buildBenchFixture renders a gradient with pseudo-random noise bands, so the
 // PNG compresses to a realistic ~1-2 MB rather than a trivially small file.
-// Fixture preparation is not a hot path, so the stdlib PNG encoder is
-// acceptable here; the decode uses the production internal/pngdecode and the
-// base64 forms use the production emmb64, so per-frame costs match the live
-// path.
+// Fixture preparation is not a hot path, so the stdlib PNG and JPEG encoders
+// are acceptable here; the decodes use the production internal/pngdecode and
+// jpegn and the base64 forms use the production emmb64, so per-frame costs
+// match the live path.
 func buildBenchFixture() (*benchFixture, error) {
 	img := image.NewRGBA(image.Rect(0, 0, benchW, benchH))
 	state := uint32(0x9E3779B9)
@@ -100,11 +110,18 @@ func buildBenchFixture() (*benchFixture, error) {
 	}
 	rgba := image.NewRGBA(decoded.Bounds())
 	draw.Draw(rgba, rgba.Bounds(), decoded, decoded.Bounds().Min, draw.Src)
+	var jbuf bytes.Buffer
+	if err := stdjpeg.Encode(&jbuf, rgba, &stdjpeg.Options{Quality: benchJPEGQuality}); err != nil {
+		return nil, fmt.Errorf("encode fixture JPEG: %w", err)
+	}
+	jpegBytes := jbuf.Bytes()
 	return &benchFixture{
-		pngBytes: pngBytes,
-		pngB64:   emmb64.StdEncoding.EncodeToString(pngBytes),
-		rawPix:   rgba.Pix,
-		rawB64:   emmb64.StdEncoding.EncodeToString(rgba.Pix),
+		pngBytes:  pngBytes,
+		pngB64:    emmb64.StdEncoding.EncodeToString(pngBytes),
+		rawPix:    rgba.Pix,
+		rawB64:    emmb64.StdEncoding.EncodeToString(rgba.Pix),
+		jpegBytes: jpegBytes,
+		jpegB64:   emmb64.StdEncoding.EncodeToString(jpegBytes),
 	}, nil
 }
 
@@ -227,11 +244,97 @@ func benchStats(durs []time.Duration) (mean, median, minimum, maximum time.Durat
 // benchMS renders a duration as milliseconds for the report line.
 func benchMS(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }
 
+// benchCodecLeg measures the Nyala-side decode-to-plane cost for the two
+// screencast codec candidates in shm mode, where the terminal receives raw
+// f=32 pixels and the codec choice only changes the engine-side decode. The
+// PNG path mirrors the engine's decodeKittyPlane: emmb64 base64 decode into a
+// reused scratch buffer, then pngdecode.DecodeInto into a reused RGBA plane.
+// The JPEG path has no production equivalent yet, so it is composed here from
+// the same production codecs: emmb64 base64 decode, jpegn.Decode, then a
+// straightforward YCbCr-to-RGBA conversion loop into the same plane. jpegn
+// also offers Options.ToRGBA for direct RGBA output; the manual loop keeps
+// the two conversion costs visible separately. This leg is pure CPU and needs
+// no terminal.
+func benchCodecLeg(t *testing.T, fix *benchFixture, frames int) {
+	plane := make([]byte, benchW*benchH*4)
+	scratch := make([]byte, emmb64.StdEncoding.DecodedLen(max(len(fix.pngB64), len(fix.jpegB64))))
+	reader := bytes.NewReader(nil)
+	codecs := []struct {
+		name    string
+		payload int
+		b64     []byte
+		decode  func(raw []byte) error
+	}{{
+		name:    "codec png->plane",
+		payload: len(fix.pngBytes),
+		b64:     []byte(fix.pngB64),
+		decode: func(raw []byte) error {
+			reader.Reset(raw)
+			_, _, err := pngdecode.DecodeInto(reader, plane)
+			return err
+		},
+	}, {
+		name:    "codec jpeg->plane",
+		payload: len(fix.jpegBytes),
+		b64:     []byte(fix.jpegB64),
+		decode: func(raw []byte) error {
+			reader.Reset(raw)
+			img, err := jpegn.Decode(reader)
+			if err != nil {
+				return err
+			}
+			ycc, ok := img.(*image.YCbCr)
+			if !ok {
+				return fmt.Errorf("jpegn returned %T, want *image.YCbCr", img)
+			}
+			if b := ycc.Bounds(); b.Dx() != benchW || b.Dy() != benchH {
+				return fmt.Errorf("jpegn bounds %v, want %dx%d", b, benchW, benchH)
+			}
+			for y := range benchH {
+				for x := range benchW {
+					ci := ycc.COffset(x, y)
+					r, g, b := color.YCbCrToRGB(ycc.Y[ycc.YOffset(x, y)], ycc.Cb[ci], ycc.Cr[ci])
+					i := (y*benchW + x) * 4
+					plane[i+0] = r
+					plane[i+1] = g
+					plane[i+2] = b
+					plane[i+3] = 0xff
+				}
+			}
+			return nil
+		},
+	}}
+	t.Logf("codec fixture %dx%d: PNG %d bytes (%d base64), JPEG q%d %d bytes (%d base64)",
+		benchW, benchH, len(fix.pngBytes), len(fix.pngB64),
+		benchJPEGQuality, len(fix.jpegBytes), len(fix.jpegB64))
+	for _, c := range codecs {
+		durs := make([]time.Duration, 0, frames)
+		for f := range frames {
+			start := time.Now()
+			n, err := emmb64.StdEncoding.Decode(scratch, c.b64)
+			if err == nil {
+				err = c.decode(scratch[:n])
+			}
+			if err != nil {
+				t.Fatalf("%s frame %d: %v", c.name, f+1, err)
+			}
+			durs = append(durs, time.Since(start))
+		}
+		mean, median, minimum, maximum := benchStats(durs)
+		t.Logf("%-14s payload %6.2f MB  %-9s  mean %8.2f ms  median %8.2f ms  min %8.2f ms  max %8.2f ms",
+			c.name, float64(c.payload)/1e6, "decode",
+			benchMS(mean), benchMS(median), benchMS(minimum), benchMS(maximum))
+	}
+}
+
 // TestKittyTransportBenchmark measures per-frame terminal write time for five
 // Kitty graphics transports against the live terminal: in-band PNG through
 // the production LiveEncoder (t=d), PNG by file path in /dev/shm (t=f), PNG
 // through a POSIX shared-memory object (t=s), raw f=32 pixels through shared
-// memory, and raw f=32 in-band as the reference ceiling.
+// memory, and raw f=32 in-band as the reference ceiling. Before the transport
+// variants it runs the pure-CPU codec-comparison leg (benchCodecLeg), which
+// needs the env opt-in but no terminal, so a headless run still reports the
+// codec rows before the TTY guard skips the transport leg.
 //
 // Measurement semantics: the in-band t=d variants keep the production q=2 and
 // time the blocking write alone, because pty backpressure stalls the write on
@@ -255,15 +358,6 @@ func TestKittyTransportBenchmark(t *testing.T) {
 	if os.Getenv("NYALA_KITTY_BENCH") != "1" {
 		t.Skip("set NYALA_KITTY_BENCH=1 on a Kitty graphics terminal; use `just kitty-transport-bench`")
 	}
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		t.Skipf("no controlling terminal: %v", err)
-	}
-	defer tty.Close()
-	fd := tty.Fd()
-	if !cterm.IsTerminal(fd) {
-		t.Skip("/dev/tty is not a terminal")
-	}
 
 	frames := 30
 	if s := os.Getenv("NYALA_KITTY_BENCH_FRAMES"); s != "" {
@@ -275,6 +369,18 @@ func TestKittyTransportBenchmark(t *testing.T) {
 	fix, err := buildBenchFixture()
 	if err != nil {
 		t.Fatalf("build fixture: %v", err)
+	}
+
+	benchCodecLeg(t, fix, frames)
+
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		t.Skipf("no controlling terminal: %v", err)
+	}
+	defer tty.Close()
+	fd := tty.Fd()
+	if !cterm.IsTerminal(fd) {
+		t.Skip("/dev/tty is not a terminal")
 	}
 
 	writeAPC := func(control, payload string) error {

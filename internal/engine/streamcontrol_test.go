@@ -81,6 +81,74 @@ func TestBackendRestartsUseFixedFormats(t *testing.T) {
 	}
 }
 
+// TestKittyDecodeToggleRestartsFormat proves the capture format follows the
+// Kitty transport: enabling the shm decode on a running Kitty PNG stream
+// restarts it at JPEG q90, a repeat enable is a no-op, and disabling restarts
+// it back at PNG for the direct pass-through.
+func TestKittyDecodeToggleRestartsFormat(t *testing.T) {
+	e, _ := newStreamControlTestEngine(t)
+	e.backend = backendKitty
+	stops := 0
+	e.stopScreencastOp = func(context.Context) error {
+		stops++
+		return nil
+	}
+	e.applySizingOp = func(context.Context, browser.WindowID, int, int, float64) error { return nil }
+	var starts []screencastFmt
+	e.startScreencastOp = func(_ context.Context, _, _ int, format screencastFmt) error {
+		starts = append(starts, format)
+		return nil
+	}
+
+	e.SetKittyDecode(true)
+	e.SetKittyDecode(true) // format already JPEG: no second restart
+	e.SetKittyDecode(false)
+	want := []screencastFmt{
+		{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality},
+		{format: page.ScreencastFormatPng},
+	}
+	if stops != 2 || !slices.Equal(starts, want) {
+		t.Fatalf("toggle issued stops=%d starts=%v, want 2 stops and %v", stops, starts, want)
+	}
+}
+
+// TestKittyDecodeToggleOffKittyIssuesNoRestart proves the shm flag alone never
+// restarts a stream whose format it cannot change: a Sixel stream (no direct
+// payload) and an unstarted stream both see no stop or start.
+func TestKittyDecodeToggleOffKittyIssuesNoRestart(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		started bool
+	}{
+		{"sixel stream", true},
+		{"unstarted kitty stream", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, _ := newStreamControlTestEngine(t)
+			if !tc.started {
+				e.backend = backendKitty
+				e.screencastFmt = screencastFmt{}
+				e.screencastStarted = false
+			}
+			stops, starts := 0, 0
+			e.stopScreencastOp = func(context.Context) error {
+				stops++
+				return nil
+			}
+			e.applySizingOp = func(context.Context, browser.WindowID, int, int, float64) error { return nil }
+			e.startScreencastOp = func(context.Context, int, int, screencastFmt) error {
+				starts++
+				return nil
+			}
+			e.SetKittyDecode(true)
+			e.SetKittyDecode(false)
+			if stops != 0 || starts != 0 {
+				t.Fatalf("toggle issued stops=%d starts=%d, want none", stops, starts)
+			}
+		})
+	}
+}
+
 // TestInitialStartSerialisesWithBackendRestart holds the initial StartScreencast
 // operation open while a backend switch begins. The switch cannot stop or restart
 // until the initial start releases the shared control lock.
