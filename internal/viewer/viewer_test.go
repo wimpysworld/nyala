@@ -64,6 +64,29 @@ func TestCycleBackendBlockOnly(t *testing.T) {
 	}
 }
 
+// TestExitTerminal pins the shared backend exit contract: reset SGR, move below
+// a rendered full-height frame with exactly one CRLF, then restore auto-wrap and
+// reveal the cursor. An exit before the first frame restores terminal modes in
+// place, without scrolling unrelated content.
+func TestExitTerminal(t *testing.T) {
+	const want = "\x1b[0m\x1b[24;1H\r\n\x1b[?7h\x1b[?25h"
+	for _, backend := range []Backend{BackendBlock, BackendKitty, BackendSixel} {
+		t.Run(backend.String(), func(t *testing.T) {
+			if got := exitTerminal(24, true); got != want {
+				t.Fatalf("exitTerminal(24, true) = %q, want %q", got, want)
+			}
+		})
+	}
+
+	const restoreInPlace = "\x1b[0m\x1b[?7h\x1b[?25h"
+	if got := exitTerminal(24, false); got != restoreInPlace {
+		t.Fatalf("startup exit = %q, want %q", got, restoreInPlace)
+	}
+	if got := exitTerminal(0, true); got != restoreInPlace {
+		t.Fatalf("invalid-row exit = %q, want %q", got, restoreInPlace)
+	}
+}
+
 // TestSetEnabledNominatesCeiling asserts SetEnabled nominates the best available
 // backend: enabled[0] is the active backend and block sits last as the floor. It
 // pins the orderings configureBackends builds for each detected set.

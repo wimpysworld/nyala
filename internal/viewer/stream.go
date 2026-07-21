@@ -107,9 +107,15 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks strin
 	if _, err := io.WriteString(tty, enterFullScreen); err != nil {
 		return err
 	}
-	// Registered after the Restore defer, so LIFO runs it first: re-enable
-	// auto-wrap and show the cursor while still in raw mode, then Restore.
-	defer func() { _, _ = io.WriteString(tty, exitFullScreen) }()
+	// Registered after the Restore defer, so LIFO runs it first: reset terminal
+	// attributes, place the cursor below a drawn frame, re-enable auto-wrap, and
+	// show the cursor while still in raw mode, then Restore. Capture the session so a
+	// startup exit that drew no frame does not jump to and scroll the bottom row.
+	var session *streamSession
+	defer func() {
+		drawn := session != nil && session.firstDrawn
+		_, _ = io.WriteString(tty, exitTerminal(st.Rows, drawn))
+	}()
 
 	// Close the engine on exit so the browser process and the frame loop tear
 	// down with the terminal.
@@ -143,6 +149,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks strin
 	st.SetDiff(diff)
 
 	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, ctl: ctl, diff: diff, fps: fps}
+	session = s
 	keys := readKeys(tty, done)
 	navigated := make(chan error, 1)
 	go func() {

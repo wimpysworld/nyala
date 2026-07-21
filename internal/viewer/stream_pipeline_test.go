@@ -150,6 +150,39 @@ func TestStreamWriterStopDrainsQueuedItems(t *testing.T) {
 	}
 }
 
+// TestStreamWriterDrainsFrameBeforeTerminalExit pins teardown ordering across the
+// writer and Stream seams. The queued frame, including its synchronised-update
+// close, must drain before the shared terminal cleanup. Once cleanup lands, the
+// stopped writer must emit no trailing bytes.
+func TestStreamWriterDrainsFrameBeforeTerminalExit(t *testing.T) {
+	tty := &slowWriter{delay: time.Millisecond}
+	w := newStreamWriter(tty)
+
+	frame := &bytes.Buffer{}
+	frame.WriteString("FRAME")
+	frame.WriteString(endSyncUpdate)
+	w.send(writeItem{buf: frame})
+	w.stop()
+
+	cleanup := exitTerminal(24, true)
+	if _, err := tty.Write([]byte(cleanup)); err != nil {
+		t.Fatalf("write terminal cleanup: %v", err)
+	}
+	want := "FRAME" + endSyncUpdate + cleanup
+	if got := tty.String(); got != want {
+		t.Fatalf("teardown order = %q, want %q", got, want)
+	}
+
+	tty.markClosed()
+	time.Sleep(5 * time.Millisecond)
+	if got := tty.String(); got != want {
+		t.Fatalf("writer emitted bytes after terminal cleanup: got %q, want %q", got, want)
+	}
+	if tty.wroteAfterClose() {
+		t.Fatal("writer wrote the terminal after cleanup")
+	}
+}
+
 // TestEmitControlFlushesAssembledFirst pins the Tab/resize sequencing: a control
 // write (a resize clear or a kitty reset) flushes the in-flight assembled frame
 // before its own bytes, so the two never interleave and the frame lands first.
