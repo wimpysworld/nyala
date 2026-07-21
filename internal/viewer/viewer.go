@@ -559,10 +559,21 @@ const (
 // physical line per grid row.
 const enterFullScreen = "\x1b[?7l\x1b[?25l"
 
-// exitFullScreen re-enables auto-wrap (DECAWM, "\x1b[?7h") and shows the cursor
-// ("\x1b[?25h"). Run writes it during teardown to restore the terminal to its
-// default state before the termios restore.
-const exitFullScreen = "\x1b[?7h\x1b[?25h"
+// exitTerminal returns the teardown sequence for the interactive viewer. It
+// resets SGR attributes, restores auto-wrap, and shows the cursor. After a frame
+// has drawn, it first moves to column one of the final rendered row and emits one
+// CRLF. The necessary single-line scroll leaves the complete browser area above
+// a clean row for an FPS summary or the shell prompt, independent of the cursor
+// position left by Block, Sixel, or Kitty. Before the first frame it preserves
+// the cursor position, so a startup failure does not displace terminal content.
+func exitTerminal(rows int, drawn bool) string {
+	const reset = "\x1b[0m"
+	const restore = "\x1b[?7h\x1b[?25h"
+	if !drawn || rows <= 0 {
+		return reset + restore
+	}
+	return reset + "\x1b[" + strconv.Itoa(rows) + ";1H\r\n" + restore
+}
 
 // configureBackends decides which backends the cycle offers and resolves the
 // real cell pixel size, then writes both into st. Behind a multiplexer (TMUX,
