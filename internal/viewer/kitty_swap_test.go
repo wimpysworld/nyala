@@ -97,6 +97,9 @@ func assertTransmit(t *testing.T, cmd string, id string) {
 	if !hasOpt(cmd, "i="+id) {
 		t.Fatalf("transmit %q missing image id i=%s", cmd, id)
 	}
+	if !hasOpt(cmd, "C=1") {
+		t.Fatalf("transmit %q moves the cursor, want C=1", cmd)
+	}
 }
 
 // assertDelete fails unless cmd deletes the given image id and frees its data
@@ -177,7 +180,7 @@ func TestKittyDirectPNGUsesRawPayloadAndIDs(t *testing.T) {
 	if len(cmds) != 1 {
 		t.Fatalf("first direct PNG emitted %d commands, want 1", len(cmds))
 	}
-	for _, opt := range []string{"f=100", "t=d", "a=T", "q=2", "i=1"} {
+	for _, opt := range []string{"f=100", "t=d", "a=T", "q=2", "C=1", "i=1"} {
 		if !hasOpt(cmds[0], opt) {
 			t.Errorf("direct PNG command %q missing %s", cmds[0], opt)
 		}

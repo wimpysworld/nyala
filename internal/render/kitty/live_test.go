@@ -46,7 +46,7 @@ func TestLiveEncoderPNGPassThrough(t *testing.T) {
 	if len(frames) < 3 {
 		t.Fatalf("PNG emitted %d chunks, want at least 3", len(frames))
 	}
-	for _, opt := range []string{"f=100", "t=d", "a=T", "q=2", "i=7", "m=1"} {
+	for _, opt := range []string{"f=100", "t=d", "a=T", "q=2", "C=1", "i=7", "m=1"} {
 		if !hasControlOpt(frames[0].control, opt) {
 			t.Errorf("first control %q missing %s", frames[0].control, opt)
 		}

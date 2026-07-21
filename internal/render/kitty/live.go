@@ -242,13 +242,14 @@ type LiveEncoder struct {
 // data. Validation decodes bounded base64 chunks into pooled scratch, but the path
 // does not materialise a full decode, PNG-decode, repack, compress, or re-encode
 // the payload. The command uses direct transmission and transmit-and-put, tags
-// the image with id when positive, and chunks at the Kitty protocol limit. A
-// malformed or incomplete payload returns ErrInvalidPNGData before writing.
+// the image with id when positive, leaves the cursor in place so a full-height
+// placement cannot scroll the terminal, and chunks at the Kitty protocol limit.
+// A malformed or incomplete payload returns ErrInvalidPNGData before writing.
 func (e *LiveEncoder) EncodePNGID(data string, id int, w io.Writer) error {
 	if !ValidDirectPNGData(data) {
 		return ErrInvalidPNGData
 	}
-	control := "f=100,t=d,a=T,q=2"
+	control := "f=100,t=d,a=T,q=2,C=1"
 	if id > 0 {
 		control += fmt.Sprintf(",i=%d", id)
 	}

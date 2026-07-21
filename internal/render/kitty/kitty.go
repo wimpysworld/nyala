@@ -76,11 +76,12 @@ func (r *Renderer) RenderID(f render.Frame, id int, w io.Writer) error {
 // positive id adds the i= key; a zero id omits it.
 func (*Renderer) render(f render.Frame, id int, w io.Writer) error {
 	opts := kitty.Options{
-		Format:       kitty.RGBA,
-		Compression:  kitty.Zlib,
-		Transmission: kitty.Direct,
-		Action:       kitty.TransmitAndPut,
-		Quite:        2, // upstream spelling; sets q=2, suppress replies
+		Format:          kitty.RGBA,
+		Compression:     kitty.Zlib,
+		Transmission:    kitty.Direct,
+		Action:          kitty.TransmitAndPut,
+		Quite:           2, // upstream spelling; sets q=2, suppress replies
+		DoNotMoveCursor: true,
 	}
 	if id > 0 {
 		opts.ID = id
