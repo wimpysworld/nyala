@@ -99,3 +99,13 @@ func terminalNameToken(termID string) string {
 	}
 	return strings.ToLower(fields[0])
 }
+
+// disableSixelSyncUpdates reports whether the terminal needs live Sixel frames
+// without DEC 2026 fencing. Foot identifies itself as "foot(<version>)" through
+// XTVERSION. Its synchronised-update enable path can clear the grid refresh left
+// by the preceding completed Sixel when frames arrive back to back. Other
+// terminals, and an absent identity, retain the normal synchronised fence.
+func disableSixelSyncUpdates(termID string) bool {
+	name := terminalNameToken(termID)
+	return name == "foot" || strings.HasPrefix(name, "foot(")
+}

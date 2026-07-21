@@ -224,6 +224,80 @@ func TestAssembleSixelUsesNonScrollingDisplayMode(t *testing.T) {
 	}
 }
 
+// TestAssembleFootSixelOmitsOnlySyncUpdates compares the normal and Foot Sixel
+// production bytes. Removing the two DEC 2026 markers from the normal frame must
+// produce the Foot frame exactly, preserving cursor placement, DECSDM, the Sixel
+// DCS, and every payload byte.
+func TestAssembleFootSixelOmitsOnlySyncUpdates(t *testing.T) {
+	frame := render.Frame{Img: solidImageSize(8, 16, color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})}
+
+	normalState := NewState(1, 1)
+	normalState.Backend = BackendSixel
+	var normal bytes.Buffer
+	if _, err := (&streamSession{st: &normalState}).assemble(&normal, frame); err != nil {
+		t.Fatalf("assemble normal Sixel frame: %v", err)
+	}
+
+	footState := NewState(1, 1)
+	footState.Backend = BackendSixel
+	footState.setTerminalIdentity("foot(1.27.0)")
+	var foot bytes.Buffer
+	if _, err := (&streamSession{st: &footState}).assemble(&foot, frame); err != nil {
+		t.Fatalf("assemble Foot Sixel frame: %v", err)
+	}
+
+	want := bytes.ReplaceAll(normal.Bytes(), []byte(beginSyncUpdate), nil)
+	want = bytes.ReplaceAll(want, []byte(endSyncUpdate), nil)
+	if !bytes.Equal(foot.Bytes(), want) {
+		t.Fatalf("Foot Sixel frame changed beyond DEC 2026 markers: got %q, want %q", foot.Bytes(), want)
+	}
+	if bytes.Contains(foot.Bytes(), []byte(beginSyncUpdate)) || bytes.Contains(foot.Bytes(), []byte(endSyncUpdate)) {
+		t.Fatalf("Foot Sixel frame retains DEC 2026 markers: %q", foot.Bytes())
+	}
+	if !bytes.Contains(foot.Bytes(), []byte(beginSixelDisplayMode+"\x1bP")) ||
+		!bytes.HasSuffix(foot.Bytes(), []byte(endSixelDisplayMode)) {
+		t.Fatalf("Foot Sixel frame lost DECSDM placement: %q", foot.Bytes())
+	}
+}
+
+// TestFootIdentityScopesSyncUpdateAssembly drives the same identity setter as
+// startup detection through real frame assembly. Under one Foot XTVERSION reply,
+// Sixel omits DEC 2026 while Block and Kitty retain both fence markers.
+func TestFootIdentityScopesSyncUpdateAssembly(t *testing.T) {
+	colour := color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff}
+	cases := []struct {
+		name      string
+		backend   Backend
+		frame     render.Frame
+		wantFence bool
+	}{
+		{"Sixel", BackendSixel, render.Frame{Img: solidImageSize(8, 16, colour)}, false},
+		{"Block", BackendBlock, render.Frame{Img: solidImageSize(2, 2, colour)}, true},
+		{"Kitty", BackendKitty, render.Frame{EncodedPNG: encodedPNG(t, solidImageSize(8, 8, colour))}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := NewState(1, 1)
+			st.setTerminalIdentity("foot(1.27.0)")
+			st.Backend = tc.backend
+			if tc.backend == BackendBlock {
+				st.SetDiff(&block.GridDiff{})
+			}
+
+			var out bytes.Buffer
+			if _, err := (&streamSession{st: &st}).assemble(&out, tc.frame); err != nil {
+				t.Fatalf("assemble Foot %s frame: %v", tc.backend, err)
+			}
+			hasOpen := bytes.HasPrefix(out.Bytes(), []byte(beginSyncUpdate))
+			hasClose := bytes.HasSuffix(out.Bytes(), []byte(endSyncUpdate))
+			if hasOpen != tc.wantFence || hasClose != tc.wantFence {
+				t.Fatalf("Foot %s DEC 2026 fence: open=%v close=%v, want both %v; output %q",
+					tc.backend, hasOpen, hasClose, tc.wantFence, out.Bytes())
+			}
+		})
+	}
+}
+
 // TestEmitControlFlushesAssembledFirst pins the Tab/resize sequencing: a control
 // write (a resize clear or a kitty reset) flushes the in-flight assembled frame
 // before its own bytes, so the two never interleave and the frame lands first.
