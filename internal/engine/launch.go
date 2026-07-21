@@ -353,6 +353,9 @@ func (e *ChromiumEngine) launch(flag string) error {
 		cancel()
 		return err
 	}
+	e.mu.Lock()
+	e.sizedSurfaceW, e.sizedSurfaceH, e.sizedScale = surfW, surfH, z
+	e.mu.Unlock()
 	if err := e.enableProxyAuth(ctx); err != nil {
 		cancel()
 		return err

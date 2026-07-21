@@ -34,6 +34,7 @@ type freeItem struct {
 	buf      *bytes.Buffer
 	encodeMS float64
 	writeMS  float64
+	timed    bool
 }
 
 // streamWriter owns every terminal write on one goroutine so the producer's next
@@ -106,7 +107,7 @@ func (w *streamWriter) run() {
 			}
 		}
 		if item.buf != nil {
-			w.free <- freeItem{buf: item.buf, encodeMS: item.encodeMS, writeMS: writeMS}
+			w.free <- freeItem{buf: item.buf, encodeMS: item.encodeMS, writeMS: writeMS, timed: item.timed}
 		}
 	}
 }

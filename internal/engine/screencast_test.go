@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -17,6 +18,43 @@ func TestAckFrameEnqueuesInsteadOfRunningInline(t *testing.T) {
 	}
 	if got != 42 {
 		t.Fatalf("pump queue carried %d, want 42", got)
+	}
+}
+
+func TestAckPumpFailureCancelsSessionWithoutDuplicate(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	acks := newAckQueue()
+	var calls int
+	e := &ChromiumEngine{
+		ctx:    ctx,
+		cancel: cancel,
+		acks:   acks,
+		ackScreencastOp: func(context.Context, int64) error {
+			calls++
+			return errors.New("ack execution failed")
+		},
+	}
+	done := make(chan struct{})
+	go func() {
+		e.ackPump(ctx, acks)
+		close(done)
+	}()
+	acks.push(7)
+	acks.push(7)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ack pump did not stop after execution failure")
+	}
+	if calls != 1 {
+		t.Fatalf("ack execution calls = %d, want 1 with no retry or duplicate", calls)
+	}
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("ack execution failure did not cancel the session for rebuild")
 	}
 }
 

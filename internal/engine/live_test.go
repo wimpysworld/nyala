@@ -3,7 +3,6 @@
 package engine
 
 import (
-	"image"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -121,27 +120,9 @@ func TestLiveBlockLayoutWidthCapped(t *testing.T) {
 	}
 }
 
-// distinctColours counts the distinct RGBA colours in img, capped at cap so a
-// painted frame returns early. It samples every pixel; the test images are small.
-func distinctColours(img image.Image, cap int) int {
-	seen := map[[4]uint32]struct{}{}
-	b := img.Bounds()
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			r, g, bl, a := img.At(x, y).RGBA()
-			seen[[4]uint32{r, g, bl, a}] = struct{}{}
-			if len(seen) >= cap {
-				return len(seen)
-			}
-		}
-	}
-	return len(seen)
-}
-
-// TestLiveEventuallyEmitsPaintedFrame proves the normal engine stream reaches a
-// painted frame rather than stopping at a blank pre-paint frame. It is hermetic:
-// the page comes from a local test server.
-func TestLiveEventuallyEmitsPaintedFrame(t *testing.T) {
+// TestLiveEventuallyEmitsAfterFCPFrame proves the normal stream reaches a frame
+// received after main-frame FCP. It uses lifecycle ordering, not pixel colours.
+func TestLiveEventuallyEmitsAfterFCPFrame(t *testing.T) {
 	if _, err := resolveExecutable(""); err != nil {
 		t.Skipf("no Chromium for the live test: %v", err)
 	}
@@ -149,9 +130,7 @@ func TestLiveEventuallyEmitsPaintedFrame(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		// A solid red page over a white default: at least two distinct colours once
-		// painted, so a single-colour frame is provably pre-paint.
-		_, _ = w.Write([]byte("<html><body style='margin:0'>" +
+		_, _ = w.Write([]byte("<html><body style='margin:0'><p>nyala paint marker</p>" +
 			"<div style='width:100vw;height:50vh;background:#ff0000'></div>" +
 			"<div style='width:100vw;height:50vh;background:#0000ff'></div>" +
 			"</body></html>"))
@@ -167,7 +146,7 @@ func TestLiveEventuallyEmitsPaintedFrame(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = e.Close() })
 
-	// Read until the normal stream reaches a painted frame.
+	// Read until the normal stream reaches a frame received after FCP.
 	deadline := time.NewTimer(20 * time.Second)
 	defer deadline.Stop()
 	for {
@@ -179,13 +158,11 @@ func TestLiveEventuallyEmitsPaintedFrame(t *testing.T) {
 			if f.Img == nil {
 				t.Fatal("frame has a nil bitmap")
 			}
-			if n := distinctColours(f.Img, 2); n >= 2 {
-				return // painted frame proven
+			if f.AfterFCP {
+				return
 			}
-			// A blank frame can still arrive right at load; keep reading until the
-			// deadline for the first painted one.
 		case <-deadline.C:
-			t.Fatal("no painted frame (more than one colour) within the deadline")
+			t.Fatal("no frame arrived after main-frame FCP within the deadline")
 		}
 	}
 }
@@ -199,7 +176,9 @@ func TestLiveFrameArrivesBeforeFullLoad(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte("<html><body><p>nyala partial load</p><img src='/hang'></body></html>"))
+		_, _ = w.Write([]byte("<html><style>@keyframes pulse{from{opacity:.4}to{opacity:1}}" +
+			"body{animation:pulse .05s infinite alternate}</style><body><p>nyala partial load</p>" +
+			"<img src='/hang'></body></html>"))
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
@@ -227,15 +206,24 @@ func TestLiveFrameArrivesBeforeFullLoad(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = e.Close() })
 
-	select {
-	case f, ok := <-e.Frames():
-		if !ok {
-			t.Fatal("frames channel closed before a frame arrived")
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	postCommit := 0
+	for postCommit < 3 {
+		select {
+		case f, ok := <-e.Frames():
+			if !ok {
+				t.Fatal("frames channel closed before progressive frames arrived")
+			}
+			if !f.AfterFCP {
+				continue
+			}
+			if !f.HasImage() {
+				t.Fatal("post-FCP frame has no image payload")
+			}
+			postCommit++
+		case <-deadline.C:
+			t.Fatalf("received %d post-FCP frames while a subresource was held, want 3", postCommit)
 		}
-		if f.Img == nil {
-			t.Fatal("frame has a nil bitmap")
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("no frame arrived before full page load")
 	}
 }

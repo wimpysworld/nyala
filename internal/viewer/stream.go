@@ -285,6 +285,7 @@ type streamSession struct {
 	// are producer-goroutine only.
 	assembled         *bytes.Buffer
 	assembledEncodeMS float64
+	assembledTimed    bool // the assembled frame passed the FCP measurement gate
 	// fps is the live fps counter, non-nil only when NYALA_FPS_TIMING is set. When
 	// set, assemble stamps each frame and folds a rolling usable-fps badge into the
 	// frame buffer (rebuilt at most once per second); when nil the draw path pays
@@ -350,6 +351,7 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			}
 			s.assembled = buf
 			s.assembledEncodeMS = encodeMS
+			s.assembledTimed = s.fps != nil && s.fps.gated
 			havePending = false
 		}
 
@@ -359,7 +361,7 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 		var item writeItem
 		if s.assembled != nil {
 			readyC = w.ready
-			item = writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.fps != nil}
+			item = writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed}
 		}
 
 		select {
@@ -372,7 +374,11 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 		case now := <-heartbeat:
 			// Route the idle badge refresh through the writer so it never races the
 			// in-flight frame write.
-			_ = s.emitControl([]byte(s.fps.refresh(now)))
+			if s.st.Backend == BackendKitty {
+				_ = s.emitControl([]byte(s.fps.refreshAtHome(now)))
+			} else {
+				_ = s.emitControl([]byte(s.fps.refresh(now)))
+			}
 		case frame, ok := <-frames:
 			if !ok {
 				return nil
@@ -397,7 +403,7 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 		case fi := <-w.free:
 			// A drained buffer came back: record its paint split on this goroutine
 			// (the meter is single-goroutine) and return the buffer to the free set.
-			if s.fps != nil {
+			if s.fps != nil && fi.timed {
 				s.fps.recordPaint(fi.encodeMS, fi.writeMS)
 			}
 			avail = append(avail, fi.buf)
@@ -490,7 +496,7 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	if timed {
 		encodeStart = time.Now()
 	}
-	if rerr := s.st.RenderStreamFrame(frame, buf); rerr != nil {
+	if rerr := s.st.renderStreamFrame(frame, buf, timed); rerr != nil {
 		return 0, rerr
 	}
 	if timed {
@@ -501,16 +507,23 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	// gated behind NYALA_FPS_TIMING. It sits inside the DEC 2026 bracket: painted
 	// after the close it flickered out during a scroll, when back-to-back frames each
 	// present the grid alone before the un-synced badge lands. The badge is a
-	// cursor-saved overlay, so it never enters the block grid the differ tracks and
-	// leaves the golden-gated compose bytes untouched. recordPaint is deferred to
-	// when the writer returns the buffer, because the write time is known only then.
+	// cursor-positioned overlay, so it never enters the block grid the differ tracks
+	// and leaves the golden-gated compose bytes untouched. Kitty uses absolute home
+	// moves because image placement already preserves that tracked position; Block
+	// and Sixel preserve their current position with the saved-cursor slot.
+	// recordPaint is deferred until the writer returns the buffer, because the write
+	// time is known only then.
 	if s.fps != nil {
 		now := time.Now()
-		// A frame carrying text runs is the first-text-published milestone reaching
-		// the viewer directly, no engine plumbing: it opens the warm-up gate so the
-		// page-load stall stays out of the rate stats.
-		s.fps.tick(now, len(frame.Text) > 0)
-		buf.WriteString(s.fps.badge(now))
+		// The engine stamps frames received after main-frame first contentful paint.
+		// That lifecycle marker opens one backend-neutral warm-up gate, including
+		// direct Kitty frames and text-free pages.
+		s.fps.tick(now, frame.AfterFCP)
+		if s.st.Backend == BackendKitty {
+			buf.WriteString(s.fps.badgeAtHome(now))
+		} else {
+			buf.WriteString(s.fps.badge(now))
+		}
 	}
 	buf.WriteString(endSyncUpdate)
 	return encodeMS, nil
@@ -523,7 +536,7 @@ func (s *streamSession) flushAssembled() {
 	if s.writer == nil || s.assembled == nil {
 		return
 	}
-	s.writer.send(writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.fps != nil})
+	s.writer.send(writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed})
 	s.assembled = nil
 }
 
@@ -597,7 +610,8 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 	case 'q', 'Q', keyQuitCtrlC:
 		return true
 	case keyTab:
-		wasKitty := s.st.Backend == BackendKitty
+		previous := s.st.Backend
+		wasKitty := previous == BackendKitty
 		s.st.CycleBackend()
 		if wasKitty && s.st.Backend != BackendKitty {
 			// Free both double-buffer images when leaving kitty, so the terminal keeps
@@ -610,6 +624,15 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 			if kb.Len() > 0 {
 				_ = s.emitControl(kb.Bytes())
 			}
+		}
+		if previous == BackendBlock && s.st.Backend == BackendKitty && s.fps != nil {
+			// Block leaves glyphs and cell backgrounds across the page. Kitty's FPS
+			// image sits below both, so clear them before the first restarted Kitty
+			// frame and invalidate the differ against the blank terminal.
+			if s.diff != nil {
+				s.diff.Reset()
+			}
+			_ = s.emitControl([]byte(clearScreen))
 		}
 		// Cycle the backend off the consumer loop: the engine restart runs on the
 		// control goroutine so a slow restartStream cannot freeze draw or quit.
@@ -712,13 +735,6 @@ const fpsWindow = time.Second
 // reused between rebuilds.
 const fpsBadgeInterval = time.Second
 
-// fpsWarmupFallback bounds the wait for the first-text-published milestone. A
-// text-free page never trips the warm-up gate, so once this span has elapsed since
-// Stream start the gate opens at the current frame anyway, so a text-free page
-// still measures. It is generous enough that a normal text page gates on its text,
-// not on this fallback.
-const fpsWarmupFallback = 5 * time.Second
-
 // fpsPeakHold is how long the badge holds the highest In/Out it has seen. The
 // instantaneous windowed rate decays in a second, so a discrete scroll (a
 // sub-second frame burst) would flash a number and fall back to 0 before it can be
@@ -737,7 +753,7 @@ type fpsSample struct {
 // fpsMeter tracks the live usable-frames-per-second figure for the NYALA_FPS_TIMING
 // instrument: a rolling window feeds the badge and running accumulators feed the
 // quit summary. The rate stats are gated to steady state: they accumulate only from
-// the first text-bearing frame (the first-text-published milestone), so the page
+// the first frame received after main-frame first contentful paint, so the page
 // load stall stays out of the mean, median, min, max, and worst gap. It is nil
 // unless the switch is set, so the draw path pays only a nil check when the switch
 // is off. All access is on the single draw goroutine, so it needs no lock.
@@ -770,6 +786,7 @@ type fpsMeter struct {
 	badgeStr   string    // cached escape-wrapped badge, rebuilt at most once per interval
 	badgeAt    time.Time // instant badgeStr was last rebuilt
 	haveBadge  bool      // set once badgeStr holds a real string
+	badgeHome  bool      // badgeStr uses absolute home positioning for Kitty
 	badgeWidth int       // widest badge body emitted, so shorter values clear its full span
 
 	peaks []fpsSample // trailing fpsPeakHold window of In/Out samples, for the badge peak
@@ -805,15 +822,23 @@ func newFPSMeter(env []string) *fpsMeter {
 	return nil
 }
 
-// tick records a usable draw at now. hasText is true when the frame carries text
-// runs. It always updates the trailing badge window (so the live badge tracks the
-// load period too), but the rate stats accumulate only from the warm-up gate: the
-// gate opens on the first text-bearing frame, or, for a text-free page, once
-// fpsWarmupFallback has elapsed since start. From the gate frame onward it counts
+// tick records a draw at now. afterFCP reports that the frame arrived after the
+// main frame's first contentful paint. Before that marker it records nothing, so
+// neither the live badge nor the summary measures page load. From the gate frame
+// onward it counts
 // frames, the wall span, the inter-frame gaps (min, max, and the slice the median
 // sorts at quit). It allocates nothing per call beyond the amortised window and gap
 // slices, so an armed run stays cheap.
-func (m *fpsMeter) tick(now time.Time, hasText bool) {
+func (m *fpsMeter) tick(now time.Time, afterFCP bool) {
+	if !m.gated {
+		if !afterFCP {
+			return
+		}
+		m.gated = true
+		m.warmup = now.Sub(m.start)
+		m.gateAt = now
+	}
+
 	cutoff := now.Add(-m.window)
 	m.times = append(m.times, now)
 	drop := 0
@@ -822,18 +847,8 @@ func (m *fpsMeter) tick(now time.Time, hasText bool) {
 	}
 	m.times = m.times[drop:]
 
-	// Sample the live In/Out peak every draw, before the warm-up early-return, so a
-	// scroll burst is captured whether or not the gate has opened.
+	// Sample the live In/Out peak from the FCP gate onward.
 	m.samplePeak(now)
-
-	if !m.gated {
-		if !hasText && now.Sub(m.start) < fpsWarmupFallback {
-			return // still warming up: badge window updated, rate stats held
-		}
-		m.gated = true
-		m.warmup = now.Sub(m.start)
-		m.gateAt = now
-	}
 
 	if m.frames == 0 {
 		m.gateAt = now
@@ -892,39 +907,56 @@ func (m *fpsMeter) windowRate() float64 {
 // returns the cached string between rebuilds, so the fps text refreshes about once
 // per second while the badge stays painted over every frame.
 func (m *fpsMeter) badge(now time.Time) string {
-	if !m.haveBadge || now.Sub(m.badgeAt) >= fpsBadgeInterval {
-		return m.formatBadge(now)
+	return m.positionedBadge(now, false)
+}
+
+// badgeAtHome returns the cached Kitty badge using absolute cursor movement at
+// both ends. Kitty image placement leaves the cursor at the tracked home, so the
+// trailing CUP restores that known position without consuming a saved-cursor
+// slot.
+func (m *fpsMeter) badgeAtHome(now time.Time) string {
+	return m.positionedBadge(now, true)
+}
+
+func (m *fpsMeter) positionedBadge(now time.Time, atHome bool) string {
+	if !m.haveBadge || m.badgeHome != atHome || now.Sub(m.badgeAt) >= fpsBadgeInterval {
+		return m.formatPositionedBadge(now, atHome)
 	}
 	return m.badgeStr
 }
 
-// formatBadge rebuilds and caches the badge string at now: a cursor save, a home,
-// the reverse-video rate, an SGR reset, and a cursor restore. With an ingest
-// reporter it shows "In: X.X / Out: Y.Y fps"; both are windowed, so both decay live
-// when idle. Without one it shows "Out: Y.Y fps" alone. It is the sole per-call
-// allocation and the single place the badge escape is built. The SGR opens with a
-// reset then reverse ("\x1b[0;7m"): the reset clears the grid's ambient colour so
-// reverse inverts the terminal default, not whatever page colour the differ left
-// active, which otherwise tinted the badge from a scrolled-away cell.
-func (m *fpsMeter) formatBadge(now time.Time) string {
+// formatPositionedBadge rebuilds and caches the badge string at now. With an
+// ingest reporter it shows "In: X.X / Out: Y.Y fps"; both are windowed, so both
+// decay live when idle. Without one it shows "Out: Y.Y fps" alone. It is the sole
+// per-call allocation and the single place the badge escape is built. The SGR
+// opens with a reset then reverse ("\x1b[0;7m"): the reset clears the grid's
+// ambient colour so reverse inverts the terminal default, not whatever page
+// colour the differ left active, which otherwise tinted the badge from a
+// scrolled-away cell.
+func (m *fpsMeter) formatPositionedBadge(now time.Time, atHome bool) string {
 	in, out := m.peakRates()
+	prefix, suffix := "\x1b7\x1b[1;1H", "\x1b[0m\x1b8"
+	if atHome {
+		prefix, suffix = "\x1b[1;1H", "\x1b[0m\x1b[1;1H"
+	}
 	if m.ingest != nil {
 		inField, outField := fpsField(in), fpsField(out)
 		width := len(" In:  / Out:  fps ") + len(inField) + len(outField)
 		if width > m.badgeWidth {
 			m.badgeWidth = width
 		}
-		m.badgeStr = fmt.Sprintf("\x1b7\x1b[1;1H\x1b[0;7m In: %s / Out: %s fps %*s\x1b[0m\x1b8", inField, outField, m.badgeWidth-width, "")
+		m.badgeStr = fmt.Sprintf("%s\x1b[0;7m In: %s / Out: %s fps %*s%s", prefix, inField, outField, m.badgeWidth-width, "", suffix)
 	} else {
 		outField := fpsField(out)
 		width := len(" Out:  fps ") + len(outField)
 		if width > m.badgeWidth {
 			m.badgeWidth = width
 		}
-		m.badgeStr = fmt.Sprintf("\x1b7\x1b[1;1H\x1b[0;7m Out: %s fps %*s\x1b[0m\x1b8", outField, m.badgeWidth-width, "")
+		m.badgeStr = fmt.Sprintf("%s\x1b[0;7m Out: %s fps %*s%s", prefix, outField, m.badgeWidth-width, "", suffix)
 	}
 	m.badgeAt = now
 	m.haveBadge = true
+	m.badgeHome = atHome
 	return m.badgeStr
 }
 
@@ -977,6 +1009,16 @@ func (m *fpsMeter) peakRates() (in, out float64) {
 // to 0 instead of freezing the badge at its last value. It records no frame and
 // touches no summary stat, so a heartbeat never inflates the counted-frame total.
 func (m *fpsMeter) refresh(now time.Time) string {
+	return m.refreshPositioned(now, false)
+}
+
+// refreshAtHome refreshes the idle Kitty badge and restores the tracked home
+// with absolute cursor movement.
+func (m *fpsMeter) refreshAtHome(now time.Time) string {
+	return m.refreshPositioned(now, true)
+}
+
+func (m *fpsMeter) refreshPositioned(now time.Time, atHome bool) string {
 	cutoff := now.Add(-m.window)
 	drop := 0
 	for drop < len(m.times) && m.times[drop].Before(cutoff) {
@@ -986,7 +1028,7 @@ func (m *fpsMeter) refresh(now time.Time) string {
 	// Sample the (now decayed) rate so the peak window ages out on idle too: once a
 	// burst is older than fpsPeakHold the badge falls back to 0.
 	m.samplePeak(now)
-	return m.formatBadge(now)
+	return m.formatPositionedBadge(now, atHome)
 }
 
 // printSummary writes one compact fps summary line to w after the session ends. It
@@ -1005,10 +1047,14 @@ func (m *fpsMeter) refresh(now time.Time) string {
 // buffer, our terminal-byte encode) and out_write_mean_ms and out_write_max_ms
 // (flushing that buffer to the tty). The split localises where each paint's time
 // goes: our encode versus the terminal write. When no ingest reporter is wired the
-// In fields read zero. A nil meter or a session whose gate never opened prints
-// nothing, so an off run and an empty run are both silent.
+// In fields read zero. A session whose gate never opened reports
+// warmup_ms=unavailable and no invented duration. A nil meter stays silent.
 func (m *fpsMeter) printSummary(w io.Writer) {
-	if m == nil || m.frames == 0 {
+	if m == nil {
+		return
+	}
+	if m.frames == 0 {
+		fmt.Fprintln(w, "nyala fps: warmup_ms=unavailable")
 		return
 	}
 	warmupMS := float64(m.warmup) / float64(time.Millisecond)

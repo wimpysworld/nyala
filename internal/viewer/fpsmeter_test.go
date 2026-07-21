@@ -57,18 +57,21 @@ func TestFPSMeterBadgeRebuildsAtMostOncePerSecond(t *testing.T) {
 	}
 }
 
-// TestFPSMeterWarmupGate checks the rate window starts at the first text-bearing
-// frame, so the pre-text load stall is excluded and reported as warm-up.
+// TestFPSMeterWarmupGate checks the rate window starts at the first frame after
+// main-frame FCP, so the pre-paint load stall is excluded and reported as warm-up.
 func TestFPSMeterWarmupGate(t *testing.T) {
 	m := &fpsMeter{window: time.Second, start: time.Unix(0, 0)}
 	base := time.Unix(0, 0)
-	// Two text-free load frames, including a 1.7s stall, precede the first text.
+	// Two pre-FCP load frames, including a 1.7s stall, precede the first usable frame.
 	m.tick(base, false)
 	m.tick(base.Add(1700*time.Millisecond), false)
 	if m.gated {
-		t.Fatal("gate opened before any text frame")
+		t.Fatal("gate opened before an after-FCP frame")
 	}
-	// First text frame at 1.8s opens the gate; it is the first counted frame.
+	if len(m.times) != 0 {
+		t.Fatalf("pre-FCP frames entered the live FPS window: %d", len(m.times))
+	}
+	// First after-FCP frame at 1.8s opens the gate; it is the first counted frame.
 	m.tick(base.Add(1800*time.Millisecond), true)
 	// Steady animation: three more frames at 100ms spacing.
 	m.tick(base.Add(1900*time.Millisecond), true)
@@ -136,6 +139,28 @@ func TestFPSMeterBadgeInOut(t *testing.T) {
 	}
 }
 
+func TestFPSMeterKittyBadgeUsesAbsoluteHome(t *testing.T) {
+	m := &fpsMeter{window: time.Second}
+	base := time.Unix(0, 0)
+	m.tick(base, true)
+
+	badge := m.badgeAtHome(base)
+	if strings.Contains(badge, "\x1b7") || strings.Contains(badge, "\x1b8") {
+		t.Fatalf("Kitty badge %q consumed a saved-cursor slot", badge)
+	}
+	if strings.Count(badge, "\x1b[1;1H") != 2 || !strings.HasSuffix(badge, "\x1b[0m\x1b[1;1H") {
+		t.Fatalf("Kitty badge %q did not use absolute home at both ends", badge)
+	}
+
+	heartbeat := m.refreshAtHome(base.Add(2 * time.Second))
+	if strings.Contains(heartbeat, "\x1b7") || strings.Contains(heartbeat, "\x1b8") {
+		t.Fatalf("Kitty heartbeat %q consumed a saved-cursor slot", heartbeat)
+	}
+	if strings.Count(heartbeat, "\x1b[1;1H") != 2 || !strings.HasSuffix(heartbeat, "\x1b[0m\x1b[1;1H") {
+		t.Fatalf("Kitty heartbeat %q did not return to absolute home", heartbeat)
+	}
+}
+
 // TestFPSMeterShortBadgeClearsPreviousWidth decodes a long badge followed by an
 // idle badge through a VT. Every cell in the old footprint must carry the new
 // badge or a reverse-video space, with no old glyph or style left at the tail.
@@ -174,25 +199,41 @@ func TestFPSMeterShortBadgeClearsPreviousWidth(t *testing.T) {
 	}
 }
 
-// TestFPSMeterWarmupFallback checks a text-free page still measures once the
-// fallback bound elapses, so the gate never wedges shut.
-func TestFPSMeterWarmupFallback(t *testing.T) {
+// TestFPSMeterTextFreePageGatesOnFCP checks that text is irrelevant to the gate.
+func TestFPSMeterTextFreePageGatesOnFCP(t *testing.T) {
 	m := &fpsMeter{window: time.Second, start: time.Unix(0, 0)}
 	base := time.Unix(0, 0)
-	// A text-free page: frames before the fallback bound are held out of the stats.
+	// A text-free page can emit frames before FCP; time alone never opens the gate.
 	m.tick(base.Add(1*time.Second), false)
-	m.tick(base.Add(3*time.Second), false)
+	m.tick(base.Add(30*time.Second), false)
 	if m.gated {
-		t.Fatal("gate opened before the fallback bound on a text-free page")
+		t.Fatal("gate opened without FCP on a text-free page")
 	}
-	// A frame at the fallback bound opens the gate.
-	m.tick(base.Add(fpsWarmupFallback), false)
-	m.tick(base.Add(fpsWarmupFallback+100*time.Millisecond), false)
+	// The first frame stamped after FCP opens the gate even though it has no text.
+	m.tick(base.Add(30100*time.Millisecond), true)
+	m.tick(base.Add(30200*time.Millisecond), true)
 	if !m.gated {
-		t.Fatal("gate did not open at the fallback bound")
+		t.Fatal("text-free page did not gate on FCP")
 	}
 	if m.frames != 2 {
 		t.Fatalf("counted frames: got %d, want 2", m.frames)
+	}
+}
+
+func TestFPSMeterFCPGateIsBackendNeutral(t *testing.T) {
+	for _, name := range []string{"block", "kitty", "text-free"} {
+		t.Run(name, func(t *testing.T) {
+			base := time.Unix(0, 0)
+			m := &fpsMeter{window: time.Second, start: base}
+			m.tick(base.Add(10*time.Second), false)
+			if m.frames != 0 {
+				t.Fatalf("%s pre-FCP frame entered FPS stats", name)
+			}
+			m.tick(base.Add(10100*time.Millisecond), true)
+			if m.frames != 1 || m.warmup != 10100*time.Millisecond {
+				t.Fatalf("%s gate = frames %d warm-up %v", name, m.frames, m.warmup)
+			}
+		})
 	}
 }
 
@@ -300,12 +341,15 @@ func TestFPSMeterPaintSplitSummary(t *testing.T) {
 	}
 }
 
-func TestFPSMeterSummaryNilAndEmptyAreSilent(t *testing.T) {
+func TestFPSMeterSummaryReportsUnavailableWithoutFCP(t *testing.T) {
 	var nilMeter *fpsMeter
 	var b strings.Builder
 	nilMeter.printSummary(&b)
-	(&fpsMeter{window: time.Second, start: time.Unix(0, 0)}).printSummary(&b)
 	if b.Len() != 0 {
-		t.Fatalf("expected silence, got %q", b.String())
+		t.Fatalf("nil meter wrote %q", b.String())
+	}
+	(&fpsMeter{window: time.Second, start: time.Unix(0, 0)}).printSummary(&b)
+	if got := b.String(); got != "nyala fps: warmup_ms=unavailable\n" {
+		t.Fatalf("summary without FCP = %q", got)
 	}
 }

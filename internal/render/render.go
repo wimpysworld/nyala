@@ -174,9 +174,10 @@ type Frame struct {
 	Text        []GlyphRun        // text overlay runs, empty when the page has none
 	Diagnostics *FrameDiagnostics // diagnostic data, nil on the production path
 
-	// layoutSlot keeps the frame header at 72 bytes on 64-bit targets, preserving
-	// the shared publication layout without adding work or an allocation.
-	_ uintptr
+	// AfterFCP reports that this frame arrived after the main frame's first
+	// contentful paint lifecycle event. The viewer uses it as the backend-neutral
+	// FPS warm-up gate, including for text-free pages and direct Kitty payloads.
+	AfterFCP bool
 }
 
 // HasImage reports whether the frame carries decoded pixels or a direct encoded

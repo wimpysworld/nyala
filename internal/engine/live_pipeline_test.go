@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/page"
 
 	"github.com/wimpysworld/nyala/internal/render"
@@ -40,6 +41,41 @@ func TestRunTextSyncSnapshotsOncePerPaint(t *testing.T) {
 		t.Fatalf("published runs = %v, want %v", got, want)
 	}
 
+	cancel()
+	waitForPipelineStop(t, done)
+}
+
+func TestRunTextSyncWaitsForMainFrameFCP(t *testing.T) {
+	t.Parallel()
+	var snaps atomic.Int64
+	lifecycle := newSessionLifecycle()
+	e := &ChromiumEngine{backend: backendBlock, lifecycle: lifecycle}
+	e.snapshot = func(context.Context, overlayState) ([]render.GlyphRun, scrollOffset, int64, overlayState) {
+		snaps.Add(1)
+		return nil, scrollOffset{}, 0, overlayState{}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		e.runTextSync(ctx, &textSync{}, make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1))
+		close(done)
+	}()
+	cancel()
+	waitForPipelineStop(t, done)
+	if got := snaps.Load(); got != 0 {
+		t.Fatalf("snapshots before FCP = %d, want 0", got)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	done = make(chan struct{})
+	go func() {
+		e.runTextSync(ctx, &textSync{}, make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1))
+		close(done)
+	}()
+	lifecycle.recordCommit(&cdp.Frame{ID: "main", LoaderID: "loader"})
+	lifecycle.recordFCP("main")
+	waitForSnapshotCount(t, &snaps, 2)
 	cancel()
 	waitForPipelineStop(t, done)
 }
