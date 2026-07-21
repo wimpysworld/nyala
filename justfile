@@ -139,11 +139,17 @@ fps url="https://wimpys.world" *flags: build
     #!/usr/bin/env bash
     set -euo pipefail
 
+    url="$1"
+    shift
+    if [[ "$url" == url=* ]]; then
+        url="${url#url=}"
+    fi
+
     if ! { [ -t 0 ] && [ -t 1 ]; }; then
         printf 'just fps: needs an interactive terminal; the live meter measures the on-screen render.\n' >&2
         exit 1
     fi
-    NYALA_FPS_TIMING=1 just run "$@"
+    NYALA_FPS_TIMING=1 just run "$url" "$@"
 
 # Run the full local gate
 check: tidy-check fmt-check lint test build release-check
