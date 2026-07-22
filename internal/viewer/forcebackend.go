@@ -42,6 +42,26 @@ func ValidateForcedBackend(mode string, enabled []Backend) error {
 	return fmt.Errorf("viewer: backend %q is not supported by this terminal", mode)
 }
 
+// validateForcedBackend applies terminal-specific errors before the generic
+// capability check. Rio 0.4.x advertises Sixel but draws no image, so an explicit
+// request points to its working alternatives.
+func (s *State) validateForcedBackend(mode string) error {
+	if s.compat.rio04 && mode == ModeSixel {
+		return fmt.Errorf("viewer: Rio 0.4.x does not render Sixel images; use --backend=kitty or --backend=block")
+	}
+	return ValidateForcedBackend(mode, s.Enabled)
+}
+
+// validateColourCompatibility rejects explicit truecolour when the selected
+// backend cycle can reach Block on affected Rio releases. A forced graphics
+// backend passes because it does not consume Block colour settings.
+func (s *State) validateColourCompatibility(mode, colourFlag string) error {
+	if s.compat.rio04 && colourFlag == "truecolor" && (mode == ModeAuto || mode == ModeBlock) {
+		return fmt.Errorf("viewer: Rio 0.4.x cannot use truecolour Block rendering; use --color=256 or --color=none")
+	}
+	return nil
+}
+
 // forcedBackend maps a named --backend mode to the Backend it pins. It returns
 // ok=false for ModeAuto and any unnamed mode, meaning no forcing: auto leaves
 // the detected cycle in charge. The three named modes map to their backend.

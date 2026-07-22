@@ -70,13 +70,14 @@ const (
 // order, highest-fidelity first with block last; the embedded cellPx is the real
 // terminal cell pixel size used to scale the graphics backends.
 type State struct {
-	Backend Backend      // active backend in the cycle
-	Scheme  block.Scheme // block glyph scheme; applies only to the block backend
-	Colour  ColourMode   // block colour depth; applies only to the block backend
-	Cols    int          // terminal width in cells
-	Rows    int          // terminal height in cells
-	Enabled []Backend    // backends in the Tab cycle, highest-fidelity first
-	cellPx               // terminal cell pixel size for graphics scaling
+	Backend Backend               // active backend in the cycle
+	Scheme  block.Scheme          // block glyph scheme; applies only to the block backend
+	Colour  ColourMode            // block colour depth; applies only to the block backend
+	Cols    int                   // terminal width in cells
+	Rows    int                   // terminal height in cells
+	Enabled []Backend             // backends in the Tab cycle, highest-fidelity first
+	cellPx                        // terminal cell pixel size for graphics scaling
+	compat  terminalCompatibility // terminal-specific rendering compatibility policy
 
 	// diff is the Block cell differ. The interactive stream session and Block
 	// diagnostics set it before composition so renderBlock emits only the cells
@@ -129,12 +130,6 @@ type State struct {
 	// The viewer draw path is serial, so one renderer owns the whole stream.
 	sixelEnc *sixel.Renderer
 
-	// sixelSyncUpdatesDisabled records the narrow terminal compatibility policy
-	// resolved from XTVERSION. Foot clears a completed Sixel grid refresh when the
-	// next back-to-back DEC 2026 update begins, so only Foot Sixel frames omit that
-	// fence. The zero value keeps synchronised updates enabled everywhere else.
-	sixelSyncUpdatesDisabled bool
-
 	// kittyTransport is the effective Kitty transmission medium, resolved once
 	// by configureBackends from the --kitty-transport override, the deny list,
 	// the startup shm probe, and the allow list. It is always direct or shm.
@@ -151,14 +146,20 @@ func (s *State) KittyTransport() KittyTransport {
 // its live frame. The Foot compatibility policy is scoped to Sixel, so a backend
 // cycle to Block or Kitty restores the normal fence without changing detection.
 func (s *State) syncUpdatesEnabled() bool {
-	return s.Backend != BackendSixel || !s.sixelSyncUpdatesDisabled
+	return s.Backend != BackendSixel || !s.compat.sixelSyncUpdatesDisabled
 }
 
-// setTerminalIdentity applies terminal-specific compatibility decisions from the
-// XTVERSION reply. Keeping this assignment behind one seam lets startup detection
-// and tests drive the same policy state.
-func (s *State) setTerminalIdentity(termID string) {
-	s.sixelSyncUpdatesDisabled = disableSixelSyncUpdates(termID)
+// setTerminalCompatibility applies terminal-specific compatibility decisions
+// from XTVERSION and the environment fallback. Keeping this assignment behind
+// one seam lets startup detection and tests drive the same policy state.
+func (s *State) setTerminalCompatibility(termID string, environ []string) {
+	s.compat = resolveTerminalCompatibility(termID, environ)
+}
+
+// fpsBadgeAllowed reports whether the active backend should paint the live FPS
+// badge. Rio 0.4.x suppresses it only on Kitty, so cycling to Block restores it.
+func (s *State) fpsBadgeAllowed() bool {
+	return s.Backend != BackendKitty || s.compat.kittyFPSBadgeAllowed()
 }
 
 // kittySHMWriter is the shared-memory writer seam encodeKittySHM drives. The
@@ -421,8 +422,9 @@ func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
 }
 
 // renderStreamFrame draws a live frame and optionally places a Kitty page image
-// below terminal text. The option is private to the FPS-enabled stream path, so
-// public rendering, diagnostics, and non-FPS Kitty output retain their bytes.
+// below terminal text. The option follows the live-badge policy separately from
+// FPS measurement, so public rendering, diagnostics, non-FPS output, and timed
+// Rio Kitty output retain normal placement.
 func (s *State) renderStreamFrame(frame render.Frame, w io.Writer, kittyBelowText bool) error {
 	// The frame's pooled pixel plane, when present, returns to the engine on
 	// every exit: painted, copied into shared memory, or dropped. Release is
@@ -825,16 +827,16 @@ func exitTerminal(rows int, drawn bool) string {
 // real cell pixel size, then writes both into st. Behind a multiplexer (TMUX,
 // ZELLIJ, herdr, or STY set) it offers block only because Nyala does not use
 // graphics passthrough. Otherwise it runs one terminal handshake and offers a
-// graphics backend only when the terminal confirms it. The colour mode resolves first, on
-// every path, because it is multiplexer-agnostic, so it must not strand at the
-// NewState default behind an early return. A NYALA_CELL_PX override (a diagnostic
+// graphics backend only when the terminal confirms it. The colour mode resolves
+// on every path after terminal compatibility, so the multiplexer early return
+// cannot strand it at the NewState default. A NYALA_CELL_PX override (a diagnostic
 // and harness knob) takes precedence over the ioctl and handshake cell; a
 // malformed override returns an error so the run fails loudly. transportFlag is
 // the --kitty-transport intent; the effective transport resolves here, once,
 // from the flag and the probe result, and lands on st for the kitty draw path.
 func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, transportFlag string) error {
-	detected := detectColour(os.Environ(), cterm.IsTerminal(tty.Fd()))
-	st.Colour = resolveColour(colourFlag, os.Environ(), detected)
+	environ := os.Environ()
+	detected := detectColour(environ, cterm.IsTerminal(tty.Fd()))
 
 	overrideValue, overrideSet := os.LookupEnv(cellPxEnv)
 	overridePx, overrideOK, err := parseCellPxOverride(overrideValue, overrideSet)
@@ -851,6 +853,8 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 	}
 
 	if multiplexed() {
+		st.setTerminalCompatibility("", environ)
+		st.Colour = resolveCompatibleColour(colourFlag, environ, detected, st.compat)
 		// No handshake runs under a multiplexer, so the transport resolves
 		// with no identity and no probe: an explicit override still wins and
 		// auto falls back to direct.
@@ -864,18 +868,25 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 		st.cellPx = res.cellPx
 	}
 	st.kittyTransport = resolveKittyTransport(transportFlag, res.TermID, res.KittySHM, runtime.GOOS)
-	st.setTerminalIdentity(res.TermID)
+	st.setTerminalCompatibility(res.TermID, environ)
+	st.Colour = resolveCompatibleColour(colourFlag, environ, detected, st.compat)
 
+	st.SetEnabled(enabledBackends(res, st.compat))
+	return nil
+}
+
+// enabledBackends returns the detected backend cycle after terminal
+// compatibility gates. Block remains the floor and Rio 0.4.x silently omits
+// its advertised but non-rendering Sixel capability.
+func enabledBackends(res probeResult, compat terminalCompatibility) []Backend {
 	enabled := []Backend{}
 	if res.Kitty {
 		enabled = append(enabled, BackendKitty)
 	}
-	if res.Sixel {
+	if res.Sixel && compat.sixelAllowed() {
 		enabled = append(enabled, BackendSixel)
 	}
-	enabled = append(enabled, BackendBlock)
-	st.SetEnabled(enabled)
-	return nil
+	return append(enabled, BackendBlock)
 }
 
 // multiplexed reports whether the viewer runs under a focus multiplexer: tmux
