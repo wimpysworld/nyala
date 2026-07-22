@@ -281,6 +281,8 @@ and research documents.
   towards the isolated value near 2. Source: the fixture's `fixture.json`.
 - [ ] Add paint-order z-ordering for overlapping text runs. The current
   first-writer-wins guard prevents welded text but does not select the front-most box.
+  This is run-versus-run ordering; the occlusion cull's text-over-image false positive
+  is already fixed by LCA-bounded compositing (`STAGE-3.md`, 2026-07-22 note).
   Source: `STAGE-3.md`, "Overlay guard and background recompose".
 - [ ] Improve shaped-script placement and joining where corpus evidence still exceeds
   the default gates, including Arabic advances and CJK vertical/ruby runs. Tighten each

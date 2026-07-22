@@ -209,17 +209,26 @@ func TestLiveScreenReaderOnlyTextDropped(t *testing.T) {
 	}
 }
 
-// occlusionTestPage carries four text nodes in a deterministic 640x384 CSS viewport
+// occlusionTestPage carries five text nodes in a deterministic 640x384 CSS viewport
 // (grid 80x24 at cell 8x16, device scale 1). An opaque position:fixed banner at the
 // bottom (background rgb(0,0,0), its own text "acceptcookies") covers the absolute
 // "behindtext". A translucent position:fixed scrim (rgba(0,0,0,0.3)) covers the
 // absolute "underscrim". "visibletext" sits clear of both. The banner and scrim
 // carry explicit z-index so their paint order is fixed regardless of source order.
+// The top-right card mirrors the linuxmatters.sh episode badge: an opaque card
+// holds a transparent in-flow div (the img stand-in) and an absolutely positioned
+// pointer-events:none sibling span "badge86" on top. The hit-test at the badge
+// centre returns the transparent stand-in, and only the opaque card ancestry, at
+// the LCA and above, carries alpha; the badge must survive the occlusion cull.
 // Colours use rgb()/rgba() rather than hex: a '#' in a data: URL starts the fragment
 // and would drop the rest of the document.
 const occlusionTestPage = "data:text/html," +
 	"<html><body style='margin:0'>" +
 	"<div style='position:absolute;top:10px;left:10px'>visibletext</div>" +
+	"<div style='position:absolute;top:10px;left:440px;width:160px;height:80px;background:rgb(40,40,40)'>" +
+	"<div style='width:160px;height:80px'></div>" +
+	"<span style='position:absolute;top:10px;right:10px;color:rgb(248,179,29);pointer-events:none'>badge86</span>" +
+	"</div>" +
 	"<div style='position:absolute;top:110px;left:10px'>underscrim</div>" +
 	"<div style='position:fixed;top:100px;left:0;width:400px;height:40px;background:rgba(0,0,0,0.3);z-index:10'></div>" +
 	"<div style='position:absolute;top:320px;left:10px'>behindtext</div>" +
@@ -231,8 +240,9 @@ const occlusionTestPage = "data:text/html," +
 // headers, modals). It launches a real Chromium, navigates the occlusion page,
 // injects the production forcing stylesheet, waits for the font, then runs the walk
 // and asserts the opaque banner culls the behind-text while the banner's own text,
-// the clear text, and the text under a translucent scrim all survive. The live tag
-// keeps it off `just test` and CI; run it with `just live`.
+// the clear text, the text under a translucent scrim, and the pointer-events:none
+// badge over the image stand-in all survive. The live tag keeps it off `just test`
+// and CI; run it with `just live`.
 func TestLiveOccludedTextDropped(t *testing.T) {
 	if _, err := resolveExecutable(""); err != nil {
 		t.Skipf("no Chromium for the live test: %v", err)
@@ -300,5 +310,8 @@ func TestLiveOccludedTextDropped(t *testing.T) {
 	}
 	if !strings.Contains(all, "underscrim") {
 		t.Errorf("text under the translucent scrim was culled; runs:\n%s", all)
+	}
+	if !strings.Contains(all, "badge86") {
+		t.Errorf("pointer-events:none badge over the image stand-in was culled; runs:\n%s", all)
 	}
 }

@@ -834,6 +834,20 @@ hit-test per run, on the snapshot goroutine, not per frame. A `//go:build live` 
 CI test asserts the predicates in the walk script. This one mechanism also covers
 sticky headers, modals, and dropdowns.
 
+2026-07-22 note: the cull had a false-positive class, text over an image with
+`pointer-events: none`, seen on linuxmatters.sh episode badges. `elementFromPoint`
+skips a `pointer-events: none` element by spec, so the hit-test at the badge centre
+returned the sibling `<img>` underneath, and `bgOf` composited that element's entire
+ancestor chain. The opaque `body` background then pushed alpha to 255 and culled the
+badge, even though that background paints below the badge's text. Fix: LCA-bounded
+compositing. `occluded` now composites the hit element's backgrounds only below the
+lowest common ancestor of the hit element and the run's element (a new `lca` helper
+and a stop parameter on `bgOf`); any background at or above the LCA also paints below
+the run and cannot occlude it. Opaque banners still cull, because the hit element's
+own chain below the LCA is opaque. Accepted residual: a `pointer-events: none`
+element that genuinely occludes text is invisible to the hit-test, so that text
+bleeds through, the safe polarity for a text browser.
+
 ## References
 
 These sources sit behind the engine fixes recorded above.
