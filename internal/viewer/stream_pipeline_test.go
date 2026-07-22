@@ -240,7 +240,7 @@ func TestAssembleFootSixelOmitsOnlySyncUpdates(t *testing.T) {
 
 	footState := NewState(1, 1)
 	footState.Backend = BackendSixel
-	footState.setTerminalIdentity("foot(1.27.0)")
+	footState.setTerminalCompatibility("foot(1.27.0)", nil)
 	var foot bytes.Buffer
 	if _, err := (&streamSession{st: &footState}).assemble(&foot, frame); err != nil {
 		t.Fatalf("assemble Foot Sixel frame: %v", err)
@@ -278,7 +278,7 @@ func TestFootIdentityScopesSyncUpdateAssembly(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			st := NewState(1, 1)
-			st.setTerminalIdentity("foot(1.27.0)")
+			st.setTerminalCompatibility("foot(1.27.0)", nil)
 			st.Backend = tc.backend
 			if tc.backend == BackendBlock {
 				st.SetDiff(&block.GridDiff{})

@@ -119,8 +119,11 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	}
 	defer restore()
 
-	if verr := ValidateForcedBackend(mode, st.Enabled); verr != nil {
+	if verr := st.validateForcedBackend(mode); verr != nil {
 		return verr
+	}
+	if cerr := st.validateColourCompatibility(mode, colourFlag); cerr != nil {
+		return cerr
 	}
 	// Pin the active backend to a named --backend mode now that validation
 	// passed, so a forced block overrides a higher-fidelity detected backend.
@@ -327,9 +330,10 @@ type streamSession struct {
 	kittyShmAwait    bool
 	kittyShmDeadline time.Time
 	// fps is the live fps counter, non-nil only when NYALA_FPS_TIMING is set. When
-	// set, assemble stamps each frame and folds a rolling usable-fps badge into the
-	// frame buffer (rebuilt at most once per second); when nil the draw path pays
-	// only a nil check, so production is unchanged.
+	// set, assemble stamps each frame and, where compatibility permits, folds a
+	// rolling usable-fps badge into the frame buffer (rebuilt at most once per
+	// second); when nil the draw path pays only a nil check, so production is
+	// unchanged.
 	fps *fpsMeter
 }
 
@@ -434,6 +438,9 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 		case now := <-heartbeat:
 			// Route the idle badge refresh through the writer so it never races the
 			// in-flight frame write.
+			if !s.st.fpsBadgeAllowed() {
+				continue
+			}
 			if s.st.Backend == BackendKitty {
 				_ = s.emitControl([]byte(s.fps.refreshAtHome(now)))
 			} else {
@@ -645,7 +652,8 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	if nonScrollingSixel {
 		buf.WriteString(beginSixelDisplayMode)
 	}
-	if rerr := s.st.renderStreamFrame(frame, buf, timed); rerr != nil {
+	kittyBelowText := timed && s.st.Backend == BackendKitty && s.st.fpsBadgeAllowed()
+	if rerr := s.st.renderStreamFrame(frame, buf, kittyBelowText); rerr != nil {
 		return 0, rerr
 	}
 	if nonScrollingSixel {
@@ -659,8 +667,8 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	s.assembledSHM = s.st.takeKittySHMWrote()
 	s.applyKittySHMDemotion()
 
-	// Fold the fps badge into the same buffer so every frame carries it, gated behind
-	// NYALA_FPS_TIMING. Where DEC 2026 is active it sits inside the bracket: painted
+	// Fold the fps badge into the same buffer where compatibility permits it, gated
+	// behind NYALA_FPS_TIMING. Where DEC 2026 is active it sits inside the bracket: painted
 	// after the close it flickered out during a scroll, when back-to-back frames each
 	// present the grid alone before the un-synced badge lands. The badge is a
 	// cursor-positioned overlay, so it never enters the block grid the differ tracks
@@ -675,10 +683,12 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 		// That lifecycle marker opens one backend-neutral warm-up gate, including
 		// direct Kitty frames and text-free pages.
 		s.fps.tick(now, frame.AfterFCP)
-		if s.st.Backend == BackendKitty {
-			buf.WriteString(s.fps.badgeAtHome(now))
-		} else {
-			buf.WriteString(s.fps.badge(now))
+		if s.st.fpsBadgeAllowed() {
+			if s.st.Backend == BackendKitty {
+				buf.WriteString(s.fps.badgeAtHome(now))
+			} else {
+				buf.WriteString(s.fps.badge(now))
+			}
 		}
 	}
 	if syncUpdates {
@@ -784,7 +794,7 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 				_ = s.emitControl(kb.Bytes())
 			}
 		}
-		if previous == BackendBlock && s.st.Backend == BackendKitty && s.fps != nil {
+		if previous == BackendBlock && s.st.Backend == BackendKitty && s.fps != nil && s.st.fpsBadgeAllowed() {
 			// Block leaves glyphs and cell backgrounds across the page. Kitty's FPS
 			// image sits below both, so clear them before the first restarted Kitty
 			// frame and invalidate the differ against the blank terminal.
