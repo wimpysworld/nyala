@@ -33,7 +33,7 @@
       },
       "bytes": {
         "block": 196110,
-        "kitty": 22258
+        "kitty": 22262
       }
     },
     {
@@ -64,7 +64,7 @@
       },
       "bytes": {
         "block": 195487,
-        "kitty": 33841
+        "kitty": 33845
       }
     },
     {
@@ -95,7 +95,7 @@
       },
       "bytes": {
         "block": 194879,
-        "kitty": 30020
+        "kitty": 30024
       }
     },
     {
@@ -126,7 +126,7 @@
       },
       "bytes": {
         "block": 190894,
-        "kitty": 64700
+        "kitty": 64704
       }
     }
   ],
@@ -156,9 +156,9 @@
       "max": 0.1161588541666666
     },
     "bytesPerFrame": {
-      "min": 22258,
+      "min": 22262,
       "max": 196110
     }
   },
-  "sixelPsnrNoiseFloor": 0.0
+  "sixelPsnrNoiseFloor": 0
 }

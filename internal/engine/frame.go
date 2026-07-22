@@ -110,20 +110,39 @@ const blockScreencastQuality = 90
 // raw queue already bounds upstream backpressure, so a couple of results are enough.
 const frameChannelBuffer = 2
 
-// layoutScale is the pure, block-only continuous device scale Z. It returns
-// max(1, cols*cellW / layoutWidth), so a grid wider than the target layout width
-// shrinks by Z and lays out at the target; a grid at or under the target keeps
-// Z == 1. It is continuous (fractional), not stepped, and independent of the
-// backend; the ChromiumEngine.layoutScale method gates it to the block backend.
-func layoutScale(cols, cellW, layoutWidth int) float64 {
-	if layoutWidth <= 0 {
+// blockCellCSSW anchors the CSS density of a block-backend cell: each terminal
+// column lays out blockCellCSSW CSS pixels regardless of the device pixels the
+// terminal reports per cell. The density is 8 because Block's raster is 2
+// sub-cells wide per cell, half the full-pixel resolution the graphics
+// backends show at graphicsCellCSSW (16); Browsh's measured 9 CSS px per
+// column is the prior art in the same band. Anchoring density per cell makes
+// Z = cellW/blockCellCSSW a per-terminal constant (1 at 8 px cells, 2 at
+// 16 px), integer on the common cells and stable across resizes.
+const blockCellCSSW = 8
+
+// blockLayoutFloor is the minimum block-backend target CSS layout width. It
+// keeps a narrow grid on a desktop layout rather than a mobile reflow, the
+// same role graphicsLayoutFloor plays for the graphics backends.
+const blockLayoutFloor = 1024
+
+// blockLayoutScale is the pure block-backend continuous device scale Z. The
+// target CSS width anchors blockCellCSSW CSS pixels per column, held to at
+// least blockLayoutFloor. The CSS layout width is min(target, surface), so
+// content never lays out wider than the device surface and Z never drops
+// below 1: under a sub-floor surface the surface wins, unlike the graphics
+// formula, because shrinking Block's sub-cell raster below the terminal's
+// natural size costs legibility it cannot afford. Z = surface/cssW is
+// continuous (fractional), and a degenerate grid returns 1. The captured
+// surface is unaffected: Z rescales only the CSS layout, never the painted
+// pixel count, so cssW*Z = surfW stays an identity.
+func blockLayoutScale(cols, cellW int) float64 {
+	surfW := cols * cellW
+	if surfW <= 0 {
 		return 1
 	}
-	z := float64(cols*cellW) / float64(layoutWidth)
-	if z < 1 {
-		return 1
-	}
-	return z
+	target := max(cols*blockCellCSSW, blockLayoutFloor)
+	cssW := min(target, surfW)
+	return float64(surfW) / float64(cssW)
 }
 
 // graphicsCellCSSW anchors the CSS density of a graphics-backend cell: each
@@ -165,17 +184,17 @@ func graphicsLayoutScale(cols, cellW int) float64 {
 }
 
 // layoutScale returns the layout scale Z for the active backend, read under the
-// caller's existing e.mu hold. The block backend folds text onto the cell grid
-// and shrinks a wide grid to the --layout-width target through the pure
-// layoutScale(cols, cellW, layoutWidth). The graphics backends normalise cell
-// density instead: graphicsLayoutScale anchors the CSS width per cell, so a
-// terminal that reports device-pixel cells (Ghostty, WezTerm) lays out the same
-// page as one that reports logical-point cells (Kitty, Rio, Contour).
+// caller's existing e.mu hold. Both backends normalise cell density: the block
+// backend anchors blockCellCSSW CSS pixels per column through the pure
+// blockLayoutScale, and the graphics backends anchor graphicsCellCSSW through
+// graphicsLayoutScale, so a terminal that reports device-pixel cells (Ghostty,
+// WezTerm) lays out the same page as one that reports logical-point cells
+// (Kitty, Rio, Contour).
 func (e *ChromiumEngine) layoutScale() float64 {
 	if !e.backend.UsesLayoutScaling() {
 		return graphicsLayoutScale(e.cols, e.cellW)
 	}
-	return layoutScale(e.cols, e.cellW, e.layoutWidth)
+	return blockLayoutScale(e.cols, e.cellW)
 }
 
 // snapshotCellPx returns the fractional CSS-pixel cell size, the forced cell the

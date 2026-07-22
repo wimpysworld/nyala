@@ -79,7 +79,6 @@ type pipeEngine struct {
 
 func (e *pipeEngine) SetBackend(Backend)          {}
 func (e *pipeEngine) SetCellPx(int, int)          {}
-func (e *pipeEngine) SetLayoutWidth(int)          {}
 func (e *pipeEngine) Resize(int, int)             {}
 func (e *pipeEngine) Navigate(string) error       { return nil }
 func (e *pipeEngine) Frames() <-chan render.Frame { return e.frames }

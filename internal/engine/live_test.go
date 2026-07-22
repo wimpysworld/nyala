@@ -65,25 +65,23 @@ func TestLiveSyncedFrame(t *testing.T) {
 	}
 }
 
-// TestLiveBlockLayoutWidthCapped tests the block layout scale with a wide grid
-// whose cols*cellW exceeds the target layout width. It navigates a self-contained
-// page, then reads window.innerWidth, the CSS layout viewport width, and asserts
-// it equals min(cols*cellW, layoutWidth)
-// within one pixel. On a wide grid the page lays out at the target width via the
-// continuous device scale Z, so the innerWidth caps at layoutWidth rather than the
-// full cols*cellW. Run it with `just live`.
-func TestLiveBlockLayoutWidthCapped(t *testing.T) {
+// TestLiveBlockDensityLayoutWidth tests the block cell-density layout scale on
+// a grid whose cell exceeds the 8 px density anchor. It navigates a
+// self-contained page, then reads window.innerWidth, the CSS layout viewport
+// width, and asserts it equals the density cssW = min(max(cols*8, 1024),
+// cols*cellW) within one pixel: at cell 16 the page lays out at cols*8 CSS px
+// through the constant Z = 2 rather than at the full cols*cellW surface. Run
+// it with `just live`.
+func TestLiveBlockDensityLayoutWidth(t *testing.T) {
 	if _, err := resolveExecutable(""); err != nil {
 		t.Skipf("no Chromium for the live test: %v", err)
 	}
 
 	const cols, rows = 240, 48
-	const cellW, cellH = 8, 16
-	const layoutWidth = 1280
+	const cellW, cellH = 16, 32
 
 	e := New("")
 	e.SetCellPx(cellW, cellH)
-	e.SetLayoutWidth(layoutWidth)
 	e.Resize(cols, rows)
 	if err := e.Navigate(liveTestPage); err != nil {
 		t.Fatalf("navigate: %v", err)
@@ -114,9 +112,9 @@ func TestLiveBlockLayoutWidthCapped(t *testing.T) {
 		t.Fatalf("read window.innerWidth: %v", err)
 	}
 
-	want := math.Min(float64(cols*cellW), float64(layoutWidth))
+	want := float64(cols*cellW) / blockLayoutScale(cols, cellW)
 	if math.Abs(innerWidth-want) > 1 {
-		t.Fatalf("CSS viewport width = %g, want min(cols*cellW, layoutWidth) = %g within 1px", innerWidth, want)
+		t.Fatalf("CSS viewport width = %g, want the density cssW = %g within 1px", innerWidth, want)
 	}
 }
 

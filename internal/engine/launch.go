@@ -197,8 +197,9 @@ func proxyFlags(cfg ProxyConfig) [][2]string {
 // paintedSurface derives the CSS layout dimensions and the resulting painted
 // device surface from a target real surface surfW x surfH at device scale Z. The
 // CSS dimensions are chosen so the page reflows to the target width yet never
-// paints past the screencast cap: the width divides exactly at the target layout
-// width, so a round is correct, but the height takes a floor so cssH*Z <= surfH.
+// paints past the screencast cap: the width divides exactly (Z is surface over
+// cssW by construction), so a round is correct, but the height takes a floor so
+// cssH*Z <= surfH.
 // A round of the height would let cssH*Z land one device row over surfH (the
 // 1437*1.975 = 2839 > 2838 fault), so Chromium would downscale every frame; the
 // floor keeps the painted surface at or under the cap. It returns the CSS
@@ -272,6 +273,7 @@ func (e *ChromiumEngine) injectFontStylesheet(ctx context.Context) error {
 	}
 	e.mu.Lock()
 	e.fontForcingID = id
+	e.forcedCellW, e.forcedCellH = cellW, cellH
 	e.mu.Unlock()
 	return nil
 }

@@ -68,7 +68,7 @@ func TestSetupViewerWiresResolvedScheme(t *testing.T) {
 			}
 
 			eng := &fakeEngine{}
-			_, state, restore, err := setupViewer(eng, newSetupViewerTTY(t), "auto", "auto", scheme, 0)
+			_, state, restore, err := setupViewer(eng, newSetupViewerTTY(t), "auto", "auto", scheme)
 			if err != nil {
 				t.Fatalf("setupViewer: %v", err)
 			}

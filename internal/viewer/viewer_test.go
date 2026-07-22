@@ -848,8 +848,6 @@ func (e streamTestEngine) SetBackend(backend Backend) {
 
 func (e streamTestEngine) SetCellPx(int, int) {}
 
-func (e streamTestEngine) SetLayoutWidth(int) {}
-
 func (e streamTestEngine) Resize(int, int) {}
 
 func (e streamTestEngine) Navigate(string) error { return nil }

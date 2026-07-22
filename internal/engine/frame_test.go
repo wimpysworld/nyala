@@ -15,32 +15,39 @@ import (
 // image-maths note bars exact float equality; a small epsilon absorbs the residue.
 const layoutScaleEps = 1e-9
 
-// TestLayoutScale checks the pure block-only device scale Z = max(1, cols*cellW /
-// layoutWidth). A grid at or under the target width keeps Z == 1; a wider grid
-// shrinks by the continuous ratio. The 120- and 240-column cases cover both sides
-// of the target width.
-func TestLayoutScale(t *testing.T) {
+// TestBlockLayoutScale pins the block-backend cell-density normalisation,
+// mirroring the graphics pins: Z = cellW/blockCellCSSW in the common case, so
+// it is a per-terminal constant, integer on the common cells, and stable
+// across resizes.
+func TestBlockLayoutScale(t *testing.T) {
 	cases := []struct {
-		name        string
-		cols        int
-		cellW       int
-		layoutWidth int
-		want        float64
+		name  string
+		cols  int
+		cellW int
+		want  float64
 	}{
-		// 120 cols * 8 = 960 <= 1280, so Z clamps to 1.
-		{"120 cols under target holds at 1", 120, 8, 1280, 1},
-		// 240 cols * 8 = 1920, so Z = 1920/1280 = 1.5.
-		{"240 cols over target scales to 1.5", 240, 8, 1280, 1.5},
-		// A grid exactly at the target keeps Z == 1, not a rounding step over.
-		{"grid at target holds at 1", 160, 8, 1280, 1},
-		// A non-positive target falls back to 1 rather than dividing by zero.
-		{"zero target falls back to 1", 240, 8, 0, 1},
+		// A 16 px cell doubles the 8 px density anchor: 158*16 = 2528 surface over
+		// the 1264 target gives Z = 2, the interop reference geometry.
+		{"cell 16 scales to 2", 158, 16, 2},
+		// An 8 px cell matches the anchor exactly: surface equals target, Z = 1.
+		{"cell 8 holds at 1", 240, 8, 1},
+		// 120 cols * 8 = 960 surface sits under the 1024 floor target, so the
+		// surface guard wins: cssW = 960, Z = 1, never a sub-1 shrink.
+		{"sub-floor surface guard holds at 1", 120, 8, 1},
+		// The floor engages on a narrow grid with big cells: 100*8 = 800 target
+		// lifts to 1024, so the 1600 surface gives Z = 1600/1024 = 1.5625.
+		{"floor lifts a narrow grid", 100, 16, 1.5625},
+		// Ghostty's device-pixel cell 26 over the 8 px anchor: 156*26 = 4056
+		// surface over the 1248 target gives Z = 3.25.
+		{"Ghostty cell 26 scales to 3.25", 156, 26, 3.25},
+		// A degenerate grid falls back to 1 rather than dividing by zero.
+		{"degenerate grid falls back to 1", 0, 8, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := layoutScale(c.cols, c.cellW, c.layoutWidth)
+			got := blockLayoutScale(c.cols, c.cellW)
 			if math.Abs(got-c.want) > layoutScaleEps {
-				t.Errorf("layoutScale(%d, %d, %d) = %g, want %g", c.cols, c.cellW, c.layoutWidth, got, c.want)
+				t.Errorf("blockLayoutScale(%d, %d) = %g, want %g", c.cols, c.cellW, got, c.want)
 			}
 		})
 	}
@@ -88,19 +95,19 @@ func TestGraphicsLayoutScale(t *testing.T) {
 }
 
 // TestLayoutScaleBackendGate checks the engine method routes each backend to its
-// own scale: the block backend takes the pure layoutScale against the
-// --layout-width target, and a graphics backend takes the cell-density
-// graphicsLayoutScale, independent of layoutWidth. The Ghostty-like geometry
-// (device-pixel cell 26) makes the two formulas diverge.
+// own density anchor: the block backend takes blockLayoutScale (8 CSS px per
+// column) and a graphics backend takes graphicsLayoutScale (16 CSS px per
+// column). The Ghostty-like geometry (device-pixel cell 26) makes the two
+// formulas diverge: Z 3.25 against Z 1.625.
 func TestLayoutScaleBackendGate(t *testing.T) {
-	const cols, cellW, layoutWidth = 156, 26, 1280
+	const cols, cellW = 156, 26
 
-	block := &ChromiumEngine{backend: backendBlock, cols: cols, cellW: cellW, layoutWidth: layoutWidth}
-	if got, want := block.layoutScale(), 4056.0/1280.0; math.Abs(got-want) > layoutScaleEps {
-		t.Errorf("block layoutScale = %g, want %g", got, want)
+	block := &ChromiumEngine{backend: backendBlock, cols: cols, cellW: cellW}
+	if got, want := block.layoutScale(), 3.25; math.Abs(got-want) > layoutScaleEps {
+		t.Errorf("block layoutScale = %g, want %g (block density scale)", got, want)
 	}
 	for _, backend := range []backend{backendSixel, backendKitty} {
-		g := &ChromiumEngine{backend: backend, cols: cols, cellW: cellW, layoutWidth: layoutWidth}
+		g := &ChromiumEngine{backend: backend, cols: cols, cellW: cellW}
 		if got := g.layoutScale(); math.Abs(got-1.625) > layoutScaleEps {
 			t.Errorf("%s layoutScale = %g, want 1.625 (graphics density scale)", backend, got)
 		}

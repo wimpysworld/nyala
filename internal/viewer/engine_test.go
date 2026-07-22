@@ -8,7 +8,6 @@ type fakeEngine struct {
 
 func (e *fakeEngine) SetBackend(Backend)          {}
 func (e *fakeEngine) SetCellPx(int, int)          {}
-func (e *fakeEngine) SetLayoutWidth(int)          {}
 func (e *fakeEngine) Resize(int, int)             {}
 func (e *fakeEngine) Navigate(string) error       { return nil }
 func (e *fakeEngine) Frames() <-chan render.Frame { return e.frames }

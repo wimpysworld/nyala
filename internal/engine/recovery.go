@@ -457,6 +457,7 @@ func (e *ChromiumEngine) teardownSession() {
 	e.sizedSurfaceW, e.sizedSurfaceH, e.sizedScale = 0, 0, 0
 	e.windowID = 0
 	e.fontForcingID = ""
+	e.forcedCellW, e.forcedCellH = 0, 0
 	e.layoutShiftID = ""
 	e.mu.Unlock()
 	acks.stop()

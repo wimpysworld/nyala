@@ -1501,6 +1501,56 @@ faults by construction: no shared mutable state, and it targets the dominant sta
 
 ---
 
+## Block cell-density layout (2026-07-22)
+
+Block adopted the graphics formula shape and dropped its fixed 1280 CSS layout
+width, closing the layout-width research recorded in the graphics section
+below. The 1280 default had no recorded justification beyond Chromium's window
+default, was the only width any correctness gate ever validated, and made `Z`
+depend on the grid width, so a resize could change `Z` mid-session. For the
+block backend (`internal/engine/frame.go`):
+
+- `target = max(cols * 8, 1024)`: `blockCellCSSW = 8` CSS pixels per column,
+  held to at least the `blockLayoutFloor = 1024` floor. The density is 8
+  because Block's raster is 2 sub-cells wide per cell, half the full-pixel
+  resolution the graphics backends anchor at 16; Browsh's measured 9 CSS px
+  per column is the prior art in the same band.
+- `cssW = min(target, surfW)`: content never lays out wider than the device
+  surface and `Z` never drops below 1. Unlike the graphics formula, a
+  sub-floor surface keeps `cssW = surfW`, because shrinking Block's sub-cell
+  raster below the terminal's natural size costs legibility.
+- `Z = surfW / cssW`, so `Z = cellW/8` in the common case: a per-terminal
+  constant, integer on the common cells (1 at 8 px cells, 2 at 16 px, 3.25 at
+  Ghostty's 26), and stable across resizes.
+
+Pinned outcomes (`TestBlockLayoutScale`): cell 16 gives `Z = 2`; cell 8 gives
+`Z = 1`; 120 cols of cell 8 keep `cssW = 960` through the surface guard at
+`Z = 1`; the floor lifts a narrow big-cell grid (100 cols of cell 16 gives
+`Z = 1.5625`); Ghostty's cell 26 gives `Z = 3.25`. At the 158x86 16x33 interop
+geometry `cssW` moves 1280 to 1264 and `Z` moves 1.975 to 2.0, a small reflow.
+Capture resolution is untouched: `cssW * Z = surfW` stays an identity, and the
+painted screencast cap is unchanged in derivation.
+
+`--layout-width` is removed end to end (flag, `viewer.Engine.SetLayoutWidth`,
+engine field). A future zoom control should adjust the density, as already
+decided for the graphics backends; no flag or environment variable replaces
+the width.
+
+Two hardenings landed with the change:
+
+- Stale line-height on a cell-pair change: the registered font-forcing
+  stylesheet bakes the CSS cell pair (line-height from `cellH`, seed font-size
+  from `cellW`) and recalibration rewrites only the font-size, so a
+  mid-session terminal font change (which now moves `Z` with `cellW`) would
+  leave rows stacking at the old pitch while the walk snapped at the new one.
+  `syncFontForcing` now compares the current cell pair against the baked pair
+  and refreshes the stylesheet (re-register plus live swap) when it went
+  stale; recalibration then corrects the font-size against the fresh sheet
+  (`TestFontForcingStaleOnCellPairChange`).
+- `testdata/calibration.json` refreshed with `UPDATE_CALIBRATION=1`: commit
+  fe3755f added a `,q=` key to every Kitty escape, drifting the recorded
+  per-card Kitty byte cost by exactly +4. Unrelated to the layout change.
+
 ## Graphics cell-density layout normalisation (2026-07-22)
 
 Terminals split over the unit of the cell pixel size they report, so the same
