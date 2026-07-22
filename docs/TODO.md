@@ -35,6 +35,14 @@ and research documents.
   scope. This is an explicit owner decision, not deferred work. Do not add an
   offline damage oracle, Chrome/CDP damage prototype, client-side frame diff, or
   partial-update transport. Reopen only by an explicit owner decision.
+- [x] Handle mid-session terminal zoom (font-size change). The viewer re-derives
+  the cell pixel pair on SIGWINCH and lands it on the engine before the resize
+  restart. Headless Chromium paints at the launch device scale factor only, so the
+  viewer scales graphics to the cell grid (Kitty `c=`/`r=` placement keys, Sixel
+  grid upscale) and Block recomposes exactly. Live verified across the reference
+  terminals in Block, Kitty, and Sixel, both zoom directions. Commit `9716a2c`.
+  The exact-density relaunch option remains open in section 5. Source:
+  `PERFORMANCE.md`, "Mid-session zoom re-derives the cell pair".
 
 ## 2. Improve graphics transport where measurements justify it
 
@@ -240,9 +248,20 @@ and research documents.
   plus any post-repaint viewport re-blit must finish within one frame budget. Test
   resize, alt-screen behaviour, cursor restoration, and concurrent frame arrival.
   Source: [TUI decisions](./OVERVIEW.md#decisions-tui-research).
-- [ ] Add direct interaction: address entry, keyboard input, mouse clicks, buttons,
-  links, and focus mapped to CDP events. Scrolling already uses the Stage 3 engine
-  transport. Source: `OVERVIEW.md`, "Input mapping".
+- [ ] Add direct interaction: address entry, keyboard text input, buttons, focus,
+  hover, and drag selection mapped to CDP events. Wheel scrolling at the pointer
+  and mouse clicks (press, release, modifiers, synthesised clickCount) are done
+  through the viewer's SGR 1002+1006 decode and the engine `SendMouse` seam;
+  keyboard scrolling already used the Stage 3 engine transport. Source:
+  `OVERVIEW.md`, "Input mapping".
+- [x] Add mouse wheel and click support. The viewer enables SGR 1002+1006 on every
+  terminal with no per-terminal cases and disables them unconditionally on exit and
+  SIGTERM. Wheel dispatches at the pointer, three lines per event, accumulable;
+  clicks carry left/right/middle buttons, modifier bits, and synthesised clickCount
+  through the engine `SendMouse` seam with Z-aware cell-centre mapping. Live
+  verified on Kitty (Block and Kitty backends), Alacritty (Sixel), tmux, and
+  zellij. Hover (1003) and drag selection stay in the open direct-interaction item
+  above. Source: `OVERVIEW.md`, "Input mapping".
 - [ ] Add clickable Back, Forward, and Reload controls to the Stage 4 chrome. Back
   and Forward use Chromium's existing navigation state; Nyala does not own or persist
   a navigation-history model. Bookmarks and other full-browser features remain out of

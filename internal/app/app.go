@@ -80,6 +80,45 @@ func (a engineAdapter) SendKey(code string) {
 	a.ChromiumEngine.SendKey(engine.Key{Code: code})
 }
 
+// SendMouse maps a viewer mouse event to the engine's terminal-neutral
+// MouseEvent. The fields mirror each other; the engine converts the cell to
+// CSS pixels and dispatches over CDP.
+func (a engineAdapter) SendMouse(ev viewer.MouseEvent) {
+	a.ChromiumEngine.SendMouse(engine.MouseEvent{
+		Action:  mouseAction(ev.Action),
+		Button:  mouseButton(ev.Button),
+		Mod:     ev.Mod,
+		Col:     ev.Col,
+		Row:     ev.Row,
+		WheelDX: ev.WheelDX,
+		WheelDY: ev.WheelDY,
+	})
+}
+
+// mouseAction maps the viewer mouse action enum to the engine's.
+func mouseAction(a viewer.MouseAction) engine.MouseAction {
+	switch a {
+	case viewer.MouseActionRelease:
+		return engine.MouseActionRelease
+	case viewer.MouseActionWheel:
+		return engine.MouseActionWheel
+	default:
+		return engine.MouseActionPress
+	}
+}
+
+// mouseButton maps the viewer mouse button enum to the engine's.
+func mouseButton(b viewer.MouseButton) engine.MouseButton {
+	switch b {
+	case viewer.MouseButtonMiddle:
+		return engine.MouseButtonMiddle
+	case viewer.MouseButtonRight:
+		return engine.MouseButtonRight
+	default:
+		return engine.MouseButtonLeft
+	}
+}
+
 // normaliseURL prepends https:// when raw carries no scheme, then accepts only
 // http, https, and file. It returns a clear error for any other scheme.
 func normaliseURL(raw string) (string, error) {

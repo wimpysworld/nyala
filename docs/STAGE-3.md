@@ -95,8 +95,11 @@ later declared the narrower interface it consumes, so the producer-owned interfa
 was removed. The current seam is `viewer.Engine`, supplied by `app.engineAdapter`
 and backed by the concrete `ChromiumEngine`. One synced channel delivers the
 bitmap with its crisp text already folded on `Frame.Text`, so the consumer does no
-two-cadence reconcile. The retained `Key` and `MouseEvent` types are
-terminal-neutral; scroll uses wheel deltas in CSS pixels. `ChromiumEngine`
+two-cadence reconcile. Only the terminal-neutral `Key` type survived that trim; the
+mouse seam returned later as `SendMouse` on `viewer.Engine`, carrying a
+terminal-neutral `MouseEvent` (cell coordinates, CDP modifier bits) the engine
+converts to CSS pixels at the cell centre and dispatches over CDP. Scroll uses
+wheel deltas in CSS pixels. `ChromiumEngine`
 (`chromium.go`) is the one concrete engine. It owns a
 `chromedp` context, the URL, the scroll offset, the resolved cell px, the active
 backend, the capture size, the latest-wins slot, the ack-pump channel, and the

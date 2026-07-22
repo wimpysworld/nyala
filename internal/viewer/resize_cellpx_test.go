@@ -58,6 +58,7 @@ func (e *resizeOpEngine) Resize(cols, rows int) {
 func (e *resizeOpEngine) Navigate(string) error       { return nil }
 func (e *resizeOpEngine) Frames() <-chan render.Frame { return nil }
 func (e *resizeOpEngine) SendKey(string)              {}
+func (e *resizeOpEngine) SendMouse(MouseEvent)        {}
 func (e *resizeOpEngine) Close() error                { return nil }
 
 // TestResizeEngineOpOrder pins the restart closure: with a changed pair the
