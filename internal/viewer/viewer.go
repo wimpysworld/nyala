@@ -110,9 +110,11 @@ type State struct {
 	// any objects the terminal never consumed. It stays nil on the direct path.
 	kittySHM kittySHMWriter
 
-	// kittyShmDemoted marks the one-way runtime fallback from the shm
-	// transport to direct PNG. An shm create or write failure sets it for the
-	// rest of the session, so a flaky /dev/shm cannot fail every frame.
+	// kittyShmDemoted marks the runtime fallback from the shm transport to
+	// direct PNG. An shm create or write failure sets it for the rest of the
+	// Kitty stint, so a flaky /dev/shm cannot fail every frame; a Tab back to
+	// Kitty re-arms it via rearmKittySHM because the startup probe proved the
+	// transport.
 	kittyShmDemoted bool
 
 	// kittyShmDemoteErr holds the error that demoted the shm transport until
@@ -160,10 +162,10 @@ func (s *State) kittySHMLive() bool {
 	return s.kittyTransport == KittyTransportSHM && !s.kittyShmDemoted
 }
 
-// demoteKittySHM records the one-way runtime fallback from the shm transport
-// to direct PNG and closes the shm writer, unlinking unconsumed objects. The
-// first error wins; later calls are no-ops. The stream session collects the
-// recorded error with takeKittySHMDemotion.
+// demoteKittySHM records the runtime fallback from the shm transport to
+// direct PNG for the rest of the Kitty stint and closes the shm writer,
+// unlinking unconsumed objects. The first error wins; later calls are no-ops.
+// The stream session collects the recorded error with takeKittySHMDemotion.
 func (s *State) demoteKittySHM(err error) {
 	if s.kittyShmDemoted {
 		return
@@ -171,6 +173,16 @@ func (s *State) demoteKittySHM(err error) {
 	s.kittyShmDemoted = true
 	s.kittyShmDemoteErr = err
 	s.closeKittySHM()
+}
+
+// rearmKittySHM clears a runtime shm demotion so the next Kitty stint runs
+// the shm transport again. The stream session calls it when Tab returns to
+// the Kitty backend: the startup probe proved the transport, so a demotion
+// lasts one stint rather than pinning the session on the parser-bound direct
+// path. A genuinely broken transport demotes again on its next shm failure.
+func (s *State) rearmKittySHM() {
+	s.kittyShmDemoted = false
+	s.kittyShmDemoteErr = nil
 }
 
 // takeKittySHMDemotion returns the error that demoted the shm transport, once,
@@ -419,10 +431,10 @@ func (s *State) renderStreamFrame(frame render.Frame, w io.Writer, kittyBelowTex
 			if err == nil {
 				return nil
 			}
-			// One-way runtime demotion: the direct PNG path takes over for
-			// the rest of the session. This frame still paints when it
-			// carries a retained payload; a plane-only frame is dropped and
-			// its plane released by the deferred hook.
+			// Runtime demotion: the direct PNG path takes over for the rest
+			// of the Kitty stint. This frame still paints when it carries a
+			// retained payload; a plane-only frame is dropped and its plane
+			// released by the deferred hook.
 			s.demoteKittySHM(err)
 		}
 		// A retained-payload frame in shm mode (a mode-change race) and every
@@ -748,6 +760,10 @@ func framePrefix(firstDrawn bool, diff *block.GridDiff) string {
 	}
 	return clearScreen
 }
+
+// sgrReset clears all SGR attributes, so a following erase fills with the
+// terminal default background rather than the last drawn cell's colours.
+const sgrReset = "\x1b[0m"
 
 // clearScreen homes the cursor and clears the terminal so the next frame draws
 // from the top-left without stale cells. The draw path uses it for the first

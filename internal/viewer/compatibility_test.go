@@ -121,20 +121,20 @@ func TestRioColourCompatibility(t *testing.T) {
 		t.Fatalf("Rio explicit truecolor = %v, want visible for validation", got)
 	}
 
+	// Tab cycles every supported backend from any --backend start, so explicit
+	// truecolour is rejected regardless of the starting backend, Kitty included.
 	st := NewState(80, 24)
 	st.compat = compat
-	for _, mode := range []string{ModeAuto, ModeBlock} {
-		if err := st.validateColourCompatibility(mode, "truecolor"); err == nil || !strings.Contains(err.Error(), "truecolour Block") {
-			t.Fatalf("mode %s truecolor error = %v", mode, err)
-		}
-	}
-	if err := st.validateColourCompatibility(ModeKitty, "truecolor"); err != nil {
-		t.Fatalf("forced Kitty rejected unused truecolor: %v", err)
+	if err := st.validateColourCompatibility("truecolor"); err == nil || !strings.Contains(err.Error(), "truecolour Block") {
+		t.Fatalf("Rio truecolor error = %v", err)
 	}
 	for _, colour := range []string{"auto", "256", "none"} {
-		if err := st.validateColourCompatibility(ModeAuto, colour); err != nil {
-			t.Fatalf("auto %s rejected: %v", colour, err)
+		if err := st.validateColourCompatibility(colour); err != nil {
+			t.Fatalf("colour %s rejected: %v", colour, err)
 		}
+	}
+	if err := (&State{}).validateColourCompatibility("truecolor"); err != nil {
+		t.Fatalf("non-Rio truecolor rejected: %v", err)
 	}
 }
 

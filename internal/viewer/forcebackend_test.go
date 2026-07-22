@@ -50,13 +50,14 @@ func TestValidateForcedBackend(t *testing.T) {
 	}
 }
 
-// TestApplyForcedBackendPinsNamedBackend asserts a named --backend mode forces
-// the active backend even when detection advertised a higher-fidelity one. It
-// simulates wezterm: detection enables kitty, sixel, then block, so the active
-// backend resolves to kitty. Forcing block must pin block and shrink the Tab
-// cycle to block only. auto must leave the detected cycle untouched.
-func TestApplyForcedBackendPinsNamedBackend(t *testing.T) {
-	t.Run("block forces block over detected kitty", func(t *testing.T) {
+// TestApplyForcedBackendSetsStartingBackend asserts a named --backend mode
+// selects the starting backend without shrinking the Tab cycle. It simulates
+// wezterm: detection enables kitty, sixel, then block, so the active backend
+// resolves to kitty. Forcing block must start on block, keep all three
+// backends in the cycle, and let Tab cycle kitty -> sixel -> block -> wrap
+// from that start. auto must leave the detected nomination untouched.
+func TestApplyForcedBackendSetsStartingBackend(t *testing.T) {
+	t.Run("block starts on block over detected kitty", func(t *testing.T) {
 		st := NewState(120, 40)
 		st.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
 		if st.Backend != BackendKitty {
@@ -66,10 +67,39 @@ func TestApplyForcedBackendPinsNamedBackend(t *testing.T) {
 		applyForcedBackend(&st, ModeBlock)
 
 		if st.Backend != BackendBlock {
-			t.Fatalf("forced active backend = %v, want block", st.Backend)
+			t.Fatalf("starting backend = %v, want block", st.Backend)
 		}
-		if len(st.Enabled) != 1 || st.Enabled[0] != BackendBlock {
-			t.Fatalf("forced cycle = %v, want block only", st.Enabled)
+		if len(st.Enabled) != 3 {
+			t.Fatalf("cycle = %v, want the detected three backends", st.Enabled)
+		}
+	})
+
+	t.Run("tab cycles the full set from a forced block start", func(t *testing.T) {
+		st := NewState(120, 40)
+		st.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
+		applyForcedBackend(&st, ModeBlock)
+
+		want := []Backend{BackendKitty, BackendSixel, BackendBlock}
+		for i, w := range want {
+			if got := st.CycleBackend(); got != w {
+				t.Fatalf("cycle step %d = %v, want %v", i+1, got, w)
+			}
+		}
+	})
+
+	t.Run("tab wraps in cycle order from a forced sixel start", func(t *testing.T) {
+		st := NewState(120, 40)
+		st.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
+		applyForcedBackend(&st, ModeSixel)
+
+		if st.Backend != BackendSixel {
+			t.Fatalf("starting backend = %v, want sixel", st.Backend)
+		}
+		want := []Backend{BackendBlock, BackendKitty, BackendSixel}
+		for i, w := range want {
+			if got := st.CycleBackend(); got != w {
+				t.Fatalf("cycle step %d = %v, want %v", i+1, got, w)
+			}
 		}
 	})
 
