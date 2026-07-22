@@ -29,8 +29,9 @@ type CLI struct {
 	// Color is the viewer colour mode: auto, truecolor, 256, or none.
 	Color string `help:"Viewer colour mode: auto, truecolor, 256, or none." default:"auto" enum:"auto,truecolor,256,none"`
 
-	// Backend forces one renderer: auto, block, kitty, or sixel. auto detects the
-	// terminal's best supported backend.
+	// Backend selects the starting renderer: auto, block, kitty, or sixel. auto
+	// detects the terminal's best supported backend; a named backend fails fast
+	// when the terminal cannot run it. Tab cycles all supported backends.
 	Backend string `help:"Renderer backend: auto, block, kitty, or sixel." default:"auto" enum:"auto,block,kitty,sixel"`
 
 	// Blocks selects the block glyph mode: auto, sextant, quadrant, or half. On the

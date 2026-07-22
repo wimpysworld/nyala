@@ -1704,7 +1704,11 @@ for the terminal's OK reply (sent with `q=0`) or a 40 ms deadline, whichever
 comes first, so a lost reply cannot stall the stream.
 
 **Demotion.** Any shm failure, from object creation through a terminal error
-reply, demotes the session to the direct PNG path, one way.
+reply, demotes the current Kitty stint to the direct PNG path. A terminal
+error reply counts only while the session is still on the Kitty backend: after
+Tab cycles away, the switch itself unlinks unconsumed objects, so a busy
+terminal's late failure reply is self-inflicted and ignored. Tab back to Kitty
+re-arms the probe-proven transport, so a demotion never outlives its stint.
 
 The fixture benchmark above predicts the per-frame write falling from 16.07 to
 10.74 ms and understates the live gain (see its caveat). The live

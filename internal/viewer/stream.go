@@ -85,8 +85,9 @@ func syncEngineKittyDecode(eng Engine, st *State) {
 // wheel to the engine, cycles the backend on Tab, and restores the terminal on
 // exit. It returns an error only on a setup or I/O failure; a clean quit returns
 // nil. colourFlag is the --color intent; configureBackends resolves it against
-// NO_COLOR and detection. mode is the --backend mode: auto and block always
-// pass, and a forced graphics backend is rejected before navigation when
+// NO_COLOR and detection. mode is the --backend mode: a named mode picks the
+// starting backend and Tab still cycles every supported backend; auto and
+// block always pass, and a graphics start is rejected before navigation when
 // detection did not confirm it. blocks is the --blocks mode selecting the block
 // glyph scheme; Stream resolves it with resolveScheme against os.Environ(), so
 // auto and sextant render sextant on a supported terminal and quadrant otherwise,
@@ -122,13 +123,14 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	if verr := st.validateForcedBackend(mode); verr != nil {
 		return verr
 	}
-	if cerr := st.validateColourCompatibility(mode, colourFlag); cerr != nil {
+	if cerr := st.validateColourCompatibility(colourFlag); cerr != nil {
 		return cerr
 	}
-	// Pin the active backend to a named --backend mode now that validation
-	// passed, so a forced block overrides a higher-fidelity detected backend.
-	// setupViewer handed the engine the detected backend; re-notify it so the
-	// engine sizes its capture for the forced backend, not the detected one.
+	// Start on the named --backend mode now that validation passed, so a forced
+	// block start overrides a higher-fidelity detected nomination while Tab keeps
+	// the full detected cycle. setupViewer handed the engine the detected backend;
+	// re-notify it so the engine sizes its capture for the starting backend, not
+	// the detected one.
 	applyForcedBackend(st, mode)
 	eng.SetBackend(st.Backend)
 	// The backend is final now, so arm the engine's kitty-shm decode when the
@@ -556,14 +558,19 @@ func (s *streamSession) markKittySHMHandoff() {
 
 // handleKittyResponse consumes one Kitty graphics response from the input
 // stream. Any response settles the in-flight shm transmit, so the pacing gate
-// opens. A failure response (no ";OK") while the shm transport is live means
-// the terminal could not read the object, so the session demotes to direct.
+// opens. A failure response (no ";OK") while the session is on the Kitty
+// backend with the shm transport live means the terminal could not read the
+// object, so the stint demotes to direct. A failure that lands after Tab
+// cycled away is ignored: resetKitty has already unlinked unconsumed objects,
+// so a busy terminal that reads the switch-window escape late reports a
+// failure Nyala itself caused, and demoting on it would falsely pin later
+// Kitty stints on the parser-bound direct path.
 func (s *streamSession) handleKittyResponse(body string) {
 	s.kittyShmAwait = false
 	if strings.Contains(body, ";OK") {
 		return
 	}
-	if !s.st.kittySHMLive() {
+	if s.st.Backend != BackendKitty || !s.st.kittySHMLive() {
 		return
 	}
 	s.st.demoteKittySHM(fmt.Errorf("terminal rejected shm transmit: %s", body))
@@ -793,15 +800,29 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 			if kb.Len() > 0 {
 				_ = s.emitControl(kb.Bytes())
 			}
+			// Drop the shm pacing gate with the stint, so a stale in-flight
+			// wait cannot gate the next stint's first frame against the old
+			// stream's deadline.
+			s.kittyShmAwait = false
+		}
+		if s.st.Backend == BackendKitty && !wasKitty {
+			// Returning to Kitty re-arms a demoted shm transport: the startup
+			// probe proved it, so a switch-window false failure costs at most
+			// one stint, never the session.
+			s.st.rearmKittySHM()
 		}
 		if previous == BackendBlock && s.st.Backend == BackendKitty && s.fps != nil && s.st.fpsBadgeAllowed() {
 			// Block leaves glyphs and cell backgrounds across the page. Kitty's FPS
 			// image sits below both, so clear them before the first restarted Kitty
-			// frame and invalidate the differ against the blank terminal.
+			// frame and invalidate the differ against the blank terminal. Reset the
+			// SGR first: the Block differ leaves the last cell's background active,
+			// and terminals erase with the current background (background colour
+			// erase), so a bare clear fills every cell with a non-default background
+			// that occludes the kittyFPSPageZ page image on Kitty and Ghostty.
 			if s.diff != nil {
 				s.diff.Reset()
 			}
-			_ = s.emitControl([]byte(clearScreen))
+			_ = s.emitControl([]byte(sgrReset + clearScreen))
 		}
 		// Align the engine's kitty-shm decode with the new backend before the
 		// restart, so frames after the switch arrive in the right form: planes

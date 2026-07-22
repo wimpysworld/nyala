@@ -134,9 +134,9 @@ func (w *failSHMWriter) Close() error {
 }
 
 // TestKittySHMDemotesOnCreateFailure asserts an shm create failure demotes the
-// session to the direct path permanently: the failing plane-only frame drops
-// cleanly with its plane released, the demotion error surfaces exactly once,
-// and the next retained-payload frame paints via direct PNG.
+// stint to the direct path: the failing plane-only frame drops cleanly with
+// its plane released, the demotion error surfaces exactly once, and the next
+// retained-payload frame paints via direct PNG.
 func TestKittySHMDemotesOnCreateFailure(t *testing.T) {
 	s := shmState()
 	stub := &failSHMWriter{}
@@ -295,6 +295,91 @@ func TestKittySHMPacingGate(t *testing.T) {
 	}
 	if st.kittySHMLive() {
 		t.Fatal("failure response did not demote the shm transport")
+	}
+}
+
+// TestKittySHMLateErrorAfterTabAwayDoesNotDemote reproduces the Ghostty
+// switch-window race: an shm transmit is in flight when Tab cycles away from
+// Kitty, so resetKitty unlinks the object before the busy terminal reads the
+// escape, and the terminal's ENOENT reply lands after the switch. That failure
+// is self-inflicted, not a transport fault, so it must not demote the shm
+// transport; the next Tab back to Kitty must run shm again with the engine
+// decode on and the stale pacing gate dropped.
+func TestKittySHMLateErrorAfterTabAwayDoesNotDemote(t *testing.T) {
+	st := shmState()
+	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
+	st.kittyID = 1
+	eng := &decodeFakeEngine{}
+	done := make(chan struct{})
+	defer close(done)
+	s := &streamSession{eng: eng, st: &st, tty: &bytes.Buffer{}, ctl: newControl(eng, done)}
+
+	// One shm transmit awaits its acknowledgement when the user hits Tab.
+	s.assembledSHM = true
+	s.markKittySHMHandoff()
+	s.handleKey(keyEvent{b: keyTab})
+	if st.Backend != BackendBlock {
+		t.Fatalf("backend after Tab = %v, want Block", st.Backend)
+	}
+	if s.kittyShmAwait {
+		t.Fatal("Tab away from Kitty left the stale shm pacing gate armed")
+	}
+
+	// The busy terminal processes the escape after the unlink and replies with
+	// a failure. The transport itself is healthy.
+	s.handleKittyResponse("i=2;ENOENT:failed to open shared memory object")
+	if !st.kittySHMLive() {
+		t.Fatal("late failure response after Tab away falsely demoted the shm transport")
+	}
+
+	s.handleKey(keyEvent{b: keyTab})
+	if st.Backend != BackendKitty {
+		t.Fatalf("backend after second Tab = %v, want Kitty", st.Backend)
+	}
+	if !st.kittySHMLive() {
+		t.Fatal("shm transport not live after returning to Kitty")
+	}
+	if !eng.kittyDecode {
+		t.Fatal("engine kitty-shm decode not re-enabled on return to Kitty")
+	}
+	if s.kittySHMGated() {
+		t.Fatal("stale pacing gate held the new Kitty stint's first frame")
+	}
+}
+
+// TestKittySHMDemotionRearmsOnReturnToKitty asserts a runtime demotion lasts
+// one Kitty stint, not the whole session: the startup probe proved the
+// transport, so Tab back to Kitty re-arms shm and re-enables the engine
+// decode. A genuinely broken transport demotes again on its next failure.
+func TestKittySHMDemotionRearmsOnReturnToKitty(t *testing.T) {
+	st := shmState()
+	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
+	eng := &decodeFakeEngine{}
+	done := make(chan struct{})
+	defer close(done)
+	s := &streamSession{eng: eng, st: &st, tty: &bytes.Buffer{}, ctl: newControl(eng, done)}
+
+	// A failure response while on Kitty still demotes the stint.
+	s.assembledSHM = true
+	s.markKittySHMHandoff()
+	s.handleKittyResponse("i=1;EBADF:could not open shared memory")
+	if st.kittySHMLive() {
+		t.Fatal("failure response on Kitty did not demote the shm transport")
+	}
+	if eng.kittyDecode {
+		t.Fatal("demotion did not disable the engine kitty-shm decode")
+	}
+
+	s.handleKey(keyEvent{b: keyTab})
+	s.handleKey(keyEvent{b: keyTab})
+	if st.Backend != BackendKitty {
+		t.Fatalf("backend after two Tabs = %v, want Kitty", st.Backend)
+	}
+	if !st.kittySHMLive() {
+		t.Fatal("returning to Kitty did not re-arm the demoted shm transport")
+	}
+	if !eng.kittyDecode {
+		t.Fatal("returning to Kitty did not re-enable the engine kitty-shm decode")
 	}
 }
 

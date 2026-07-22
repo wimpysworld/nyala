@@ -124,11 +124,11 @@ func (s *State) validateForcedBackend(mode string) error {
 	return ValidateForcedBackend(mode, s.Enabled)
 }
 
-// validateColourCompatibility rejects explicit truecolour when the selected
-// backend cycle can reach Block on affected Rio releases. A forced graphics
-// backend passes because it does not consume Block colour settings.
-func (s *State) validateColourCompatibility(mode, colourFlag string) error {
-	if s.compat.rio04 && colourFlag == "truecolor" && (mode == ModeAuto || mode == ModeBlock) {
+// validateColourCompatibility rejects explicit truecolour on affected Rio
+// releases regardless of the starting backend. Tab cycles every supported
+// backend, so truecolour Block frames are always reachable at runtime.
+func (s *State) validateColourCompatibility(colourFlag string) error {
+	if s.compat.rio04 && colourFlag == "truecolor" {
 		return fmt.Errorf("viewer: Rio 0.4.x cannot use truecolour Block rendering; use --color=256 or --color=none")
 	}
 	return nil

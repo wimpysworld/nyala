@@ -60,7 +60,8 @@ therefore excludes Sixel from auto backend selection. An explicit
 Rio stores terminal styles in an append-only table capped at 65,535 entries.
 Truecolour Block rendering can exhaust that table, so `--color=auto` uses the
 xterm-256 palette. Explicit `--color=256` and `--color=none` remain available.
-Nyala rejects `--color=truecolor` when Block can be selected. Start a new Rio
+Nyala rejects `--color=truecolor` for every starting backend, because Tab can
+always cycle to Block at runtime. Start a new Rio
 tab or process if the table was already exhausted.
 
 Kitty graphics remain enabled. Rio 0.4.x does not draw Nyala's negative-z Kitty

@@ -199,6 +199,57 @@ func TestBackendCycleUsesActiveFrameRepresentation(t *testing.T) {
 	}
 }
 
+// TestFPSBlockToKittyClearResetsSGRBeforeErase pins the byte order that keeps
+// the first Kitty frame visible after a Block-to-Kitty Tab with the FPS
+// overlay armed. The Block differ leaves the last cell's SGR background
+// active, and terminals erase with the current background (background colour
+// erase), so an unreset ESC[2J fills every cell with a non-default
+// background. The overlay places the page image at kittyFPSPageZ, below
+// non-default backgrounds, so those cells occlude every frame after the
+// switch: a black screen on Kitty and Ghostty. The switch clear must reset
+// the SGR before it erases.
+func TestFPSBlockToKittyClearResetsSGRBeforeErase(t *testing.T) {
+	st := NewState(8, 4)
+	st.SetEnabled([]Backend{BackendBlock, BackendKitty})
+	diff := &block.GridDiff{}
+	st.SetDiff(diff)
+	// Draw one Block frame so the differ emits SGR colours, leaving a
+	// non-default background active, as after any live Block frame.
+	var blockOut bytes.Buffer
+	if err := st.RenderStreamFrame(render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}, &blockOut); err != nil {
+		t.Fatalf("seed Block frame: %v", err)
+	}
+	if !strings.Contains(blockOut.String(), "48;2;") {
+		t.Fatalf("seed Block frame emitted no background SGR: %q", blockOut.String())
+	}
+
+	out := &syncBuf{}
+	eng := &pipeEngine{frames: make(chan render.Frame, 1)}
+	done := make(chan struct{})
+	defer close(done)
+	ctl := newControl(eng, done)
+	writer := newStreamWriter(out)
+	s := &streamSession{
+		eng: eng, st: &st, tty: out, ctl: ctl, diff: diff, writer: writer,
+		fps: &fpsMeter{window: fpsWindow, start: time.Now()},
+	}
+	s.handleKey(keyEvent{b: keyTab})
+	if st.Backend != BackendKitty {
+		t.Fatalf("backend after Tab = %v, want Kitty", st.Backend)
+	}
+	writer.stop()
+	s.writer = nil
+
+	got := out.String()
+	clearAt := strings.Index(got, clearScreen)
+	if clearAt < 0 {
+		t.Fatalf("Block-to-Kitty switch emitted no clear: %q", got)
+	}
+	if !strings.HasSuffix(got[:clearAt], "\x1b[0m") {
+		t.Fatalf("Block-to-Kitty clear erases with the Block SGR background still active: %q", got)
+	}
+}
+
 func TestFPSBlockToKittyClearsBeforeFrameAndResetsDiff(t *testing.T) {
 	st := NewState(8, 4)
 	st.SetEnabled([]Backend{BackendBlock, BackendKitty})
