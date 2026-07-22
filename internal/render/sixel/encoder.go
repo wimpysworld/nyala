@@ -46,6 +46,22 @@ type opaqueEncoder struct {
 	paletted   *image.Paletted
 	palette    color.Palette
 	lut        []uint8
+
+	// Retained adaptive-palette state. While paletteValid holds, palette and
+	// lut carry over between frames and encode re-quantises only when the
+	// drift test in reusePalette fires. Geometry changes and leaving the
+	// adaptive path invalidate the retained state.
+	paletteValid bool
+	// paletteBounds is the frame geometry the retained palette was built for.
+	paletteBounds image.Rectangle
+	// paletteError is the sample mapping error recorded when the retained
+	// palette was built; it is the drift test's baseline.
+	paletteError float64
+	// oldPalette is scratch holding the previous palette during hysteresis.
+	oldPalette color.Palette
+	// requantCount counts full re-quantisations. Tests and benchmarks read it
+	// as the reuse hook; production ignores it.
+	requantCount int
 }
 
 func newOpaqueEncoder(w io.Writer) *opaqueEncoder { return &opaqueEncoder{w: w} }
@@ -85,7 +101,10 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 		return fmt.Errorf("unsupported image type %T", img)
 	}
 	if !exact {
-		e.palette, e.sample = samplePaletteInto(rgba, colours-1, e.palette, e.sample)
+		sample := e.paletteSample(rgba)
+		if !e.reusePalette(rgba.Bounds(), sample) {
+			e.requantisePalette(rgba.Bounds(), sample, colours-1)
+		}
 		palette := e.palette
 		if paletted == nil {
 			paletted = reusablePaletted(e.paletted, rgba.Bounds(), palette)
@@ -93,8 +112,11 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 		} else {
 			paletted.Palette = palette
 		}
-		e.lut = paletteLUT(e.lut, palette)
 		mapPaletted(paletted, rgba, e.lut)
+	} else {
+		// Leaving the adaptive path invalidates the retained palette; the
+		// next adaptive frame re-quantises from scratch.
+		e.paletteValid = false
 	}
 
 	paletteSize := len(paletted.Palette)
@@ -337,34 +359,51 @@ func samplePalette(rgba *image.RGBA, maxColours int) color.Palette { //nolint:un
 }
 
 func samplePaletteInto(rgba *image.RGBA, maxColours int, dst color.Palette, sample *image.RGBA) (color.Palette, *image.RGBA) {
-	const budget = 1 << 16
 	if cap(dst) < maxColours {
 		dst = make(color.Palette, 0, maxColours)
 	}
-	bounds := rgba.Bounds()
-	src := image.Image(rgba)
-	if bounds.Dx()*bounds.Dy() > budget {
-		step := 2
-		width, height := max(1, bounds.Dx()/step), max(1, bounds.Dy()/step)
-		for width > budget/height {
-			step++
-			width, height = max(1, bounds.Dx()/step), max(1, bounds.Dy()/step)
-		}
-		sampleBounds := image.Rect(0, 0, width, height)
-		if sample == nil || sample.Bounds() != sampleBounds {
-			sample = image.NewRGBA(sampleBounds)
-		}
-		for y := range height {
-			dstOffset := sample.PixOffset(0, y)
-			for x := range width {
-				srcOffset := rgba.PixOffset(bounds.Min.X+x*step, bounds.Min.Y+y*step)
-				copy(sample.Pix[dstOffset:dstOffset+4], rgba.Pix[srcOffset:srcOffset+4])
-				dstOffset += 4
-			}
-		}
-		src = sample
-	}
+	src, sample := paletteSampleInto(rgba, sample)
 	return median.Quantizer(0).Quantize(dst[:0], src), sample
+}
+
+// paletteSample builds this frame's palette sample and retains the downsample
+// scratch. The sample feeds both the drift test and re-quantisation, so it is
+// built every frame regardless of whether the retained palette is reused.
+func (e *opaqueEncoder) paletteSample(rgba *image.RGBA) *image.RGBA {
+	src, sample := paletteSampleInto(rgba, e.sample)
+	e.sample = sample
+	return src
+}
+
+// paletteSampleInto returns the image the quantiser and drift test read: the
+// frame itself when it is within the 64K pixel budget, otherwise a fixed-phase
+// strided downsample written into the reusable sample scratch. It also returns
+// the (possibly reallocated) scratch.
+func paletteSampleInto(rgba, sample *image.RGBA) (*image.RGBA, *image.RGBA) {
+	const budget = 1 << 16
+	bounds := rgba.Bounds()
+	if bounds.Dx()*bounds.Dy() <= budget {
+		return rgba, sample
+	}
+	step := 2
+	width, height := max(1, bounds.Dx()/step), max(1, bounds.Dy()/step)
+	for width > budget/height {
+		step++
+		width, height = max(1, bounds.Dx()/step), max(1, bounds.Dy()/step)
+	}
+	sampleBounds := image.Rect(0, 0, width, height)
+	if sample == nil || sample.Bounds() != sampleBounds {
+		sample = image.NewRGBA(sampleBounds)
+	}
+	for y := range height {
+		dstOffset := sample.PixOffset(0, y)
+		for x := range width {
+			srcOffset := rgba.PixOffset(bounds.Min.X+x*step, bounds.Min.Y+y*step)
+			copy(sample.Pix[dstOffset:dstOffset+4], rgba.Pix[srcOffset:srcOffset+4])
+			dstOffset += 4
+		}
+	}
+	return sample, sample
 }
 
 func newPaletteLUT(palette color.Palette) []uint8 {

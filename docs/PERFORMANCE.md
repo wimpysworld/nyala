@@ -3088,6 +3088,101 @@ Retain the accepted combined mapping and band path. Send only accepted wins upst
 If short-lived integration needs a fork, publish a versioned fork and use a temporary
 module replacement. Do not vendor, use `go:linkname`, or add a Nix-only patch.
 
+### Sixel palette reuse (2026-07-22)
+
+Sixel now reuses the adaptive palette across frames through delta-triggered
+reuse with hysteresis (`internal/render/sixel/palette_reuse.go`). This revisits
+the "stateless" wording in the cross-track decision above: the temporal-state
+deferral named a future profile as its trigger, and palette shimmer on motion
+content was that trigger. The 64K sample cap, the median-cut quantiser, the
+no-dither mapping, and the 8192 repeat ceiling are unchanged. The palette
+history above still stands: benchmark A measured warm palette reuse as 45.8%
+faster with byte-identical static output, benchmark B rejected fixed palettes
+on quality, and the sample-cap matrix fixed the 64K budget.
+
+The encoder retains the palette and the RGB555 LUT between frames. Every frame
+still builds the 64K palette sample (the `1<<16` budget is untouched).
+`reusePalette` maps that sample through the retained LUT and measures the mean
+squared RGB error, summed over the three channels. The frame reuses the
+retained palette while that error stays within `max(1.15 x baseline, 12.0)`,
+where the baseline is the mapping error recorded at the last re-quantisation,
+1.15 is the relative trigger, and 12.0 is the absolute floor. Above the
+threshold, `requantisePalette` rebuilds the palette and
+`freezeSubJNDRegisters` keeps an old register value wherever the new entry's
+nearest old entry sits within CIEDE2000 2.3. Nearest matching uses squared RGB
+distance; dE runs only for the 255 final judgements. Geometry changes and
+exact-path interludes invalidate the retained state, so the next adaptive
+frame re-quantises from scratch without hysteresis. Registers are still
+emitted every frame. No dithering was introduced. Determinism is preserved:
+the same input sequence produces the same output sequence.
+
+`TestPaletteShimmerBenchmark`, opt-in through `just palette-bench`, is the
+shimmer measurement. It encodes a deterministic 20-frame motion sequence at
+1280x720, with static page chrome over the top 60% and a photo-like field
+translating 3 px per frame across the bottom 40%, through one production
+renderer session. It decodes every payload and scores decoded pixel pairs
+whose source pixels are byte-identical between consecutive frames.
+
+| Arm | Unchanged-pixel dE mean | Unchanged-pixel dE max, pair mean | Registers changed, mean of 255 |
+|---|---:|---:|---:|
+| Per-frame re-quantisation | 0.056360 | 15.99 | 202.7 |
+| Palette reuse | 0.000000 in all 19 pairs | 0.000000 | 0 |
+
+Unit tests pin the surrounding behaviour: static sequences quantise once,
+sub-threshold motion reuses, a scene change (full inversion) re-quantises
+immediately, geometry changes and exact-path interludes invalidate, hysteresis
+freezes sub-JND registers, and repeated sequences stay byte-identical.
+
+Benchmark interpretation note: the existing palette-bench arms re-encode one
+fixture through one encoder, so from iteration 2 onward they now measure the
+reuse path, not per-frame re-quantisation. Read their per-frame means with
+that in mind.
+
+The 32K sample-cap question is answered: no. Shimmer comes from per-frame
+global re-quantisation, not sample size; a halved sample is a noisier
+estimate, so palette jitter rises by about sqrt(2). The expected speed gain
+was about 2-3 ms because selection is no longer the dominant cost at 64K.
+
+Live verification (2026-07-22, mlterm, noted by the operator as the fastest
+Sixel renderer, aquarium WebGL page):
+
+```
+warmup_ms=3135 in_frames=1868 in_mean=25.3 in_min=9.2 in_max=213.4 in_median=31.1 in_worst_gap_ms=108.8 in_decode_mean_ms=66.7 in_decode_max_ms=113.8 out_frames=1814 wall=73.77s out_mean=24.6 out_median=25.0 out_min=7.6 out_max=115.8 out_worst_gap_ms=131.5 out_encode_mean_ms=17.0 out_encode_max_ms=42.0 out_write_mean_ms=37.1 out_write_max_ms=64.7 ack_rtt_mean_ms=12.5 ack_rtt_max_ms=67.5
+```
+
+Load timings: process spawned +185.3 ms, screencast started +3096.4 ms,
+first frame emitted +3123.0 ms.
+
+No shimmer observed. Output tracks ingest (`out_mean` 24.6 against `in_mean`
+25.3), so the Sixel encoder is no longer the bound. The remaining costs are
+the per-frame PNG decode (66.7 ms mean) and mlterm's in-band consumption
+(`out_write_mean_ms` 37.1, a ~27 fps ceiling on this content). Encode at
+17.0 ms mean is mapping and band emission, with palette selection skipped
+under reuse.
+
+Live verification (2026-07-22, same mlterm, Blender Charge video):
+
+```
+warmup_ms=869 in_frames=6478 in_mean=24.4 in_min=1.8 in_max=171.9 in_median=27.3 in_worst_gap_ms=570.9 in_decode_mean_ms=18.3 in_decode_max_ms=40.9 out_frames=6477 wall=265.20s out_mean=24.4 out_median=26.4 out_min=1.7 out_max=166.7 out_worst_gap_ms=571.7 out_encode_mean_ms=9.2 out_encode_max_ms=32.4 out_write_mean_ms=2.0 out_write_max_ms=20.6 ack_rtt_mean_ms=0.3 ack_rtt_max_ms=3.2
+```
+
+Load timings: process spawned +183.3 ms, screencast started +832.9 ms,
+first frame emitted +861.3 ms.
+
+No shimmer observed; the operator called the result impressive. 6477 of
+6478 frames painted at the video's native ~24 fps over 265 s. The 571 ms
+worst gaps are damage-driven idle during still scenes, not stalls.
+
+Open items:
+
+- JPEG q90 capture for the Sixel path rests with the operator. Sixel always
+  decodes, so no pass-through constraint applies; `jpegn` would cut decode
+  towards ~20 ms and relieve Chromium encode, mirroring the Kitty shm
+  decision. Adoption needs the AGENTS.md Sixel format rule amended.
+- Omitting palette-register emission on reused frames would cut payload bytes,
+  but register redefinition behaviour varies across emulators. Deferred as
+  future work.
+
 ### Option assessment
 
 | Option | Assessment | Decision |

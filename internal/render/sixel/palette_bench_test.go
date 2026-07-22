@@ -27,6 +27,8 @@ import (
 	xdraw "golang.org/x/image/draw"
 
 	"github.com/wimpysworld/nyala/internal/metrics"
+	"github.com/wimpysworld/nyala/internal/render"
+	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
 
 const (
@@ -911,6 +913,246 @@ func bandBenchmarkImage(width, height, colours, pattern int) *image.Paletted {
 		}
 	}
 	return img
+}
+
+const (
+	// shimmerFrames is the length of the synthetic motion sequence.
+	shimmerFrames = 20
+	// shimmerShiftPX is the horizontal translation of the moving region per frame.
+	shimmerShiftPX = 3
+	// shimmerWidth and shimmerHeight give a realistic viewport size.
+	shimmerWidth  = 1280
+	shimmerHeight = 720
+	// shimmerStaticRows is the static page-chrome share, ~60% of the frame.
+	shimmerStaticRows = shimmerHeight * 6 / 10
+)
+
+// TestPaletteShimmerBenchmark measures palette shimmer objectively: it encodes
+// a deterministic motion sequence through one production Renderer session,
+// decodes every payload, and reports the frame-to-frame CIEDE2000 of pixels
+// that are identical in the source pair, plus palette-register churn. Under
+// per-frame re-quantisation the unchanged-pixel dE is non-zero; under palette
+// reuse it must be exactly zero between re-quantisations. It never changes the
+// production palette policy.
+func TestPaletteShimmerBenchmark(t *testing.T) {
+	if os.Getenv(paletteBenchEnv) != "1" {
+		t.Skip("set " + paletteBenchEnv + "=1")
+	}
+	frames := shimmerMotionSequence(t)
+	renderer := &Renderer{}
+	payloads := make([][]byte, len(frames))
+	decoded := make([]*image.RGBA, len(frames))
+	var out bytes.Buffer
+	for i, frame := range frames {
+		out.Reset()
+		if err := renderer.Render(render.Frame{Img: frame}, &out); err != nil {
+			t.Fatalf("frame %d render: %v", i, err)
+		}
+		payloads[i] = append([]byte(nil), out.Bytes()...)
+		img, err := renderdecode.DecodeSixel(payloads[i])
+		if err != nil {
+			t.Fatalf("frame %d decode: %v", i, err)
+		}
+		if img.Bounds() != frame.Bounds() {
+			t.Fatalf("frame %d decoded bounds = %v, want %v", i, img.Bounds(), frame.Bounds())
+		}
+		decoded[i] = img
+	}
+	pairs := len(frames) - 1
+	var sumMean, sumMax, sumRegisters float64
+	for i := range pairs {
+		unchanged, meanDE, maxDE := shimmerUnchangedDelta(frames[i], frames[i+1], decoded[i], decoded[i+1])
+		registers := countChangedRegisters(payloads[i], payloads[i+1])
+		total := shimmerWidth * shimmerHeight
+		t.Logf("SHIMMER pair=%02d-%02d unchanged-px=%d unchanged-share=%.3f unchanged-dE-mean=%.6f unchanged-dE-max=%.6f registers-changed=%d",
+			i, i+1, unchanged, float64(unchanged)/float64(total), meanDE, maxDE, registers)
+		sumMean += meanDE
+		sumMax += maxDE
+		sumRegisters += float64(registers)
+	}
+	t.Logf("SHIMMER SUMMARY frames=%d pairs=%d unchanged-dE-mean=%.6f unchanged-dE-max-mean=%.6f registers-changed-mean=%.1f",
+		len(frames), pairs, sumMean/float64(pairs), sumMax/float64(pairs), sumRegisters/float64(pairs))
+}
+
+// shimmerMotionSequence builds the deterministic motion fixture: a static
+// page-chrome region (solid blocks, text-like pattern, gradients) over the top
+// ~60% of each frame, and a photo-like region translating shimmerShiftPX
+// pixels per frame across the bottom ~40%. Every source pixel in the static
+// region is byte-identical across the sequence.
+func shimmerMotionSequence(t *testing.T) []*image.RGBA {
+	t.Helper()
+	chrome := shimmerStaticChrome()
+	movingRect := image.Rect(0, shimmerStaticRows, shimmerWidth, shimmerHeight)
+	photoWidth := shimmerWidth + shimmerShiftPX*(shimmerFrames-1)
+	photo := shimmerPhotoField(photoWidth, movingRect.Dy())
+	frames := make([]*image.RGBA, shimmerFrames)
+	for i := range frames {
+		frame := image.NewRGBA(image.Rect(0, 0, shimmerWidth, shimmerHeight))
+		draw.Draw(frame, chrome.Bounds(), chrome, image.Point{}, draw.Src)
+		draw.Draw(frame, movingRect, photo, image.Pt(i*shimmerShiftPX, 0), draw.Src)
+		assertOpaque(t, frame)
+		frames[i] = frame
+	}
+	return frames
+}
+
+// shimmerPhotoField synthesises the photo-like moving patch: a smooth dense
+// colour field from fixed-wavelength sinusoids. Neighbouring pixels differ, so
+// every translation changes the whole patch and the sampled colour set; the
+// wavelengths share no small common period, so the sequence never repeats
+// under the fixed-phase sample stride.
+func shimmerPhotoField(width, height int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := range height {
+		for x := range width {
+			fx, fy := float64(x), float64(y)
+			r := 128 + 55*math.Sin(fx/17.3)*math.Cos(fy/23.7) + 40*math.Sin((fx+fy)/41.1)
+			g := 128 + 60*math.Sin(fx/29.5+1.7)*math.Cos(fy/13.1) + 30*math.Cos((fx-fy)/37.3)
+			b := 128 + 50*math.Cos(fx/11.9)*math.Sin(fy/31.7+0.6) + 45*math.Sin((fx+2*fy)/53.9)
+			img.SetRGBA(x, y, color.RGBA{R: shimmerChannel(r), G: shimmerChannel(g), B: shimmerChannel(b), A: 0xff})
+		}
+	}
+	return img
+}
+
+// shimmerChannel rounds a sinusoid sum to an 8-bit channel value. The field
+// amplitudes keep values inside 0..255; the clamp guards the cast.
+func shimmerChannel(v float64) uint8 {
+	return uint8(math.Round(math.Min(255, math.Max(0, v)))) //nolint:gosec // Clamped to 0..255 above.
+}
+
+// shimmerStaticChrome renders the page-chrome band reused verbatim by every
+// frame: a solid header, a horizontal gradient strip, a text-like dash
+// pattern on white, and a grid of solid colour blocks.
+func shimmerStaticChrome() *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, shimmerWidth, shimmerStaticRows))
+	palette := mappingTestPalette()[:16]
+	for y := range shimmerStaticRows {
+		for x := range shimmerWidth {
+			var c color.RGBA
+			switch {
+			case y < 48:
+				c = color.RGBA{R: 0x1f, G: 0x2a, B: 0x44, A: 0xff}
+			case y < 96:
+				level := uint8(x * 255 / (shimmerWidth - 1)) //nolint:gosec // The ramp is bounded to 0..255.
+				c = color.RGBA{R: level, G: level / 2, B: 255 - level, A: 0xff}
+			case y < 288:
+				c = color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+				if y%12 < 7 && (x*7+y*3)%11 < 5 && x%97 > 8 {
+					c = color.RGBA{R: 0x22, G: 0x22, B: 0x26, A: 0xff}
+				}
+			default:
+				base := color.RGBAModel.Convert(palette[(x/80+(y-288)/36)%len(palette)]).(color.RGBA)
+				c = color.RGBA{R: base.R, G: base.G, B: base.B, A: 0xff}
+			}
+			img.SetRGBA(x, y, c)
+		}
+	}
+	return img
+}
+
+// shimmerUnchangedDelta returns the count, mean CIEDE2000, and max CIEDE2000
+// of the decoded pixel pairs whose source pixels are byte-identical between
+// the two frames. This is the shimmer number: identical input, so any decoded
+// difference comes from the palette changing under it.
+func shimmerUnchangedDelta(srcA, srcB, decA, decB *image.RGBA) (int, float64, float64) {
+	var unchanged int
+	var sum, maxDE float64
+	for y := range shimmerHeight {
+		for x := range shimmerWidth {
+			pa, pb := srcA.RGBAAt(x, y), srcB.RGBAAt(x, y)
+			if pa != pb {
+				continue
+			}
+			unchanged++
+			da, db := decA.RGBAAt(x, y), decB.RGBAAt(x, y)
+			if da == db {
+				continue
+			}
+			de := metrics.DeltaE2000(da.R, da.G, da.B, db.R, db.G, db.B)
+			sum += de
+			if de > maxDE {
+				maxDE = de
+			}
+		}
+	}
+	if unchanged == 0 {
+		return 0, 0, 0
+	}
+	return unchanged, sum / float64(unchanged), maxDE
+}
+
+// shimmerRegisters holds one payload's parsed colour-register definitions:
+// #n;2;r;g;b with RGB percentages in 0..100.
+type shimmerRegisters struct {
+	set    [256]bool
+	colour [256][3]int
+}
+
+// parsePaletteDefinitions extracts every #n;2;r;g;b register definition from a
+// raw Sixel payload, distinguishing definitions from bare #n colour selects by
+// the ';' after the register number, as countPaletteRegisters does.
+func parsePaletteDefinitions(payload []byte) shimmerRegisters {
+	var regs shimmerRegisters
+	i := 0
+	next := func() (int, bool) {
+		if i >= len(payload) || payload[i] < '0' || payload[i] > '9' {
+			return 0, false
+		}
+		value := 0
+		for i < len(payload) && payload[i] >= '0' && payload[i] <= '9' {
+			value = value*10 + int(payload[i]-'0')
+			i++
+		}
+		return value, true
+	}
+	expect := func(b byte) bool {
+		if i < len(payload) && payload[i] == b {
+			i++
+			return true
+		}
+		return false
+	}
+	for i < len(payload) {
+		if payload[i] != '#' {
+			i++
+			continue
+		}
+		i++
+		n, ok := next()
+		if !ok || !expect(';') || !expect('2') || !expect(';') {
+			continue
+		}
+		r, ok := next()
+		if !ok || !expect(';') {
+			continue
+		}
+		g, ok := next()
+		if !ok || !expect(';') {
+			continue
+		}
+		b, ok := next()
+		if !ok || n > 255 {
+			continue
+		}
+		regs.set[n] = true
+		regs.colour[n] = [3]int{r, g, b}
+	}
+	return regs
+}
+
+// countChangedRegisters returns how many palette registers differ between two
+// payloads: defined in only one of them, or defined in both with different
+// colours.
+func countChangedRegisters(a, b []byte) int {
+	ra, rb := parsePaletteDefinitions(a), parsePaletteDefinitions(b)
+	changed := 0
+	for n := range ra.set {
+		if ra.set[n] != rb.set[n] || (ra.set[n] && ra.colour[n] != rb.colour[n]) {
+			changed++
+		}
+	}
+	return changed
 }
 
 func envInt(name string) int {
