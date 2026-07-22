@@ -44,7 +44,7 @@ func TestBackendCapabilities(t *testing.T) {
 		text, direct, layout, quantisedScroll bool
 	}{
 		{BackendBlock, CaptureJPEG, true, false, true, true},
-		{BackendSixel, CapturePNG, false, false, false, false},
+		{BackendSixel, CaptureJPEG, false, false, false, false},
 		{BackendKitty, CapturePNG, false, true, false, false},
 		{Backend(99), CaptureJPEG, true, false, true, true},
 	} {

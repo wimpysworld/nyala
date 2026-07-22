@@ -7,9 +7,9 @@ import (
 )
 
 // TestInitialScreencastFormatBackendMatrix pins the format policy per backend
-// and kitty-shm decode mode: Block runs JPEG q90, Kitty runs JPEG q90 in shm
-// mode and PNG in direct mode, and Sixel always runs PNG (a stale shm flag
-// cannot reach it because Sixel takes no direct payload).
+// and kitty-shm decode mode: Block and Sixel run JPEG q90 (both decode every
+// frame), and Kitty runs JPEG q90 in shm mode and PNG in direct mode. A stale
+// shm flag cannot change Sixel because Sixel takes no direct payload.
 func TestInitialScreencastFormatBackendMatrix(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -22,8 +22,8 @@ func TestInitialScreencastFormatBackendMatrix(t *testing.T) {
 		{"block shm flag", backendBlock, true, page.ScreencastFormatJpeg, blockScreencastQuality},
 		{"kitty direct", backendKitty, false, page.ScreencastFormatPng, 0},
 		{"kitty shm", backendKitty, true, page.ScreencastFormatJpeg, blockScreencastQuality},
-		{"sixel", backendSixel, false, page.ScreencastFormatPng, 0},
-		{"sixel stale shm flag", backendSixel, true, page.ScreencastFormatPng, 0},
+		{"sixel", backendSixel, false, page.ScreencastFormatJpeg, blockScreencastQuality},
+		{"sixel stale shm flag", backendSixel, true, page.ScreencastFormatJpeg, blockScreencastQuality},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -37,7 +37,7 @@ func TestInitialScreencastFormatBackendMatrix(t *testing.T) {
 }
 
 // TestBackendCycleFormatSelection proves every backend switch re-picks the fixed
-// policy, including both directions between Block JPEG and Sixel PNG.
+// policy, including both directions between Kitty PNG and the JPEG backends.
 func TestBackendCycleFormatSelection(t *testing.T) {
 	e := &ChromiumEngine{backend: backendSixel}
 	for _, tc := range []struct {
@@ -47,10 +47,10 @@ func TestBackendCycleFormatSelection(t *testing.T) {
 	}{
 		{backendKitty, page.ScreencastFormatPng, 0},
 		{backendBlock, page.ScreencastFormatJpeg, blockScreencastQuality},
-		{backendSixel, page.ScreencastFormatPng, 0},
+		{backendSixel, page.ScreencastFormatJpeg, blockScreencastQuality},
 		{backendBlock, page.ScreencastFormatJpeg, blockScreencastQuality},
 		{backendKitty, page.ScreencastFormatPng, 0},
-		{backendSixel, page.ScreencastFormatPng, 0},
+		{backendSixel, page.ScreencastFormatJpeg, blockScreencastQuality},
 	} {
 		e.backend = tc.backend
 		got := e.initialScreencastFormat()
@@ -62,7 +62,7 @@ func TestBackendCycleFormatSelection(t *testing.T) {
 }
 
 // TestSixelFormatDoesNotDependOnWorkerCount proves every supported live decode-pool
-// size keeps the Sixel wire format at PNG.
+// size keeps the Sixel wire format at JPEG q90.
 func TestSixelFormatDoesNotDependOnWorkerCount(t *testing.T) {
 	for _, tc := range []struct {
 		value string
@@ -74,8 +74,8 @@ func TestSixelFormatDoesNotDependOnWorkerCount(t *testing.T) {
 				t.Fatalf("decode workers = %d, want %d", got, tc.want)
 			}
 			e := &ChromiumEngine{backend: backendSixel}
-			if got := e.initialScreencastFormat(); got.format != page.ScreencastFormatPng || got.quality != 0 {
-				t.Fatalf("Sixel format = {%s %d}, want PNG with no quality", got.format, got.quality)
+			if got := e.initialScreencastFormat(); got.format != page.ScreencastFormatJpeg || got.quality != blockScreencastQuality {
+				t.Fatalf("Sixel format = {%s %d}, want JPEG q%d", got.format, got.quality, blockScreencastQuality)
 			}
 		})
 	}

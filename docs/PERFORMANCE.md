@@ -725,7 +725,9 @@ full-motion 2560x2880 grid pushed `out_write` to ~20 ms (Out ~40), while `--colo
 does the same (2560x1440 holds 60 at sextant + truecolour). So `just fps` now measures
 each terminal's bytes-per-frame ceiling: kitty, Alacritty, foot hold 60 at 2560x2880;
 WezTerm and Ghostty saturate sooner. `--color=256` is the documented lever for
-byte-bound terminals; no code change needed.
+byte-bound terminals; no code change needed. The Sixel counterpart, emulator
+write ceilings across mlterm, Alacritty, and Contour on the same payload, is
+recorded under "Sixel palette reuse (2026-07-22)".
 
 ### Full headless profile and benchmark pass (2026-07-14)
 
@@ -3175,13 +3177,111 @@ worst gaps are damage-driven idle during still scenes, not stalls.
 
 Open items:
 
-- JPEG q90 capture for the Sixel path rests with the operator. Sixel always
-  decodes, so no pass-through constraint applies; `jpegn` would cut decode
-  towards ~20 ms and relieve Chromium encode, mirroring the Kitty shm
-  decision. Adoption needs the AGENTS.md Sixel format rule amended.
+- Closed 2026-07-22: the Sixel path now captures JPEG q90. Sixel decodes every
+  frame, so no pass-through constraint applies, and the `jpegn` decode cuts the
+  66.7 ms PNG decode towards ~20 ms while relieving Chromium encode; see the
+  Kitty shm JPEG q90 capture decision above for the payload and decode
+  analysis. JPEG noise means the encoder's exact-colour fast path fires less
+  often and flat pages take the adaptive path; this is accepted. Live
+  verification is recorded below.
 - Omitting palette-register emission on reused frames would cut payload bytes,
   but register redefinition behaviour varies across emulators. Deferred as
   future work.
+
+Live verification of the JPEG q90 capture (2026-07-22, mlterm, aquarium WebGL
+page, 2560x1600 on the office machine; the PNG baseline above ran at 2560x1440
+at home, so this run pushes 11% more pixels, a confounder in any direct
+comparison):
+
+```
+warmup_ms=2129 in_frames=4559 in_mean=60.0 in_min=43.5 in_max=233.2 in_median=60.1 in_worst_gap_ms=23.0 in_decode_mean_ms=13.5 in_decode_max_ms=19.6 out_frames=1742 wall=75.86s out_mean=22.9 out_median=21.3 out_min=13.3 out_max=62.6 out_worst_gap_ms=75.2 out_encode_mean_ms=28.3 out_encode_max_ms=60.9 out_write_mean_ms=42.2 out_write_max_ms=70.5 ack_rtt_mean_ms=0.3 ack_rtt_max_ms=3.1
+```
+
+Load timings: process spawned +234.1 ms, screencast started +1285.2 ms,
+first frame emitted +2047.6 ms.
+
+The ingest wall is gone. Ingest runs at 60.0 fps, the CDP cap, against the PNG
+baseline's 25.3, and decode falls from 66.7 ms to 13.5 ms mean. Output is now
+terminal-bound: the 28.3 ms encode overlaps the 42.2 ms write, so mlterm's
+in-band payload consumption sets a ~24 fps ceiling for full-screen motion at
+this size. This is Sixel's equivalent of the Kitty parser wall, and the
+protocol has no shm escape hatch. 1742 of 4559 frames painted is the
+freshest-frame pacing working as designed. Payload grew against the PNG run
+partly because JPEG noise compresses worse under RLE and partly because of the
+resolution change.
+
+Two further live runs (2026-07-22) repeat the same setup, the aquarium WebGL
+page at 2560x1600 with JPEG q90 capture on the same machine, on Alacritty and
+Contour.
+
+Alacritty:
+
+```
+warmup_ms=1080 in_frames=4342 in_mean=60.0 in_min=29.9 in_max=287.6 in_median=59.8 in_worst_gap_ms=33.5 in_decode_mean_ms=13.7 in_decode_max_ms=19.2 out_frames=1266 wall=72.26s out_mean=17.5 out_median=16.7 out_min=11.2 out_max=69.2 out_worst_gap_ms=89.5 out_encode_mean_ms=29.4 out_encode_max_ms=63.7 out_write_mean_ms=55.6 out_write_max_ms=74.4 ack_rtt_mean_ms=0.3 ack_rtt_max_ms=6.5
+```
+
+Load timings: process spawned +213.9 ms, screencast started +624.7 ms,
+first frame emitted +1012.1 ms.
+
+Contour:
+
+```
+warmup_ms=1218 in_frames=2814 in_mean=60.0 in_min=42.6 in_max=113.7 in_worst_gap_ms=23.5 in_median=60.0 in_decode_mean_ms=13.0 in_decode_max_ms=19.5 out_frames=187 wall=46.34s out_mean=4.0 out_median=3.6 out_min=2.9 out_max=84.9 out_worst_gap_ms=340.8 out_encode_mean_ms=30.3 out_encode_max_ms=57.4 out_write_mean_ms=250.3 out_write_max_ms=319.7 ack_rtt_mean_ms=0.2 ack_rtt_max_ms=5.3
+```
+
+Load timings: process spawned +221.7 ms, screencast started +1163.2 ms,
+first frame emitted +1194.9 ms.
+
+Two more live runs (2026-07-22) repeat the identical setup on foot and
+WezTerm.
+
+foot:
+
+```
+warmup_ms=879 in_frames=7663 in_mean=60.0 in_min=40.3 in_max=142.3 in_median=60.0 in_worst_gap_ms=24.8 in_decode_mean_ms=13.6 in_decode_max_ms=19.9 out_frames=1030 wall=127.44s out_mean=8.1 out_median=7.9 out_min=6.2 out_max=47.6 out_worst_gap_ms=161.8 out_encode_mean_ms=30.0 out_encode_max_ms=60.2 out_write_mean_ms=123.9 out_write_max_ms=146.3 ack_rtt_mean_ms=0.2 ack_rtt_max_ms=6.9
+```
+
+Load timings: process spawned +186.3 ms, screencast started +581.4 ms,
+first frame emitted +811.7 ms.
+
+WezTerm:
+
+```
+warmup_ms=1421 in_frames=24383 in_mean=38.3 in_min=13.4 in_max=691.2 in_median=47.2 in_worst_gap_ms=74.7 in_decode_mean_ms=29.2 in_decode_max_ms=43.8 out_frames=1150 wall=636.20s out_mean=1.8 out_median=1.8 out_min=1.5 out_max=24.2 out_worst_gap_ms=646.3 out_encode_mean_ms=70.3 out_encode_max_ms=103.5 out_write_mean_ms=553.7 out_write_max_ms=627.6 ack_rtt_mean_ms=1.7 ack_rtt_max_ms=27.4
+```
+
+Load timings: process spawned +216.3 ms, screencast started +1298.8 ms,
+first frame emitted +1370.3 ms.
+
+On mlterm, Alacritty, Contour, and foot the Nyala side is constant: ingest
+holds 60.0 fps at the CDP cap, decode stays at 13.0-13.7 ms mean, and encode
+stays at 28.3-30.3 ms mean. For those four, the output spread is entirely the
+emulator's Sixel consumption:
+
+| Emulator | `out_write_mean_ms` | Output fps |
+|---|---:|---:|
+| mlterm | 42.2 | 22.9 |
+| Alacritty | 55.6 | 17.5 |
+| foot | 123.9 | 8.1 |
+| Contour | 250.3 | 4.0 |
+| WezTerm | 553.7 | 1.8 |
+
+WezTerm is the outlier twice over. It is the slowest consumer at 553.7 ms per
+frame, thirteen times mlterm. Its Sixel parsing and rasterisation also contend
+with Nyala for CPU, inflating decode to 29.2 ms and encode to 70.3 ms and
+dropping ingest to 38.3 fps. It is the only terminal tested whose consumption
+degrades the Nyala side.
+
+Contour consumes the same payload six times slower than mlterm. This is the
+same shape as the Kitty in-band parser wall, and Sixel has no shm escape
+hatch, so the emulator sets the ceiling. Freshest-frame pacing degrades
+gracefully: Contour paints the newest frame at 4 fps, and WezTerm at 1.8 fps,
+rather than falling behind. The operator's ranking is confirmed: mlterm is the
+fastest Sixel renderer tested.
+
+Remaining Sixel levers, recorded as ideas, not commitments: omit register
+emission on reused frames (the deferred item above), and emit only dirty bands
+for partial-motion content.
 
 ### Option assessment
 

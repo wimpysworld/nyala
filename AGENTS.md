@@ -59,7 +59,7 @@ Never set `FENCE_SANDBOX` by hand.
 ## Rendering rules
 
 - Keep pixels in RGBA byte order throughout rendering and metrics code.
-- Block uses JPEG q90 screencast frames in production. Sixel requests PNG.
+- Block and Sixel use JPEG q90 screencast frames in production.
   Kitty's direct fallback passes CDP PNG through as `t=d`; its shm fast path
   captures JPEG q90, decodes it, and sends raw `f=32` RGBA over POSIX shared
   memory. Diagnostics capture stays lossless PNG.
