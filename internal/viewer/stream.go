@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -46,6 +47,11 @@ type Engine interface {
 	// Scroll keys route to the engine's wheel transport; the engine owns the
 	// offset.
 	SendKey(code string)
+	// SendMouse forwards one decoded mouse event. A wheel step scrolls at the
+	// pointer cell through the engine's wheel transport; a press or release
+	// dispatches a mouse event at the cell centre. The engine owns the
+	// cell-to-CSS conversion and clamps the cell to its grid.
+	SendMouse(ev MouseEvent)
 	// Close tears down the engine and the browser process.
 	Close() error
 }
@@ -114,7 +120,23 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	if err != nil {
 		return err
 	}
-	defer restore()
+	// restoreTerminal is the one terminal-restore path: the exit escapes
+	// (mouse reporting off, auto-wrap and cursor back, and, once a frame
+	// drew, the cursor moved below the frame), then the termios restore. The
+	// deferred teardown and the SIGTERM watcher below share it through the
+	// Once, so the restore runs exactly once however the session ends. It
+	// reads firstDrawn through the session's atomic, so the watcher goroutine
+	// never races the producer's write.
+	var restoreOnce sync.Once
+	var session *streamSession
+	restoreTerminal := func() {
+		restoreOnce.Do(func() {
+			drawn := session != nil && session.firstDrawn.Load()
+			_, _ = io.WriteString(tty, exitTerminal(st.Rows, drawn))
+			restore()
+		})
+	}
+	defer restoreTerminal()
 
 	if verr := st.validateForcedBackend(mode); verr != nil {
 		return verr
@@ -135,18 +157,13 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	syncEngineKittyDecode(eng, st)
 	defer st.closeKittySHM()
 
-	if _, err := io.WriteString(tty, enterFullScreen); err != nil {
+	// Mouse reporting enables here, beside the full-screen escapes and after
+	// the setupViewer handshake, so mouse traffic cannot race the startup
+	// probe replies. restoreTerminal's exitTerminal write disables it
+	// unconditionally on every teardown.
+	if _, err := io.WriteString(tty, enterFullScreen+enableMouseReporting); err != nil {
 		return err
 	}
-	// Registered after the Restore defer, so LIFO runs it first: reset terminal
-	// attributes, place the cursor below a drawn frame, re-enable auto-wrap, and
-	// show the cursor while still in raw mode, then Restore. Capture the session so a
-	// startup exit that drew no frame does not jump to and scroll the bottom row.
-	var session *streamSession
-	defer func() {
-		drawn := session != nil && session.firstDrawn
-		_, _ = io.WriteString(tty, exitTerminal(st.Rows, drawn))
-	}()
 
 	// Close the engine on exit so the browser process and the frame loop tear
 	// down with the terminal.
@@ -181,6 +198,24 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 
 	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, ctl: ctl, diff: diff, fps: fps}
 	session = s
+	// A SIGTERM must restore the terminal before the process dies: a hard
+	// kill would otherwise leave raw mode and mouse reporting enabled, and
+	// the shell would read a stream of SGR mouse reports. The watcher shares
+	// restoreTerminal's Once with the deferred teardown, so the restore runs
+	// exactly once, and it exits via done on a normal quit. It starts after
+	// session is set, so the drawn-state read never races this goroutine's
+	// start.
+	sigterm := make(chan os.Signal, 1)
+	signal.Notify(sigterm, syscall.SIGTERM)
+	defer signal.Stop(sigterm)
+	go func() {
+		select {
+		case <-sigterm:
+			restoreTerminal()
+			os.Exit(143) // conventional SIGTERM exit status: 128 + 15
+		case <-done:
+		}
+	}()
 	keys := readKeys(tty, done)
 	navigated := make(chan error, 1)
 	go func() {
@@ -293,12 +328,14 @@ type streamSession struct {
 	// tty is the terminal sink. It is an io.Writer (satisfied by the *os.File the
 	// production path passes) so the writer goroutine and a test can drive it; the
 	// resized geometry is read from fd, not tty.
-	tty          io.Writer
-	fd           uintptr
-	keySender    *keySender
-	ctl          *control
-	diff         *block.GridDiff
-	firstDrawn   bool
+	tty       io.Writer
+	fd        uintptr
+	keySender *keySender
+	ctl       *control
+	diff      *block.GridDiff
+	// firstDrawn is atomic because the producer goroutine writes it per frame
+	// while Stream's SIGTERM watcher reads it for the teardown escapes.
+	firstDrawn   atomic.Bool
 	nilImageOnce sync.Once // guards the one-shot nil-image diagnostic
 	resizeOnce   sync.Once // guards the one-shot dropped-resize diagnostic
 	// writer owns the terminal writes on its own goroutine, so the producer's next
@@ -489,6 +526,10 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 				s.handleKittyResponse(ev.apc)
 				continue
 			}
+			if ev.mouse != nil {
+				s.handleMouse(*ev.mouse)
+				continue
+			}
 			if s.handleKey(ev) {
 				return nil
 			}
@@ -640,13 +681,13 @@ func startupQuit(ev keyEvent) bool {
 // buffers; the producer owns it until the writer returns it on free.
 func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeMS float64, err error) {
 	buf.Reset()
-	prefix := framePrefix(s.firstDrawn, s.diff)
+	prefix := framePrefix(s.firstDrawn.Load(), s.diff)
 	syncUpdates := s.st.syncUpdatesEnabled()
 	if syncUpdates {
 		buf.WriteString(beginSyncUpdate)
 	}
 	buf.WriteString(prefix)
-	s.firstDrawn = true
+	s.firstDrawn.Store(true)
 
 	timed := s.fps != nil
 	var encodeStart time.Time
@@ -769,7 +810,7 @@ func (s *streamSession) resize() error {
 	// The engine restart runs on the control goroutine so a slow restartStream
 	// never freezes the consumer loop; the loop keeps drawing and handling quit.
 	s.ctl.submit(resizeEngineOp(px, changed, nc, nr))
-	if !s.firstDrawn {
+	if !s.firstDrawn.Load() {
 		return nil
 	}
 	// The resize clears the screen, so the differ full-repaints the next frame
@@ -804,6 +845,17 @@ func resizeEngineOp(px cellPx, changed bool, cols, rows int) func(Engine) {
 		}
 		eng.Resize(cols, rows)
 	}
+}
+
+// handleMouse forwards one decoded mouse event to the engine off the input
+// loop through the keySender worker, the same stall policy as scroll keys, so
+// a wedged browser never freezes quit or draw.
+func (s *streamSession) handleMouse(ev MouseEvent) {
+	if s.keySender != nil {
+		s.keySender.sendMouse(ev)
+		return
+	}
+	s.eng.SendMouse(ev)
 }
 
 // handleKey forwards one key to the engine or handles the viewer hotkeys and
@@ -875,26 +927,27 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 	return false
 }
 
-// keySender serialises forwarded scroll keys away from the input loop, so a
-// browser scroll call that stalls never freezes quit or draw. Unlike the frame
-// path (latest-wins-drop), scrolling is cumulative: a rapid burst of scroll keys
-// must all reach the engine, or the page barely moves. So it accumulates every
-// submitted code and the worker forwards them all in order, letting the engine's
-// wheel transport sum the burst (dispatchWheel adds each delta into its held
-// offset) rather than dropping to the last key. send never blocks the input loop.
-// It owns its done channel and closes it once on close, stopping the worker.
+// keySender serialises forwarded input (scroll keys and mouse events) away
+// from the input loop, so a browser call that stalls never freezes quit or
+// draw. Unlike the frame path (latest-wins-drop), input is cumulative: a rapid
+// burst of scroll keys or wheel events must all reach the engine, or the page
+// barely moves. So it accumulates every submitted event and the worker forwards
+// them all in order, letting the engine's wheel transport sum the burst
+// (dispatchWheel adds each delta into its held offset) rather than dropping to
+// the last event. send and sendMouse never block the input loop. It owns its
+// done channel and closes it once on close, stopping the worker.
 type keySender struct {
-	fn      func(string)
+	eng     Engine
 	wake    chan struct{}
 	done    chan struct{}
 	mu      sync.Mutex
-	pending []string
+	pending []func(Engine)
 	once    sync.Once
 }
 
 func newKeySender(eng Engine) *keySender {
 	s := &keySender{
-		fn:   eng.SendKey,
+		eng:  eng,
 		wake: make(chan struct{}, 1),
 		done: make(chan struct{}),
 	}
@@ -902,16 +955,28 @@ func newKeySender(eng Engine) *keySender {
 	return s
 }
 
-// send queues one scroll-key code for the worker with a non-blocking append, so
-// the input loop never blocks on a stalled browser. The empty code is ignored.
-// The queued code is never dropped: a burst accumulates and the worker forwards
-// every code, so the engine sums the scroll instead of taking a single step.
+// send queues one scroll-key code for the worker. The empty code is ignored.
 func (s *keySender) send(code string) {
 	if code == "" {
 		return
 	}
+	s.enqueue(func(e Engine) { e.SendKey(code) })
+}
+
+// sendMouse queues one decoded mouse event for the worker on the same queue
+// as scroll keys, so a wheel burst and a click reach the engine in arrival
+// order.
+func (s *keySender) sendMouse(ev MouseEvent) {
+	s.enqueue(func(e Engine) { e.SendMouse(ev) })
+}
+
+// enqueue appends one forward closure with a non-blocking wake, so the input
+// loop never blocks on a stalled browser. A queued event is never dropped: a
+// burst accumulates and the worker forwards every one, so the engine sums the
+// scroll instead of taking a single step.
+func (s *keySender) enqueue(fn func(Engine)) {
 	s.mu.Lock()
-	s.pending = append(s.pending, code)
+	s.pending = append(s.pending, fn)
 	s.mu.Unlock()
 	select {
 	case s.wake <- struct{}{}:
@@ -919,26 +984,26 @@ func (s *keySender) send(code string) {
 	}
 }
 
-// drain removes and returns all queued codes in submission order, resetting the
-// buffer. The worker forwards the whole batch, so codes queued while a dispatch
-// was in flight are summed by the engine, not lost.
-func (s *keySender) drain() []string {
+// drain removes and returns all queued events in submission order, resetting
+// the buffer. The worker forwards the whole batch, so events queued while a
+// dispatch was in flight are summed by the engine, not lost.
+func (s *keySender) drain() []func(Engine) {
 	s.mu.Lock()
-	codes := s.pending
+	events := s.pending
 	s.pending = nil
 	s.mu.Unlock()
-	return codes
+	return events
 }
 
-// run forwards queued codes serially off the input loop until done closes. A
+// run forwards queued events serially off the input loop until done closes. A
 // single wake may cover several appends because drain takes the whole batch, so
-// no scroll key is dropped between the append and the drain.
+// no event is dropped between the append and the drain.
 func (s *keySender) run() {
 	for {
 		select {
 		case <-s.wake:
-			for _, code := range s.drain() {
-				s.fn(code)
+			for _, fn := range s.drain() {
+				fn(s.eng)
 			}
 		case <-s.done:
 			return

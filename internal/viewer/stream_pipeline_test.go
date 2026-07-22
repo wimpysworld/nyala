@@ -83,6 +83,7 @@ func (e *pipeEngine) Resize(int, int)             {}
 func (e *pipeEngine) Navigate(string) error       { return nil }
 func (e *pipeEngine) Frames() <-chan render.Frame { return e.frames }
 func (e *pipeEngine) SendKey(string)              {}
+func (e *pipeEngine) SendMouse(MouseEvent)        {}
 func (e *pipeEngine) Close() error                { return nil }
 
 // TestStreamWriterOrdersItemsUnderSlowTTY drives the two-buffer ping-pong against a

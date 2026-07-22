@@ -843,7 +843,9 @@ const (
 const enterFullScreen = "\x1b[?7l\x1b[?25l"
 
 // exitTerminal returns the teardown sequence for the interactive viewer. It
-// resets SGR attributes and Sixel display mode, restores auto-wrap, and shows
+// resets SGR attributes, disables mouse reporting unconditionally (pairing
+// the enableMouseReporting write, so a leaked mode cannot spray SGR reports
+// into the shell), resets Sixel display mode, restores auto-wrap, and shows
 // the cursor. Resetting DECSDM here also covers an interrupted Sixel write that
 // did not reach its per-frame reset. After a frame has drawn, it first moves to
 // column one of the final rendered row and emits one CRLF. The necessary
@@ -853,7 +855,7 @@ const enterFullScreen = "\x1b[?7l\x1b[?25l"
 // position, so a startup failure does not displace terminal content.
 func exitTerminal(rows int, drawn bool) string {
 	const reset = "\x1b[0m"
-	const restore = endSixelDisplayMode + "\x1b[?7h\x1b[?25h"
+	const restore = disableMouseReporting + endSixelDisplayMode + "\x1b[?7h\x1b[?25h"
 	if !drawn || rows <= 0 {
 		return reset + restore
 	}
@@ -1058,13 +1060,15 @@ func parseCellPxOverride(value string, set bool) (cellPx, bool, error) {
 }
 
 // keyEvent is one parsed key from the reader: a single byte (b, with scroll ==
-// ScrollNone), a recognised scroll key (scroll set), or a Kitty graphics
-// response (apc set). The reader resolves escape sequences so the consumer
-// handles whole events, not raw bytes.
+// ScrollNone), a recognised scroll key (scroll set), a decoded SGR mouse
+// report (mouse set), or a Kitty graphics response (apc set). The reader
+// resolves escape sequences so the consumer handles whole events, not raw
+// bytes.
 type keyEvent struct {
-	b      byte      // the single key byte when scroll is ScrollNone
-	scroll ScrollKey // the recognised scroll key, or ScrollNone for a byte
-	apc    string    // Kitty graphics response body after ESC _ G, e.g. "i=1;OK"; "" otherwise
+	b      byte        // the single key byte when scroll is ScrollNone
+	scroll ScrollKey   // the recognised scroll key, or ScrollNone for a byte
+	apc    string      // Kitty graphics response body after ESC _ G, e.g. "i=1;OK"; "" otherwise
+	mouse  *MouseEvent // decoded SGR mouse report; nil otherwise
 }
 
 // readKeys reads keys from r and sends them on the returned channel, closing it
@@ -1102,8 +1106,10 @@ func readKeys(r io.Reader, done <-chan struct{}) <-chan keyEvent {
 
 // nextEvent turns one read byte into a keyEvent. A non-escape byte is a byte
 // event. An ESC that opens a CSI sequence (next byte '[') is read to its final
-// byte (0x40..0x7e) and decoded; a recognised sequence is a scroll event, an
-// unrecognised one is dropped (emit false). An ESC that opens an APC (next
+// byte (0x40..0x7e) and decoded; a recognised sequence is a scroll or mouse
+// event, an SGR motion report is consumed and dropped (motion dispatch is
+// deferred), and an unrecognised or malformed sequence is dropped (emit
+// false) without leaking its bytes as keys. An ESC that opens an APC (next
 // byte '_') is read to its String Terminator; a Kitty graphics response (body
 // leading with 'G') emits an apc event for the shm pacing gate, any other APC
 // is dropped. A bare ESC, or ESC not followed by '[' or '_', is passed through
@@ -1139,6 +1145,12 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 			break
 		}
 		body = append(body, c)
+	}
+	if m, motion, ok := decodeSGRMouse(body); ok {
+		if motion {
+			return keyEvent{}, false
+		}
+		return keyEvent{mouse: &m}, true
 	}
 	if k, ok := decodeCSI(body); ok {
 		return keyEvent{scroll: k}, true

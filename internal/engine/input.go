@@ -12,6 +12,12 @@ import (
 // from the resolved cell geometry.
 const wheelLineStepPx = 40
 
+// wheelTickPx is the CSS-pixel delta one SGR wheel event dispatches: three
+// wheelLineStepPx lines, the Charm viewport convention. Wheel events are
+// accumulable: high-precision devices emit several per physical tick and each
+// one dispatches, so the transport sums a burst instead of debouncing it.
+const wheelTickPx = 3 * wheelLineStepPx
+
 // inputDispatchTimeout bounds one input dispatch. A wedged browser must drop the
 // keystroke rather than park the viewer's key goroutine forever, so each dispatch
 // runs under this deadline; on expiry the key is dropped and the failure counted.

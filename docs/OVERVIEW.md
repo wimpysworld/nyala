@@ -321,15 +321,26 @@ Resolved in the architecture phase. Each decision sits behind the consumer-owned
   Mouse messages map to `Input.dispatchMouseEvent` (`mousePressed`/`mouseReleased`/
   `mouseWheel`/`mouseMoved`) with the same modifier bits, a pressed-buttons mask (Left=1,
   Right=2, Middle=4, Back=8, Forward=16), and wheel deltas in CSS pixels. Cell coordinates
-  convert to CSS pixels via the Stage 0 capture geometry: `x = (cellX + 0.5) * cellWidthPx`,
-  `y = (cellY + 0.5) * cellHeightPx` at the LoDPI viewport. Pasted and IME text routes
+  convert to CSS pixels at the cell centre through the Z-aware cell geometry:
+  `x = ((cellX + 0.5) * cellWidthPx) / Z`, `y = ((cellY + 0.5) * cellHeightPx) / Z`, where
+  `Z` is the layout scale (the engine's `snapshotCellPx` divides the device cell by `Z`,
+  so the click lands where the frame drew the cell). As built ahead of the Bubble Tea
+  migration, the viewer enables `?1002h` plus `?1006h` on every terminal (multiplexers
+  re-encode SGR cells pane-relative) and decodes the SGR reports itself into a typed
+  `MouseEvent` the engine consumes over `SendMouse`: wheel events dispatch through the
+  one wheel transport at the pointer cell (three 40 px lines per event, accumulable),
+  and press/release dispatch at the cell centre with a synthesised `clickCount` (400 ms
+  window, same cell, capped at 3). Hover (`?1003h`) and drag selection are deferred
+  until `mouseMoved` dispatch exists. Pasted and IME text routes
   through `Input.insertText` so multi-byte input inserts atomically. Evidence: CDP Input
   domain and `chromedp/cdproto/input`; Bubble Tea v2 `key.go`/`mouse.go`.
 - **v1 interaction scope:** ship scrolling, direct page interaction, and clickable Back,
   Forward, and Reload controls; defer tabs to post-v1. Back and Forward operate on
   Chromium's existing navigation state. Nyala does not add custom history tracking,
-  bookmarks, navigation persistence, or a second geometry channel. Ordinary page links,
-  buttons, mouse clicks, keyboard input, and focus remain part of direct interaction.
+  bookmarks, navigation persistence, or a second geometry channel. Wheel scrolling at
+  the pointer and mouse clicks (left, right, and middle with modifiers and synthesised
+  `clickCount`) are shipped; address entry, keyboard text input, focus, hover, and drag
+  selection remain part of direct interaction still to build.
   Tabs are deferred to keep v1 small; the single-page `Engine` model adds them later via a
   child `NewContext` bound with `WithTargetID`, so the deferral is reversible.
 - **Process lifecycle: launch by default, attach optional, single page for v1.** Launch

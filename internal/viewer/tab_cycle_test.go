@@ -50,6 +50,7 @@ func (e *tabCycleEngine) SetCellPx(int, int)          {}
 func (e *tabCycleEngine) Resize(int, int)             {}
 func (e *tabCycleEngine) Navigate(string) error       { return nil }
 func (e *tabCycleEngine) SendKey(string)              {}
+func (e *tabCycleEngine) SendMouse(MouseEvent)        {}
 func (e *tabCycleEngine) Close() error                { return nil }
 
 // syncBuf is a concurrency-safe sink for the pipe reader goroutine.

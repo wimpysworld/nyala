@@ -22,11 +22,11 @@ import (
 // snapshot decode, frame sync, and launch logic live in their own files.
 type ChromiumEngine struct {
 	// mu guards the session and geometry fields read or written from both the
-	// viewer goroutine (Resize, SetBackend, SendKey, SendScroll, dispatchWheel)
-	// and the supervisor goroutine (startSession, teardownSession, launch,
-	// rebuild): ctx, cancel, acks, text, frame, cols, rows, scrollX,
-	// scrollY, scrollYTarget, backend, cellW, cellH, windowID,
-	// inputFailures and fontForcingID. Lock, copy the fields into locals or write
+	// viewer goroutine (Resize, SetBackend, SendKey, SendMouse, SendScroll,
+	// dispatchWheel) and the supervisor goroutine (startSession,
+	// teardownSession, launch, rebuild): ctx, cancel, acks, text, frame, cols,
+	// rows, scrollX, scrollY, scrollYTarget, click, backend, cellW, cellH,
+	// windowID, inputFailures and fontForcingID. Lock, copy the fields into locals or write
 	// the updates, unlock, then run the chromedp I/O on the locals. Never hold mu
 	// across a chromedp.Run or a channel send, or it deadlocks with the supervisor.
 	mu sync.Mutex
@@ -46,6 +46,12 @@ type ChromiumEngine struct {
 	// scrollY, so repeated small scrolls track the true intent and do not drift. Off
 	// the block backend it tracks scrollY exactly.
 	scrollYTarget int
+
+	// click is the press-chain state SendMouse's clickCount synthesis carries
+	// between presses (double within clickChainWindow on the same cell). It
+	// sits beside the scroll state under mu; a stale chain after a rebuild is
+	// harmless because the window expires it.
+	click clickState
 
 	// Resolved geometry from terminal cell detection and the active backend.
 	cellW int // resolved cell width in pixels
@@ -449,8 +455,24 @@ func (e *ChromiumEngine) SendScroll(dy int) {
 	e.dispatchWheel(0, dy)
 }
 
-// dispatchWheel scrolls the page by dx, dy CSS pixels through the one scroll
-// transport: a mouseWheel DispatchMouseEvent at the viewport centre. It advances
+// dispatchWheel scrolls the page by dx, dy CSS pixels at the viewport centre.
+// Keyboard scrolling and crash-recovery replay take this path, so their
+// behaviour is position-independent and unchanged by pointer wheels.
+func (e *ChromiumEngine) dispatchWheel(dx, dy int) {
+	e.dispatchWheelFrom(dx, dy, false, 0, 0)
+}
+
+// dispatchWheelAt scrolls the page by dx, dy CSS pixels through the same
+// transport with the event positioned at the given terminal cell, so a
+// pointer wheel scrolls the scrollable element under the pointer rather than
+// the viewport centre.
+func (e *ChromiumEngine) dispatchWheelAt(dx, dy, col, row int) {
+	e.dispatchWheelFrom(dx, dy, true, col, row)
+}
+
+// dispatchWheelFrom scrolls the page by dx, dy CSS pixels through the one scroll
+// transport: a mouseWheel DispatchMouseEvent, positioned at the cell centre when
+// atCell is set and at the viewport centre otherwise. It advances
 // the engine's held scroll offset by the dispatched deltas, which crash recovery
 // reads to restore the page position after a rebuild.
 //
@@ -461,10 +483,10 @@ func (e *ChromiumEngine) SendScroll(dy int) {
 // always advances in whole cells, which removes fractional-cell row aliasing
 // and lets composeFrame pair a run set to the bitmap on scroll equality once the
 // settle re-snapshot lands. Snapping the accumulated target rather than each raw delta
-// keeps repeated small scrolls from drifting. Horizontal scroll and graphics backends
-// are unchanged.
+// keeps repeated small scrolls from drifting. The quantisation applies to keyboard
+// and pointer wheels alike. Horizontal scroll and graphics backends are unchanged.
 // synthesizeScrollGesture is deliberately not used.
-func (e *ChromiumEngine) dispatchWheel(dx, dy int) {
+func (e *ChromiumEngine) dispatchWheelFrom(dx, dy int, atCell bool, col, row int) {
 	e.mu.Lock()
 	e.scrollX += dx
 	e.scrollYTarget += dy
@@ -489,7 +511,7 @@ func (e *ChromiumEngine) dispatchWheel(dx, dy int) {
 		e.scrollYTarget = e.scrollY
 	}
 	ctx := e.ctx
-	cx, cy := wheelCentre(e.cols, e.rows, e.cellW, e.cellH, e.layoutScale())
+	cx, cy := e.wheelPositionLocked(atCell, col, row)
 	e.mu.Unlock()
 	if ctx == nil {
 		return
@@ -501,6 +523,17 @@ func (e *ChromiumEngine) dispatchWheel(dx, dy int) {
 		WithDeltaX(float64(dx)).
 		WithDeltaY(float64(dyDispatch))
 	e.dispatchInput(ctx, ev)
+}
+
+// wheelPositionLocked returns the CSS-pixel wheel dispatch position, read
+// under the caller's e.mu hold: the pointer cell centre when atCell is set,
+// the viewport centre otherwise.
+func (e *ChromiumEngine) wheelPositionLocked(atCell bool, col, row int) (cx, cy float64) {
+	if atCell {
+		cellW, cellH := e.snapshotCellPx()
+		return cellCentreCSS(col, row, e.cols, e.rows, cellW, cellH)
+	}
+	return wheelCentre(e.cols, e.rows, e.cellW, e.cellH, e.layoutScale())
 }
 
 // Close tears down the engine and the browser process. It signals the supervisor

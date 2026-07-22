@@ -101,7 +101,7 @@ Open a page:
 nyala example.com
 ```
 
-A bare host gains an `https://` scheme. The `http`, `https`, and `file` schemes are accepted; others are rejected. Nyala launches headless Chromium, streams the live page, and renders it to the TTY. Press Tab to cycle the supported backends.
+A bare host gains an `https://` scheme. The `http`, `https`, and `file` schemes are accepted; others are rejected. Nyala launches headless Chromium, streams the live page, and renders it to the TTY. Press Tab to cycle the supported backends. The mouse works too: the wheel scrolls the page at the pointer and clicks reach the page.
 
 Nyala needs a Chromium executable at runtime. It resolves the path from `--browser`, then `NYALA_BROWSER`, then `CHROME_PATH`, then a `PATH` lookup. The Nix package ships its own Chromium.
 
