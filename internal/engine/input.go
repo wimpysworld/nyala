@@ -37,6 +37,14 @@ func (e *ChromiumEngine) dispatchInput(ctx context.Context, action chromedp.Acti
 	e.mu.Unlock()
 }
 
+// wheelCentre returns the CSS-pixel viewport centre the wheel transport
+// dispatches at. DispatchMouseEvent speaks CSS pixels, but cols*cellW and
+// rows*cellH are device pixels, so both axes divide by the layout scale Z, the
+// same divide pageStepPx applies to its delta; at Z 1 the divide is a no-op.
+func wheelCentre(cols, rows, cellW, cellH int, z float64) (cx, cy float64) {
+	return float64(cols*cellW) / 2 / z, float64(rows*cellH) / 2 / z
+}
+
 // scrollKeyDelta maps a scroll key to a wheel delta in CSS pixels. It returns
 // ok=false for any key that is not a scroll key, so the caller routes it to the
 // focused-element key path instead. pageStepPx is the viewport height in CSS

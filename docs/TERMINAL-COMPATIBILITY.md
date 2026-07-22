@@ -17,6 +17,21 @@ protocol to avoid a terminal-side limit. Notes record incomplete compatibility.
 | Rio | Sextant | No | Yes | Tested with Rio 0.4.7. Rio 0.4.x has the terminal-side limits described below; Nyala applies compatibility gates for them. |
 | WezTerm | Sextant | Yes | Yes | Sixel is documented as preliminary and experimental. Nyala's Kitty placement works. |
 
+## Graphics text size
+
+Terminals disagree on the unit of the cell pixel size they report: Kitty, Rio,
+and Contour report logical points, while Ghostty and WezTerm report scaled
+device pixels (26x53 against 16x33 at the same HiDPI window). Ghostty and
+WezTerm therefore used to lay out more CSS pixels on the Kitty and Sixel
+backends, rendering page text about 1.6x smaller than the other terminals.
+Nyala now anchors the CSS layout density per cell and carries the difference in
+a fractional device scale factor, so every terminal lays out the same page at
+the same text size. There is no layout-width ceiling (owner decision): the
+density anchor already guarantees text size, so scaled super-ultrawide grids
+stay normalised instead of over-scaling. Capture resolution still follows the
+full terminal grid. See "Graphics cell-density layout normalisation
+(2026-07-22)" in [PERFORMANCE.md](PERFORMANCE.md).
+
 ## Sixel performance
 
 Measured with the live WebGL Aquarium at 2560x1600 with Sixel JPEG q90 capture

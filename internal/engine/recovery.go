@@ -35,8 +35,7 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	url := e.url
 	frames := e.frames
 	scrollX, scrollY := e.scrollX, e.scrollY
-	cx := float64(e.cols*e.cellW) / 2
-	cy := float64(e.rows*e.cellH) / 2
+	cx, cy := wheelCentre(e.cols, e.rows, e.cellW, e.cellH, e.layoutScale())
 	e.mu.Unlock()
 
 	// Feed a bounded, drop-oldest queue to a small pool of decode

@@ -85,8 +85,9 @@ func (e *ChromiumEngine) surfaceSize(cols, rows int) (pxW, pxH int) {
 // block backend Z > 1 shrinks the CSS viewport, so the painted surface (round of
 // the floored CSS height times Z) is at or just under surfaceSize, and capping the
 // screencast to it keeps Chromium from downscaling a frame it painted one row over
-// a cap set from an independently rounded surfaceSize. On a graphics backend Z is 1,
-// so the painted surface equals surfaceSize and the cap is unchanged. It takes the
+// a cap set from an independently rounded surfaceSize. On a graphics backend the
+// density Z keeps the painted surface at surfaceSize within one rounded row, so
+// the captured pixel count stays set by the terminal grid. It takes the
 // same (cols, rows) surfaceSize does and reads no engine field beyond the scale, so
 // callers pass the grid they already hold under mu.
 func (e *ChromiumEngine) screencastCap(cols, rows int) (pxW, pxH int) {
@@ -120,8 +121,8 @@ type allocatorConfig struct {
 // newAllocator builds a chromedp ExecAllocator for the resolved executable,
 // sized to the configured real device-pixel surface (surfaceSize). It sets the
 // launch --window-size from the surface size and the configured device scale factor:
-// the block backend passes its continuous Z so the page lays out at surf/Z CSS pixels,
-// and the graphics backends pass 1. The window size matters because
+// each backend passes its continuous Z (the block layout scale or the graphics
+// density scale) so the page lays out at surf/Z CSS pixels. The window size matters because
 // emulation.SetDeviceMetricsOverride resizes only the CSS viewport, not the
 // captured content area; the surface is then sized authoritatively with
 // Browser.SetContentsSize once the context and window id exist. When

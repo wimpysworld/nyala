@@ -1501,6 +1501,57 @@ faults by construction: no shared mutable state, and it targets the dominant sta
 
 ---
 
+## Graphics cell-density layout normalisation (2026-07-22)
+
+Terminals split over the unit of the cell pixel size they report, so the same
+physical window used to produce different page layouts on the graphics
+backends. At the reference window on the owner's HiDPI setup:
+
+| Terminal | Reported cell | Unit |
+|---|---|---|
+| Kitty | 16x33 | Logical points |
+| Rio | 16x33 | Logical points |
+| Contour | 16x33 | Logical points |
+| Ghostty | 26x53 | Scaled device pixels |
+| WezTerm | 26x53 | Scaled device pixels |
+
+Nyala mapped surface pixels 1:1 to CSS at DSF 1 for the graphics backends, so
+Ghostty and WezTerm laid out 1.6x more CSS pixels than Kitty at the same window
+and their text rendered 1.6x smaller.
+
+The fix anchors CSS density per cell and lets a fractional device scale factor
+carry the difference, the same machinery the Block layout scale already uses
+(STAGE-3, "Block layout scale"). For the graphics backends only:
+
+- `target = max(cols * 16, 1024)`: 16 CSS pixels per column, held to at least
+  the 1024 floor. An earlier 2560 ceiling was dropped by owner decision: the
+  density anchor already guarantees text size, and on a scaled super-ultrawide
+  the ceiling would push `Z` past the display scale and break the unit
+  normalisation.
+- `cssW = min(target, surfW)` when `surfW >= 1024`, else `cssW = target`: the
+  floor deliberately wins on a tiny window to keep a desktop layout; everywhere
+  else `Z >= 1`, so content never lays out wider than the device surface and
+  text never shrinks below the terminal's natural size.
+- `Z = surfW / cssW`, continuous and fractional, carried by
+  `force-device-scale-factor` and `SetDeviceMetricsOverride` exactly as on
+  Block.
+
+Predicted and pinned outcomes (`TestGraphicsLayoutScale`): logical-point
+terminals (cell 16, ~156 cols) keep `Z = 1` and stay pixel-identical; Ghostty
+and WezTerm (cell 26, 156 cols) lay out 2496 CSS pixels at `Z = 1.625`, so both
+groups converge on the same layout; a genuinely small cell (8) keeps `Z = 1`;
+wide grids keep the same density with no ceiling (250 cols of cell 16 holds
+`Z = 1`, cell 26 holds `Z = 1.625`); a sub-1024 surface takes the floor with
+`Z < 1`.
+
+Capture resolution is untouched: the captured surface stays the full terminal
+grid (`cols*cellW x rows*cellH`) and the screencast cap follows the painted
+surface within one rounded row, honouring the owner decision above that the
+captured pixel count is set by the terminal grid and never shrunk. The same
+change fixed the wheel dispatch position, which sent device-pixel centre
+coordinates into the CSS-pixel CDP API; it now divides by `Z` like the
+page-step delta, load-bearing at `Z = 1.625`.
+
 ## Kitty in-band ceiling research (2026-07-21)
 
 Why the direct `t=d` path capped at 12.7 fps on the live aquarium, and what the

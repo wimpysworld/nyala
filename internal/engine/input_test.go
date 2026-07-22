@@ -160,6 +160,26 @@ func TestWheelBackendSwitchNoCorrectiveJump(t *testing.T) {
 	}
 }
 
+// TestWheelCentreCSSPixels asserts the wheel dispatch position is in CSS
+// pixels: the device-pixel viewport centre divides by the layout scale Z, the
+// same divide the page-step delta takes. At the Ghostty graphics geometry
+// (cell 26x53, Z = 1.625) the raw device centre would land outside the CSS
+// viewport, so the divide is load-bearing there; at Z 1 it is a no-op.
+func TestWheelCentreCSSPixels(t *testing.T) {
+	cx, cy := wheelCentre(156, 43, 26, 53, 1.625)
+	if wantCx := 2028.0 / 1.625; math.Abs(cx-wantCx) > layoutScaleEps {
+		t.Errorf("wheelCentre cx = %g, want %g (device centre / Z)", cx, wantCx)
+	}
+	if wantCy := 1139.5 / 1.625; math.Abs(cy-wantCy) > layoutScaleEps {
+		t.Errorf("wheelCentre cy = %g, want %g (device centre / Z)", cy, wantCy)
+	}
+
+	cx, cy = wheelCentre(80, 24, 8, 16, 1)
+	if cx != 320 || cy != 192 {
+		t.Errorf("wheelCentre at Z 1 = (%g, %g), want (320, 192) unchanged", cx, cy)
+	}
+}
+
 // TestSendKeyPageStepCSSPixels asserts a Page key steps one CSS-pixel viewport
 // height, not one device-pixel height. The wheel transport speaks CSS pixels, so
 // on a wide block grid where the layout scale Z exceeds 1 the raw rows*cellH device

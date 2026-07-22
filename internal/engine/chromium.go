@@ -490,8 +490,7 @@ func (e *ChromiumEngine) dispatchWheel(dx, dy int) {
 		e.scrollYTarget = e.scrollY
 	}
 	ctx := e.ctx
-	cx := float64(e.cols*e.cellW) / 2
-	cy := float64(e.rows*e.cellH) / 2
+	cx, cy := wheelCentre(e.cols, e.rows, e.cellW, e.cellH, e.layoutScale())
 	e.mu.Unlock()
 	if ctx == nil {
 		return
