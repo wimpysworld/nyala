@@ -67,18 +67,6 @@ func resolveColour(flag string, environ []string, detected ColourMode) ColourMod
 	return detected
 }
 
-// resolveCompatibleColour applies terminal compatibility after normal colour
-// resolution. Rio 0.4.x auto mode is capped at xterm-256 because its append-only
-// style table is exhausted by truecolour Block frames. Explicit 256 and none
-// retain their normal result; explicit truecolor remains visible for validation.
-func resolveCompatibleColour(flag string, environ []string, detected ColourMode, compat terminalCompatibility) ColourMode {
-	resolved := resolveColour(flag, environ, detected)
-	if flag == "auto" && compat.rio04 && resolved == ColourTrue {
-		return ColourXTerm256
-	}
-	return resolved
-}
-
 // colorterm returns the COLORTERM value from environ, lowercased, or "" when
 // absent. It scans environ directly so the lookup matches the injected env.
 func colorterm(environ []string) string {
