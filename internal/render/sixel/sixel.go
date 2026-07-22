@@ -17,8 +17,10 @@ const emptyPayload = "\x1bP0;0;8q\x1b\\"
 
 // Renderer emits a Frame as a Sixel DCS payload. It owns no cell grid; it
 // encodes the opaque frame image directly. A renderer retains the encoder's
-// output and band scratch across moving frames. The mutex makes one renderer
-// safe for concurrent callers while keeping production serial.
+// output and band scratch across moving frames, along with the adaptive
+// palette and its LUT, which re-quantise only when sampled drift exceeds the
+// retained baseline. The mutex makes one renderer safe for concurrent callers
+// while keeping production serial.
 type Renderer struct {
 	mu  sync.Mutex
 	enc *opaqueEncoder

@@ -280,6 +280,8 @@ palette-bench:
         NYALA_PALETTE_BENCH=1 NYALA_PALETTE_BENCH_RUN="$run" \
             go test -run '^TestPaletteBenchmark$' -v -count=1 ./internal/render/sixel/
     done
+    NYALA_PALETTE_BENCH=1 \
+        go test -run '^TestPaletteShimmerBenchmark$' -v -count=1 ./internal/render/sixel/
 
 # Interactive tty only: run it inside a Kitty graphics terminal. Frames per
 # variant come from NYALA_KITTY_BENCH_FRAMES (default 30).
