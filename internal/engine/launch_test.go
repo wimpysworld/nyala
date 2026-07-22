@@ -413,11 +413,21 @@ func TestScreencastCapNeverExceedsSurface(t *testing.T) {
 	if capW > surfW || capH > surfH {
 		t.Fatalf("screencastCap = (%d,%d) exceeds surfaceSize (%d,%d); Chromium would downscale", capW, capH, surfW, surfH)
 	}
-	// A graphics backend stays at Z == 1, so its cap equals the surface exactly.
+	// A graphics backend on a logical-point cell runs a density Z of 1, so its
+	// cap equals the surface exactly, byte-identical to the pre-density path.
 	g := &ChromiumEngine{backend: backendSixel, cellW: cellW, cellH: cellH, cols: cols, rows: rows, layoutWidth: layoutWidth}
 	gSurfW, gSurfH := g.surfaceSize(cols, rows)
 	gCapW, gCapH := g.screencastCap(cols, rows)
 	if gCapW != gSurfW || gCapH != gSurfH {
 		t.Errorf("graphics screencastCap = (%d,%d), want the surface (%d,%d) at Z 1", gCapW, gCapH, gSurfW, gSurfH)
+	}
+	// A device-pixel cell (Ghostty, WezTerm) runs a fractional density Z, so the
+	// painted cap stays at the surface width and within one rounded row of the
+	// surface height: capture resolution is set by the terminal grid, never shrunk.
+	d := &ChromiumEngine{backend: backendKitty, cellW: 26, cellH: 53, cols: 156, rows: 43}
+	dSurfW, dSurfH := d.surfaceSize(156, 43)
+	dCapW, dCapH := d.screencastCap(156, 43)
+	if dCapW != dSurfW || dCapH > dSurfH || dCapH < dSurfH-1 {
+		t.Errorf("density screencastCap = (%d,%d), want width %d and height within one row of %d", dCapW, dCapH, dSurfW, dSurfH)
 	}
 }

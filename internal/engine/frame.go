@@ -126,13 +126,54 @@ func layoutScale(cols, cellW, layoutWidth int) float64 {
 	return z
 }
 
+// graphicsCellCSSW anchors the CSS density of a graphics-backend cell: each
+// terminal column lays out graphicsCellCSSW CSS pixels regardless of the device
+// pixels the terminal reports per cell. Terminals split over the unit of the
+// reported cell size (Kitty, Rio, and Contour report logical points; Ghostty
+// and WezTerm report scaled device pixels), so anchoring density per cell keeps
+// the laid-out page identical across them while the fractional device scale
+// carries the difference.
+const graphicsCellCSSW = 16
+
+// graphicsLayoutFloor is the minimum graphics-backend target CSS layout
+// width. It keeps a tiny window on a desktop layout rather than a mobile
+// reflow. There is no ceiling: the per-cell density anchor already sets the
+// text size, so a very wide grid lays out wider at the same density.
+const graphicsLayoutFloor = 1024
+
+// graphicsLayoutScale is the pure graphics-backend continuous device scale Z.
+// The target CSS width anchors graphicsCellCSSW CSS pixels per column, held
+// to at least graphicsLayoutFloor, so one density applies everywhere. The CSS
+// layout width is min(target, surface) so content never lays out wider than
+// the device surface (Z >= 1 keeps text from shrinking below the terminal's
+// natural size), except under a sub-floor surface, where the floor
+// deliberately wins to keep a desktop layout and Z drops below 1.
+// Z = surface/cssW is continuous (fractional), and a degenerate grid returns
+// 1. The captured surface is unaffected: Z rescales only the CSS layout,
+// never the painted pixel count.
+func graphicsLayoutScale(cols, cellW int) float64 {
+	surfW := cols * cellW
+	if surfW <= 0 {
+		return 1
+	}
+	target := max(cols*graphicsCellCSSW, graphicsLayoutFloor)
+	cssW := target
+	if surfW >= graphicsLayoutFloor && surfW < target {
+		cssW = surfW
+	}
+	return float64(surfW) / float64(cssW)
+}
+
 // layoutScale returns the layout scale Z for the active backend, read under the
-// caller's existing e.mu hold. Only the block backend folds text onto the cell
-// grid and needs the shrink, so it returns 1 for a graphics backend and the pure
-// layoutScale(cols, cellW, layoutWidth) for block.
+// caller's existing e.mu hold. The block backend folds text onto the cell grid
+// and shrinks a wide grid to the --layout-width target through the pure
+// layoutScale(cols, cellW, layoutWidth). The graphics backends normalise cell
+// density instead: graphicsLayoutScale anchors the CSS width per cell, so a
+// terminal that reports device-pixel cells (Ghostty, WezTerm) lays out the same
+// page as one that reports logical-point cells (Kitty, Rio, Contour).
 func (e *ChromiumEngine) layoutScale() float64 {
 	if !e.backend.UsesLayoutScaling() {
-		return 1
+		return graphicsLayoutScale(e.cols, e.cellW)
 	}
 	return layoutScale(e.cols, e.cellW, e.layoutWidth)
 }

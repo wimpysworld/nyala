@@ -46,20 +46,63 @@ func TestLayoutScale(t *testing.T) {
 	}
 }
 
-// TestLayoutScaleBackendGate checks the engine method gates Z to the block
-// backend: a graphics backend returns 1 even on a wide grid, and the block backend
-// returns the pure layoutScale for the same grid.
+// TestGraphicsLayoutScale pins the graphics-backend cell-density normalisation
+// across the observed terminal unit split, wide uncapped grids, and the floor
+// edge. The reference window is 156 columns.
+func TestGraphicsLayoutScale(t *testing.T) {
+	cases := []struct {
+		name  string
+		cols  int
+		cellW int
+		want  float64
+	}{
+		// Kitty, Rio, and Contour report logical-point cells (16 px wide at the
+		// reference window): the 2496 surface equals the 2496 target, so Z is 1
+		// and rendering stays pixel-identical to the pre-normalisation path.
+		{"logical-point cell 16 holds at 1", 156, 16, 1},
+		// Ghostty and WezTerm report scaled device pixels (26 px wide at the same
+		// window): the 4056 surface over the 2496 target gives Z = 1.625, so the
+		// page lays out at the same CSS density as the logical-point terminals.
+		{"device-pixel cell 26 scales to 1.625", 156, 26, 1.625},
+		// A genuinely small cell lays out at the surface, never wider: no shrink.
+		{"small cell 8 holds at 1", 156, 8, 1},
+		// A very wide grid keeps the per-column density with no ceiling:
+		// 250*16 = 4000 surface equals the 4000 target, so Z is 1.
+		{"wide logical-point grid holds at 1", 250, 16, 1},
+		// A scaled super-ultrawide (device-pixel cell 26 over 250 cols) keeps
+		// the exact unit normalisation a ceiling would distort: 6500 surface
+		// over the 4000 target gives Z = 1.625.
+		{"wide device-pixel grid scales to 1.625", 250, 26, 1.625},
+		// A sub-floor surface keeps a desktop layout: the floor wins and Z < 1,
+		// the one case where content lays out wider than the device surface.
+		{"sub-floor surface takes the floor", 60, 16, 0.9375},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := graphicsLayoutScale(c.cols, c.cellW)
+			if math.Abs(got-c.want) > layoutScaleEps {
+				t.Errorf("graphicsLayoutScale(%d, %d) = %g, want %g", c.cols, c.cellW, got, c.want)
+			}
+		})
+	}
+}
+
+// TestLayoutScaleBackendGate checks the engine method routes each backend to its
+// own scale: the block backend takes the pure layoutScale against the
+// --layout-width target, and a graphics backend takes the cell-density
+// graphicsLayoutScale, independent of layoutWidth. The Ghostty-like geometry
+// (device-pixel cell 26) makes the two formulas diverge.
 func TestLayoutScaleBackendGate(t *testing.T) {
-	const cols, cellW, layoutWidth = 240, 8, 1280
+	const cols, cellW, layoutWidth = 156, 26, 1280
 
 	block := &ChromiumEngine{backend: backendBlock, cols: cols, cellW: cellW, layoutWidth: layoutWidth}
-	if got := block.layoutScale(); math.Abs(got-1.5) > layoutScaleEps {
-		t.Errorf("block layoutScale = %g, want 1.5", got)
+	if got, want := block.layoutScale(), 4056.0/1280.0; math.Abs(got-want) > layoutScaleEps {
+		t.Errorf("block layoutScale = %g, want %g", got, want)
 	}
 	for _, backend := range []backend{backendSixel, backendKitty} {
 		g := &ChromiumEngine{backend: backend, cols: cols, cellW: cellW, layoutWidth: layoutWidth}
-		if got := g.layoutScale(); math.Abs(got-1) > layoutScaleEps {
-			t.Errorf("%s layoutScale = %g, want 1 (graphics stays at DSF 1)", backend, got)
+		if got := g.layoutScale(); math.Abs(got-1.625) > layoutScaleEps {
+			t.Errorf("%s layoutScale = %g, want 1.625 (graphics density scale)", backend, got)
 		}
 	}
 }
