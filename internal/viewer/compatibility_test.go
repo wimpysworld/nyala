@@ -11,6 +11,30 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
+// TestFootSixelSyncUpdateCompatibility pins the XTVERSION compatibility
+// decision: Foot alone disables the fence, including its parenthesised version
+// reply, while an absent identity and other terminal names retain normal
+// synchronised updates.
+func TestFootSixelSyncUpdateCompatibility(t *testing.T) {
+	cases := []struct {
+		termID string
+		want   bool
+	}{
+		{"foot(1.27.0)", true},
+		{"FOOT(1.27.0-extra)", true},
+		{"foot", true},
+		{"foot-extra 1.27.0", false},
+		{"football 1.0", false},
+		{"WezTerm 20240203", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := disableSixelSyncUpdates(tc.termID); got != tc.want {
+			t.Fatalf("disableSixelSyncUpdates(%q) = %v, want %v", tc.termID, got, tc.want)
+		}
+	}
+}
+
 func TestRio04XTVERSIONRange(t *testing.T) {
 	cases := []struct {
 		identity string

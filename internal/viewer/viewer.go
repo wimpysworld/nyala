@@ -142,26 +142,6 @@ func (s *State) KittyTransport() KittyTransport {
 	return s.kittyTransport
 }
 
-// syncUpdatesEnabled reports whether the active backend keeps DEC 2026 around
-// its live frame. The Foot compatibility policy is scoped to Sixel, so a backend
-// cycle to Block or Kitty restores the normal fence without changing detection.
-func (s *State) syncUpdatesEnabled() bool {
-	return s.Backend != BackendSixel || !s.compat.sixelSyncUpdatesDisabled
-}
-
-// setTerminalCompatibility applies terminal-specific compatibility decisions
-// from XTVERSION and the environment fallback. Keeping this assignment behind
-// one seam lets startup detection and tests drive the same policy state.
-func (s *State) setTerminalCompatibility(termID string, environ []string) {
-	s.compat = resolveTerminalCompatibility(termID, environ)
-}
-
-// fpsBadgeAllowed reports whether the active backend should paint the live FPS
-// badge. Rio 0.4.x suppresses it only on Kitty, so cycling to Block restores it.
-func (s *State) fpsBadgeAllowed() bool {
-	return s.Backend != BackendKitty || s.compat.kittyFPSBadgeAllowed()
-}
-
 // kittySHMWriter is the shared-memory writer seam encodeKittySHM drives. The
 // production value is *kitty.SHMWriter; a test stub forces create failures to
 // exercise the runtime demotion to the direct path.

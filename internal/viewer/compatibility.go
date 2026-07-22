@@ -1,6 +1,7 @@
 package viewer
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -27,6 +28,36 @@ func resolveTerminalCompatibility(termID string, environ []string) terminalCompa
 	}
 	compat.rio04 = rioEnvironmentFallback(environ)
 	return compat
+}
+
+// disableSixelSyncUpdates reports whether the terminal needs live Sixel frames
+// without DEC 2026 fencing. Foot identifies itself as "foot(<version>)" through
+// XTVERSION. Its synchronised-update enable path can clear the grid refresh left
+// by the preceding completed Sixel when frames arrive back to back. Other
+// terminals, and an absent identity, retain the normal synchronised fence.
+func disableSixelSyncUpdates(termID string) bool {
+	name := terminalNameToken(termID)
+	return name == "foot" || strings.HasPrefix(name, "foot(")
+}
+
+// setTerminalCompatibility applies terminal-specific compatibility decisions
+// from XTVERSION and the environment fallback. Keeping this assignment behind
+// one seam lets startup detection and tests drive the same policy state.
+func (s *State) setTerminalCompatibility(termID string, environ []string) {
+	s.compat = resolveTerminalCompatibility(termID, environ)
+}
+
+// syncUpdatesEnabled reports whether the active backend keeps DEC 2026 around
+// its live frame. The Foot compatibility policy is scoped to Sixel, so a backend
+// cycle to Block or Kitty restores the normal fence without changing detection.
+func (s *State) syncUpdatesEnabled() bool {
+	return s.Backend != BackendSixel || !s.compat.sixelSyncUpdatesDisabled
+}
+
+// fpsBadgeAllowed reports whether the active backend should paint the live FPS
+// badge. Rio 0.4.x suppresses it only on Kitty, so cycling to Block restores it.
+func (s *State) fpsBadgeAllowed() bool {
+	return s.Backend != BackendKitty || s.compat.kittyFPSBadgeAllowed()
 }
 
 // rio04XTVERSION reports whether identity names an affected Rio 0.4.x release.
@@ -69,4 +100,36 @@ func (c terminalCompatibility) sixelAllowed() bool {
 // kittyFPSBadgeAllowed reports whether Kitty can present Nyala's live FPS badge.
 func (c terminalCompatibility) kittyFPSBadgeAllowed() bool {
 	return !c.rio04
+}
+
+// resolveCompatibleColour applies terminal compatibility after normal colour
+// resolution. Rio 0.4.x auto mode is capped at xterm-256 because its append-only
+// style table is exhausted by truecolour Block frames. Explicit 256 and none
+// retain their normal result; explicit truecolor remains visible for validation.
+func resolveCompatibleColour(flag string, environ []string, detected ColourMode, compat terminalCompatibility) ColourMode {
+	resolved := resolveColour(flag, environ, detected)
+	if flag == "auto" && compat.rio04 && resolved == ColourTrue {
+		return ColourXTerm256
+	}
+	return resolved
+}
+
+// validateForcedBackend applies terminal-specific errors before the generic
+// capability check. Rio 0.4.x advertises Sixel but draws no image, so an explicit
+// request points to its working alternatives.
+func (s *State) validateForcedBackend(mode string) error {
+	if s.compat.rio04 && mode == ModeSixel {
+		return fmt.Errorf("viewer: Rio 0.4.x does not render Sixel images; use --backend=kitty or --backend=block")
+	}
+	return ValidateForcedBackend(mode, s.Enabled)
+}
+
+// validateColourCompatibility rejects explicit truecolour when the selected
+// backend cycle can reach Block on affected Rio releases. A forced graphics
+// backend passes because it does not consume Block colour settings.
+func (s *State) validateColourCompatibility(mode, colourFlag string) error {
+	if s.compat.rio04 && colourFlag == "truecolor" && (mode == ModeAuto || mode == ModeBlock) {
+		return fmt.Errorf("viewer: Rio 0.4.x cannot use truecolour Block rendering; use --color=256 or --color=none")
+	}
+	return nil
 }
