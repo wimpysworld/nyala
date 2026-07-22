@@ -38,7 +38,6 @@ const (
 	cdpInteropRows              = 40
 	cdpInteropCellW             = 8
 	cdpInteropCellH             = 16
-	cdpInteropLayoutWidth       = 1280
 	cdpInteropIdle              = 600 * time.Millisecond
 	cdpInteropDeadline          = 30 * time.Second
 	cdpInteropSixelDelta        = 2
@@ -253,7 +252,7 @@ func TestCDPCorpusCorrectness(t *testing.T) {
 				}
 				frame, placementErr := settledCorpusFrame(fixture, geom, false)
 				result := cdpCorpusResult{Fixture: fixture, Geometry: geom.name, Cols: geom.cols, Rows: geom.rows, CellPx: [2]int{geom.cellW, geom.cellH}, PlacementGate: gates.Placement, PaintGate: gates.Paint, PaintBaseline: paintCase}
-				result.LayoutScale = max(1, float64(geom.cols*geom.cellW)/cdpInteropLayoutWidth)
+				result.LayoutScale = cdpBlockLayoutScale(geom.cols, geom.cellW)
 				result.Diagnostics = frame.Diagnostics
 				if placementErr == nil {
 					var source *image.RGBA
@@ -398,7 +397,6 @@ func startCorpusEngine(fixture string, geom cdpGeometry, paintText bool) (*engin
 	e := engine.New("")
 	e.SetDiagnosticFrameMeta(true)
 	e.SetCellPx(geom.cellW, geom.cellH)
-	e.SetLayoutWidth(cdpInteropLayoutWidth)
 	e.SetBackend(BackendBlock)
 	e.SetDiagnosticTextPaint(paintText)
 	e.Resize(geom.cols, geom.rows)
@@ -491,10 +489,20 @@ func validCorpusFrame(frame render.Frame, geom cdpGeometry) bool {
 
 func corpusPaintedSurface(geom cdpGeometry) (int, int) {
 	surfaceW, surfaceH := geom.cols*geom.cellW, geom.rows*geom.cellH
-	z := max(1, float64(surfaceW)/cdpInteropLayoutWidth)
+	z := cdpBlockLayoutScale(geom.cols, geom.cellW)
 	cssW := int(math.Round(float64(surfaceW) / z))
 	cssH := int(math.Floor(float64(surfaceH) / z))
 	return int(math.Round(float64(cssW) * z)), int(math.Round(float64(cssH) * z))
+}
+
+// cdpBlockLayoutScale mirrors the engine's block cell-density layout scale Z:
+// the target CSS width anchors 8 CSS px per column held to at least the 1024
+// floor, and the CSS layout width is min(target, surface), so Z = cellW/8 in
+// the common case and never drops below 1.
+func cdpBlockLayoutScale(cols, cellW int) float64 {
+	surfW := cols * cellW
+	cssW := min(max(cols*8, 1024), surfW)
+	return float64(surfW) / float64(cssW)
 }
 
 // croppedDimension accepts the production painted size and Chromium's documented
@@ -582,7 +590,7 @@ func runCorpusScrollAttempt(fixture string, geom cdpGeometry, gate metrics.Scrol
 		return result, err
 	}
 	result.ScrollOffsets = []float64{baseScroll, pre.Diagnostics.Meta.ScrollOffsetY, settled.Diagnostics.Meta.ScrollOffsetY}
-	cssScale := max(1, float64(geom.cols*geom.cellW)/cdpInteropLayoutWidth)
+	cssScale := cdpBlockLayoutScale(geom.cols, geom.cellW)
 	cellH, bucket := float64(geom.cellH)/cssScale, float64(geom.cellW)/cssScale
 	result.PreSettle = metrics.ScrollDance([][]metrics.ScrollRun{scrollRuns(before.Text), scrollRuns(pre.Text)}, result.ScrollOffsets[:2], cellH, bucket)
 	result.Settled = metrics.ScrollDance([][]metrics.ScrollRun{scrollRuns(before.Text), scrollRuns(settled.Text)}, []float64{result.ScrollOffsets[0], result.ScrollOffsets[2]}, cellH, bucket)
@@ -648,7 +656,6 @@ func captureCDPInteropFrames(tc cdpInteropCase) ([]render.Frame, error) {
 	fixtureURL := (&url.URL{Scheme: "file", Path: fixture}).String()
 	e := engine.New("")
 	e.SetCellPx(cdpInteropCellW, cdpInteropCellH)
-	e.SetLayoutWidth(cdpInteropLayoutWidth)
 	e.SetBackend(cdpInteropBackend(tc.backend))
 	e.Resize(cdpInteropCols, cdpInteropRows)
 	if err := e.Navigate(fixtureURL); err != nil {

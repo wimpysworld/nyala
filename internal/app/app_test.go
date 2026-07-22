@@ -106,29 +106,12 @@ func TestParseBackendInvalid(t *testing.T) {
 	}
 }
 
-func TestParseLayoutWidthDefault(t *testing.T) {
-	cli := parse(t, "example.com")
-	if cli.LayoutWidth != defaultLayoutWidth {
-		t.Errorf("LayoutWidth = %d, want %d by default", cli.LayoutWidth, defaultLayoutWidth)
-	}
-}
-
-func TestParseLayoutWidthOverride(t *testing.T) {
-	cli := parse(t, "--layout-width", "960", "example.com")
-	if cli.LayoutWidth != 960 {
-		t.Errorf("--layout-width 960: LayoutWidth = %d, want 960", cli.LayoutWidth)
-	}
-}
-
-func TestParseLayoutWidthRejectsNonPositive(t *testing.T) {
-	for _, v := range []string{"0", "-1"} {
-		t.Run(v, func(t *testing.T) {
-			if _, err := tryParse("--layout-width", v, "example.com"); err == nil {
-				t.Errorf("--layout-width %s: want a validation error, got nil", v)
-			} else if !strings.Contains(err.Error(), "layout-width") {
-				t.Errorf("--layout-width %s: err = %v, want it to name layout-width", v, err)
-			}
-		})
+// TestParseLayoutWidthRemoved pins the flag removal: the Block backend derives
+// its layout width from the cell-density formula, so --layout-width no longer
+// parses.
+func TestParseLayoutWidthRemoved(t *testing.T) {
+	if _, err := tryParse("--layout-width", "960", "example.com"); err == nil {
+		t.Errorf("--layout-width: want an unknown-flag error, got nil")
 	}
 }
 

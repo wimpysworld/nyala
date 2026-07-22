@@ -366,19 +366,23 @@ func TestSurfaceSizeNonZeroFloor(t *testing.T) {
 }
 
 func TestPaintedSurfaceHeightFloorNeverExceedsCap(t *testing.T) {
-	// The real-geometry fault: at 158x86 cell 16x33 the surface is 2528x2838 and
-	// Z = 2528/1280 = 1.975. A rounded CSS height (round(2838/1.975) = 1437) paints
-	// 1437*1.975 = 2839 device rows, one over the 2838 cap, so Chromium downscales
-	// every frame. The floor (1436) paints 2836 <= 2838, so no downscale.
+	// The historical fault geometry: a 2528x2838 surface at the fractional
+	// Z = 1.975 the removed fixed-width formula produced there. A rounded CSS
+	// height (round(2838/1.975) = 1437) paints 1437*1.975 = 2839 device rows, one
+	// over the 2838 cap, so Chromium downscales every frame. The floor (1436)
+	// paints 2836 <= 2838, so no downscale. Fractional Z still occurs under the
+	// density formula (Ghostty's cell 26 gives 3.25), so the floor stays
+	// load-bearing.
 	const surfW, surfH = 2528, 2838
 	const z = 1.975
 	cssW, cssH, paintW, paintH := paintedSurface(surfW, surfH, z)
 	if paintW > surfW || paintH > surfH {
 		t.Fatalf("paintedSurface(%d,%d,%g) painted (%d,%d) exceeds the cap (%d,%d)", surfW, surfH, z, paintW, paintH, surfW, surfH)
 	}
-	// The width divides exactly at the target layout width, so it lands on 1280.
+	// The width divides exactly (Z is surface over cssW by construction), so it
+	// rounds back to the layout width the scale was derived from.
 	if cssW != 1280 {
-		t.Errorf("cssW = %d, want 1280 (the target layout width)", cssW)
+		t.Errorf("cssW = %d, want 1280 (round of 2528/1.975)", cssW)
 	}
 	// The height floors rather than rounds, so cssH is 1436 not 1437.
 	if cssH != 1436 {
@@ -405,8 +409,7 @@ func TestScreencastCapNeverExceedsSurface(t *testing.T) {
 	// the real cell-grid surface, so the screencast cap never forces a downscale.
 	const cols, rows = 158, 86
 	const cellW, cellH = 16, 33
-	const layoutWidth = 1280
-	e := &ChromiumEngine{backend: backendBlock, cellW: cellW, cellH: cellH, cols: cols, rows: rows, layoutWidth: layoutWidth}
+	e := &ChromiumEngine{backend: backendBlock, cellW: cellW, cellH: cellH, cols: cols, rows: rows}
 
 	surfW, surfH := e.surfaceSize(cols, rows)
 	capW, capH := e.screencastCap(cols, rows)
@@ -415,7 +418,7 @@ func TestScreencastCapNeverExceedsSurface(t *testing.T) {
 	}
 	// A graphics backend on a logical-point cell runs a density Z of 1, so its
 	// cap equals the surface exactly, byte-identical to the pre-density path.
-	g := &ChromiumEngine{backend: backendSixel, cellW: cellW, cellH: cellH, cols: cols, rows: rows, layoutWidth: layoutWidth}
+	g := &ChromiumEngine{backend: backendSixel, cellW: cellW, cellH: cellH, cols: cols, rows: rows}
 	gSurfW, gSurfH := g.surfaceSize(cols, rows)
 	gCapW, gCapH := g.screencastCap(cols, rows)
 	if gCapW != gSurfW || gCapH != gSurfH {

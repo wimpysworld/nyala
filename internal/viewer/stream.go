@@ -35,9 +35,6 @@ type Engine interface {
 	// SetCellPx sets the resolved terminal cell pixel size the engine uses to
 	// size the graphics capture and to bin DOM text boxes to cells.
 	SetCellPx(w, h int)
-	// SetLayoutWidth sets the block-backend target layout width in CSS pixels the
-	// engine uses to compute the block device scale.
-	SetLayoutWidth(w int)
 	// Resize sets the terminal grid in cells; the engine recomputes the capture
 	// size and, when streaming, restarts the stream.
 	Resize(cols, rows int)
@@ -94,9 +91,8 @@ func syncEngineKittyDecode(eng Engine, st *State) {
 // quadrant forces quadrant, and half renders half-block.
 // kittyTransport is the --kitty-transport intent (auto, direct, or shm);
 // configureBackends resolves it against the probe result and the allow and
-// deny lists. layoutWidth is the block-backend target layout
-// width in CSS pixels, handed to the engine before Navigate.
-func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kittyTransport string, layoutWidth int) (err error) {
+// deny lists.
+func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kittyTransport string) (err error) {
 	scheme := resolveScheme(blocks, os.Environ())
 	// The live fps meter counts every drawn frame for the badge and the quit
 	// summary. Its printSummary defer is registered before setupViewer's restore
@@ -114,7 +110,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 		}
 	}
 	defer fps.printSummary(os.Stdout)
-	fd, st, restore, err := setupViewer(eng, tty, colourFlag, kittyTransport, scheme, layoutWidth)
+	fd, st, restore, err := setupViewer(eng, tty, colourFlag, kittyTransport, scheme)
 	if err != nil {
 		return err
 	}
@@ -244,13 +240,13 @@ func (c *control) run() {
 
 // setupViewer performs Stream's terminal setup: it checks tty is a terminal, reads the grid size, puts the
 // terminal into raw mode, builds the State, runs backend and colour detection,
-// and hands the resolved backend, cell px, and layout width to the engine before
-// Navigate so the engine sizes its screencast capture and block device scale. It
+// and hands the resolved backend and cell px to the engine before Navigate so
+// the engine sizes its screencast capture and derives its layout scale. It
 // returns the tty fd, the State, and a restore closure the caller must defer to
 // leave raw mode. Scheme is the resolved block glyph scheme; it is set directly
 // on State. The caller resolves it through detection. kittyTransport is the
 // --kitty-transport intent, resolved inside configureBackends.
-func setupViewer(eng Engine, tty *os.File, colourFlag, kittyTransport string, scheme block.Scheme, layoutWidth int) (fd uintptr, st *State, restore func(), err error) {
+func setupViewer(eng Engine, tty *os.File, colourFlag, kittyTransport string, scheme block.Scheme) (fd uintptr, st *State, restore func(), err error) {
 	fd = tty.Fd()
 	if !cterm.IsTerminal(fd) {
 		return 0, nil, nil, fmt.Errorf("viewer: %s is not a terminal", tty.Name())
@@ -278,11 +274,9 @@ func setupViewer(eng Engine, tty *os.File, colourFlag, kittyTransport string, sc
 		return 0, nil, nil, err
 	}
 
-	// Hand the resolved backend, cell px, and layout width to the engine before
-	// Navigate; the engine sizes the screencast capture and the block device scale
-	// from them.
+	// Hand the resolved backend and cell px to the engine before Navigate; the
+	// engine sizes the screencast capture and derives its layout scale from them.
 	eng.SetCellPx(state.W, state.H)
-	eng.SetLayoutWidth(layoutWidth)
 	eng.SetBackend(state.Backend)
 	eng.Resize(cols, rows)
 

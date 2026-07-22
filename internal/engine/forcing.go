@@ -24,24 +24,80 @@ import (
 // drop the live style. Runtime.evaluate ExceptionDetails are treated as errors, like
 // evaluateVoid.
 //
+// When forcing stays active but the current cell pair no longer matches the pair
+// the registered stylesheet baked (a terminal font change moves Z with cellW), it
+// refreshes the stylesheet so the forced line-height can never trail the grid.
+//
 // It keeps the state consistent on partial CDP failure: it stores an id only after a
 // successful register, and clears the id only after a successful remove, so a failed
 // call never leaves a phantom or stale id. On any error it returns the current active
 // state rather than the desired one. It returns whether forcing is enabled after the
 // reconcile.
 func (e *ChromiumEngine) syncFontForcing(ctx context.Context) (enabled bool) {
-	e.mu.Lock()
-	desired := e.backend.UsesTextOverlay()
-	active := e.fontForcingID != ""
-	cellW, cellH := e.snapshotCellPx()
-	e.mu.Unlock()
-	if ctx == nil || desired == active {
+	desired, active, cellW, cellH, stale := e.forcingReconcileInputs()
+	if ctx == nil {
 		return active
 	}
-	if desired {
+	switch reconcileForcingAction(desired, active, stale) {
+	case forcingEnable:
 		return e.enableFontForcing(ctx, cellW, cellH)
+	case forcingDisable:
+		return e.disableFontForcing(ctx)
+	case forcingRefresh:
+		return e.refreshFontForcing(ctx, cellW, cellH)
+	default:
+		return active
 	}
-	return e.disableFontForcing(ctx)
+}
+
+// forcingReconcileInputs snapshots the reconcile inputs under mu: the desired
+// state (the active backend takes the overlay), the active state (a forcing
+// script is registered), the current fractional CSS-pixel cell pair, and
+// whether the registered stylesheet's baked pair is stale against it. It is
+// the seam the stale-line-height unit test drives without a browser.
+func (e *ChromiumEngine) forcingReconcileInputs() (desired, active bool, cellW, cellH float64, stale bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	desired = e.backend.UsesTextOverlay()
+	active = e.fontForcingID != ""
+	cellW, cellH = e.snapshotCellPx()
+	stale = active && (cellW != e.forcedCellW || cellH != e.forcedCellH)
+	return desired, active, cellW, cellH, stale
+}
+
+// forcingAction is the reconcile step syncFontForcing runs for one desired,
+// active, stale triple.
+type forcingAction int
+
+const (
+	// forcingKeep leaves the current state untouched.
+	forcingKeep forcingAction = iota
+	// forcingEnable registers the stylesheet on a fresh block enable.
+	forcingEnable
+	// forcingDisable removes the stylesheet on a switch off the block backend.
+	forcingDisable
+	// forcingRefresh replaces the active stylesheet whose baked cell pair went
+	// stale, so the forced line-height tracks a cell-pair change mid-session.
+	forcingRefresh
+)
+
+// reconcileForcingAction is the pure font-forcing reconcile decision. Enable
+// and disable follow the desired and active states; a desired, active, stale
+// triple refreshes, because the registered stylesheet bakes the cell pair and
+// calibration rewrites only the font-size, so without the refresh a cell-pair
+// change would leave rows stacking at the old line-height pitch while the walk
+// snaps at the new one. Pure so the trigger is unit-tested without a browser.
+func reconcileForcingAction(desired, active, stale bool) forcingAction {
+	switch {
+	case desired && !active:
+		return forcingEnable
+	case !desired && active:
+		return forcingDisable
+	case desired && stale:
+		return forcingRefresh
+	default:
+		return forcingKeep
+	}
 }
 
 // fontForcingActive reports whether a font-forcing script is currently registered.
@@ -75,11 +131,50 @@ func (e *ChromiumEngine) enableFontForcing(ctx context.Context, cellW, cellH flo
 	}
 	e.mu.Lock()
 	e.fontForcingID = id
+	e.forcedCellW, e.forcedCellH = cellW, cellH
 	e.mu.Unlock()
 	// Apply to the live document too: the on-new-document script only fires for later
 	// documents, so evaluate the same script now to force the current page.
 	_ = evaluateVoid(ctx, "live font forcing", script, false)
 	e.enableLayoutShift(ctx)
+	return true
+}
+
+// refreshFontForcing replaces the registered font-forcing stylesheet with one
+// rebuilt for the current cell pair, keeping forcing active across the swap. It
+// registers the new on-new-document script first and removes the old one only
+// after that succeeds, so a failed register leaves the old sheet standing (a
+// stale pitch, retried on the next sync) rather than no forcing at all. A
+// failed remove after a successful register leaves an orphan script for the
+// session; its duplicate live style degrades placement on a later document
+// until teardown, the same degrade-not-fail contract calibration follows. It
+// then drops the live style and evaluates the rebuilt script so the current
+// document reflows at the new pitch without a reload; the caller's
+// recalibration corrects the font-size against the fresh sheet. The
+// layout-shift observer is untouched: it bakes no cell-derived value.
+func (e *ChromiumEngine) refreshFontForcing(ctx context.Context, cellW, cellH float64) (enabled bool) {
+	e.mu.Lock()
+	oldID := e.fontForcingID
+	paintText := e.diagnosticTextPaint
+	e.mu.Unlock()
+	script := buildStylesheetScriptWithPaint(font.FiraCodeTTF(), cellW, cellH, paintText)
+	var id page.ScriptIdentifier
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {
+		var err error
+		id, err = page.AddScriptToEvaluateOnNewDocument(script).Do(runCtx)
+		return err
+	})); err != nil {
+		return true
+	}
+	_ = chromedp.Run(ctx, page.RemoveScriptToEvaluateOnNewDocument(oldID))
+	e.mu.Lock()
+	e.fontForcingID = id
+	e.forcedCellW, e.forcedCellH = cellW, cellH
+	e.mu.Unlock()
+	// Swap the live style too: drop the old sheet, then inject the rebuilt one so
+	// the current document reflows at the new pitch without waiting for a reload.
+	_ = evaluateVoid(ctx, "live style removal", buildStyleRemovalScript(), false)
+	_ = evaluateVoid(ctx, "live font forcing", script, false)
 	return true
 }
 
@@ -129,6 +224,7 @@ func (e *ChromiumEngine) disableFontForcing(ctx context.Context) (enabled bool) 
 	}
 	e.mu.Lock()
 	e.fontForcingID = ""
+	e.forcedCellW, e.forcedCellH = 0, 0
 	e.mu.Unlock()
 	// Drop the style from the live document too, so the current page renders unforced
 	// without waiting for a reload.

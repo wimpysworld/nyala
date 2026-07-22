@@ -25,7 +25,7 @@ type ChromiumEngine struct {
 	// viewer goroutine (Resize, SetBackend, SendKey, SendScroll, dispatchWheel)
 	// and the supervisor goroutine (startSession, teardownSession, launch,
 	// rebuild): ctx, cancel, acks, text, frame, cols, rows, scrollX,
-	// scrollY, scrollYTarget, backend, cellW, cellH, layoutWidth, windowID,
+	// scrollY, scrollYTarget, backend, cellW, cellH, windowID,
 	// inputFailures and fontForcingID. Lock, copy the fields into locals or write
 	// the updates, unlock, then run the chromedp I/O on the locals. Never hold mu
 	// across a chromedp.Run or a channel send, or it deadlocks with the supervisor.
@@ -51,7 +51,6 @@ type ChromiumEngine struct {
 	cellW int // resolved cell width in pixels
 	cellH int // resolved cell height in pixels
 
-	layoutWidth int            // block-backend target layout width in CSS pixels
 	backend     render.Backend // active terminal rendering backend
 	browserFlag string         // --browser value, empty for env/PATH discovery
 	// disableFrameRateLimit passes Chromium's launch-time
@@ -80,6 +79,16 @@ type ChromiumEngine struct {
 	// both when it does not. It is reset per session by teardownSession so a stale id
 	// never targets a fresh session's script list.
 	fontForcingID page.ScriptIdentifier
+
+	// forcedCellW and forcedCellH record the fractional CSS-pixel cell pair the
+	// registered font-forcing stylesheet was built with. The stylesheet bakes the
+	// pair at build time (line-height cellH, seed font-size from cellW) and
+	// calibration rewrites only the font-size, so syncFontForcing compares the
+	// current snapshotCellPx pair against these to detect a stale sheet (a
+	// terminal font change moves Z with cellW) and refresh it. Guarded by mu;
+	// reset per session by teardownSession alongside fontForcingID.
+	forcedCellW float64
+	forcedCellH float64
 
 	// layoutShiftID is the ScriptIdentifier of the registered layout-shift observer
 	// on-new-document script, empty when no observer is active. It rides the block
@@ -293,16 +302,6 @@ func (e *ChromiumEngine) SetCellPx(w, h int) {
 func (e *ChromiumEngine) SetDiagnosticTextPaint(enabled bool) {
 	e.mu.Lock()
 	e.diagnosticTextPaint = enabled
-	e.mu.Unlock()
-}
-
-// SetLayoutWidth records the block-backend target layout width in CSS pixels. The
-// engine uses it to compute the block device scale so a terminal wider than the
-// target lays out at the target width. The caller sets it before Navigate,
-// alongside the cell px and the grid.
-func (e *ChromiumEngine) SetLayoutWidth(w int) {
-	e.mu.Lock()
-	e.layoutWidth = w
 	e.mu.Unlock()
 }
 

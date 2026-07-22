@@ -17,15 +17,14 @@ func snapshotCellHeight(e *ChromiumEngine) float64 {
 
 // TestWheelSnapsVerticalToWholeCellBlock asserts a fractional-cell line scroll on
 // the block backend lands the held vertical offset on a whole multiple of the CSS
-// cell height. At 158x86 with cell 16x33 and layout width 1280 the CSS cell height
-// is fractional (~16.7 px), so a raw 40 px line step must snap to the nearest whole
-// cell, not to the raw 40. The DOM scroll reported by the snapshot and screencast
-// metadata must always be a whole number of cells.
+// cell height. At 158x86 with cell 16x33 the block density scale is Z = 2, so the
+// CSS cell height is fractional (16.5 px) and a raw 40 px line step must snap to
+// the nearest whole cell, not to the raw 40. The DOM scroll reported by the
+// snapshot and screencast metadata must always be a whole number of cells.
 func TestWheelSnapsVerticalToWholeCellBlock(t *testing.T) {
 	e := New("")
 	e.SetCellPx(16, 33)
-	e.SetLayoutWidth(1280)
-	e.Resize(158, 86) // cols*cellW = 2528, Z = 2528/1280 = 1.975; fractional CSS cell
+	e.Resize(158, 86) // cell 16 over the 8 px density anchor: Z = 2; fractional CSS cell
 
 	cellH := snapshotCellHeight(e)
 	want := int(math.Round(math.Round(float64(wheelLineStepPx)/cellH) * cellH))
@@ -49,7 +48,6 @@ func TestWheelSnapsVerticalToWholeCellBlock(t *testing.T) {
 func TestWheelSnapAccumulatesWithoutDrift(t *testing.T) {
 	e := New("")
 	e.SetCellPx(16, 33)
-	e.SetLayoutWidth(1280)
 	e.Resize(158, 86)
 
 	cellH := snapshotCellHeight(e)
@@ -79,7 +77,6 @@ func TestWheelSnapAccumulatesWithoutDrift(t *testing.T) {
 func TestWheelHorizontalUnquantised(t *testing.T) {
 	e := New("")
 	e.SetCellPx(16, 33)
-	e.SetLayoutWidth(1280)
 	e.Resize(158, 86)
 
 	e.SendKey(Key{Code: "ArrowRight"})
@@ -101,7 +98,6 @@ func TestWheelHorizontalUnquantised(t *testing.T) {
 func TestWheelNonBlockAlignsTarget(t *testing.T) {
 	e := New("")
 	e.SetCellPx(16, 33)
-	e.SetLayoutWidth(1280)
 	e.Resize(158, 86)
 	e.SetBackend(backendSixel)
 
@@ -126,7 +122,6 @@ func TestWheelNonBlockAlignsTarget(t *testing.T) {
 func TestWheelBackendSwitchNoCorrectiveJump(t *testing.T) {
 	e := New("")
 	e.SetCellPx(16, 33)
-	e.SetLayoutWidth(1280)
 	e.Resize(158, 86)
 
 	cellH := snapshotCellHeight(e)
@@ -188,12 +183,11 @@ func TestWheelCentreCSSPixels(t *testing.T) {
 // step the transport applied.
 func TestSendKeyPageStepCSSPixels(t *testing.T) {
 	e := New("")
-	e.SetCellPx(8, 16)
-	e.SetLayoutWidth(1280)
-	e.Resize(240, 48) // cols*cellW = 1920, so Z = 1920/1280 = 1.5
+	e.SetCellPx(16, 32)
+	e.Resize(240, 48) // cell 16 over the 8 px density anchor, so Z = 2
 
-	// rows*cellH = 48*16 = 768 device px; CSS step = round(768 / 1.5) = 512.
-	const wantStep = 512
+	// rows*cellH = 48*32 = 1536 device px; CSS step = round(1536 / 2) = 768.
+	const wantStep = 768
 	e.SendKey(Key{Code: "PageDown"})
 
 	e.mu.Lock()
@@ -205,13 +199,12 @@ func TestSendKeyPageStepCSSPixels(t *testing.T) {
 }
 
 // TestSendKeyPageStepUnscaled asserts the page step equals the raw device height
-// when Z is 1 (a grid at or under the target layout width), so the CSS-pixel divide
+// when Z is 1 (an 8 px cell matches the density anchor), so the CSS-pixel divide
 // is a no-op there.
 func TestSendKeyPageStepUnscaled(t *testing.T) {
 	e := New("")
 	e.SetCellPx(8, 16)
-	e.SetLayoutWidth(1280)
-	e.Resize(120, 40) // cols*cellW = 960 <= 1280, so Z = 1
+	e.Resize(120, 40) // cell 8 matches the 8 px density anchor, so Z = 1
 
 	const wantStep = 40 * 16 // rows*cellH, no divide
 	e.SendKey(Key{Code: "PageDown"})

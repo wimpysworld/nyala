@@ -65,7 +65,6 @@ type Engine interface {
     SetBackend(name string)
     SetScheme(name string)
     SetCellPx(w, h int)
-    SetLayoutWidth(w int)
     Resize(cols, rows int)
     Navigate(url string) error
     Frames() <-chan render.Frame
