@@ -40,14 +40,14 @@ func TestLiveEncoderPNGPassThrough(t *testing.T) {
 
 	var e LiveEncoder
 	var out bytes.Buffer
-	if err := e.EncodePNGID(data, 7, &out); err != nil {
+	if err := e.EncodePNGID(data, 7, 80, 24, &out); err != nil {
 		t.Fatalf("EncodePNGID() = %v", err)
 	}
 	frames := splitAPCFrames(t, out.String())
 	if len(frames) < 3 {
 		t.Fatalf("PNG emitted %d chunks, want at least 3", len(frames))
 	}
-	for _, opt := range []string{"f=100", "t=d", "a=T", "q=2", "C=1", "i=7", "m=1"} {
+	for _, opt := range []string{"f=100", "t=d", "a=T", "q=2", "C=1", "c=80", "r=24", "i=7", "m=1"} {
 		if !hasControlOpt(frames[0].control, opt) {
 			t.Errorf("first control %q missing %s", frames[0].control, opt)
 		}
@@ -85,13 +85,29 @@ func TestLiveEncoderPNGPassThrough(t *testing.T) {
 		}
 	}
 
+	var gridless bytes.Buffer
+	if err := e.EncodePNGID(data, 7, 0, 0, &gridless); err != nil {
+		t.Fatalf("EncodePNGID() gridless = %v", err)
+	}
+	gridlessFrames := splitAPCFrames(t, gridless.String())
+	for _, opt := range []string{"c=0", "r=0"} {
+		if hasControlOpt(gridlessFrames[0].control, opt) {
+			t.Fatalf("gridless control %q carries %s, want the grid keys omitted", gridlessFrames[0].control, opt)
+		}
+	}
+
 	var layered bytes.Buffer
-	if err := e.EncodePNGIDAtZ(data, 7, -1073741825, &layered); err != nil {
+	if err := e.EncodePNGIDAtZ(data, 7, -1073741825, 80, 24, &layered); err != nil {
 		t.Fatalf("EncodePNGIDAtZ() = %v", err)
 	}
 	layeredFrames := splitAPCFrames(t, layered.String())
 	if !hasControlOpt(layeredFrames[0].control, "z=-1073741825") {
 		t.Fatalf("first layered control %q missing negative z-index", layeredFrames[0].control)
+	}
+	for _, opt := range []string{"c=80", "r=24"} {
+		if !hasControlOpt(layeredFrames[0].control, opt) {
+			t.Fatalf("first layered control %q missing %s", layeredFrames[0].control, opt)
+		}
 	}
 	var layeredPayload strings.Builder
 	for i, frame := range layeredFrames {
@@ -120,20 +136,25 @@ func TestLiveEncoderSHMRaw(t *testing.T) {
 	}{
 		{
 			label:  "q=2",
-			encode: func(w *bytes.Buffer) error { return e.EncodeSHMID(name, 128, 72, 7, 2, w) },
-			want:   apcIntro + "f=32,t=s,s=128,v=72,a=T,C=1,i=7,q=2;" + payload + st,
+			encode: func(w *bytes.Buffer) error { return e.EncodeSHMID(name, 128, 72, 7, 2, 80, 24, w) },
+			want:   apcIntro + "f=32,t=s,s=128,v=72,a=T,C=1,c=80,r=24,i=7,q=2;" + payload + st,
 		},
 		{
 			label:  "q=1",
-			encode: func(w *bytes.Buffer) error { return e.EncodeSHMID(name, 128, 72, 7, 1, w) },
-			want:   apcIntro + "f=32,t=s,s=128,v=72,a=T,C=1,i=7,q=1;" + payload + st,
+			encode: func(w *bytes.Buffer) error { return e.EncodeSHMID(name, 128, 72, 7, 1, 80, 24, w) },
+			want:   apcIntro + "f=32,t=s,s=128,v=72,a=T,C=1,c=80,r=24,i=7,q=1;" + payload + st,
+		},
+		{
+			label:  "gridless omits c and r",
+			encode: func(w *bytes.Buffer) error { return e.EncodeSHMID(name, 128, 72, 7, 2, 0, 0, w) },
+			want:   apcIntro + "f=32,t=s,s=128,v=72,a=T,C=1,i=7,q=2;" + payload + st,
 		},
 		{
 			label: "z and q=2",
 			encode: func(w *bytes.Buffer) error {
-				return e.EncodeSHMIDAtZ(name, 128, 72, 7, -1073741825, 2, w)
+				return e.EncodeSHMIDAtZ(name, 128, 72, 7, -1073741825, 2, 80, 24, w)
 			},
-			want: apcIntro + "f=32,t=s,s=128,v=72,a=T,C=1,i=7,z=-1073741825,q=2;" + payload + st,
+			want: apcIntro + "f=32,t=s,s=128,v=72,a=T,C=1,c=80,r=24,i=7,z=-1073741825,q=2;" + payload + st,
 		},
 	}
 	for _, tc := range cases {
@@ -164,7 +185,7 @@ func TestLiveEncoderSHMRawAllocs(t *testing.T) {
 	const name = "/nyala-99-8"
 	var e LiveEncoder
 	allocs := testing.AllocsPerRun(100, func() {
-		if err := e.EncodeSHMID(name, 2560, 1440, 2, 1, io.Discard); err != nil {
+		if err := e.EncodeSHMID(name, 2560, 1440, 2, 1, 190, 45, io.Discard); err != nil {
 			t.Fatalf("EncodeSHMID() = %v", err)
 		}
 	})
@@ -200,7 +221,7 @@ func TestLiveEncoderPNGRejectsBeforeWrite(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var e LiveEncoder
 			var out bytes.Buffer
-			err := e.EncodePNGID(data, 1, &out)
+			err := e.EncodePNGID(data, 1, 80, 24, &out)
 			if !errors.Is(err, ErrInvalidPNGData) {
 				t.Fatalf("EncodePNGID() error = %v, want ErrInvalidPNGData", err)
 			}

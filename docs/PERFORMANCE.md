@@ -4194,3 +4194,71 @@ available parallelism is captured.
   https://scispace.com/papers/design-implementation-and-evaluation-of-a-task-parallel-jpeg-4k0eed5nkj
 - Per-byte decode scaling on larger images:
   http://blog.loopbio.com/video-io-2-jpeg-decoding.html
+
+## Mid-session zoom re-derives the cell pair (2026-07-22)
+
+Symptom: a mid-session terminal font-size change (zoom) left the whole
+pipeline on a stale cell pixel pair. Block did not reflow text, Kitty graphics
+neither rescaled nor realigned (the image offset right on zoom-out), and stale
+pixels outside the new image were never repainted.
+
+Mechanism: the viewer resolved the cell pair once at startup and called
+`SetCellPx` exactly once before Navigate. The SIGWINCH handler re-read only
+cols and rows and submitted `Resize`, so the engine restarted the screencast
+from the old pair. The font-forcing refresh could not trip either: its
+`snapshotCellPx` read the same stale pair, so the reconcile saw nothing move.
+
+Fix: `streamSession.resize` now re-derives the pair from the TIOCGWINSZ
+winsize on every SIGWINCH. The pure decision (`resizeCellPx` in
+`internal/viewer/viewer.go`) moves the pair only when the derivation succeeds
+and the pair changed; a `NYALA_CELL_PX` override pins the pair for the whole
+run. A changed pair travels to the engine inside the same control closure as
+the grid restart, before `Resize`, because the control channel is one-slot
+drop-on-full: a separately queued `SetCellPx` could be dropped while the
+`Resize` survives and restart at the stale pair. On Kitty the resize also
+reuses the backend-switch delete-all seam (`resetKitty`) before the clear,
+because a Kitty placement survives the ANSI clear and a zoom-out otherwise
+leaves the old, larger image standing outside the new one.
+
+Fail-closed fallback: a terminal that does not update the ioctl pixel report
+(derivation fails or is out of the sanity window) keeps the old pair, the same
+policy as startup, so geometry never degrades below the last known-good pair.
+
+The re-derived pair exposed a second fault: after a zoom-in the restarted
+graphics stream drew undersized frames. The governing mechanism, measured
+against real Chromium 150: headless Chromium always paints at the launch
+`--force-device-scale-factor` Z0 (`newAllocator` in
+`internal/engine/launch.go`) for the whole process. The live
+`Emulation.SetDeviceMetricsOverride` scale changes layout only, and
+`Browser.SetContentsSize` governs only the window around content painted at
+css x Z0. So the engine cannot obtain full-density frames at a new Z without
+a relaunch: after a zoom-in (Z > Z0) the delivered frame is the complete css
+viewport, undersized by Z0/Z against the grid, and nothing upscaled it. On a
+static page the single post-restart refresh frame is pixel-identical to the
+old content, so the user saw no repaint and the fps badge legitimately read
+`In: -- / Out: --` (a rate needs two frames in its one-second window). Block
+masked the shortfall because `ComposeBlockFrame` composes any bitmap onto the
+grid. A contents-size-at-launch-scale variant was tried and reverted: it
+cannot change the paint density, and whenever Z fell below Z0 it broke
+Block's contract that the delivered bitmap spans exactly the css viewport.
+
+Fix, viewer-side grid scaling: the delivered frame is complete, just at a
+stale density, so the viewer fits it to the cell grid. Kitty placements now
+carry the `c=<cols>,r=<rows>` keys (`internal/render/kitty/live.go`), so the
+terminal scales every placement to the full cell area; a matching frame
+scales 1:1, a no-op. Sixel has no placement-scaling key, so the viewer
+rescales through the shared block scaler only when the frame no longer spans
+the grid (`fitSixelToGrid` in `internal/viewer/viewer.go`); the steady state
+skips the copy. The accepted cost is zoom-in softness: frames stay at the
+launch density until the next navigation, so a zoomed-in page renders
+slightly soft rather than sharp. Two adjacent faults fixed on the same seam:
+`deriveCellPixels` now rounds each axis to the nearest cell instead of
+flooring (a fractional device-pixel cell lost up to one pixel per column of
+surface, the Ghostty/WezTerm zoom-out shrink; Sixel overdraw is clipped by
+the DECSDM wrap), and the decode collector geometry-tags its held re-emit
+bitmap so a restart's re-emit poke can no longer recompose an old-geometry
+bitmap onto the resized grid (the transient WezTerm Block misalignment). The
+fps badge also appends a cumulative received-frame total,
+`In: -- / Out: -- fps (N)`, because a frozen total distinguishes this class
+of stall from an idle page, the ambiguity that delayed this diagnosis. The
+exact-density relaunch option is recorded in `TODO.md` section 5.

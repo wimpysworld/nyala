@@ -18,6 +18,7 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"math"
 	"os"
 	"runtime"
 	"strconv"
@@ -78,6 +79,11 @@ type State struct {
 	Enabled []Backend             // backends in the Tab cycle, highest-fidelity first
 	cellPx                        // terminal cell pixel size for graphics scaling
 	compat  terminalCompatibility // terminal-specific rendering compatibility policy
+
+	// cellPxForced records that the NYALA_CELL_PX override supplied cellPx, so a
+	// resize never re-derives the pair from the winsize and the diagnostic
+	// geometry stays pinned for the whole run.
+	cellPxForced bool
 
 	// diff is the Block cell differ. The interactive stream session and Block
 	// diagnostics set it before composition so renderBlock emits only the cells
@@ -466,7 +472,39 @@ func (s *State) renderStreamFrame(frame render.Frame, w io.Writer, kittyBelowTex
 	if s.sixelEnc == nil {
 		s.sixelEnc = &sixel.Renderer{}
 	}
+	img = s.fitSixelToGrid(img)
 	return s.sixelEnc.Render(render.Frame{Img: img}, w)
+}
+
+// fitSixelToGrid scales a Sixel frame onto the cell-grid pixel extent when it
+// no longer spans it. After a mid-session zoom the engine keeps delivering the
+// complete viewport at the stale launch paint density, and Sixel, unlike
+// Kitty, has no placement key the terminal scales by, so the viewer fits the
+// bitmap itself through the shared block scaler (area-average down,
+// nearest-fill up). The steady state pays nothing: a frame at the grid extent
+// returns unchanged, and a height-only shortfall under one cell is the
+// engine's floored fractional-density row band, not a zoom, so it draws as-is
+// like today rather than rescaling every frame on a device-pixel-cell
+// terminal.
+func (s *State) fitSixelToGrid(img image.Image) image.Image {
+	gridW, gridH := render.GraphicsCaptureSize(s.Cols, s.Rows, s.W, s.H)
+	if gridW <= 0 || gridH <= 0 {
+		return img
+	}
+	b := img.Bounds()
+	dh := gridH - b.Dy()
+	if dh < 0 {
+		dh = -dh
+	}
+	if b.Dx() == gridW && dh < s.H {
+		return img
+	}
+	if s.scratch.pool == nil {
+		s.scratch.pool = rowband.New()
+		s.scratch.downscale = metrics.NewParallelDownscale()
+		s.scratch.compose = block.NewParallelCompose()
+	}
+	return s.scratch.downscale.DownscaleInto(s.scratch.downscaleDst(gridW, gridH), img, s.scratch.pool)
 }
 
 // decodeFramePNG materialises a retained CDP PNG only when a non-Kitty consumer
@@ -545,7 +583,10 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 }
 
 // encodeKittyPNG transmits a retained CDP PNG unchanged, then deletes the prior
-// double-buffer image.
+// double-buffer image. The placement carries the c=/r= grid keys, so the
+// terminal scales the image to the full cell area: after a mid-session zoom the
+// engine delivers the complete viewport at the stale launch paint density, and
+// the grid fit keeps it spanning the terminal (a matching frame scales 1:1).
 func (s *State) encodeKittyPNG(data string, w io.Writer, belowText bool) error {
 	next := nextKittyID(s.kittyID)
 	if s.kittyEnc == nil {
@@ -553,9 +594,9 @@ func (s *State) encodeKittyPNG(data string, w io.Writer, belowText bool) error {
 	}
 	var err error
 	if belowText {
-		err = s.kittyEnc.EncodePNGIDAtZ(data, next, kittyFPSPageZ, w)
+		err = s.kittyEnc.EncodePNGIDAtZ(data, next, kittyFPSPageZ, s.Cols, s.Rows, w)
 	} else {
-		err = s.kittyEnc.EncodePNGID(data, next, w)
+		err = s.kittyEnc.EncodePNGID(data, next, s.Cols, s.Rows, w)
 	}
 	if err != nil {
 		return err
@@ -607,9 +648,9 @@ func (s *State) encodeKittySHM(img *image.RGBA, w io.Writer, belowText bool) err
 		return err
 	}
 	if belowText {
-		err = s.kittyEnc.EncodeSHMIDAtZ(obj.Name(), width, height, next, kittyFPSPageZ, kittySHMQuiet, w)
+		err = s.kittyEnc.EncodeSHMIDAtZ(obj.Name(), width, height, next, kittyFPSPageZ, kittySHMQuiet, s.Cols, s.Rows, w)
 	} else {
-		err = s.kittyEnc.EncodeSHMID(obj.Name(), width, height, next, kittySHMQuiet, w)
+		err = s.kittyEnc.EncodeSHMID(obj.Name(), width, height, next, kittySHMQuiet, s.Cols, s.Rows, w)
 	}
 	if err != nil {
 		return err
@@ -844,6 +885,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 	switch {
 	case overrideOK:
 		st.cellPx = overridePx
+		st.cellPxForced = true
 	case winOK:
 		st.cellPx = winPx
 	}
@@ -932,15 +974,42 @@ func winsizeCellPixels(fd uintptr, _, _ int) (cellPx, bool) {
 // bound are testable without a live ioctl. It returns ok=false when any field
 // is zero, so a bogus report (for example a 32000x0 winsize, Ypixel 0) falls
 // through, and ok=false when the derived cell px is outside the sane window.
+//
+// Each axis rounds to the nearest integer cell rather than flooring. A terminal
+// with fractional device-pixel cells (Ghostty, WezTerm, most visibly after a
+// zoom) reports an xpixel that is no exact multiple of cols, and flooring lost
+// up to one pixel per column of surface, a visible shrink of the rendered image
+// inside the window. Rounding bounds the error to half a pixel per cell in
+// either direction, so cols*cellW (or rows*cellH) can overshoot the reported
+// pixel size by under half the grid dimension. The overshoot is safe: every
+// live Sixel frame travels inside DECSDM fixed placement
+// (beginSixelDisplayMode), which clips at the screen edge instead of scrolling
+// the viewport, and Kitty scales its placement to the cell area.
 func deriveCellPixels(xpixel, ypixel, col, row int) (cellPx, bool) {
 	if xpixel == 0 || ypixel == 0 || col == 0 || row == 0 {
 		return cellPx{}, false
 	}
-	c := cellPx{W: xpixel / col, H: ypixel / row}
+	c := cellPx{
+		W: int(math.Round(float64(xpixel) / float64(col))),
+		H: int(math.Round(float64(ypixel) / float64(row))),
+	}
 	if !c.inBounds() {
 		return cellPx{}, false
 	}
 	return c, true
+}
+
+// resizeCellPx is the pure resize-time cell-pair decision: it returns the pair
+// the viewer and engine should use after a terminal resize and whether it
+// changed. A forced NYALA_CELL_PX pair never moves, a failed winsize
+// derivation keeps the current pair (fail closed, the same policy as startup),
+// and an unchanged derivation reports no change so the engine restart skips
+// SetCellPx. The ioctl stays at the seam edge in winsizeCellPixels.
+func resizeCellPx(forced bool, current, derived cellPx, derivedOK bool) (cellPx, bool) {
+	if forced || !derivedOK || derived == current {
+		return current, false
+	}
+	return derived, true
 }
 
 // inBounds reports whether a derived cell pixel size sits inside the winsize

@@ -206,6 +206,14 @@ func proxyFlags(cfg ProxyConfig) [][2]string {
 // dimensions and the painted device surface paintW = round(cssW*Z), paintH =
 // round(cssH*Z), the surface Chromium actually paints and the screencast cap and
 // the compose model both take, so the engine's model matches the delivered bitmap.
+//
+// The paint model holds exactly only while Z equals the launch
+// --force-device-scale-factor: headless Chromium paints at the launch density for
+// the whole process, and a later SetDeviceMetricsOverride changes layout alone.
+// After a mid-session zoom to a larger Z the delivered bitmap is the complete css
+// viewport at the launch density, so it is undersized against paint = css x Z and
+// the viewer scales it onto the terminal grid (see the Kitty c=/r= placement keys
+// and the Sixel grid upscale).
 func paintedSurface(surfW, surfH int, z float64) (cssW, cssH, paintW, paintH int) {
 	cssW = int(math.Round(float64(surfW) / z))
 	cssH = int(math.Floor(float64(surfH) / z))
@@ -226,6 +234,13 @@ func paintedSurface(surfW, surfH int, z float64) (cssW, cssH, paintW, paintH int
 // (maxWidth/maxHeight, set by startScreencast) takes the painted device surface
 // from the same paintedSurface computation, so Chromium never downscales a frame
 // to fit a cap set one row short of the painted rows.
+//
+// Measured constraint (Chromium 150): the paint density is pinned to the launch
+// --force-device-scale-factor and the live Z here changes layout only, so sizing
+// the contents at any other derivation cannot change the delivered pixel density.
+// Sizing them at the window extent instead of the CSS pair broke the Block
+// contract (the bitmap must span exactly the css viewport) whenever Z fell below
+// the launch scale, so the CSS pair is authoritative for both calls.
 func applySizing(ctx context.Context, windowID browser.WindowID, surfW, surfH int, z float64) error {
 	cssW, cssH, _, _ := paintedSurface(surfW, surfH, z)
 	if err := chromedp.Run(ctx,

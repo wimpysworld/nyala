@@ -79,7 +79,9 @@ func TestDecodeKittySHMRawRGBA(t *testing.T) {
 	var buf bytes.Buffer
 	enc := &kitty.LiveEncoder{}
 	b := in.Bounds()
-	if err := enc.EncodeSHMID(name, b.Dx(), b.Dy(), 7, 0, &buf); err != nil {
+	// A real grid pair proves the decoder tolerates the c=/r= placement keys the
+	// live viewer now emits; they scale display only, never the pixel payload.
+	if err := enc.EncodeSHMID(name, b.Dx(), b.Dy(), 7, 0, 8, 3, &buf); err != nil {
 		t.Fatalf("EncodeSHMID: %v", err)
 	}
 

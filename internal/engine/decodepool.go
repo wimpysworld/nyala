@@ -322,6 +322,16 @@ func (e *ChromiumEngine) runDecodeWorker(ctx context.Context, q *rawFrameQueue, 
 	}
 }
 
+// captureGeom returns the capture geometry the engine currently expects: the
+// screencast cap for the held grid, cell pair, and backend, read under mu. The
+// collector tags its held re-emit bitmap with it, so a bitmap captured for an
+// older grid is dropped rather than recomposed onto a resized one.
+func (e *ChromiumEngine) captureGeom() (w, h int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.screencastCap(e.cols, e.rows)
+}
+
 // runDecodeCollector is the single serialising stage of the live decode pool. The
 // workers decode in parallel and finish out of order, so this stage restores order and
 // owns everything the frame loop kept serial: the monotonic publish gate, the held
@@ -350,6 +360,14 @@ func (e *ChromiumEngine) runDecodeCollector(ctx context.Context, in <-chan decod
 	e.mu.Unlock()
 	var held pendingFrame
 	var haveHeld bool
+	// heldGeomW, heldGeomH tag the held bitmap with the capture geometry the
+	// engine expected when the collector took it. A resize or backend switch moves
+	// that geometry before the first fresh frame lands, and the restart's snapshot
+	// poke sends a re-emit in exactly that window; re-pushing then recomposes the
+	// old-geometry bitmap onto the already-resized grid (the transient
+	// misalignment after a zoom). The re-emit arm compares the tag against the
+	// current geometry and drops a stale hold instead.
+	var heldGeomW, heldGeomH int
 	// lastScroll tracks the scroll offset of the last published frame so a change pokes
 	// a re-snapshot. lastComposed holds the previous frame's composed overlay for one
 	// frame when a bitmap's generation or scroll does not match the latest runs. Both
@@ -370,6 +388,14 @@ func (e *ChromiumEngine) runDecodeCollector(ctx context.Context, in <-chan decod
 			// viewer repaints with the fresh text. Before the first frame there is nothing
 			// to re-push, so the poke is a no-op; the first frame carries it.
 			if !haveHeld {
+				continue
+			}
+			if w, h := e.captureGeom(); w != heldGeomW || h != heldGeomH {
+				// The grid moved since this bitmap arrived: drop the stale hold so the
+				// next fresh frame repaints instead of recomposing old-geometry pixels
+				// onto the new grid. A held frame never carries a pooled plane (the
+				// plane path clears the hold), so there is nothing to release.
+				held, haveHeld = pendingFrame{}, false
 				continue
 			}
 			if !e.emitFrame(ctx, frames, ts, held, &lastComposed) {
@@ -394,6 +420,7 @@ func (e *ChromiumEngine) runDecodeCollector(ctx context.Context, in <-chan decod
 				held, haveHeld = pendingFrame{}, false
 			} else {
 				held, haveHeld = pending, true
+				heldGeomW, heldGeomH = e.captureGeom()
 			}
 			off, offOK := frameScrollOffset(pending)
 			if offOK {

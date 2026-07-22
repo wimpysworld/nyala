@@ -395,7 +395,7 @@ func TestKittyTransportBenchmark(t *testing.T) {
 		name:    "t=d png",
 		payload: len(fix.pngBytes),
 		send: func(id int) error {
-			return enc.EncodePNGID(fix.pngB64, id, tty)
+			return enc.EncodePNGID(fix.pngB64, id, 0, 0, tty)
 		},
 	}}
 

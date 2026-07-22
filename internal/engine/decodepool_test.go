@@ -173,6 +173,77 @@ func TestDecodePoolMonotonicUnderRace(t *testing.T) {
 	}
 }
 
+// TestCollectorDropsHeldBitmapOnGeometryChange proves the re-emit hold is
+// geometry-tagged: after a simulated resize (the grid moves under the engine,
+// as Resize does before restarting the stream), a re-emit poke must not re-push
+// the held old-geometry bitmap onto the new grid. At unchanged geometry the
+// same poke re-pushes the hold, so the static-page text repaint stays intact.
+func TestCollectorDropsHeldBitmapOnGeometryChange(t *testing.T) {
+	t.Parallel()
+	e := &ChromiumEngine{backend: backendBlock, cellW: 8, cellH: 16, cols: 80, rows: 24}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	decoded := make(chan decodedFrame, 1)
+	frames := make(chan render.Frame, 8)
+	reEmit := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.runDecodeCollector(ctx, decoded, frames, &textSync{}, nil, reEmit)
+	}()
+
+	recv := func(want string) render.Frame {
+		t.Helper()
+		select {
+		case f := <-frames:
+			return f
+		case <-time.After(time.Second):
+			t.Fatalf("no frame published: %s", want)
+			return render.Frame{}
+		}
+	}
+
+	decoded <- decodedFrame{seq: 1, pending: pendingFrame{img: seqImage(1)}}
+	recv("initial decoded frame")
+
+	// Unchanged geometry: the poke re-pushes the held bitmap.
+	reEmit <- struct{}{}
+	if f := recv("re-emit at unchanged geometry"); seqOf(f.Img.(*image.RGBA)) != 1 {
+		t.Fatal("re-emit did not re-push the held bitmap")
+	}
+
+	// Simulated resize: the grid moves under the engine, as Resize does before
+	// restartStreamLocked pokes the snapshot goroutine.
+	e.mu.Lock()
+	e.cols, e.rows = 120, 40
+	e.mu.Unlock()
+
+	reEmit <- struct{}{}
+	select {
+	case f := <-frames:
+		t.Fatalf("re-emit after a geometry change re-pushed the stale bitmap (seq %d)", seqOf(f.Img.(*image.RGBA)))
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// The hold is dropped, not merely skipped: a later poke at the new geometry
+	// still re-emits nothing until a fresh frame arrives and retags the hold.
+	reEmit <- struct{}{}
+	select {
+	case <-frames:
+		t.Fatal("dropped hold re-emitted after a second poke")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	decoded <- decodedFrame{seq: 2, pending: pendingFrame{img: seqImage(2)}}
+	recv("fresh frame at the new geometry")
+	reEmit <- struct{}{}
+	if f := recv("re-emit of the retagged hold"); seqOf(f.Img.(*image.RGBA)) != 2 {
+		t.Fatal("retagged hold did not re-emit the fresh bitmap")
+	}
+	cancel()
+	<-done
+}
+
 // TestTeardownSessionDropsCancelledCollectorFrames proves a torn-down live session
 // cannot leave a decoded frame on the engine-lifetime channel for the replacement
 // session's viewer to consume.
