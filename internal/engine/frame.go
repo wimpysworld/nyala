@@ -98,9 +98,10 @@ func decodeBase64Pooled(data string) (raw []byte, release func(), err error) {
 	return nil, nil, derr
 }
 
-// blockScreencastQuality is the JPEG quality the block backend uses for its live
-// stream. Quality 90 retains page detail while native-YCbCr composition keeps the
-// live Block path within its processing budget.
+// blockScreencastQuality is the JPEG quality every live JPEG capture uses:
+// Block, Sixel, and the kitty-shm transport. Quality 90 retains page detail
+// while native-YCbCr composition keeps the live Block path within its
+// processing budget.
 const blockScreencastQuality = 90
 
 // frameChannelBuffer is the buffer size of the emitted-frame channel. A small
@@ -232,8 +233,9 @@ func (e *ChromiumEngine) decodeKittyPlane(data string) (image.Image, func(), err
 
 // decodeLiveFrame is the live decode-pool's pixel decode. It keeps the decoder's
 // native image layout. Block averages native JPEG YCbCr planes directly while
-// composing its final grid. Sixel decodes PNG; Kitty passes its PNG through without
-// calling this method. Capture does not call this path and remains lossless PNG.
+// composing its final grid. Sixel decodes JPEG q90 through the same signature
+// sniff, so its encoder receives native YCbCr; Kitty passes its PNG through
+// without calling this method.
 func (e *ChromiumEngine) decodeLiveFrame(data string) (image.Image, error) {
 	raw, release, err := decodeBase64Pooled(data)
 	if err != nil {

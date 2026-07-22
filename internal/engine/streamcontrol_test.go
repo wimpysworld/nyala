@@ -24,17 +24,17 @@ func newStreamControlTestEngine(t *testing.T) (*ChromiumEngine, context.Context)
 		rows:              24,
 		cellW:             8,
 		cellH:             16,
-		screencastFmt:     screencastFmt{format: page.ScreencastFormatPng},
+		screencastFmt:     screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality},
 		screencastStarted: true,
 	}
 	t.Cleanup(cancel)
 	return e, ctx
 }
 
-// TestSixelFrameBurstAndIdleKeepPNG proves frame arrival rate no longer controls
+// TestSixelFrameBurstAndIdleKeepJPEG proves frame arrival rate no longer controls
 // Sixel's format. A rapid burst and an idle period issue no stop or start and leave
-// the active stream at PNG.
-func TestSixelFrameBurstAndIdleKeepPNG(t *testing.T) {
+// the active stream at JPEG.
+func TestSixelFrameBurstAndIdleKeepJPEG(t *testing.T) {
 	e, _ := newStreamControlTestEngine(t)
 	stops, starts := 0, 0
 	e.stopScreencastOp = func(context.Context) error {
@@ -52,13 +52,13 @@ func TestSixelFrameBurstAndIdleKeepPNG(t *testing.T) {
 	e.mu.Lock()
 	format := e.screencastFmt.format
 	e.mu.Unlock()
-	if stops != 0 || starts != 0 || format != page.ScreencastFormatPng {
-		t.Fatalf("burst and idle issued stops=%d starts=%d format=%q, want no controls and PNG", stops, starts, format)
+	if stops != 0 || starts != 0 || format != page.ScreencastFormatJpeg {
+		t.Fatalf("burst and idle issued stops=%d starts=%d format=%q, want no controls and JPEG", stops, starts, format)
 	}
 }
 
 // TestBackendRestartsUseFixedFormats proves live backend switches restart with the
-// destination policy: Block JPEG q90, then Kitty PNG and Sixel PNG.
+// destination policy: Block JPEG q90, then Kitty PNG and Sixel JPEG q90.
 func TestBackendRestartsUseFixedFormats(t *testing.T) {
 	e, _ := newStreamControlTestEngine(t)
 	e.stopScreencastOp = func(context.Context) error { return nil }
@@ -74,7 +74,7 @@ func TestBackendRestartsUseFixedFormats(t *testing.T) {
 	want := []screencastFmt{
 		{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality},
 		{format: page.ScreencastFormatPng},
-		{format: page.ScreencastFormatPng},
+		{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality},
 	}
 	if !slices.Equal(starts, want) {
 		t.Fatalf("backend restart formats = %v, want %v", starts, want)
@@ -88,6 +88,7 @@ func TestBackendRestartsUseFixedFormats(t *testing.T) {
 func TestKittyDecodeToggleRestartsFormat(t *testing.T) {
 	e, _ := newStreamControlTestEngine(t)
 	e.backend = backendKitty
+	e.screencastFmt = screencastFmt{format: page.ScreencastFormatPng} // running direct Kitty stream
 	stops := 0
 	e.stopScreencastOp = func(context.Context) error {
 		stops++
@@ -261,7 +262,7 @@ func TestInitialStartSerialisesWithBackendRestart(t *testing.T) {
 	mu.Lock()
 	got := slices.Clone(events)
 	mu.Unlock()
-	want := []string{"size", "start:png", "stop", "size", "start:png"}
+	want := []string{"size", "start:jpeg", "stop", "size", "start:png"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("stream control order = %v, want %v", got, want)
 	}
@@ -385,22 +386,27 @@ func TestBackendBeforeRebuildInitialStartDefersRestart(t *testing.T) {
 }
 
 // TestRestartOperationFailureCancelsSession checks every operation that can fail
-// after a healthy stream enters a restart. The desired PNG format is never committed,
-// and cancellation hands recovery to the existing supervisor lifecycle.
+// after a healthy stream enters a restart. The restart's target format is never
+// committed, and cancellation hands recovery to the existing supervisor lifecycle.
+// Each case seeds a committed format that differs from the restart's target: the
+// resize cases carry a stale PNG on the Sixel stream, whose target is JPEG q90,
+// and the backend case carries Sixel's JPEG q90 into a switch to Kitty PNG.
 func TestRestartOperationFailureCancelsSession(t *testing.T) {
 	failure := errors.New("injected stream-control failure")
 	for _, tc := range []struct {
 		name   string
 		fail   string
 		resize bool
+		seed   screencastFmt
+		target page.ScreencastFormat
 	}{
-		{name: "stop through resize", fail: "stop", resize: true},
-		{name: "sizing through backend", fail: "size"},
-		{name: "start through resize", fail: "start", resize: true},
+		{name: "stop through resize", fail: "stop", resize: true, seed: screencastFmt{format: page.ScreencastFormatPng}, target: page.ScreencastFormatJpeg},
+		{name: "sizing through backend", fail: "size", seed: screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality}, target: page.ScreencastFormatPng},
+		{name: "start through resize", fail: "start", resize: true, seed: screencastFmt{format: page.ScreencastFormatPng}, target: page.ScreencastFormatJpeg},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, ctx := newStreamControlTestEngine(t)
-			e.screencastFmt = screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality}
+			e.screencastFmt = tc.seed
 			e.stopScreencastOp = func(context.Context) error {
 				if tc.fail == "stop" {
 					return failure
@@ -433,8 +439,8 @@ func TestRestartOperationFailureCancelsSession(t *testing.T) {
 			e.mu.Lock()
 			got := e.screencastFmt.format
 			e.mu.Unlock()
-			if got == page.ScreencastFormatPng {
-				t.Fatal("failed restart committed the target PNG format")
+			if got == tc.target {
+				t.Fatalf("failed restart committed the target %s format", tc.target)
 			}
 		})
 	}

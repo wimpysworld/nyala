@@ -51,9 +51,12 @@ func (b Backend) String() string {
 }
 
 // CaptureFormat returns the browser screencast encoding for the backend.
+// Block and Sixel decode every frame, so they capture JPEG; Kitty captures
+// PNG for its direct pass-through (its shm transport overrides to JPEG at
+// the engine seam).
 func (b Backend) CaptureFormat() CaptureFormat {
 	switch b {
-	case BackendSixel, BackendKitty:
+	case BackendKitty:
 		return CapturePNG
 	default:
 		return CaptureJPEG

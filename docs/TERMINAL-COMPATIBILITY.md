@@ -17,6 +17,31 @@ protocol to avoid a terminal-side limit. Notes record incomplete compatibility.
 | Rio | Sextant | No | Yes | Tested with Rio 0.4.7. Rio 0.4.x has the terminal-side limits described below; Nyala applies compatibility gates for them. |
 | WezTerm | Sextant | Yes | Yes | Sixel is documented as preliminary and experimental. Nyala's Kitty placement works. |
 
+## Sixel performance
+
+Measured with the live WebGL Aquarium at 2560x1600 with Sixel JPEG q90 capture
+on the same machine, 2026-07-22. Full metric lines live in
+[PERFORMANCE.md](PERFORMANCE.md) under "Sixel palette reuse (2026-07-22)".
+
+| Terminal | Nyala decode mean ms | Nyala encode mean ms | Terminal write mean ms | Output fps |
+|---|---|---|---|---|
+| mlterm | 13.5 | 28.3 | 42.2 | 22.9 |
+| Alacritty | 13.7 | 29.4 | 55.6 | 17.5 |
+| foot | 13.6 | 30.0 | 123.9 | 8.1 |
+| Contour | 13.0 | 30.3 | 250.3 | 4.0 |
+| WezTerm | 29.2 | 70.3 | 553.7 | 1.8 |
+
+Ingest was 60.0 fps (the CDP cap) on every terminal except WezTerm (38.3).
+Nyala's side is constant across emulators: decode 13 to 14 ms, encode 28 to
+30 ms. Output rate is set by the emulator's Sixel consumption, a 13x spread
+from mlterm to WezTerm on identical payloads. Sixel is in-band with no
+shared-memory escape hatch, so the emulator sets the ceiling. Nyala's
+freshest-frame pacing degrades gracefully; slow terminals show the newest
+frame at a lower rate rather than lagging behind. WezTerm is the double
+outlier. Its parse and raster cost contends for CPU, which inflates Nyala's
+own decode and encode and drops ingest, the only tested emulator that
+degrades the Nyala side. mlterm is the fastest Sixel renderer tested.
+
 ## Rio 0.4.x
 
 The problems below are incompatibilities and implementation limits in Rio

@@ -105,7 +105,7 @@ type ChromiumEngine struct {
 	// failing transition without deadlocking.
 	screencastCtl sync.Mutex
 	// screencastFmt is the last successfully started screencast format and JPEG
-	// quality, guarded by e.mu. Block uses JPEG; Kitty and Sixel use PNG.
+	// quality, guarded by e.mu. Block and Sixel use JPEG; direct Kitty uses PNG.
 	screencastFmt screencastFmt
 	// sizedSurface records the viewport sizing last applied to this session. The
 	// launch path seeds it, so the post-commit initial capture does not repeat

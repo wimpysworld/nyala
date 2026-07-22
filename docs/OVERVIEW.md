@@ -82,11 +82,11 @@ second text or geometry channel is not planned for Stage 4. See `docs/STAGE-3.md
 
 `render.Frame.Img` is an `image.Image`, not a forced full-frame RGBA plane. Live
 JPEG normally crosses the engine/render seam as the decoder's `*image.YCbCr`.
-Block keeps that native layout. Sixel requests PNG for every frame and preserves the
-PNG decoder's native concrete pixel type into the encoder; this can be RGBA or NRGBA,
-so the encoder retains both fast paths. PNG also keeps its native layout when a
-queued Kitty frame reaches a pixel backend. The direct Kitty transport requests PNG;
-the shm transport captures JPEG q90.
+Block and Sixel keep that native layout: the Sixel encoder consumes the JPEG
+decoder's YCbCr directly. PNG also keeps its native layout (RGBA or NRGBA, so the
+encoder retains both fast paths) when a queued Kitty frame reaches a pixel
+backend. The direct Kitty transport requests PNG; the shm transport captures
+JPEG q90.
 On the direct transport the frame carries the owned CDP base64 string in
 `Frame.EncodedPNG`; the Kitty consumer rechunks it as `f=100,t=d,a=T` without base64
 decode, PNG decode, pixel packing, zlib, or base64 encode. On the runtime-detected
@@ -100,13 +100,12 @@ direction, Kitty drops queued pixel frames until the restarted PNG stream emits.
 The live format policy follows the consumer. Block requests JPEG quality 90. It
 improves fidelity over the former q80 default while the matched
 2560x2880 headless benchmark retains 6.39 ms median processing headroom and provides
-more headroom for higher resolutions than q95. Kitty always requests PNG for the
-direct path. Sixel also requests PNG for every frame. This reverses the former
-settled-PNG/moving-JPEG policy: the sustained sweep improved serial p90 at 1920x1080
-and 2560x1600, regressed 1.26% at 2560x2880, and cut Sixel output by 38% to 50%.
-The owner accepts that torture-size processing loss for higher fidelity, smaller
-terminal payloads, and one Sixel input format. Real-terminal write, parse, draw, FPS,
-and tearing remain to be validated.
+more headroom for higher resolutions than q95. Kitty requests PNG for the direct
+path and JPEG q90 for the shm transport. Sixel also requests JPEG q90: it decodes
+every frame, so no pass-through constraint applies, and the `jpegn` decode cuts
+the per-frame cost while relieving Chromium encode. `docs/PERFORMANCE.md` records
+the earlier settled-PNG/moving-JPEG state machine, the PNG-only interlude, and
+this decision.
 
 - **Engine #1: `ChromiumEngine` (chromedp).** Frames via `Page.startScreencast`;
   text layer via CDP DOM queries, placed by the snapshot's scroll and folded into

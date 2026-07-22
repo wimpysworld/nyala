@@ -358,6 +358,35 @@ func TestDecodePoolKittyPassThroughAndStalePixels(t *testing.T) {
 	})
 }
 
+// TestDecodePoolSixelDecodesJPEG pins the Sixel worker route for the live JPEG
+// q90 capture: the signature sniff sends the payload through the jpegn decode,
+// the frame carries decoded pixels rather than a retained payload, and the
+// colour lands in RGBA channel order. JPEG is lossy, so the channels compare
+// with a tolerance while R must stay the dominant channel.
+func TestDecodePoolSixelDecodesJPEG(t *testing.T) {
+	payload := encodeBase64JPEG(t)
+	e := &ChromiumEngine{backend: backendSixel}
+	rawQ, frames, stop := drivePool(t, e, 1)
+	defer stop()
+	rawQ.put(seqRawFrame{seq: 1, data: payload})
+
+	got := recvFrame(t, frames)
+	if got.Img == nil {
+		t.Fatal("Sixel JPEG frame has no decoded pixels")
+	}
+	if got.EncodedPNG != "" {
+		t.Fatal("Sixel JPEG frame retained a direct payload")
+	}
+	pixel := imageToRGBA(got.Img).RGBAAt(0, 0)
+	const tol = 40
+	if absDiff(pixel.R, 200) > tol || absDiff(pixel.G, 10) > tol || absDiff(pixel.B, 20) > tol {
+		t.Fatalf("pixel (0,0) = %+v, want approx R=200 G=10 B=20 (RGBA order, tol %d)", pixel, tol)
+	}
+	if pixel.R <= pixel.G || pixel.R <= pixel.B {
+		t.Fatalf("pixel (0,0) = %+v, R must dominate G and B (RGBA order, not BGRA)", pixel)
+	}
+}
+
 func TestDirectKittyPNGRejectsInvalidRawData(t *testing.T) {
 	valid := pngPayload(t)
 	raw, err := base64.StdEncoding.DecodeString(valid)

@@ -247,10 +247,11 @@ func (e *ChromiumEngine) startInitialScreencast(ctx context.Context) error {
 
 // initialScreencastFormatLocked selects the wire format for the next
 // StartScreencast, read under the caller's e.mu hold. JPEG q90 serves the
-// backends that decode every frame: Block by its capture format, and Kitty in
-// shm mode, where the plane decode converts either format and JPEG halves the
-// payload and decodes about four times faster than PNG on real content. PNG
-// serves Sixel and direct Kitty, whose pass-through needs the PNG bytes.
+// backends that decode every frame: Block and Sixel by their capture format,
+// and Kitty in shm mode, where the plane decode converts either format and
+// JPEG halves the payload and decodes about four times faster than PNG on
+// real content. PNG serves direct Kitty, whose pass-through needs the PNG
+// bytes.
 func (e *ChromiumEngine) initialScreencastFormatLocked() screencastFmt {
 	if e.backend.CaptureFormat() == render.CaptureJPEG || (e.kittyDecode && e.backend.UsesDirectPayload()) {
 		return screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality}
