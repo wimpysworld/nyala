@@ -13,7 +13,7 @@ protocol to avoid a terminal-side limit. Notes record incomplete compatibility.
 | Foot | Sextant | Yes | No | Nyala omits DEC 2026 for Foot Sixel because Foot 1.27 can cancel pending refreshes. DECSDM remains enabled. Live-tested on Foot 1.27.0 under Hyprland 0.55.4. |
 | Ghostty | Sextant | No | Yes | Native Kitty graphics; no Sixel support. |
 | Kitty | Sextant | No | Yes | Native protocol. Nyala uses the POSIX shared-memory fast path where available, with direct PNG as the fallback. |
-| mlterm | Quadrant | Yes | No | Sixel was live-tested. Sextants depend on font coverage, so auto mode uses quadrants. |
+| mlterm | Quadrant | Yes | No | Sixel was live-tested. Sextants depend on font coverage, so auto mode uses quadrants. In mlterm's default compact truecolour build, reuse of 240 mutable palette IDs can cause sparse incorrect Block-cell colours under high-cardinality workloads. WebGL Aquarium showed the issue, while Blender Charge did not in limited testing. This is an intermittent, workload-dependent mlterm limitation, not a Nyala SGR defect. Use `--color=256` as the manual workaround. Building mlterm with `--disable-compact-truecolor` fixed the corruption but severely slowed measured Block output to 5.3 FPS, with a 189.2 ms mean write time. |
 | Rio | Sextant | No | Yes | Tested with Rio 0.4.7. Rio 0.4.x has the terminal-side limits described below; Nyala applies compatibility gates for them. |
 | WezTerm | Sextant | Yes | Yes | Sixel is documented as preliminary and experimental. Nyala's Kitty placement works. |
 
