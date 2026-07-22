@@ -87,14 +87,14 @@ func benchmarkKittyFrame(b *testing.B, payload screencastBenchPayload) {
 	b.Run(payload.name+"/kitty/direct-png", func(b *testing.B) {
 		enc := &renderkitty.LiveEncoder{}
 		var count byteCountingWriter
-		if err := enc.EncodePNGID(payload.data, 1, &count); err != nil {
+		if err := enc.EncodePNGID(payload.data, 1, 0, 0, &count); err != nil {
 			b.Fatal(err)
 		}
 		outputBytes := count.n
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			if err := enc.EncodePNGID(payload.data, 1, io.Discard); err != nil {
+			if err := enc.EncodePNGID(payload.data, 1, 0, 0, io.Discard); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -214,7 +214,7 @@ func validateNativeFrameOutputs(tb testing.TB, payloads []screencastBenchPayload
 		assertBenchImagesClose(tb, payload.name+" shared", current, native, tolerance)
 
 		if payload.name == "png" {
-			if err := (&renderkitty.LiveEncoder{}).EncodePNGID(payload.data, 1, io.Discard); err != nil {
+			if err := (&renderkitty.LiveEncoder{}).EncodePNGID(payload.data, 1, 0, 0, io.Discard); err != nil {
 				tb.Fatalf("%s direct Kitty PNG: %v", payload.name, err)
 			}
 		}

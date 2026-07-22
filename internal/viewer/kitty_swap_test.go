@@ -265,7 +265,10 @@ func TestFPSKittyFrameOrder(t *testing.T) {
 }
 
 func TestRetainedPNGFallsBackAfterBackendSwitch(t *testing.T) {
-	s := NewState(8, 4)
+	// A 1x1 grid of 8x8 cells matches the 8x8 fixture, so the Sixel grid fit is
+	// an identity and the round trip compares decode fidelity, not scaling.
+	s := NewState(1, 1)
+	s.cellPx = cellPx{W: 8, H: 8}
 	s.Backend = BackendSixel
 	img := image.NewNRGBA(image.Rect(0, 0, 8, 8))
 	colours := []color.NRGBA{

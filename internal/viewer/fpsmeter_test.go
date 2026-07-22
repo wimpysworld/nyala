@@ -126,11 +126,15 @@ func TestFPSMeterBadgeInOut(t *testing.T) {
 	base := time.Unix(0, 0)
 
 	withIn := &fpsMeter{window: time.Second, ingest: fakeIngest{fps: 24}}
+	withIn.countReceived(2)
 	withIn.tick(base, true)
 	withIn.tick(base.Add(100*time.Millisecond), true)
 	b := withIn.badge(base.Add(100 * time.Millisecond))
 	if !strings.Contains(b, "In: 24.0") || !strings.Contains(b, "Out:") {
 		t.Fatalf("badge %q missing In/Out with a reporter", b)
+	}
+	if !strings.Contains(b, "fps (2)") {
+		t.Fatalf("badge %q missing the cumulative received total", b)
 	}
 
 	outOnly := &fpsMeter{window: time.Second}
@@ -138,6 +142,9 @@ func TestFPSMeterBadgeInOut(t *testing.T) {
 	b = outOnly.badge(base)
 	if strings.Contains(b, "In:") || !strings.Contains(b, "Out:") {
 		t.Fatalf("badge %q should be Out-only with no reporter", b)
+	}
+	if !strings.Contains(b, "fps (0)") {
+		t.Fatalf("badge %q missing the cumulative received total without a reporter", b)
 	}
 }
 
@@ -180,7 +187,7 @@ func TestFPSMeterShortBadgeClearsPreviousWidth(t *testing.T) {
 	longWidth := m.badgeWidth
 
 	m.ingest = fakeIngest{}
-	shortBody := " In: -- / Out: -- fps "
+	shortBody := " In: -- / Out: -- fps (0) "
 	if longWidth <= len(shortBody) {
 		t.Fatalf("long badge width = %d, want more than short width %d", longWidth, len(shortBody))
 	}

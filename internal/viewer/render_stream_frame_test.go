@@ -11,7 +11,12 @@ import (
 )
 
 // TestRenderStreamFrameGraphicsNoSecondDownscale asserts that the graphics path
-// encodes the engine-sized bitmap at its exact dimensions.
+// encodes an engine-sized bitmap at its exact dimensions. The engine's painted
+// height can fall under the grid extent by a sub-cell row band on a
+// fractional-density terminal, and that steady-state shape must pass through
+// untouched: neither the retired aspect-fit letterbox nor the post-zoom grid
+// fit (fitSixelToGrid, which acts only on frames a cell or more away) may
+// rescale it.
 func TestRenderStreamFrameGraphicsNoSecondDownscale(t *testing.T) {
 	const cols, rows = 40, 20
 	const cellW, cellH = 8, 16
@@ -20,8 +25,9 @@ func TestRenderStreamFrameGraphicsNoSecondDownscale(t *testing.T) {
 	st.SetEnabled([]Backend{BackendSixel, BackendBlock})
 	st.Backend = BackendSixel
 
-	// A second fit-based downscale would turn this 320x170 bitmap into 320x160.
-	const imgW, imgH = 320, 170
+	// Grid extent 320x320; the engine paints 320x314 under a fractional density
+	// (a sub-cell shortfall). Any refit would move these exact dimensions.
+	const imgW, imgH = 320, 314
 	img := image.NewRGBA(image.Rect(0, 0, imgW, imgH))
 	for i := range img.Pix {
 		img.Pix[i] = 0xff

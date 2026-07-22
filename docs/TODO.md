@@ -325,6 +325,15 @@ and research documents.
 - [ ] Re-evaluate Go's `archsimd` base64 decoder when it is enabled by default and has
   an arm64 implementation. Keep the cgo-free cross-build and byte-identity gates.
   Source: `PERFORMANCE.md`, "Option 1 - base64 decode".
+- [ ] Exact-density zoom: relaunch Chromium with the new device scale factor when a
+  zoom moves `layoutScale` away from the launch `--force-device-scale-factor`, gated
+  in `transitionScreencastLocked`. Headless Chromium paints at the launch scale for
+  the whole process, so the current viewer-side grid scaling leaves a zoomed-in page
+  slightly soft until the next navigation; a relaunch restores full density at about
+  1 s per zoom step. `Emulation.SetDeviceMetricsOverride` `WithScale` was measured
+  and rejected: above the launch scale it pinch-zoom crops instead of repainting
+  densely. Source: `PERFORMANCE.md`, "Mid-session zoom re-derives the cell pair
+  (2026-07-22)".
 
 ## Closed or stale roadmap entries
 

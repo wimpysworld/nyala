@@ -480,11 +480,13 @@ func TestRenderFrameGraphics(t *testing.T) {
 
 // TestRenderFrameGraphicsFillsGrid asserts the graphics backends fill the whole
 // grid from the top-left and never emit a letterbox CUP move, whatever the image
-// aspect. The engine sizes the graphics bitmap to the full grid, so the viewer
-// encodes it directly; an aspect-fit would letterbox a non-1:2 grid and shift the
-// bitmap off the corner. The
-// first kitty frame transmits under image id 1 (i=1) with no preceding delete, the
-// double-buffer start state.
+// aspect. An aspect-fit would letterbox a non-1:2 grid and shift the bitmap off
+// the corner. Each backend fills the grid its own way: Kitty passes the payload
+// through unchanged and carries the c=/r= keys so the terminal scales the
+// placement to the cell area, while Sixel rasters at fixed pixel size, so the
+// viewer fits an off-grid bitmap to the grid extent before encoding
+// (fitSixelToGrid). The first kitty frame transmits under image id 1 (i=1) with
+// no preceding delete, the double-buffer start state.
 func TestRenderFrameGraphicsFillsGrid(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -518,6 +520,7 @@ func TestRenderFrameGraphicsFillsGrid(t *testing.T) {
 					decoded *image.RGBA
 					err     error
 				)
+				want := src.Bounds()
 				if b == BackendKitty {
 					if !strings.Contains(out, "i=1") || !strings.Contains(out, "a=T") {
 						t.Fatalf("kitty: first frame missing the i=1 transmit-and-place")
@@ -525,14 +528,24 @@ func TestRenderFrameGraphicsFillsGrid(t *testing.T) {
 					if strings.Contains(out, "a=d") {
 						t.Fatalf("kitty: first frame emitted a delete, want none")
 					}
+					// The payload passes through at the source size; the grid fill is
+					// the terminal's, via the c=/r= placement keys.
+					gridKeys := fmt.Sprintf("c=%d,r=%d", c.cols, c.rows)
+					if !strings.Contains(out, gridKeys) {
+						t.Fatalf("kitty: transmit missing the %s grid-fit keys", gridKeys)
+					}
 					decoded, err = renderdecode.DecodeKitty(buf.Bytes())
 				} else {
+					// Sixel rasters at pixel size, so the viewer fits an off-grid
+					// bitmap to the grid extent before encoding.
+					gridW, gridH := render.GraphicsCaptureSize(c.cols, c.rows, s.W, s.H)
+					want = image.Rect(0, 0, gridW, gridH)
 					decoded, err = renderdecode.DecodeSixel(buf.Bytes())
 				}
 				if err != nil {
 					t.Fatalf("decode backend %d output: %v", b, err)
 				}
-				if got, want := decoded.Bounds(), src.Bounds(); !got.Eq(want) {
+				if got := decoded.Bounds(); !got.Eq(want) {
 					t.Fatalf("backend %d decoded bounds = %v, want full-grid target %v", b, got, want)
 				}
 			}
@@ -748,8 +761,12 @@ func TestCellPxInBounds(t *testing.T) {
 // TestDeriveCellPixels exercises the pure core of winsizeCellPixels with
 // synthetic winsize fields the live ioctl cannot supply. It pins the named
 // 32000x0 bogus report: Ypixel 0 trips the zero-guard, so it resolves to ok=false
-// before any division. It also pins a healthy report and a derived cell px outside
-// the sanity window.
+// before any division. It also pins a healthy report, a derived cell px outside
+// the sanity window, and the round-to-nearest rule on both axes: a fractional
+// device-pixel cell (xpixel no exact multiple of cols) rounds to the nearest
+// integer cell instead of flooring, so the derived surface can overshoot the
+// reported pixels by under half a cell per axis but never undershoots by up to a
+// full cell (the Ghostty/WezTerm zoom-out shrink).
 func TestDeriveCellPixels(t *testing.T) {
 	cases := []struct {
 		name                     string
@@ -763,6 +780,14 @@ func TestDeriveCellPixels(t *testing.T) {
 		{"zero col", 640, 384, 0, 24, 0, 0, false},
 		{"zero row", 640, 384, 80, 0, 0, 0, false},
 		{"derived cell px too wide", 32000, 384, 80, 24, 0, 0, false},
+		// 688/80 = 8.6: floor lost 48 px of surface (0.6 px per column), round
+		// overshoots by only 32 px. 404/24 = 16.83 rounds up the same way.
+		{"fractional cell rounds up", 688, 404, 80, 24, 9, 17, true},
+		// 675/80 = 8.4375 and 392/24 = 16.33 sit under the half-cell midpoint,
+		// so both round down to the floor value.
+		{"fractional cell rounds down", 675, 392, 80, 24, 8, 16, true},
+		// Mixed axes: width rounds down (8.4375), height rounds up (16.83).
+		{"fractional axes round independently", 675, 404, 80, 24, 8, 17, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -775,6 +800,28 @@ func TestDeriveCellPixels(t *testing.T) {
 				t.Fatalf("cell px = %dx%d, want %dx%d", px.W, px.H, c.wantX, c.wantY)
 			}
 		})
+	}
+}
+
+// TestFitSixelToGrid pins the Sixel grid fit: a frame at the grid extent
+// returns unchanged (the common path pays nothing), a height-only shortfall
+// under one cell draws as-is (the engine's floored fractional-density row
+// band, not a zoom), and a stale-density frame (both axes short, the post-zoom
+// shape) scales onto the full grid extent.
+func TestFitSixelToGrid(t *testing.T) {
+	st := NewState(10, 4) // cell 8x16 default: grid extent 80x64
+	exact := image.NewRGBA(image.Rect(0, 0, 80, 64))
+	if got := st.fitSixelToGrid(exact); got != exact {
+		t.Fatal("exact-extent frame was rescaled, want identity")
+	}
+	rowBand := image.NewRGBA(image.Rect(0, 0, 80, 50)) // short by under one 16px cell
+	if got := st.fitSixelToGrid(rowBand); got != rowBand {
+		t.Fatal("sub-cell height shortfall was rescaled, want identity")
+	}
+	stale := image.NewRGBA(image.Rect(0, 0, 64, 51)) // stale-density post-zoom frame
+	got := st.fitSixelToGrid(stale)
+	if b := got.Bounds(); b.Dx() != 80 || b.Dy() != 64 {
+		t.Fatalf("stale frame fitted to %dx%d, want the 80x64 grid extent", b.Dx(), b.Dy())
 	}
 }
 

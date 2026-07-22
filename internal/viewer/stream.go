@@ -451,7 +451,13 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			// mid-drain stops the loop, matching the main receive. The differ stays
 			// correct because it compares the assembled frame against the previous
 			// assembled grid, so skipped frames do not corrupt its state.
-			frame, ok = drainFrames(frames, frame)
+			var drained int
+			frame, drained, ok = drainFrames(frames, frame)
+			// Count every frame the engine delivered, including the coalesced ones,
+			// so the badge total distinguishes a stalled stream from an idle one.
+			if s.fps != nil {
+				s.fps.countReceived(1 + drained)
+			}
 			if !ok {
 				return nil
 			}
@@ -498,20 +504,23 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 // already received. It pulls any further queued frames non-blocking and returns
 // the last, coalescing a burst to one paint; each superseded frame's pooled
 // plane, when present, is released back to the engine as it is dropped. The
-// bool is false when the channel closed mid-drain, so the caller stops the
-// loop the same way the main receive does; otherwise it is true with the
-// newest frame.
-func drainFrames(frames <-chan render.Frame, latest render.Frame) (render.Frame, bool) {
+// int counts the extra frames pulled, so the caller's cumulative received-frame
+// total stays exact across coalescing. The bool is false when the channel
+// closed mid-drain, so the caller stops the loop the same way the main receive
+// does; otherwise it is true with the newest frame.
+func drainFrames(frames <-chan render.Frame, latest render.Frame) (render.Frame, int, bool) {
+	drained := 0
 	for {
 		select {
 		case f, ok := <-frames:
 			if !ok {
-				return latest, false
+				return latest, drained, false
 			}
 			releaseFrame(latest)
 			latest = f
+			drained++
 		default:
-			return latest, true
+			return latest, drained, true
 		}
 	}
 }
@@ -735,9 +744,12 @@ func (s *streamSession) emitControl(b []byte) error {
 }
 
 // resize re-fits to the new terminal size and restarts the stream at the
-// recomputed capture size, so frames arrive at the new grid, not the old one. It
-// clears the screen only once a frame has drawn, so the loading cue is not wiped
-// before the first frame replaces it.
+// recomputed capture size, so frames arrive at the new grid, not the old one. A
+// terminal font-size change (zoom) moves the cell pixel pair with the grid, so
+// it re-derives the pair from the winsize and hands a changed pair to the
+// engine with the restart; resizeCellPx keeps the old pair when the override is
+// forced or the winsize reports nothing. It clears the screen only once a frame
+// has drawn, so the loading cue is not wiped before the first frame replaces it.
 func (s *streamSession) resize() error {
 	nc, nr, err := cterm.GetSize(s.fd)
 	if err != nil {
@@ -748,10 +760,15 @@ func (s *streamSession) resize() error {
 		})
 		return nil
 	}
+	derived, derivedOK := winsizeCellPixels(s.fd, nc, nr)
+	px, changed := resizeCellPx(s.st.cellPxForced, s.st.cellPx, derived, derivedOK)
+	if changed {
+		s.st.cellPx = px
+	}
 	s.st.Resize(nc, nr)
 	// The engine restart runs on the control goroutine so a slow restartStream
 	// never freezes the consumer loop; the loop keeps drawing and handling quit.
-	s.ctl.submit(func(eng Engine) { eng.Resize(nc, nr) })
+	s.ctl.submit(resizeEngineOp(px, changed, nc, nr))
 	if !s.firstDrawn {
 		return nil
 	}
@@ -759,7 +776,34 @@ func (s *streamSession) resize() error {
 	// even when the grid dimensions are unchanged. The clear routes through the
 	// writer so it never races an in-flight frame write.
 	s.diff.Reset()
-	return s.emitControl([]byte(clearScreen))
+	var ctl bytes.Buffer
+	if s.st.Backend == BackendKitty {
+		// A Kitty placement survives the ANSI clear, so a resize that shrank the
+		// image (a zoom-out moves the cell pair) would leave the old image's
+		// pixels standing outside the new one. Reuse the backend-switch delete-all
+		// seam: free both double-buffer ids so the next frame rebuilds from id 1,
+		// and drop the shm pacing gate so a stale in-flight wait cannot gate the
+		// first post-resize frame.
+		_ = s.st.resetKitty(&ctl)
+		s.kittyShmAwait = false
+	}
+	ctl.WriteString(clearScreen)
+	return s.emitControl(ctl.Bytes())
+}
+
+// resizeEngineOp returns the control-goroutine closure for one resize. A
+// changed cell pair is set on the engine inside the same closure as the grid
+// restart, before Resize, so the restart recomputes the capture from the new
+// pair; the control channel is one-slot drop-on-full, so a separately queued
+// SetCellPx could be dropped while the Resize survives and restart at the
+// stale pair.
+func resizeEngineOp(px cellPx, changed bool, cols, rows int) func(Engine) {
+	return func(eng Engine) {
+		if changed {
+			eng.SetCellPx(px.W, px.H)
+		}
+		eng.Resize(cols, rows)
+	}
 }
 
 // handleKey forwards one key to the engine or handles the viewer hotkeys and
@@ -980,6 +1024,13 @@ type fpsMeter struct {
 
 	peaks []fpsSample // trailing fpsPeakHold window of In/Out samples, for the badge peak
 
+	// received is the cumulative count of frames the draw loop pulled from the
+	// engine channel, including coalesced ones, from stream start with no warm-up
+	// gate. The badge appends it in parentheses so a stalled stream (the total
+	// frozen while the page should repaint) reads differently from an idle one
+	// where the rates alone show the ambiguous "--" for both.
+	received int
+
 	// ingest is the optional engine ingest source. When set the badge and summary
 	// show the screencast ingest rate (In) beside the paint rate (Out); nil (a fake
 	// engine, or the switch off) shows Out only. It is read on the draw goroutine.
@@ -1077,6 +1128,13 @@ func (m *fpsMeter) recordPaint(encodeMS, writeMS float64) {
 	}
 }
 
+// countReceived adds n delivered frames to the cumulative badge total. The
+// receive arm calls it for every frame pulled from the engine channel, before
+// any draw gating, so the total moves whenever the engine delivers at all.
+func (m *fpsMeter) countReceived(n int) {
+	m.received += n
+}
+
 // windowRate returns the rolling usable-fps over the trailing window. F draws in
 // the window leave F-1 intervals over their span, so the rate is (F-1)/span. Fewer
 // than two frames, or a non-positive span, report 0.
@@ -1115,33 +1173,37 @@ func (m *fpsMeter) positionedBadge(now time.Time, atHome bool) string {
 }
 
 // formatPositionedBadge rebuilds and caches the badge string at now. With an
-// ingest reporter it shows "In: X.X / Out: Y.Y fps"; both are windowed, so both
-// decay live when idle. Without one it shows "Out: Y.Y fps" alone. It is the sole
-// per-call allocation and the single place the badge escape is built. The SGR
-// opens with a reset then reverse ("\x1b[0;7m"): the reset clears the grid's
-// ambient colour so reverse inverts the terminal default, not whatever page
-// colour the differ left active, which otherwise tinted the badge from a
-// scrolled-away cell.
+// ingest reporter it shows "In: X.X / Out: Y.Y fps (N)"; both rates are
+// windowed, so both decay live when idle. Without one it shows
+// "Out: Y.Y fps (N)" alone. N is the cumulative received-frame total, which
+// never decays: a frozen N with "--" rates is a stalled or idle stream, while a
+// moving N with "--" rates is delivery the peak window has already aged out.
+// It is the sole per-call allocation and the single place the badge escape is
+// built. The SGR opens with a reset then reverse ("\x1b[0;7m"): the reset
+// clears the grid's ambient colour so reverse inverts the terminal default, not
+// whatever page colour the differ left active, which otherwise tinted the badge
+// from a scrolled-away cell.
 func (m *fpsMeter) formatPositionedBadge(now time.Time, atHome bool) string {
 	in, out := m.peakRates()
 	prefix, suffix := "\x1b7\x1b[1;1H", "\x1b[0m\x1b8"
 	if atHome {
 		prefix, suffix = "\x1b[1;1H", "\x1b[0m\x1b[1;1H"
 	}
+	total := strconv.Itoa(m.received)
 	if m.ingest != nil {
 		inField, outField := fpsField(in), fpsField(out)
-		width := len(" In:  / Out:  fps ") + len(inField) + len(outField)
+		width := len(" In:  / Out:  fps () ") + len(inField) + len(outField) + len(total)
 		if width > m.badgeWidth {
 			m.badgeWidth = width
 		}
-		m.badgeStr = fmt.Sprintf("%s\x1b[0;7m In: %s / Out: %s fps %*s%s", prefix, inField, outField, m.badgeWidth-width, "", suffix)
+		m.badgeStr = fmt.Sprintf("%s\x1b[0;7m In: %s / Out: %s fps (%s) %*s%s", prefix, inField, outField, total, m.badgeWidth-width, "", suffix)
 	} else {
 		outField := fpsField(out)
-		width := len(" Out:  fps ") + len(outField)
+		width := len(" Out:  fps () ") + len(outField) + len(total)
 		if width > m.badgeWidth {
 			m.badgeWidth = width
 		}
-		m.badgeStr = fmt.Sprintf("%s\x1b[0;7m Out: %s fps %*s%s", prefix, outField, m.badgeWidth-width, "", suffix)
+		m.badgeStr = fmt.Sprintf("%s\x1b[0;7m Out: %s fps (%s) %*s%s", prefix, outField, total, m.badgeWidth-width, "", suffix)
 	}
 	m.badgeAt = now
 	m.haveBadge = true

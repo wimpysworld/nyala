@@ -141,7 +141,7 @@ func BenchmarkDirectPNGKitty(b *testing.B) {
 		if !e.directKittyPNG(data) {
 			b.Fatal("valid PNG rejected by direct Kitty selector")
 		}
-		if err := enc.EncodePNGID(data, 1, io.Discard); err != nil {
+		if err := enc.EncodePNGID(data, 1, 0, 0, io.Discard); err != nil {
 			b.Fatal(err)
 		}
 		b.ReportAllocs()
@@ -150,7 +150,7 @@ func BenchmarkDirectPNGKitty(b *testing.B) {
 			if !e.directKittyPNG(data) {
 				b.Fatal("valid PNG rejected by direct Kitty selector")
 			}
-			if err := enc.EncodePNGID(data, 1, io.Discard); err != nil {
+			if err := enc.EncodePNGID(data, 1, 0, 0, io.Discard); err != nil {
 				b.Fatal(err)
 			}
 		}

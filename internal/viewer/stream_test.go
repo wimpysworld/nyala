@@ -19,12 +19,15 @@ func TestDrainFramesKeepsNewest(t *testing.T) {
 	frames <- frameWith(3)
 	frames <- frameWith(4)
 
-	got, ok := drainFrames(frames, frameWith(1))
+	got, drained, ok := drainFrames(frames, frameWith(1))
 	if !ok {
 		t.Fatal("drainFrames reported close on an open channel")
 	}
 	if w := got.Img.Bounds().Dx(); w != 4 {
 		t.Fatalf("kept frame id = %d, want 4 (newest)", w)
+	}
+	if drained != 3 {
+		t.Fatalf("drained count = %d, want 3 (coalesced frames feed the badge total)", drained)
 	}
 	if len(frames) != 0 {
 		t.Fatalf("frames left queued = %d, want 0", len(frames))
@@ -34,12 +37,15 @@ func TestDrainFramesKeepsNewest(t *testing.T) {
 func TestDrainFramesNoQueueReturnsReceived(t *testing.T) {
 	frames := make(chan render.Frame, 1)
 
-	got, ok := drainFrames(frames, frameWith(7))
+	got, drained, ok := drainFrames(frames, frameWith(7))
 	if !ok {
 		t.Fatal("drainFrames reported close on an open channel")
 	}
 	if w := got.Img.Bounds().Dx(); w != 7 {
 		t.Fatalf("kept frame id = %d, want 7 (received)", w)
+	}
+	if drained != 0 {
+		t.Fatalf("drained count = %d, want 0 (nothing queued)", drained)
 	}
 }
 
@@ -48,7 +54,7 @@ func TestDrainFramesClosedMidDrainStops(t *testing.T) {
 	frames <- frameWith(5)
 	close(frames)
 
-	got, ok := drainFrames(frames, frameWith(1))
+	got, _, ok := drainFrames(frames, frameWith(1))
 	if ok {
 		t.Fatal("drainFrames did not report close")
 	}

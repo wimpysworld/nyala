@@ -245,24 +245,33 @@ type LiveEncoder struct {
 // the payload. The command uses direct transmission and transmit-and-put, tags
 // the image with id when positive, leaves the cursor in place so a full-height
 // placement cannot scroll the terminal, and chunks at the Kitty protocol limit.
-// A malformed or incomplete payload returns ErrInvalidPNGData before writing.
-func (e *LiveEncoder) EncodePNGID(data string, id int, w io.Writer) error {
-	return e.encodePNGID(data, id, 0, false, w)
+// A positive cols and rows pair adds the c= and r= placement keys, so the
+// terminal scales the image to exactly that cell area: after a mid-session zoom
+// Chromium keeps painting at its launch density, so the delivered frame is the
+// complete viewport at a stale pixel size, and the grid-fit placement keeps it
+// spanning the terminal (a matching pixel size scales 1:1, a no-op). A
+// non-positive pair omits both keys. A malformed or incomplete payload returns
+// ErrInvalidPNGData before writing.
+func (e *LiveEncoder) EncodePNGID(data string, id, cols, rows int, w io.Writer) error {
+	return e.encodePNGID(data, id, 0, false, cols, rows, w)
 }
 
 // EncodePNGIDAtZ is EncodePNGID with an explicit Kitty placement z-index. The
 // z option is emitted only on the first APC chunk; continuation chunks retain
 // their protocol-only m control. The viewer uses this live-only variant when a
 // terminal text badge must remain above the page image.
-func (e *LiveEncoder) EncodePNGIDAtZ(data string, id, z int, w io.Writer) error {
-	return e.encodePNGID(data, id, z, true, w)
+func (e *LiveEncoder) EncodePNGIDAtZ(data string, id, z, cols, rows int, w io.Writer) error {
+	return e.encodePNGID(data, id, z, true, cols, rows, w)
 }
 
-func (e *LiveEncoder) encodePNGID(data string, id, z int, withZ bool, w io.Writer) error {
+func (e *LiveEncoder) encodePNGID(data string, id, z int, withZ bool, cols, rows int, w io.Writer) error {
 	if !ValidDirectPNGData(data) {
 		return ErrInvalidPNGData
 	}
 	control := "f=100,t=d,a=T,q=2,C=1"
+	if cols > 0 && rows > 0 {
+		control += fmt.Sprintf(",c=%d,r=%d", cols, rows)
+	}
 	if id > 0 {
 		control += fmt.Sprintf(",i=%d", id)
 	}
@@ -292,28 +301,38 @@ func (e *LiveEncoder) encodePNGID(data string, id, z int, withZ bool, w io.Write
 // raw-pixel command: f=32 RGBA pixels of the given width and height, read by
 // the terminal from the named object (t=s). The whole frame travels in a
 // single escape, never chunked, because chunked shm transmission fails on
-// Ghostty, so no m= key is ever emitted on this path. The quiet key controls
+// Ghostty, so no m= key is ever emitted on this path. A positive cols and rows
+// pair adds the c= and r= placement keys, so the terminal scales the image to
+// exactly that cell area (the post-zoom stale-density fit EncodePNGID
+// documents); a non-positive pair omits both keys. The quiet key controls
 // terminal responses: q=1 keeps OK acknowledgements for pacing, q=2 suppresses
 // every response; the caller chooses per session.
-func (e *LiveEncoder) EncodeSHMID(name string, width, height, id, quiet int, w io.Writer) error {
-	return e.encodeSHMID(name, width, height, id, 0, false, quiet, w)
+func (e *LiveEncoder) EncodeSHMID(name string, width, height, id, quiet, cols, rows int, w io.Writer) error {
+	return e.encodeSHMID(name, width, height, id, 0, false, quiet, cols, rows, w)
 }
 
 // EncodeSHMIDAtZ is EncodeSHMID with an explicit Kitty placement z-index, the
 // shm counterpart of EncodePNGIDAtZ for placements that must sit below a
 // terminal text badge.
-func (e *LiveEncoder) EncodeSHMIDAtZ(name string, width, height, id, z, quiet int, w io.Writer) error {
-	return e.encodeSHMID(name, width, height, id, z, true, quiet, w)
+func (e *LiveEncoder) EncodeSHMIDAtZ(name string, width, height, id, z, quiet, cols, rows int, w io.Writer) error {
+	return e.encodeSHMID(name, width, height, id, z, true, quiet, cols, rows, w)
 }
 
-func (e *LiveEncoder) encodeSHMID(name string, width, height, id, z int, withZ bool, quiet int, w io.Writer) error {
+func (e *LiveEncoder) encodeSHMID(name string, width, height, id, z int, withZ bool, quiet, cols, rows int, w io.Writer) error {
 	e.frame = e.frame[:0]
 	e.frame = append(e.frame, apcIntro...)
 	e.frame = append(e.frame, "f=32,t=s,s="...)
 	e.frame = strconv.AppendInt(e.frame, int64(width), 10)
 	e.frame = append(e.frame, ",v="...)
 	e.frame = strconv.AppendInt(e.frame, int64(height), 10)
-	e.frame = append(e.frame, ",a=T,C=1,i="...)
+	e.frame = append(e.frame, ",a=T,C=1"...)
+	if cols > 0 && rows > 0 {
+		e.frame = append(e.frame, ",c="...)
+		e.frame = strconv.AppendInt(e.frame, int64(cols), 10)
+		e.frame = append(e.frame, ",r="...)
+		e.frame = strconv.AppendInt(e.frame, int64(rows), 10)
+	}
+	e.frame = append(e.frame, ",i="...)
 	e.frame = strconv.AppendInt(e.frame, int64(id), 10)
 	if withZ {
 		e.frame = append(e.frame, ",z="...)

@@ -244,7 +244,7 @@ func TestDrainFramesReleasesStale(t *testing.T) {
 	frames <- mk(1)
 	frames <- mk(2)
 
-	latest, ok := drainFrames(frames, mk(0))
+	latest, _, ok := drainFrames(frames, mk(0))
 	if !ok {
 		t.Fatal("drainFrames reported a closed channel")
 	}

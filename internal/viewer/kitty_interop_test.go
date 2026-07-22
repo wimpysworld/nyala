@@ -171,7 +171,7 @@ func kittySHMEscapeName(t *testing.T, out, wantID string) string {
 	if !ok {
 		t.Fatal("APC envelope missing the options/payload separator")
 	}
-	for _, opt := range []string{"f=32", "t=s", "a=T", "C=1", "q=0", wantID} {
+	for _, opt := range []string{"f=32", "t=s", "a=T", "C=1", "c=80", "r=24", "q=0", wantID} {
 		found := false
 		for _, field := range strings.Split(control, ",") {
 			if field == opt {
@@ -219,6 +219,11 @@ func assertKittyInteropChunks(t *testing.T, chunks []kittyinterop.Chunk, chunked
 	t.Helper()
 	if len(chunks) == 0 || chunks[0].Options["C"] != "1" {
 		t.Fatal("Kitty placement can move the cursor, want C=1 on the first chunk")
+	}
+	// The live viewer scales every placement to the full cell grid, so the first
+	// chunk must carry the c=/r= keys for the 80x24 state driving this test.
+	if chunks[0].Options["c"] != "80" || chunks[0].Options["r"] != "24" {
+		t.Fatalf("first chunk grid keys = c=%q r=%q, want c=80 r=24", chunks[0].Options["c"], chunks[0].Options["r"])
 	}
 	if !chunked {
 		if len(chunks) != 1 {
