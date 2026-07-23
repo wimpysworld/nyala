@@ -75,8 +75,9 @@ therefore excludes Sixel from auto backend selection. An explicit
 Rio stores terminal styles in an append-only table capped at 65,535 entries.
 Truecolour Block rendering can exhaust that table, so `--color=auto` uses the
 xterm-256 palette. Explicit `--color=256` and `--color=none` remain available.
-Nyala rejects `--color=truecolor` for every starting backend, because Tab can
-always cycle to Block at runtime. Start a new Rio
+Nyala rejects `--color=truecolor` for every starting backend, because Alt+R
+can always cycle to Block at runtime, and the Alt+C colour cycle skips
+truecolour for the same reason. Start a new Rio
 tab or process if the table was already exhausted.
 
 Kitty graphics remain enabled. Rio 0.4.x does not draw Nyala's negative-z Kitty
@@ -143,7 +144,7 @@ source, that would present as Nyala bugs:
   zellij's absolute repaint snaps it back.
 
 No Nyala-side workaround exists for either, so `multiplexerBackends` never
-offers Sixel under zellij: auto-detection and Tab stay on Block, and
+offers Sixel under zellij: auto-detection and the Alt+R cycle stay on Block, and
 `--backend=sixel` fails with the standard "not supported by this terminal"
 error, the same shape as the tmux pre-3.6 refusal. Kitty stays blocked as
 under every multiplexer, so Block is the zellij backend. Lift the block in

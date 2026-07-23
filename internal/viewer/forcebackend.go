@@ -9,7 +9,7 @@ import (
 
 // Backend mode strings the --backend flag accepts. They mirror the kong enum:
 // auto leaves detection in charge, and a named mode picks the starting backend.
-// A graphics start must be confirmed by detection; Tab then cycles every
+// A graphics start must be confirmed by detection; Alt+R then cycles every
 // supported backend regardless of the start.
 const (
 	// ModeAuto leaves the detected cycle in charge; the validator always passes it.
@@ -57,7 +57,7 @@ func forcedBackend(mode string) (Backend, bool) {
 
 // applyForcedBackend starts the session on a named --backend mode. For a named
 // mode it sets the active backend to the forced one and keeps st.Enabled as
-// the detected cycle, so Tab still cycles every supported backend in order
+// the detected cycle, so Alt+R still cycles every supported backend in order
 // from the forced start. ModeAuto and any unnamed mode leave the detected
 // nomination untouched. Call it only after ValidateForcedBackend passes, so a
 // graphics backend the terminal cannot run never becomes the start.

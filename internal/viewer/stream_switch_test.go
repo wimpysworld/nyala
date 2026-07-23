@@ -68,6 +68,7 @@ func (e *switchOpEngine) SetCellPx(int, int)          {}
 func (e *switchOpEngine) Navigate(string) error       { return nil }
 func (e *switchOpEngine) Frames() <-chan render.Frame { return nil }
 func (e *switchOpEngine) SendKey(string)              {}
+func (e *switchOpEngine) SendNav(NavAction)           {}
 func (e *switchOpEngine) SendMouse(MouseEvent)        {}
 func (e *switchOpEngine) Close() error                { return nil }
 
@@ -87,7 +88,7 @@ func TestTabResizesEngineGridUnderMultiplexer(t *testing.T) {
 	s := &streamSession{eng: eng, st: &st, ctl: ctl}
 
 	// Sixel to Block: the engine grid returns to the full 24 rows.
-	s.handleKey(keyEvent{b: keyTab})
+	s.handleKey(keyEvent{act: actionCycleBackend})
 	if st.Backend != BackendBlock {
 		t.Fatalf("backend after first Tab = %v, want Block", st.Backend)
 	}
@@ -97,7 +98,7 @@ func TestTabResizesEngineGridUnderMultiplexer(t *testing.T) {
 	}
 
 	// Block back to Sixel: the engine grid reserves the bottom row again.
-	s.handleKey(keyEvent{b: keyTab})
+	s.handleKey(keyEvent{act: actionCycleBackend})
 	if st.Backend != BackendSixel {
 		t.Fatalf("backend after second Tab = %v, want Sixel", st.Backend)
 	}
@@ -149,7 +150,7 @@ func TestTabSwitchAwayFromSixelClearsAndResetsDiff(t *testing.T) {
 	out := &bytes.Buffer{}
 	s := &streamSession{eng: eng, st: &st, tty: out, ctl: ctl, diff: diff}
 	s.firstDrawn.Store(true)
-	s.handleKey(keyEvent{b: keyTab})
+	s.handleKey(keyEvent{act: actionCycleBackend})
 	if st.Backend != BackendBlock {
 		t.Fatalf("backend after Tab = %v, want Block", st.Backend)
 	}
@@ -189,7 +190,7 @@ func TestTabSwitchToSixelUnderMultiplexerClears(t *testing.T) {
 	out := &bytes.Buffer{}
 	s := &streamSession{eng: eng, st: &st, tty: out, ctl: ctl}
 	s.firstDrawn.Store(true)
-	s.handleKey(keyEvent{b: keyTab})
+	s.handleKey(keyEvent{act: actionCycleBackend})
 	if st.Backend != BackendSixel {
 		t.Fatalf("backend after Tab = %v, want Sixel", st.Backend)
 	}
@@ -217,7 +218,7 @@ func TestTabSwitchEmitsNoClearWhenBackendUnchanged(t *testing.T) {
 		out := &bytes.Buffer{}
 		s := &streamSession{eng: eng, st: &st, tty: out, ctl: ctl}
 		s.firstDrawn.Store(true)
-		s.handleKey(keyEvent{b: keyTab})
+		s.handleKey(keyEvent{act: actionCycleBackend})
 		if out.Len() != 0 {
 			t.Fatalf("same-backend Tab wrote %q, want nothing", out.String())
 		}
@@ -231,7 +232,7 @@ func TestTabSwitchEmitsNoClearWhenBackendUnchanged(t *testing.T) {
 		st.SetEnabled([]Backend{BackendSixel, BackendBlock})
 		out := &bytes.Buffer{}
 		s := &streamSession{eng: eng, st: &st, tty: out, ctl: ctl}
-		s.handleKey(keyEvent{b: keyTab})
+		s.handleKey(keyEvent{act: actionCycleBackend})
 		if out.Len() != 0 {
 			t.Fatalf("pre-frame Tab wrote %q, want nothing", out.String())
 		}

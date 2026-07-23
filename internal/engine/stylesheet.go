@@ -113,7 +113,7 @@ input, textarea, select, option, svg, svg *, ::placeholder {
 }
 
 // buildStyleRemovalScript returns the JavaScript that removes the injected
-// font-forcing <style> from the live document if present, so a Tab switch from the
+// font-forcing <style> from the live document if present, so a backend switch from the
 // block backend to a graphics backend drops the forcing without a reload. It looks
 // the element up by styleElementID and removes it; a missing element is a no-op, so
 // it never throws when no forcing style is on the page.

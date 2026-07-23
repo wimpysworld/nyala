@@ -12,5 +12,6 @@ func (e *fakeEngine) Resize(int, int)             {}
 func (e *fakeEngine) Navigate(string) error       { return nil }
 func (e *fakeEngine) Frames() <-chan render.Frame { return e.frames }
 func (e *fakeEngine) SendKey(string)              {}
+func (e *fakeEngine) SendNav(NavAction)           {}
 func (e *fakeEngine) SendMouse(MouseEvent)        {}
 func (e *fakeEngine) Close() error                { return nil }

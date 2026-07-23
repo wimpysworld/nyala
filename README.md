@@ -28,7 +28,7 @@ Three rendering backends sit behind one `Renderer` seam. Swapping backend change
 | **Sixel** | Sixel graphics | Higher | Higher-fidelity bitmap than blocks, for terminals that speak Sixel. Live frames use JPEG quality 90 with a temporally stable adaptive palette. |
 | **Kitty** | Kitty graphics | Highest | Two transports. Shared memory (probed at startup): JPEG quality 90 decoded to raw RGBA and handed over POSIX shared memory. Direct fallback: lossless CDP PNG passed straight to Kitty framing without an image decode or re-encode. |
 
-Kitty is the reason to run Nyala on a capable terminal: where the terminal supports it, Nyala streams raw pixels over POSIX shared memory; elsewhere it rechunks Chromium's base64 PNG for the terminal without decoding or re-encoding it. Sixel is the next step down, a high-fidelity bitmap for terminals that speak it. Block is the guarantee Nyala works on any TTY, down to a bare Linux console under KMSCON with no graphics protocol. Its sharpest mode is sextant (2x3), which Nyala uses where the terminal self-draws sextant glyphs; an unknown terminal falls back to quadrant. See [`docs/BLOCK-MODES.md`](docs/BLOCK-MODES.md). Nyala detects what the terminal supports and picks the highest-fidelity backend automatically: Kitty, then Sixel, then Block. Press Tab to cycle the supported backends. Block and Sixel use JPEG q90; direct Kitty uses PNG, and shared-memory Kitty uses JPEG.
+Kitty is the reason to run Nyala on a capable terminal: where the terminal supports it, Nyala streams raw pixels over POSIX shared memory; elsewhere it rechunks Chromium's base64 PNG for the terminal without decoding or re-encoding it. Sixel is the next step down, a high-fidelity bitmap for terminals that speak it. Block is the guarantee Nyala works on any TTY, down to a bare Linux console under KMSCON with no graphics protocol. Its sharpest mode is sextant (2x3), which Nyala uses where the terminal self-draws sextant glyphs; an unknown terminal falls back to quadrant. See [`docs/BLOCK-MODES.md`](docs/BLOCK-MODES.md). Nyala detects what the terminal supports and picks the highest-fidelity backend automatically: Kitty, then Sixel, then Block. Press Alt+R to cycle the supported backends. Block and Sixel use JPEG q90; direct Kitty uses PNG, and shared-memory Kitty uses JPEG.
 
 A measurement harness scores each render for quality, cost, and legibility. Run it with `just diagnostics`.
 
@@ -101,7 +101,7 @@ Open a page:
 nyala example.com
 ```
 
-A bare host gains an `https://` scheme. The `http`, `https`, and `file` schemes are accepted; others are rejected. Nyala launches headless Chromium, streams the live page, and renders it to the TTY. Press Tab to cycle the supported backends. The mouse works too: the wheel scrolls the page at the pointer and clicks reach the page.
+A bare host gains an `https://` scheme. The `http`, `https`, and `file` schemes are accepted; others are rejected. Nyala launches headless Chromium, streams the live page, and renders it to the TTY. Press Alt+R to cycle the supported backends. The mouse works too: the wheel scrolls the page at the pointer and clicks reach the page.
 
 Nyala needs a Chromium executable at runtime. It resolves the path from `--browser`, then `NYALA_BROWSER`, then `CHROME_PATH`, then a `PATH` lookup. The Nix package ships its own Chromium.
 
@@ -112,10 +112,42 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 | `<url>` | required | Page to open. |
 | `--browser` | auto | Path to the Chromium executable to drive. |
 | `--disable-frame-rate-limit` | off | Disable Chromium's browser frame-rate limit for benchmark testing. This does not control terminal or display synchronisation. |
-| `--backend` | `auto` | Renderer backend: `auto`, `block`, `kitty`, or `sixel`. `auto` picks the terminal's best supported backend. A named backend selects the starting renderer and fails fast if the terminal cannot run it; Tab still cycles all supported backends. |
+| `--backend` | `auto` | Renderer backend: `auto`, `block`, `kitty`, or `sixel`. `auto` picks the terminal's best supported backend. A named backend selects the starting renderer and fails fast if the terminal cannot run it; Alt+R still cycles all supported backends. |
 | `--blocks` | `auto` | Block glyph mode: `auto`, `sextant`, `quadrant`, or `half`. `quadrant` (2x2) and `half` (half-block) map to the existing schemes; `sextant` renders 2x3 sextant blocks (Unicode legacy-computing) for sharper vertical resolution. `auto` picks sextant on terminals known to self-draw it (a static allow-list read from environment variables) and quadrant elsewhere. |
 | `--color` | `auto` | Viewer colour mode: `auto`, `truecolor`, `256`, or `none`. |
 | `--version` | | Print the version and exit. |
+
+### Keys
+
+| Binding | Action |
+|---|---|
+| Arrow keys | Scroll by one line step |
+| `PgUp` / `PgDn` | Scroll by one viewport height |
+| `Home` | Scroll to top |
+| `End` | Scroll to bottom |
+| `Tab` | Focus next page element |
+| `Shift+Tab` | Focus previous page element |
+| `Enter` | Activate focused element |
+| `Alt+Home` | Open home page (the URL Nyala was launched with) |
+| `Ctrl+R` | Reload page |
+| `F5` | Reload page |
+| `Alt+Left` | Go back |
+| `Alt+Right` | Go forward |
+| `Ctrl+Q` | Quit |
+| `Alt+R` | Cycle rendering backend |
+| `Alt+Shift+R` | Cycle rendering backend backwards |
+| `Alt+B` | Cycle Block mode: Half -> Quadrant -> Sextant (Block backend only) |
+| `Alt+Shift+B` | Cycle Block mode backwards (Block backend only) |
+| `Alt+C` | Cycle colour mode: True Colour -> 256-colour -> Monochrome (Block backend only) |
+| `Alt+Shift+C` | Cycle colour mode backwards (Block backend only) |
+
+Notes:
+
+- Plain `q` does not quit. Printable keys are reserved for page input (form fields need them), so quitting is `Ctrl+Q`, with `Ctrl+C` kept as the interrupt fallback so a wedged page can never trap you.
+- `Alt+Home` returns to the URL Nyala was launched with, for the lifetime of the process. It is a normal navigation, so `Alt+Left` goes back to the page you were on.
+- The Block mode and colour cycles skip modes the terminal cannot render (for example, truecolour under Rio 0.4.x).
+- The Block mode and colour cycles only work while the Block backend is on screen. Both cycles only affect Block rendering, so cycling them under Kitty or Sixel would change hidden state with no visible feedback, and the next switch to Block would land in an unexpected mode.
+- A multiplexer with custom Alt binds can shadow the Alt chords. The zellij defaults leave `Alt+R`, `Alt+B`, and `Alt+C` free.
 
 ### Diagnostics
 

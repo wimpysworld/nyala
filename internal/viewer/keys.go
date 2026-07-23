@@ -25,20 +25,111 @@ const (
 	ScrollPageUp
 	// ScrollPageDown is the PageDown key (ESC [ 6 ~).
 	ScrollPageDown
+	// ScrollHome is the Home key (ESC [ H or ESC [ 1 ~); it scrolls to the top.
+	ScrollHome
+	// ScrollEnd is the End key (ESC [ F or ESC [ 4 ~); it scrolls to the bottom.
+	ScrollEnd
 )
 
-// keyQuitCtrlC is the Ctrl-C byte; keyTab is the Tab byte; keyEsc is the escape
-// byte that opens a CSI sequence.
+// Raw-mode control bytes the reader and the dispatcher recognise. keyEsc opens
+// an escape sequence; the rest arrive as single bytes. Ctrl-Q reaches the
+// reader only because raw mode clears IXON, the XON/XOFF flow-control flag
+// that would otherwise consume it; setupViewer's raw-mode seam is pinned on
+// that flag by test.
 const (
 	keyQuitCtrlC = 0x03
 	keyTab       = 0x09
+	keyEnter     = 0x0d
+	keyQuitCtrlQ = 0x11
+	keyCtrlR     = 0x12
 	keyEsc       = 0x1b
 )
 
-// decodeCSI maps a CSI sequence body (the bytes after ESC [) to a scroll key. It
-// recognises the arrow finals A/B/C/D and the PageUp/PageDown sequences 5~/6~.
-// It returns ScrollNone, false for any other body, so an unrecognised escape
-// sequence is ignored. The reader strips the leading ESC [ before calling it.
+// keyAction is a recognised viewer command decoded from the input stream: a
+// forwarded page key, a navigation request, a quit, or a render-mode cycle.
+// actionNone is the zero value: the event carries no command.
+type keyAction int
+
+const (
+	// actionNone means the event maps to no viewer command.
+	actionNone keyAction = iota
+	// actionQuit ends the session (Ctrl+Q, with Ctrl+C as the interrupt
+	// fallback so a wedged page can never trap the user).
+	actionQuit
+	// actionFocusNext forwards Tab to the page for native focus traversal.
+	actionFocusNext
+	// actionFocusPrev forwards Shift+Tab (CSI Z backtab) to the page.
+	actionFocusPrev
+	// actionActivate forwards Enter to the page to activate the focused element.
+	actionActivate
+	// actionReload reloads the page (Ctrl+R or F5).
+	actionReload
+	// actionBack goes one history entry back (Alt+Left).
+	actionBack
+	// actionForward goes one history entry forward (Alt+Right).
+	actionForward
+	// actionOpenHome navigates to the launch URL (Alt+Home).
+	actionOpenHome
+	// actionCycleBackend cycles the render backend forwards (Alt+R).
+	actionCycleBackend
+	// actionCycleBackendReverse cycles the render backend backwards (Alt+Shift+R).
+	actionCycleBackendReverse
+	// actionCycleBlocks cycles the Block glyph scheme (Alt+B).
+	actionCycleBlocks
+	// actionCycleBlocksReverse cycles the Block glyph scheme backwards (Alt+Shift+B).
+	actionCycleBlocksReverse
+	// actionCycleColour cycles the Block colour mode (Alt+C).
+	actionCycleColour
+	// actionCycleColourReverse cycles the Block colour mode backwards (Alt+Shift+C).
+	actionCycleColourReverse
+)
+
+// byteKeyAction maps a single key byte to its viewer command. Plain printable
+// bytes map to none: they stay free for future page form input, which is why
+// plain q no longer quits (Ctrl+Q does).
+func byteKeyAction(b byte) keyAction {
+	switch b {
+	case keyQuitCtrlQ, keyQuitCtrlC:
+		return actionQuit
+	case keyCtrlR:
+		return actionReload
+	case keyTab:
+		return actionFocusNext
+	case keyEnter:
+		return actionActivate
+	default:
+		return actionNone
+	}
+}
+
+// altKeyAction maps an ESC-prefixed letter (an Alt chord: most terminals send
+// Alt+letter as ESC then the letter, with Shift carried by its case) to its
+// cycle command. ok is false for any other byte, so an unrelated ESC-prefixed
+// byte keeps the bare-ESC passthrough behaviour.
+func altKeyAction(b byte) (keyAction, bool) {
+	switch b {
+	case 'r':
+		return actionCycleBackend, true
+	case 'R':
+		return actionCycleBackendReverse, true
+	case 'b':
+		return actionCycleBlocks, true
+	case 'B':
+		return actionCycleBlocksReverse, true
+	case 'c':
+		return actionCycleColour, true
+	case 'C':
+		return actionCycleColourReverse, true
+	default:
+		return actionNone, false
+	}
+}
+
+// decodeCSI maps a CSI sequence body (the bytes after ESC [) to a scroll key.
+// It recognises the arrow finals A/B/C/D, the PageUp/PageDown sequences 5~/6~,
+// and both encodings each of Home (H, 1~) and End (F, 4~). It returns
+// ScrollNone, false for any other body, so an unrecognised escape sequence is
+// ignored. The reader strips the leading ESC [ before calling it.
 func decodeCSI(body []byte) (ScrollKey, bool) {
 	switch string(body) {
 	case "A":
@@ -53,19 +144,47 @@ func decodeCSI(body []byte) (ScrollKey, bool) {
 		return ScrollPageUp, true
 	case "6~":
 		return ScrollPageDown, true
+	case "H", "1~":
+		return ScrollHome, true
+	case "F", "4~":
+		return ScrollEnd, true
 	default:
 		return ScrollNone, false
 	}
 }
 
+// decodeCSIAction maps a CSI sequence body to a viewer command: the backtab
+// (Z, how Shift+Tab arrives), F5 (15~), and the Alt-modified cursor keys
+// (modifier parameter 3): Alt+Left 1;3D, Alt+Right 1;3C, and Alt+Home in
+// both its 1;3H and 1;3~ encodings, mirroring the two plain Home forms. ok
+// is false for any other body.
+func decodeCSIAction(body []byte) (keyAction, bool) {
+	switch string(body) {
+	case "Z":
+		return actionFocusPrev, true
+	case "15~":
+		return actionReload, true
+	case "1;3D":
+		return actionBack, true
+	case "1;3C":
+		return actionForward, true
+	case "1;3H", "1;3~":
+		return actionOpenHome, true
+	default:
+		return actionNone, false
+	}
+}
+
 // keyEvent is one parsed key from the reader: a single byte (b, with scroll ==
-// ScrollNone), a recognised scroll key (scroll set), a decoded SGR mouse
-// report (mouse set), or a Kitty graphics response (apc set). The reader
-// resolves escape sequences so the consumer handles whole events, not raw
-// bytes.
+// ScrollNone), a recognised scroll key (scroll set), a decoded escape-sequence
+// command (act set), a decoded SGR mouse report (mouse set), or a Kitty
+// graphics response (apc set). The reader resolves escape sequences so the
+// consumer handles whole events, not raw bytes; single-byte commands (Tab,
+// Enter, Ctrl+Q) stay byte events the dispatcher maps through byteKeyAction.
 type keyEvent struct {
 	b      byte        // the single key byte when scroll is ScrollNone
 	scroll ScrollKey   // the recognised scroll key, or ScrollNone for a byte
+	act    keyAction   // the decoded escape-sequence command, or actionNone
 	apc    string      // Kitty graphics response body after ESC _ G, e.g. "i=1;OK"; "" otherwise
 	mouse  *MouseEvent // decoded SGR mouse report; nil otherwise
 }
@@ -105,15 +224,17 @@ func readKeys(r io.Reader, done <-chan struct{}) <-chan keyEvent {
 
 // nextEvent turns one read byte into a keyEvent. A non-escape byte is a byte
 // event. An ESC that opens a CSI sequence (next byte '[') is read to its final
-// byte (0x40..0x7e) and decoded; a recognised sequence is a scroll or mouse
-// event, an SGR motion report is consumed and dropped (motion dispatch is
-// deferred), and an unrecognised or malformed sequence is dropped (emit
+// byte (0x40..0x7e) and decoded; a recognised sequence is a scroll, action, or
+// mouse event, an SGR motion report is consumed and dropped (motion dispatch
+// is deferred), and an unrecognised or malformed sequence is dropped (emit
 // false) without leaking its bytes as keys. An ESC that opens an APC (next
 // byte '_') is read to its String Terminator; a Kitty graphics response (body
 // leading with 'G') emits an apc event for the shm pacing gate, any other APC
-// is dropped. A bare ESC, or ESC not followed by '[' or '_', is passed through
-// as a byte event so it is not swallowed. It reads only the bytes the sequence
-// needs, so it does not block on the next key.
+// is dropped. An ESC followed by an Alt-chord letter (altKeyAction) is that
+// chord's action event. A bare ESC, or ESC followed by any other byte, is
+// passed through as a byte event so it is not swallowed; a lone ESC does
+// nothing downstream, so no disambiguation timer is needed. It reads only the
+// bytes the sequence needs, so it does not block on the next key.
 func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 	if b != keyEsc {
 		return keyEvent{b: b}, true
@@ -130,6 +251,9 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 		return keyEvent{apc: string(body[1:])}, true
 	}
 	if next != '[' {
+		if act, ok := altKeyAction(next); ok {
+			return keyEvent{act: act}, true
+		}
 		_ = br.UnreadByte()
 		return keyEvent{b: b}, true
 	}
@@ -153,6 +277,9 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 	}
 	if k, ok := decodeCSI(body); ok {
 		return keyEvent{scroll: k}, true
+	}
+	if act, ok := decodeCSIAction(body); ok {
+		return keyEvent{act: act}, true
 	}
 	return keyEvent{}, false
 }

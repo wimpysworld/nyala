@@ -103,13 +103,21 @@ func (c terminalCompatibility) kittyFPSBadgeAllowed() bool {
 	return !c.rio04
 }
 
+// trueColourAllowed reports whether truecolour Block rendering is usable. Rio
+// 0.4.x is excluded because its append-only style table is exhausted by
+// truecolour Block frames. The auto colour resolution and the Alt+C cycle both
+// read it, so the two stay on one policy.
+func (c terminalCompatibility) trueColourAllowed() bool {
+	return !c.rio04
+}
+
 // resolveCompatibleColour applies terminal compatibility after normal colour
 // resolution. Rio 0.4.x auto mode is capped at xterm-256 because its append-only
 // style table is exhausted by truecolour Block frames. Explicit 256 and none
 // retain their normal result; explicit truecolor remains visible for validation.
 func resolveCompatibleColour(flag string, environ []string, detected ColourMode, compat terminalCompatibility) ColourMode {
 	resolved := resolveColour(flag, environ, detected)
-	if flag == "auto" && compat.rio04 && resolved == ColourTrue {
+	if flag == "auto" && !compat.trueColourAllowed() && resolved == ColourTrue {
 		return ColourXTerm256
 	}
 	return resolved
@@ -126,7 +134,7 @@ func (s *State) validateForcedBackend(mode string) error {
 }
 
 // validateColourCompatibility rejects explicit truecolour on affected Rio
-// releases regardless of the starting backend. Tab cycles every supported
+// releases regardless of the starting backend. Alt+R cycles every supported
 // backend, so truecolour Block frames are always reachable at runtime.
 func (s *State) validateColourCompatibility(colourFlag string) error {
 	if s.compat.rio04 && colourFlag == "truecolor" {

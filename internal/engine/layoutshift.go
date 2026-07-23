@@ -97,7 +97,7 @@ func buildLayoutShiftScript() string {
 }
 
 // buildLayoutShiftRemovalScript returns the JavaScript that disconnects the live
-// layout-shift observer, so a Tab from the block backend to a graphics backend
+// layout-shift observer, so a cycle from the block backend to a graphics backend
 // stops the observer without a reload. It reads the observer off
 // window.<observerHandle>, disconnects it, and clears the handle; a missing
 // observer is a no-op, so it never throws when none is live.

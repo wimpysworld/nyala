@@ -522,7 +522,7 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 	}
 	// Reconcile font forcing to the active backend before the first publish. On the
 	// block path this is the no-op the launch injection already covered; on a
-	// graphics-to-block Tab it registers the script and injects the live style.
+	// graphics-to-block cycle it registers the script and injects the live style.
 	// waitForFirstSnapshot only returns for the block backend, so a graphics start
 	// never reaches here.
 	e.syncFontForcing(ctx)
@@ -559,11 +559,11 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 			return
 		case <-reSnap:
 			// Resize or backend switch: reconcile font forcing first, then re-snapshot at
-			// once, no debounce, no cap. A block-to-graphics Tab removes the forcing; a
-			// graphics-to-block Tab re-registers it and injects the live style. A fresh
+			// once, no debounce, no cap. A block-to-graphics cycle removes the forcing; a
+			// graphics-to-block cycle re-registers it and injects the live style. A fresh
 			// enable (disabled before, enabled after) resets the calibration guard to zero
 			// so the recalibrate below reruns, since snapshotCellPx is backend-independent
-			// and would otherwise wrongly skip after a Tab back to block at the same grid.
+			// and would otherwise wrongly skip after a cycle back to block at the same grid.
 			wasForcing := e.fontForcingActive()
 			if e.syncFontForcing(ctx) && !wasForcing {
 				lastCalCellW, lastCalCellH = 0, 0

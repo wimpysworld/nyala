@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/chromedp"
 )
 
@@ -49,6 +50,82 @@ func (e *ChromiumEngine) dispatchInput(ctx context.Context, action chromedp.Acti
 // same divide pageStepPx applies to its delta; at Z 1 the divide is a no-op.
 func wheelCentre(cols, rows, cellW, cellH int, z float64) (cx, cy float64) {
 	return float64(cols*cellW) / 2 / z, float64(rows*cellH) / 2 / z
+}
+
+// strokeKey describes one key the engine forwards as a full CDP key stroke
+// (rawKeyDown, an optional char, then keyUp) rather than the single KeyChar
+// event typed text uses. The full stroke gives the page the browser-native
+// default action: Tab traverses focus with the focus ring, Enter activates
+// the focused element.
+type strokeKey struct {
+	key  string // the DispatchKeyEvent key value, for example "Tab"
+	vkey int64  // the Windows and native virtual key code
+	text string // the char-event text, empty when the key produces none
+}
+
+// strokeKeys maps the key codes the viewer forwards for native handling. Any
+// other code stays on the KeyChar path for a focused element to receive.
+var strokeKeys = map[string]strokeKey{
+	"Tab":   {key: "Tab", vkey: 9},
+	"Enter": {key: "Enter", vkey: 13, text: "\r"},
+}
+
+// keyStrokeParams builds the CDP key events one full key stroke dispatches,
+// in order: rawKeyDown, char when the key produces text (Enter's "\r"), then
+// keyUp, each carrying the key value, the physical code, the virtual key
+// codes, and the CDP modifier bits. It returns nil for a code with no stroke
+// mapping, so the caller falls through to the KeyChar path.
+func keyStrokeParams(code string, mod int) []*input.DispatchKeyEventParams {
+	sk, ok := strokeKeys[code]
+	if !ok {
+		return nil
+	}
+	stamp := func(p *input.DispatchKeyEventParams) *input.DispatchKeyEventParams {
+		return p.WithKey(sk.key).
+			WithCode(code).
+			WithWindowsVirtualKeyCode(sk.vkey).
+			WithNativeVirtualKeyCode(sk.vkey).
+			WithModifiers(input.Modifier(mod))
+	}
+	params := []*input.DispatchKeyEventParams{stamp(input.DispatchKeyEvent(input.KeyRawDown))}
+	if sk.text != "" {
+		params = append(params, stamp(input.DispatchKeyEvent(input.KeyChar)).WithText(sk.text).WithUnmodifiedText(sk.text))
+	}
+	return append(params, stamp(input.DispatchKeyEvent(input.KeyUp)))
+}
+
+// keyStrokeTasks wraps a stroke's key events as one chromedp action, so the
+// whole down-char-up sequence runs under a single bounded dispatch.
+func keyStrokeTasks(params []*input.DispatchKeyEventParams) chromedp.Tasks {
+	tasks := make(chromedp.Tasks, len(params))
+	for i, p := range params {
+		tasks[i] = p
+	}
+	return tasks
+}
+
+// edgeScrollPx is the vertical wheel delta one End press dispatches: far past
+// any practical document height, so the page clamps at its bottom. The held
+// scroll offset inflates past the real clamped offset, which crash recovery
+// tolerates (a replay clamps at the bottom again) and a later Home corrects
+// exactly, because Home dispatches the negated held target.
+const edgeScrollPx = 1 << 24
+
+// scrollToEdge scrolls the page to its top or bottom through the one wheel
+// transport, so the engine keeps owning the scroll offset. Home negates the
+// held target, landing the target at exactly 0 alongside the page's own top
+// clamp; End dispatches edgeScrollPx and lets the page clamp at the bottom.
+func (e *ChromiumEngine) scrollToEdge(toEnd bool) {
+	if toEnd {
+		e.dispatchWheel(0, edgeScrollPx)
+		return
+	}
+	e.mu.Lock()
+	dy := -e.scrollYTarget
+	e.mu.Unlock()
+	if dy != 0 {
+		e.dispatchWheel(0, dy)
+	}
 }
 
 // scrollKeyDelta maps a scroll key to a wheel delta in CSS pixels. It returns

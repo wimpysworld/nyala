@@ -45,8 +45,12 @@ type Engine interface {
 	Frames() <-chan render.Frame
 	// SendKey forwards a key by its code (for example ArrowDown) to the page.
 	// Scroll keys route to the engine's wheel transport; the engine owns the
-	// offset.
+	// offset. The codes Tab, ShiftTab, and Enter dispatch full key strokes for
+	// native focus traversal and activation.
 	SendKey(code string)
+	// SendNav forwards one navigation request: reload, a history step, or the
+	// launch page. The engine owns the launch URL and the navigation path.
+	SendNav(action NavAction)
 	// SendMouse forwards one decoded mouse event. A wheel step scrolls at the
 	// pointer cell through the engine's wheel transport; a press or release
 	// dispatches a mouse event at the cell centre. The engine owns the
@@ -55,6 +59,23 @@ type Engine interface {
 	// Close tears down the engine and the browser process.
 	Close() error
 }
+
+// NavAction identifies one page navigation request the viewer forwards over
+// the Engine seam. The viewer holds no URL state: the engine recorded the
+// launch URL at Navigate and owns the navigation path.
+type NavAction int
+
+const (
+	// NavReload reloads the page (Ctrl+R or F5).
+	NavReload NavAction = iota
+	// NavBack goes one history entry back (Alt+Left).
+	NavBack
+	// NavForward goes one history entry forward (Alt+Right).
+	NavForward
+	// NavHome opens the launch URL as a normal navigation (Alt+Home), pushing
+	// a history entry so NavBack returns to the prior page.
+	NavHome
+)
 
 // kittyDecodeSetter is the optional engine capability the viewer toggles when
 // the Kitty shm transport is in play. ChromiumEngine implements it; a fake
@@ -70,7 +91,7 @@ type kittyDecodeSetter interface {
 // syncEngineKittyDecode aligns the engine's kitty-shm decode mode with the
 // viewer state: on only while the active backend is Kitty and the shm
 // transport is live (resolved shm, not demoted). It runs at startup after the
-// backend settles, on every Tab cycle, and on runtime demotion.
+// backend settles, on every backend cycle, and on runtime demotion.
 func syncEngineKittyDecode(eng Engine, st *State) {
 	d, ok := eng.(kittyDecodeSetter)
 	if !ok {
@@ -84,12 +105,13 @@ func syncEngineKittyDecode(eng Engine, st *State) {
 // backends the terminal supports, hands the resolved backend and cell px to the
 // engine so it sizes the screencast capture, then navigates to url. It writes a
 // plain-text loading cue before the first frame and clears it on the first draw.
-// It re-fits and restarts the stream on resize, forwards scroll keys and the
-// wheel to the engine, cycles the backend on Tab, and restores the terminal on
-// exit. It returns an error only on a setup or I/O failure; a clean quit returns
-// nil. colourFlag is the --color intent; configureBackends resolves it against
+// It re-fits and restarts the stream on resize, forwards scroll keys, page keys,
+// and the wheel to the engine, cycles the backend on Alt+R, and restores the
+// terminal on exit. It returns an error only on a setup or I/O failure; a clean
+// quit (Ctrl+Q, or the Ctrl+C interrupt fallback) returns nil. colourFlag is the
+// --color intent; configureBackends resolves it against
 // NO_COLOR and detection. mode is the --backend mode: a named mode picks the
-// starting backend and Tab still cycles every supported backend; auto and
+// starting backend and Alt+R still cycles every supported backend; auto and
 // block always pass, and a graphics start is rejected before navigation when
 // detection did not confirm it. blocks is the --blocks mode selecting the block
 // glyph scheme; Stream resolves it with resolveScheme against os.Environ(), so
@@ -145,8 +167,8 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 		return cerr
 	}
 	// Start on the named --backend mode now that validation passed, so a forced
-	// block start overrides a higher-fidelity detected nomination while Tab keeps
-	// the full detected cycle. setupViewer handed the engine the detected backend;
+	// block start overrides a higher-fidelity detected nomination while Alt+R
+	// keeps the full detected cycle. setupViewer handed the engine the detected backend;
 	// re-notify it so the engine sizes its capture for the starting backend, not
 	// the detected one.
 	// A forced start can flip the Sixel bottom-row reservation under tmux,
@@ -793,10 +815,10 @@ func (s *streamSession) assembleSettle(buf *bytes.Buffer) error {
 // stream. Any response settles the in-flight shm transmit, so the pacing gate
 // opens. A failure response (no ";OK") while the session is on the Kitty
 // backend with the shm transport live means the terminal could not read the
-// object, so the stint demotes to direct. A failure that lands after Tab
-// cycled away is ignored: resetKitty has already unlinked unconsumed objects,
-// so a busy terminal that reads the switch-window escape late reports a
-// failure Nyala itself caused, and demoting on it would falsely pin later
+// object, so the stint demotes to direct. A failure that lands after the
+// backend cycled away is ignored: resetKitty has already unlinked unconsumed
+// objects, so a busy terminal that reads the switch-window escape late reports
+// a failure Nyala itself caused, and demoting on it would falsely pin later
 // Kitty stints on the parser-bound direct path.
 func (s *streamSession) handleKittyResponse(body string) {
 	s.kittyShmAwait = false
@@ -846,11 +868,11 @@ func (s *streamSession) waitForNavigate(winch <-chan os.Signal, keys <-chan keyE
 	}
 }
 
-// startupQuit reports whether a pre-navigation key requests exit. Browser input
-// and backend cycling are ignored until Navigate finishes and the live loop owns
-// the page.
+// startupQuit reports whether a pre-navigation key requests exit (Ctrl+Q, or
+// the Ctrl+C interrupt fallback). Browser input and backend cycling are
+// ignored until Navigate finishes and the live loop owns the page.
 func startupQuit(ev keyEvent) bool {
-	return ev.scroll == ScrollNone && (ev.b == 'q' || ev.b == 'Q' || ev.b == keyQuitCtrlC)
+	return ev.scroll == ScrollNone && ev.act == actionNone && byteKeyAction(ev.b) == actionQuit
 }
 
 // assemble builds one frame's whole terminal byte sequence into buf, ready for the
@@ -964,8 +986,8 @@ func (s *streamSession) flushAssembled() {
 // control bytes), so while inside it the producer is not draining eng.Frames() for
 // up to about two write spans. This is transient: the engine collector parks on its
 // cap-2 buffer and resumes the moment emitControl returns. In production it fires
-// only on a rare resize or Tab, because the per-second heartbeat runs only when the
-// fps meter is armed.
+// only on a rare resize or backend cycle, because the per-second heartbeat runs
+// only when the fps meter is armed.
 func (s *streamSession) emitControl(b []byte) error {
 	if s.writer == nil {
 		_, err := s.tty.Write(b)
@@ -1041,7 +1063,7 @@ func resizeEngineOp(px cellPx, changed bool, cols, rows int) func(Engine) {
 	}
 }
 
-// switchBackendOp returns the control-goroutine closure for one Tab backend
+// switchBackendOp returns the control-goroutine closure for one backend
 // switch. When the switch flips the Sixel bottom-row reservation under tmux
 // (Sixel and Block use different engine row counts there), the grid
 // resize rides in the same closure: the one-slot drop-on-full control channel
@@ -1070,81 +1092,168 @@ func (s *streamSession) handleMouse(ev MouseEvent) {
 
 // handleKey forwards one key to the engine or handles the viewer hotkeys and
 // reports whether the user asked to quit. A scroll key forwards its code; the
-// engine owns the offset. Tab cycles the backend and restarts the stream at the
-// new capture size.
+// engine owns the offset. Tab, Shift+Tab, and Enter forward to the page as
+// full key strokes for native focus traversal and activation. Alt+R cycles
+// the backend and restarts the stream at the new capture size; Alt+B and
+// Alt+C cycle the Block glyph scheme and colour mode. Both cycles only affect
+// Block rendering, so they are no-ops unless Block is the active backend:
+// cycling under a graphics backend would change hidden state with no visible
+// feedback, and the user would later land on Block in an unexpected mode.
 func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 	if ev.scroll != ScrollNone {
-		code := scrollKeyCode(ev.scroll)
-		if s.keySender != nil {
-			s.keySender.send(code)
-		} else {
-			s.eng.SendKey(code)
-		}
+		s.forwardKey(scrollKeyCode(ev.scroll))
 		return false
 	}
-	switch ev.b {
-	case 'q', 'Q', keyQuitCtrlC:
+	act := ev.act
+	if act == actionNone {
+		act = byteKeyAction(ev.b)
+	}
+	switch act {
+	case actionQuit:
 		return true
-	case keyTab:
-		previous := s.st.Backend
-		wasKitty := previous == BackendKitty
-		s.st.CycleBackend()
-		// One control buffer carries the whole switch clear, routed through the
-		// writer so it stays ordered against the frames and never races an
-		// in-flight write. Best-effort: a write failure surfaces on the next
-		// frame via the writer's error channel.
-		var ctl bytes.Buffer
-		if wasKitty && s.st.Backend != BackendKitty {
-			// Free both double-buffer images when leaving kitty, so the terminal keeps
-			// no stale image and a later return rebuilds from id 1.
-			_ = s.st.resetKitty(&ctl)
-			// Drop the shm pacing gate with the stint, so a stale in-flight
-			// wait cannot gate the next stint's first frame against the old
-			// stream's deadline.
-			s.kittyShmAwait = false
+	case actionFocusNext:
+		s.forwardKey("Tab")
+	case actionFocusPrev:
+		s.forwardKey("ShiftTab")
+	case actionActivate:
+		s.forwardKey("Enter")
+	case actionReload:
+		s.forwardNav(NavReload)
+	case actionBack:
+		s.forwardNav(NavBack)
+	case actionForward:
+		s.forwardNav(NavForward)
+	case actionOpenHome:
+		s.forwardNav(NavHome)
+	case actionCycleBackend:
+		s.cycleBackend(false)
+	case actionCycleBackendReverse:
+		s.cycleBackend(true)
+	case actionCycleBlocks, actionCycleBlocksReverse:
+		if s.st.Backend != BackendBlock {
+			break
 		}
-		if s.st.Backend == BackendKitty && !wasKitty {
-			// Returning to Kitty re-arms a demoted shm transport: the startup
-			// probe proved it, so a switch-window false failure costs at most
-			// one stint, never the session.
-			s.st.rearmKittySHM()
+		before := s.st.Scheme
+		s.recomposeBlock(s.st.CycleScheme(act == actionCycleBlocksReverse) != before)
+	case actionCycleColour, actionCycleColourReverse:
+		if s.st.Backend != BackendBlock {
+			break
 		}
-		if s.st.Backend != previous && s.firstDrawn.Load() {
-			// Every backend change erases the screen before the new backend's
-			// first frame, one shared rule for all transitions. Leaving Block,
-			// the old glyphs and cell backgrounds would otherwise sit under the
-			// next graphics frame (and under Kitty's FPS page image, which
-			// places below text). Leaving Sixel, the old raster persists over
-			// cells the terminal believes unchanged. Entering Sixel under
-			// tmux, the reserved bottom row keeps the previous backend's
-			// cells because the rows-1 frame never overwrites it. Reset the SGR
-			// first: the Block differ leaves the last cell's background active,
-			// and terminals erase with the current background (background
-			// colour erase). Invalidate the differ against the blank terminal,
-			// so the next Block frame full-repaints instead of skipping cells
-			// matching the previous Block stint. Gated on firstDrawn so a
-			// pre-frame Tab never wipes the loading cue, matching resize.
-			if s.diff != nil {
-				s.diff.Reset()
-			}
-			ctl.WriteString(sgrReset + clearScreen)
-		}
-		if ctl.Len() > 0 {
-			_ = s.emitControl(ctl.Bytes())
-		}
-		// Align the engine's kitty-shm decode with the new backend before the
-		// restart, so frames after the switch arrive in the right form: planes
-		// while Kitty runs the shm transport, direct PNG otherwise. The toggle
-		// is a cheap flag write, safe on the consumer loop.
-		syncEngineKittyDecode(s.eng, s.st)
-		// Cycle the backend off the consumer loop: the engine restart runs on the
-		// control goroutine so a slow restartStream cannot freeze draw or quit.
-		backend := s.st.Backend
-		s.ctl.submit(switchBackendOp(backend, s.st.Cols,
-			engineRows(previous, s.st.mux, s.st.Rows),
-			engineRows(backend, s.st.mux, s.st.Rows)))
+		before := s.st.Colour
+		s.recomposeBlock(s.st.CycleColour(act == actionCycleColourReverse) != before)
 	}
 	return false
+}
+
+// forwardKey forwards one key code to the engine off the input loop through
+// the keySender worker, so a wedged browser never freezes quit or draw.
+func (s *streamSession) forwardKey(code string) {
+	if s.keySender != nil {
+		s.keySender.send(code)
+		return
+	}
+	s.eng.SendKey(code)
+}
+
+// forwardNav forwards one navigation request to the engine through the same
+// serialised worker as keys, so a reload and a queued scroll burst reach the
+// engine in arrival order.
+func (s *streamSession) forwardNav(a NavAction) {
+	if s.keySender != nil {
+		s.keySender.sendNav(a)
+		return
+	}
+	s.eng.SendNav(a)
+}
+
+// cycleBackend steps the backend cycle (Alt+R forwards, Alt+Shift+R
+// backwards) and runs the whole switch: the leave-kitty reset, the shared
+// switch clear, the kitty-shm decode sync, and the engine restart at the new
+// capture size on the control goroutine.
+func (s *streamSession) cycleBackend(reverse bool) {
+	previous := s.st.Backend
+	wasKitty := previous == BackendKitty
+	if reverse {
+		s.st.CycleBackendReverse()
+	} else {
+		s.st.CycleBackend()
+	}
+	// One control buffer carries the whole switch clear, routed through the
+	// writer so it stays ordered against the frames and never races an
+	// in-flight write. Best-effort: a write failure surfaces on the next
+	// frame via the writer's error channel.
+	var ctl bytes.Buffer
+	if wasKitty && s.st.Backend != BackendKitty {
+		// Free both double-buffer images when leaving kitty, so the terminal keeps
+		// no stale image and a later return rebuilds from id 1.
+		_ = s.st.resetKitty(&ctl)
+		// Drop the shm pacing gate with the stint, so a stale in-flight
+		// wait cannot gate the next stint's first frame against the old
+		// stream's deadline.
+		s.kittyShmAwait = false
+	}
+	if s.st.Backend == BackendKitty && !wasKitty {
+		// Returning to Kitty re-arms a demoted shm transport: the startup
+		// probe proved it, so a switch-window false failure costs at most
+		// one stint, never the session.
+		s.st.rearmKittySHM()
+	}
+	if s.st.Backend != previous && s.firstDrawn.Load() {
+		// Every backend change erases the screen before the new backend's
+		// first frame, one shared rule for all transitions. Leaving Block,
+		// the old glyphs and cell backgrounds would otherwise sit under the
+		// next graphics frame (and under Kitty's FPS page image, which
+		// places below text). Leaving Sixel, the old raster persists over
+		// cells the terminal believes unchanged. Entering Sixel under
+		// tmux, the reserved bottom row keeps the previous backend's
+		// cells because the rows-1 frame never overwrites it. Reset the SGR
+		// first: the Block differ leaves the last cell's background active,
+		// and terminals erase with the current background (background
+		// colour erase). Invalidate the differ against the blank terminal,
+		// so the next Block frame full-repaints instead of skipping cells
+		// matching the previous Block stint. Gated on firstDrawn so a
+		// pre-frame cycle never wipes the loading cue, matching resize.
+		if s.diff != nil {
+			s.diff.Reset()
+		}
+		ctl.WriteString(sgrReset + clearScreen)
+	}
+	if ctl.Len() > 0 {
+		_ = s.emitControl(ctl.Bytes())
+	}
+	// Align the engine's kitty-shm decode with the new backend before the
+	// restart, so frames after the switch arrive in the right form: planes
+	// while Kitty runs the shm transport, direct PNG otherwise. The toggle
+	// is a cheap flag write, safe on the consumer loop.
+	syncEngineKittyDecode(s.eng, s.st)
+	// Cycle the backend off the consumer loop: the engine restart runs on the
+	// control goroutine so a slow restartStream cannot freeze draw or quit.
+	backend := s.st.Backend
+	s.ctl.submit(switchBackendOp(backend, s.st.Cols,
+		engineRows(previous, s.st.mux, s.st.Rows),
+		engineRows(backend, s.st.mux, s.st.Rows)))
+}
+
+// recomposeBlock repaints the live Block view after a scheme or colour cycle
+// changed it. It follows the backend-switch clear rule: reset the differ
+// against the blank terminal, reset the SGR before the erase, and route the
+// clear through the writer, then restart the stream at the unchanged grid so
+// the engine re-emits a frame for the new composition (a static page pushes
+// no frame of its own). changed is false when the cycle was a no-op (every
+// other mode capped) and a no-op skips the repaint. handleKey only dispatches
+// the cycles while Block is the active backend, so this always repaints Block.
+func (s *streamSession) recomposeBlock(changed bool) {
+	if !changed {
+		return
+	}
+	if s.diff != nil {
+		s.diff.Reset()
+	}
+	if s.firstDrawn.Load() {
+		_ = s.emitControl([]byte(sgrReset + clearScreen))
+	}
+	rows := engineRows(s.st.Backend, s.st.mux, s.st.Rows)
+	s.ctl.submit(switchBackendOp(s.st.Backend, s.st.Cols, rows, rows))
 }
 
 // keySender serialises forwarded input (scroll keys and mouse events) away
@@ -1188,6 +1297,12 @@ func (s *keySender) send(code string) {
 // order.
 func (s *keySender) sendMouse(ev MouseEvent) {
 	s.enqueue(func(e Engine) { e.SendMouse(ev) })
+}
+
+// sendNav queues one navigation request for the worker on the same queue as
+// keys, so a reload never overtakes an earlier queued key.
+func (s *keySender) sendNav(a NavAction) {
+	s.enqueue(func(e Engine) { e.SendNav(a) })
 }
 
 // enqueue appends one forward closure with a non-blocking wake, so the input
@@ -1701,6 +1816,10 @@ func scrollKeyCode(k ScrollKey) string {
 		return "PageUp"
 	case ScrollPageDown:
 		return "PageDown"
+	case ScrollHome:
+		return "Home"
+	case ScrollEnd:
+		return "End"
 	default:
 		return ""
 	}

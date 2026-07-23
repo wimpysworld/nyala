@@ -298,14 +298,14 @@ func TestKittySHMPacingGate(t *testing.T) {
 	}
 }
 
-// TestKittySHMLateErrorAfterTabAwayDoesNotDemote reproduces the Ghostty
-// switch-window race: an shm transmit is in flight when Tab cycles away from
+// TestKittySHMLateErrorAfterCycleAwayDoesNotDemote reproduces the Ghostty
+// switch-window race: an shm transmit is in flight when Alt+R cycles away from
 // Kitty, so resetKitty unlinks the object before the busy terminal reads the
 // escape, and the terminal's ENOENT reply lands after the switch. That failure
 // is self-inflicted, not a transport fault, so it must not demote the shm
-// transport; the next Tab back to Kitty must run shm again with the engine
+// transport; the next cycle back to Kitty must run shm again with the engine
 // decode on and the stale pacing gate dropped.
-func TestKittySHMLateErrorAfterTabAwayDoesNotDemote(t *testing.T) {
+func TestKittySHMLateErrorAfterCycleAwayDoesNotDemote(t *testing.T) {
 	st := shmState()
 	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
 	st.kittyID = 1
@@ -314,27 +314,27 @@ func TestKittySHMLateErrorAfterTabAwayDoesNotDemote(t *testing.T) {
 	defer close(done)
 	s := &streamSession{eng: eng, st: &st, tty: &bytes.Buffer{}, ctl: newControl(eng, done)}
 
-	// One shm transmit awaits its acknowledgement when the user hits Tab.
+	// One shm transmit awaits its acknowledgement when the user cycles the backend.
 	s.assembledSHM = true
 	s.markKittySHMHandoff()
-	s.handleKey(keyEvent{b: keyTab})
+	s.handleKey(keyEvent{act: actionCycleBackend})
 	if st.Backend != BackendBlock {
-		t.Fatalf("backend after Tab = %v, want Block", st.Backend)
+		t.Fatalf("backend after cycle = %v, want Block", st.Backend)
 	}
 	if s.kittyShmAwait {
-		t.Fatal("Tab away from Kitty left the stale shm pacing gate armed")
+		t.Fatal("cycling away from Kitty left the stale shm pacing gate armed")
 	}
 
 	// The busy terminal processes the escape after the unlink and replies with
 	// a failure. The transport itself is healthy.
 	s.handleKittyResponse("i=2;ENOENT:failed to open shared memory object")
 	if !st.kittySHMLive() {
-		t.Fatal("late failure response after Tab away falsely demoted the shm transport")
+		t.Fatal("late failure response after cycling away falsely demoted the shm transport")
 	}
 
-	s.handleKey(keyEvent{b: keyTab})
+	s.handleKey(keyEvent{act: actionCycleBackend})
 	if st.Backend != BackendKitty {
-		t.Fatalf("backend after second Tab = %v, want Kitty", st.Backend)
+		t.Fatalf("backend after second cycle = %v, want Kitty", st.Backend)
 	}
 	if !st.kittySHMLive() {
 		t.Fatal("shm transport not live after returning to Kitty")
@@ -349,7 +349,7 @@ func TestKittySHMLateErrorAfterTabAwayDoesNotDemote(t *testing.T) {
 
 // TestKittySHMDemotionRearmsOnReturnToKitty asserts a runtime demotion lasts
 // one Kitty stint, not the whole session: the startup probe proved the
-// transport, so Tab back to Kitty re-arms shm and re-enables the engine
+// transport, so cycling back to Kitty re-arms shm and re-enables the engine
 // decode. A genuinely broken transport demotes again on its next failure.
 func TestKittySHMDemotionRearmsOnReturnToKitty(t *testing.T) {
 	st := shmState()
@@ -370,10 +370,10 @@ func TestKittySHMDemotionRearmsOnReturnToKitty(t *testing.T) {
 		t.Fatal("demotion did not disable the engine kitty-shm decode")
 	}
 
-	s.handleKey(keyEvent{b: keyTab})
-	s.handleKey(keyEvent{b: keyTab})
+	s.handleKey(keyEvent{act: actionCycleBackend})
+	s.handleKey(keyEvent{act: actionCycleBackend})
 	if st.Backend != BackendKitty {
-		t.Fatalf("backend after two Tabs = %v, want Kitty", st.Backend)
+		t.Fatalf("backend after two cycles = %v, want Kitty", st.Backend)
 	}
 	if !st.kittySHMLive() {
 		t.Fatal("returning to Kitty did not re-arm the demoted shm transport")

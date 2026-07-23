@@ -19,7 +19,7 @@ import (
 )
 
 // TestCycleBackendOrder asserts the default cycle is best-first kitty -> sixel ->
-// block: the initial active backend is kitty and Tab steps down, wrapping.
+// block: the initial active backend is kitty and the cycle steps down, wrapping.
 func TestCycleBackendOrder(t *testing.T) {
 	s := NewState(120, 40)
 	s.SetEnabled([]Backend{BackendKitty, BackendSixel, BackendBlock})
@@ -36,7 +36,7 @@ func TestCycleBackendOrder(t *testing.T) {
 
 // TestCycleBackendSkipsDisabled asserts CycleBackend steps only through the
 // enabled set. With sixel disabled, configureBackends orders it kitty -> block,
-// so the initial active backend is kitty and Tab steps block -> kitty.
+// so the initial active backend is kitty and the cycle steps block -> kitty.
 func TestCycleBackendSkipsDisabled(t *testing.T) {
 	s := NewState(120, 40)
 	s.SetEnabled([]Backend{BackendKitty, BackendBlock})
@@ -123,8 +123,7 @@ func TestStreamLoopQuitsAfterDownArrowWhenSendKeyBlocks(t *testing.T) {
 		name string
 		quit keyEvent
 	}{
-		{"q", keyEvent{b: 'q'}},
-		{"Q", keyEvent{b: 'Q'}},
+		{"ctrl-q", keyEvent{b: keyQuitCtrlQ}},
 		{"ctrl-c", keyEvent{b: keyQuitCtrlC}},
 	}
 	for _, c := range cases {
@@ -184,8 +183,7 @@ func TestWaitForNavigateQuitsWhileNavigatePending(t *testing.T) {
 		name string
 		key  byte
 	}{
-		{"q", 'q'},
-		{"Q", 'Q'},
+		{"ctrl-q", keyQuitCtrlQ},
 		{"ctrl-c", keyQuitCtrlC},
 	}
 	for _, c := range cases {
@@ -213,6 +211,8 @@ func TestWaitForNavigateIgnoresBrowserKeysWhileNavigatePending(t *testing.T) {
 	}{
 		{"scroll", keyEvent{scroll: ScrollDown}},
 		{"tab", keyEvent{b: keyTab}},
+		{"plain q", keyEvent{b: 'q'}},
+		{"alt-r cycle", keyEvent{act: actionCycleBackend}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -232,7 +232,7 @@ func TestWaitForNavigateIgnoresBrowserKeysWhileNavigatePending(t *testing.T) {
 			s := &streamSession{eng: eng, st: &st}
 			keys := make(chan keyEvent, 2)
 			keys <- c.key
-			keys <- keyEvent{b: 'q'}
+			keys <- keyEvent{b: keyQuitCtrlQ}
 			navigated := make(chan error)
 
 			if err := s.waitForNavigate(nil, keys, navigated); err != nil {
@@ -534,6 +534,7 @@ type streamTestEngine struct {
 	frames     chan render.Frame
 	sendKey    func(string)
 	setBackend func(string)
+	sendNav    func(NavAction)
 }
 
 func (e streamTestEngine) SetBackend(backend Backend) {
@@ -553,6 +554,12 @@ func (e streamTestEngine) Frames() <-chan render.Frame { return e.frames }
 func (e streamTestEngine) SendKey(code string) {
 	if e.sendKey != nil {
 		e.sendKey(code)
+	}
+}
+
+func (e streamTestEngine) SendNav(a NavAction) {
+	if e.sendNav != nil {
+		e.sendNav(a)
 	}
 }
 

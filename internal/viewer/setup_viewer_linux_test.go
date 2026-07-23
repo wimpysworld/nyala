@@ -40,6 +40,31 @@ func newSetupViewerTTY(t *testing.T) *os.File {
 	return slave
 }
 
+// TestSetupViewerRawModeClearsIXON proves the raw-mode termios setup clears
+// IXON explicitly, not by assumed cfmakeraw semantics. With IXON set, the
+// line discipline consumes Ctrl+Q (XON) and Ctrl+S (XOFF) as flow control and
+// the quit key never reaches the key reader; the Ctrl+Q binding depends on
+// this flag staying cleared.
+func TestSetupViewerRawModeClearsIXON(t *testing.T) {
+	clearMuxEnv(t)
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+	tty := newSetupViewerTTY(t)
+
+	fd, _, restore, err := setupViewer(&fakeEngine{}, tty, "auto", "auto", block.SchemeQuadrant)
+	if err != nil {
+		t.Fatalf("setupViewer: %v", err)
+	}
+	t.Cleanup(restore)
+
+	termios, err := unix.IoctlGetTermios(int(fd), unix.TCGETS)
+	if err != nil {
+		t.Fatalf("read raw-mode termios: %v", err)
+	}
+	if termios.Iflag&unix.IXON != 0 {
+		t.Fatal("raw mode left IXON set; Ctrl+Q would be eaten as XON flow control")
+	}
+}
+
 // TestSetupViewerWiresResolvedScheme proves every --blocks resolution reaches
 // matching viewer state through the launch setup seam.
 func TestSetupViewerWiresResolvedScheme(t *testing.T) {

@@ -133,7 +133,7 @@ func TestMultiplexerSixelPassesForcedBackend(t *testing.T) {
 
 // TestZellijSixelBlocked pins the zellij Sixel block end to end: with DA1
 // advertised and real geometry the enabled cycle stays Block only, so
-// auto-detection starts on Block, Tab never reaches Sixel, and
+// auto-detection starts on Block, the backend cycle never reaches Sixel, and
 // --backend=sixel fails the generic validator with the standard
 // unsupported-backend error, no zellij-specific error path.
 func TestZellijSixelBlocked(t *testing.T) {
@@ -143,7 +143,7 @@ func TestZellijSixelBlocked(t *testing.T) {
 		t.Fatalf("zellij auto start = %v, want %v", st.Backend, BackendBlock)
 	}
 	if got := st.CycleBackend(); got != BackendBlock {
-		t.Fatalf("Tab cycle = %v, want %v", got, BackendBlock)
+		t.Fatalf("backend cycle = %v, want %v", got, BackendBlock)
 	}
 	err := ValidateForcedBackend(ModeSixel, st.Enabled)
 	if err == nil {

@@ -1217,7 +1217,7 @@ func TestStreamLoopTmuxSixelPacingCoalesces(t *testing.T) {
 	for range pushed {
 		frames <- render.Frame{Img: img}
 	}
-	keys <- keyEvent{b: 'q'}
+	keys <- keyEvent{b: keyQuitCtrlQ}
 
 	select {
 	case <-loopDone:
@@ -1322,7 +1322,7 @@ func TestStreamLoopTmuxSixelIdleSettles(t *testing.T) {
 		t.Fatalf("idle stream presented %d frames, want the one-shot settle to stay at 2", got)
 	}
 
-	keys <- keyEvent{b: 'q'}
+	keys <- keyEvent{b: keyQuitCtrlQ}
 	select {
 	case <-loopDone:
 	case <-time.After(5 * time.Second):
