@@ -39,7 +39,7 @@ func (s *State) demoteKittySHM(err error) {
 }
 
 // rearmKittySHM clears a runtime shm demotion so the next Kitty stint runs
-// the shm transport again. The stream session calls it when Tab returns to
+// the shm transport again. The stream session calls it when the cycle returns to
 // the Kitty backend: the startup probe proved the transport, so a demotion
 // lasts one stint rather than pinning the session on the parser-bound direct
 // path. A genuinely broken transport demotes again on its next shm failure.
@@ -197,7 +197,7 @@ func nextKittyID(prev int) int {
 // clean slate with id 1. It also closes the shm writer, unlinking any
 // shared-memory objects the terminal never consumed. It is a no-op when no
 // kitty image has been placed and no shm object exists. The stream session
-// calls it when Tab cycles the backend away from kitty.
+// calls it when the backend cycle leaves kitty.
 func (s *State) resetKitty(w io.Writer) error {
 	s.closeKittySHM()
 	if s.kittyID == 0 {

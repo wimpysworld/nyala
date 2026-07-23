@@ -1,10 +1,9 @@
 // Package viewer is the interactive raw-terminal frame viewer for Nyala.
 //
 // The viewer draws each frame an Engine pushes to the terminal. It cycles the
-// render backend (block, sixel, kitty). The block glyph scheme (quadrant,
-// half-block) is set
-// once from the --blocks flag and the colour depth from the --color flag, so
-// neither is a live toggle.
+// render backend (block, sixel, kitty) on Alt+R, the block glyph scheme on
+// Alt+B, and the block colour depth on Alt+C; the --blocks and --color flags
+// set the starting scheme and depth.
 //
 // State holds the viewer's render and backend state. Stream wires it to a raw
 // TTY, handles hotkeys, and draws an Engine's pushed frames.
@@ -60,18 +59,24 @@ const (
 )
 
 // State is the viewer's render and backend state. Cols and Rows are the terminal
-// size in cells. Enabled lists the backends the Tab cycle steps through, in cycle
-// order, highest-fidelity first with block last; the embedded cellPx is the real
-// terminal cell pixel size used to scale the graphics backends.
+// size in cells. Enabled lists the backends the Alt+R cycle steps through, in
+// cycle order, highest-fidelity first with block last; the embedded cellPx is the
+// real terminal cell pixel size used to scale the graphics backends.
 type State struct {
 	Backend Backend               // active backend in the cycle
 	Scheme  block.Scheme          // block glyph scheme; applies only to the block backend
 	Colour  ColourMode            // block colour depth; applies only to the block backend
 	Cols    int                   // terminal width in cells
 	Rows    int                   // terminal height in cells
-	Enabled []Backend             // backends in the Tab cycle, highest-fidelity first
+	Enabled []Backend             // backends in the Alt+R cycle, highest-fidelity first
 	cellPx                        // terminal cell pixel size for graphics scaling
 	compat  terminalCompatibility // terminal-specific rendering compatibility policy
+
+	// sextantOK records whether the terminal self-draws sextant glyphs, resolved
+	// once by configureBackends from the environment. The Alt+B scheme cycle
+	// skips the sextant scheme when it is false, so cycling never lands on a
+	// scheme the terminal cannot render.
+	sextantOK bool
 
 	// mux is the focus multiplexer hosting the session, recorded once by
 	// configureBackends. engineRows reads it to reserve the bottom terminal
@@ -99,7 +104,7 @@ type State struct {
 	// the first kitty frame. The kitty path double-buffers by alternating id 1 and
 	// 2: each frame places the new image under the next id, then deletes the
 	// previous id, so the swap never blanks the screen. resetKitty clears it back
-	// to 0 when Tab cycles the backend away from kitty. It stays 0 on the block and
+	// to 0 when the backend cycle leaves kitty. It stays 0 on the block and
 	// sixel paths.
 	kittyID int
 
@@ -117,7 +122,7 @@ type State struct {
 
 	// kittyShmDemoted marks the runtime fallback from the shm transport to
 	// direct PNG. An shm create or write failure sets it for the rest of the
-	// Kitty stint, so a flaky /dev/shm cannot fail every frame; a Tab back to
+	// Kitty stint, so a flaky /dev/shm cannot fail every frame; a cycle back to
 	// Kitty re-arms it via rearmKittySHM because the startup probe proved the
 	// transport.
 	kittyShmDemoted bool
@@ -248,7 +253,7 @@ func NewState(cols, rows int) State {
 	}
 }
 
-// SetEnabled records the backends the Tab cycle steps through, in cycle order,
+// SetEnabled records the backends the Alt+R cycle steps through, in cycle order,
 // and resets the active backend to the first enabled backend. Callers order the
 // slice highest-fidelity first and place block last as the floor, so enabled[0]
 // is the best available backend and the cycle never rests on a disabled one.
@@ -265,6 +270,18 @@ func (s *State) SetEnabled(enabled []Backend) {
 // colour state are untouched, so cycling away from block and back preserves the
 // chosen scheme and colour.
 func (s *State) CycleBackend() Backend {
+	return s.cycleBackendStep(1)
+}
+
+// CycleBackendReverse steps to the previous enabled backend in cycle order and
+// wraps, then returns the new backend, the Alt+Shift+R inverse of CycleBackend.
+func (s *State) CycleBackendReverse() Backend {
+	return s.cycleBackendStep(-1)
+}
+
+// cycleBackendStep moves dir steps (+1 forwards, -1 backwards) through the
+// enabled cycle and wraps in either direction.
+func (s *State) cycleBackendStep(dir int) Backend {
 	if len(s.Enabled) == 0 {
 		return s.Backend
 	}
@@ -275,8 +292,72 @@ func (s *State) CycleBackend() Backend {
 			break
 		}
 	}
-	s.Backend = s.Enabled[(idx+1)%len(s.Enabled)]
+	n := len(s.Enabled)
+	s.Backend = s.Enabled[(idx+dir+n)%n]
 	return s.Backend
+}
+
+// schemeCycle is the Alt+B block glyph scheme cycle order: half, quadrant,
+// sextant, wrapping. CycleScheme skips sextant when the terminal does not
+// self-draw sextant glyphs.
+var schemeCycle = []block.Scheme{block.SchemeHalfBlock, block.SchemeQuadrant, block.SchemeSextant}
+
+// CycleScheme steps the block glyph scheme through the half -> quadrant ->
+// sextant cycle (reverse steps backwards) and returns the new scheme. A scheme
+// the terminal cannot render (sextant off the allow-list) is skipped, so the
+// cycle only offers renderable schemes. The scheme applies only to the block
+// backend; the stream dispatcher drops the cycle while a graphics backend
+// draws, so no hidden state change surprises the next block stint.
+func (s *State) CycleScheme(reverse bool) block.Scheme {
+	s.Scheme = cycleValue(schemeCycle, s.Scheme, reverse, func(m block.Scheme) bool {
+		return m != block.SchemeSextant || s.sextantOK
+	})
+	return s.Scheme
+}
+
+// colourCycle is the Alt+C block colour mode cycle order: truecolour,
+// xterm-256, monochrome, wrapping. CycleColour skips truecolour where the
+// terminal compatibility policy caps it.
+var colourCycle = []ColourMode{ColourTrue, ColourXTerm256, ColourMono}
+
+// CycleColour steps the block colour mode through the truecolour -> 256 ->
+// monochrome cycle (reverse steps backwards) and returns the new mode. A mode
+// the terminal cannot sustain (truecolour under Rio 0.4.x, whose style table
+// truecolour Block frames exhaust) is skipped, following the same
+// compatibility state that caps --color=auto. The mode applies only to the
+// block backend; the stream dispatcher drops the cycle while a graphics
+// backend draws.
+func (s *State) CycleColour(reverse bool) ColourMode {
+	s.Colour = cycleValue(colourCycle, s.Colour, reverse, func(m ColourMode) bool {
+		return m != ColourTrue || s.compat.trueColourAllowed()
+	})
+	return s.Colour
+}
+
+// cycleValue steps current through cycle (backwards when reverse), skipping
+// values allowed rejects, and wraps. It returns current unchanged when every
+// other value is disallowed, so a fully capped cycle is a no-op rather than a
+// spin.
+func cycleValue[T comparable](cycle []T, current T, reverse bool, allowed func(T) bool) T {
+	idx := 0
+	for i, v := range cycle {
+		if v == current {
+			idx = i
+			break
+		}
+	}
+	dir := 1
+	if reverse {
+		dir = -1
+	}
+	n := len(cycle)
+	for step := 1; step < n; step++ {
+		next := cycle[(idx+dir*step+n*step)%n]
+		if allowed(next) {
+			return next
+		}
+	}
+	return current
 }
 
 // Resize records a new terminal size in cells. The next frame reflects the new

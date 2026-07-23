@@ -330,11 +330,14 @@ and research documents.
   plus any post-repaint viewport re-blit must finish within one frame budget. Test
   resize, alt-screen behaviour, cursor restoration, and concurrent frame arrival.
   Source: [TUI decisions](./OVERVIEW.md#decisions-tui-research).
-- [ ] Add direct interaction: address entry, keyboard text input, buttons, focus,
+- [ ] Add direct interaction: address entry, keyboard text input, buttons,
   hover, and drag selection mapped to CDP events. Wheel scrolling at the pointer
   and mouse clicks (press, release, modifiers, synthesised clickCount) are done
   through the viewer's SGR 1002+1006 decode and the engine `SendMouse` seam;
-  keyboard scrolling already used the Stage 3 engine transport. Source:
+  keyboard scrolling already used the Stage 3 engine transport. Focus traversal
+  and activation are done: Tab, Shift+Tab, and Enter forward as native CDP key
+  strokes (rawKeyDown/char/keyUp), giving Chromium's own focus ring and default
+  actions; plain printable keys stay free for the coming form input. Source:
   `OVERVIEW.md`, "Input mapping".
 - [x] Add mouse wheel and click support. The viewer enables SGR 1002+1006 on every
   terminal with no per-terminal cases and disables them unconditionally on exit and
@@ -344,11 +347,13 @@ and research documents.
   verified on Kitty (Block and Kitty backends), Alacritty (Sixel), tmux, and
   zellij. Hover (1003) and drag selection stay in the open direct-interaction item
   above. Source: `OVERVIEW.md`, "Input mapping".
-- [ ] Add clickable Back, Forward, and Reload controls to the Stage 4 chrome. Back
-  and Forward use Chromium's existing navigation state; Nyala does not own or persist
-  a navigation-history model. Bookmarks and other full-browser features remain out of
-  scope. Sources: `OVERVIEW.md`, "v1 interaction scope", and [Stage 3 deferred
-  scope](./STAGE-3.md#objective-and-scope).
+- [ ] Add clickable Back, Forward, and Reload controls to the Stage 4 chrome. The
+  keyboard half is done: Ctrl+R and F5 reload, Alt+Left and Alt+Right step
+  Chromium's navigation history, and Alt+Home reopens the launch URL, all through
+  the engine `SendNav` seam. Back and Forward use Chromium's existing navigation
+  state; Nyala does not own or persist a navigation-history model. Bookmarks and
+  other full-browser features remain out of scope. Sources: `OVERVIEW.md`, "v1
+  interaction scope", and [Stage 3 deferred scope](./STAGE-3.md#objective-and-scope).
 - [ ] Add chrome theming, OSC 11 light/dark handling, per-multiplexer background
   handling, typed capability messages, and terminal-colour downsampling. Use the
   documented bubbletint choice after chrome exists. Sources: `STAGE-1.md`, "Out of

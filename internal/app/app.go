@@ -26,7 +26,7 @@ type CLI struct {
 
 	// Backend selects the starting renderer: auto, block, kitty, or sixel. auto
 	// detects the terminal's best supported backend; a named backend fails fast
-	// when the terminal cannot run it. Tab cycles all supported backends.
+	// when the terminal cannot run it. Alt+R cycles all supported backends.
 	Backend string `help:"Renderer backend: auto, block, kitty, or sixel." default:"auto" enum:"auto,block,kitty,sixel"`
 
 	// Blocks selects the block glyph mode: auto, sextant, quadrant, or half. On the
@@ -75,9 +75,36 @@ func Run(cli CLI, tty *os.File) error {
 type engineAdapter struct{ *engine.ChromiumEngine }
 
 // SendKey maps a viewer key code to an engine Key. The engine routes scroll-key
-// codes (ArrowUp, PageDown, and so on) to its wheel transport.
+// codes (ArrowUp, PageDown, and so on) to its wheel transport and dispatches
+// stroke codes (Tab, Enter) as full key strokes. The viewer's ShiftTab
+// pseudo-code (the CSI Z backtab) maps here to a Tab stroke carrying the CDP
+// Shift modifier bit, because the viewer seam carries only a code string.
 func (a engineAdapter) SendKey(code string) {
-	a.ChromiumEngine.SendKey(engine.Key{Code: code})
+	k := engine.Key{Code: code}
+	if code == "ShiftTab" {
+		k = engine.Key{Code: "Tab", Mod: 8} // CDP modifier bits: Shift=8
+	}
+	a.ChromiumEngine.SendKey(k)
+}
+
+// SendNav maps a viewer navigation request to the engine's NavAction. The
+// engine owns the launch URL and the navigation path.
+func (a engineAdapter) SendNav(action viewer.NavAction) {
+	a.ChromiumEngine.SendNav(navAction(action))
+}
+
+// navAction maps the viewer navigation enum to the engine's.
+func navAction(a viewer.NavAction) engine.NavAction {
+	switch a {
+	case viewer.NavBack:
+		return engine.NavBack
+	case viewer.NavForward:
+		return engine.NavForward
+	case viewer.NavHome:
+		return engine.NavHome
+	default:
+		return engine.NavReload
+	}
 }
 
 // SendMouse maps a viewer mouse event to the engine's terminal-neutral

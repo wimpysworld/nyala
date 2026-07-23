@@ -173,7 +173,7 @@ func pageNotActive(err error) bool {
 // network idle. ErrorText remains renderable: Chromium commits its error document
 // under the returned frame and loader, so it follows the same commit gate.
 func (e *ChromiumEngine) navigateToCommit(ctx context.Context, lifecycle *sessionLifecycle, url string) error {
-	frameID, loaderID, _, isDownload, err := e.runNavigate(ctx, url)
+	frameID, loaderID, isDownload, err := e.runNavigate(ctx, url)
 	if err != nil {
 		return fmt.Errorf("engine: navigate: %w", err)
 	}
@@ -186,13 +186,15 @@ func (e *ChromiumEngine) navigateToCommit(ctx context.Context, lifecycle *sessio
 	return nil
 }
 
-// runNavigate executes raw Page.navigate or the deterministic test hook.
-func (e *ChromiumEngine) runNavigate(ctx context.Context, url string) (frameID cdp.FrameID, loaderID cdp.LoaderID, errorText string, isDownload bool, err error) {
+// runNavigate executes raw Page.navigate or the deterministic test hook. The
+// CDP errorText result is dropped: Chromium commits its error document under
+// the returned frame and loader, so rendering needs only those.
+func (e *ChromiumEngine) runNavigate(ctx context.Context, url string) (frameID cdp.FrameID, loaderID cdp.LoaderID, isDownload bool, err error) {
 	if e.navigateOp != nil {
 		return e.navigateOp(ctx, url)
 	}
 	err = chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		frameID, loaderID, errorText, isDownload, err = page.Navigate(url).Do(ctx)
+		frameID, loaderID, _, isDownload, err = page.Navigate(url).Do(ctx)
 		return err
 	}))
 	return

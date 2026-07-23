@@ -121,7 +121,7 @@ func TestRioColourCompatibility(t *testing.T) {
 		t.Fatalf("Rio explicit truecolor = %v, want visible for validation", got)
 	}
 
-	// Tab cycles every supported backend from any --backend start, so explicit
+	// Alt+R cycles every supported backend from any --backend start, so explicit
 	// truecolour is rejected regardless of the starting backend, Kitty included.
 	st := NewState(80, 24)
 	st.compat = compat

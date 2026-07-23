@@ -234,7 +234,7 @@ func (e *ChromiumEngine) disableFontForcing(ctx context.Context) (enabled bool) 
 }
 
 // disableLayoutShift removes the layout-shift observer on-new-document script,
-// disconnects the live observer, and unsubscribes from the binding, so a Tab from
+// disconnects the live observer, and unsubscribes from the binding, so a cycle from
 // the block backend to a graphics backend stops the layout-shift trigger. It clears
 // layoutShiftID only after the remove succeeds, so a failed remove leaves the id set
 // and the state stays consistent. A missing id (the binding registered but the

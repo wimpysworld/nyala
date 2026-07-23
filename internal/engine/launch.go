@@ -363,7 +363,7 @@ func (e *ChromiumEngine) launch(flag string) error {
 		// Register the layout-shift observer and its binding on the block backend, so a
 		// reflow after the last navigation, resize, scroll, or networkAlmostIdle trigger
 		// re-decodes the text and the overlay tracks the final layout. It shares
-		// syncFontForcing's enable path, so a Tab away and back reconciles it with the
+		// syncFontForcing's enable path, so a cycle away and back reconciles it with the
 		// font forcing. A CDP miss degrades the trigger rather than the launch.
 		e.enableLayoutShift(ctx)
 	}

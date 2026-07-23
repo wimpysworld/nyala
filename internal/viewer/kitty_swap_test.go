@@ -419,7 +419,7 @@ func TestNativeJPEGSixelOutputMatchesRGBAPath(t *testing.T) {
 
 // TestKittyResetDeletesBothIDs asserts resetKitty frees both double-buffer image
 // ids and clears the tracked id, so a return to the kitty backend rebuilds from
-// id 1 with no delete. The stream session calls it when Tab cycles away from
+// id 1 with no delete. The stream session calls it when the backend cycle leaves
 // kitty.
 func TestKittyResetDeletesBothIDs(t *testing.T) {
 	s := NewState(8, 4)
@@ -449,7 +449,7 @@ func TestKittyResetDeletesBothIDs(t *testing.T) {
 }
 
 // TestKittyResetNoImageIsNoOp asserts resetKitty writes nothing when no kitty
-// image has been placed, so a Tab away from a never-drawn kitty backend is silent.
+// image has been placed, so a cycle away from a never-drawn kitty backend is silent.
 func TestKittyResetNoImageIsNoOp(t *testing.T) {
 	s := NewState(8, 4)
 	var buf bytes.Buffer

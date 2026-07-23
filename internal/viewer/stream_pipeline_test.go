@@ -83,6 +83,7 @@ func (e *pipeEngine) Resize(int, int)             {}
 func (e *pipeEngine) Navigate(string) error       { return nil }
 func (e *pipeEngine) Frames() <-chan render.Frame { return e.frames }
 func (e *pipeEngine) SendKey(string)              {}
+func (e *pipeEngine) SendNav(NavAction)           {}
 func (e *pipeEngine) SendMouse(MouseEvent)        {}
 func (e *pipeEngine) Close() error                { return nil }
 
@@ -328,7 +329,7 @@ func TestFootIdentityScopesSyncUpdateAssembly(t *testing.T) {
 	}
 }
 
-// TestEmitControlFlushesAssembledFirst pins the Tab/resize sequencing: a control
+// TestEmitControlFlushesAssembledFirst pins the cycle/resize sequencing: a control
 // write (a resize clear or a kitty reset) flushes the in-flight assembled frame
 // before its own bytes, so the two never interleave and the frame lands first.
 func TestEmitControlFlushesAssembledFirst(t *testing.T) {
@@ -378,7 +379,7 @@ func TestStreamLoopDropsStaleFramesUnderSlowWriter(t *testing.T) {
 	for i := range pushed {
 		frames <- solidImageFrame(uint8(i))
 	}
-	keys <- keyEvent{b: 'q'}
+	keys <- keyEvent{b: keyQuitCtrlQ}
 
 	select {
 	case <-loopDone:
@@ -394,12 +395,12 @@ func TestStreamLoopDropsStaleFramesUnderSlowWriter(t *testing.T) {
 	}
 }
 
-// TestStreamLoopTeardownAfterTabAndWinch drives the real loop through a kitty draw,
-// a Tab away from kitty (which routes the kitty reset through the writer), a resize
+// TestStreamLoopTeardownAfterCycleAndWinch drives the real loop through a kitty draw,
+// a backend cycle away from kitty (which routes the kitty reset through the writer), a resize
 // signal, and a quit, and asserts the loop returns without deadlock and the reset
 // reached the terminal. It guards the teardown and control-write sequencing on the
 // live path.
-func TestStreamLoopTeardownAfterTabAndWinch(t *testing.T) {
+func TestStreamLoopTeardownAfterCycleAndWinch(t *testing.T) {
 	out := &syncBuf{}
 	eng := &tabCycleEngine{frames: make(chan render.Frame, 4)}
 
@@ -420,15 +421,15 @@ func TestStreamLoopTeardownAfterTabAndWinch(t *testing.T) {
 		loopDone <- s.loop(winch, keys)
 	}()
 
-	// Draw one kitty frame so a kitty image is placed (kittyID != 0), so the Tab away
+	// Draw one kitty frame so a kitty image is placed (kittyID != 0), so the cycle away
 	// actually emits a reset.
 	eng.frames <- render.Frame{EncodedPNG: eng.kittyPNG}
 	if !waitFor(3*time.Second, func() bool { return strings.Contains(out.String(), "\x1b_G") }) {
-		t.Fatalf("no kitty graphics escape before Tab; output = %q", out.String())
+		t.Fatalf("no kitty graphics escape before the cycle; output = %q", out.String())
 	}
 
-	// Tab away from kitty: the reset (a=d delete-image) must route through the writer.
-	keys <- keyEvent{b: keyTab}
+	// Cycle away from kitty: the reset (a=d delete-image) must route through the writer.
+	keys <- keyEvent{act: actionCycleBackend}
 	if !waitFor(3*time.Second, func() bool {
 		for _, n := range eng.backends() {
 			if n == "block" {
@@ -437,15 +438,15 @@ func TestStreamLoopTeardownAfterTabAndWinch(t *testing.T) {
 		}
 		return false
 	}) {
-		t.Fatalf("Tab did not switch backend; got %v", eng.backends())
+		t.Fatalf("Alt+R did not switch backend; got %v", eng.backends())
 	}
 	if !waitFor(3*time.Second, func() bool { return strings.Contains(out.String(), "a=d") }) {
-		t.Fatalf("kitty reset (a=d) did not reach the terminal after Tab; output = %q", out.String())
+		t.Fatalf("kitty reset (a=d) did not reach the terminal after the cycle; output = %q", out.String())
 	}
 
 	// A resize signal must not deadlock even when GetSize fails on the unset fd.
 	winch <- syscall.SIGWINCH
-	keys <- keyEvent{b: 'q'}
+	keys <- keyEvent{b: keyQuitCtrlQ}
 
 	select {
 	case err := <-loopDone:
@@ -453,7 +454,7 @@ func TestStreamLoopTeardownAfterTabAndWinch(t *testing.T) {
 			t.Fatalf("loop returned error: %v", err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("loop did not return after Tab, winch, and quit (deadlock)")
+		t.Fatal("loop did not return after cycle, winch, and quit (deadlock)")
 	}
 	close(done)
 }
@@ -572,7 +573,7 @@ func TestStreamLoopDropsStaleFramesWithFPSArmed(t *testing.T) {
 	for i := range pushed {
 		frames <- solidImageFrame(uint8(i))
 	}
-	keys <- keyEvent{b: 'q'}
+	keys <- keyEvent{b: keyQuitCtrlQ}
 
 	select {
 	case <-loopDone:
@@ -585,7 +586,7 @@ func TestStreamLoopDropsStaleFramesWithFPSArmed(t *testing.T) {
 }
 
 // TestStreamLoopControlFrameInterleaveUnderSlowTTY drives the real loop through a
-// kitty frame burst, a Tab away from kitty (which routes the kitty reset through the
+// kitty frame burst, a backend cycle away from kitty (which routes the kitty reset through the
 // writer amid the burst), more frames, and a quit, all against a slow tty. It asserts
 // the loop quits promptly (the two blocking control sends never wedge under
 // backpressure) and the reset lands after the kitty graphics escape, so a control
@@ -614,21 +615,21 @@ func TestStreamLoopControlFrameInterleaveUnderSlowTTY(t *testing.T) {
 		eng.frames <- render.Frame{EncodedPNG: eng.kittyPNG}
 	}
 	if !waitFor(3*time.Second, func() bool { return strings.Contains(out.String(), "\x1b_G") }) {
-		t.Fatalf("no kitty graphics escape before Tab; output = %q", out.String())
+		t.Fatalf("no kitty graphics escape before the cycle; output = %q", out.String())
 	}
 
-	// Tab away from kitty: the reset (a=d delete-image) routes through the writer amid
+	// Cycle away from kitty: the reset (a=d delete-image) routes through the writer amid
 	// the burst and must land after the already-sent frames.
-	keys <- keyEvent{b: keyTab}
+	keys <- keyEvent{act: actionCycleBackend}
 	if !waitFor(3*time.Second, func() bool { return strings.Contains(out.String(), "a=d") }) {
-		t.Fatalf("kitty reset (a=d) did not reach the terminal after Tab; output = %q", out.String())
+		t.Fatalf("kitty reset (a=d) did not reach the terminal after the cycle; output = %q", out.String())
 	}
 
 	// A few more frames after the control write, then quit.
 	for range 4 {
 		eng.frames <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}
 	}
-	keys <- keyEvent{b: 'q'}
+	keys <- keyEvent{b: keyQuitCtrlQ}
 
 	select {
 	case err := <-loopDone:

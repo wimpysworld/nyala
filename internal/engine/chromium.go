@@ -198,7 +198,7 @@ type ChromiumEngine struct {
 	startScreencastOp func(context.Context, int, int, screencastFmt) error
 	applySizingOp     func(context.Context, browser.WindowID, int, int, float64) error
 	ackScreencastOp   func(context.Context, int64) error
-	navigateOp        func(context.Context, string) (cdp.FrameID, cdp.LoaderID, string, bool, error)
+	navigateOp        func(context.Context, string) (cdp.FrameID, cdp.LoaderID, bool, error)
 	beforeInitialLock func()
 
 	// lifecycle tracks navigation commits and main-frame first contentful paint for
@@ -406,7 +406,7 @@ func (e *ChromiumEngine) Frames() <-chan render.Frame {
 // the block backend captures a sub-cell grid and the graphics backends capture a
 // cell-pixel bitmap. When the engine is already streaming it restarts the stream
 // at the new capture size, so the next frames arrive sized for the new backend.
-// The viewer push consumer calls it through its local interface on a Tab cycle.
+// The viewer push consumer calls it through its local interface on a backend cycle.
 func (e *ChromiumEngine) SetBackend(backend render.Backend) {
 	e.screencastCtl.Lock()
 	defer e.screencastCtl.Unlock()
@@ -421,8 +421,12 @@ func (e *ChromiumEngine) SetBackend(backend render.Backend) {
 
 // SendKey forwards a key event to the page. Scroll keys (arrows, PageUp,
 // PageDown) route to the wheel transport so scrolling does not depend on which
-// page element holds focus. Any other key routes to DispatchKeyEvent for a
-// focused element to receive, such as text typed into a form field.
+// page element holds focus, and Home and End scroll to the document edges
+// through the same transport. Stroke keys (Tab, Enter) dispatch a full
+// rawKeyDown/char/keyUp sequence so the page gets the browser-native default
+// action: focus traversal with the focus ring, and activation of the focused
+// element. Any other key routes to DispatchKeyEvent for a focused element to
+// receive, such as text typed into a form field.
 func (e *ChromiumEngine) SendKey(k Key) {
 	e.mu.Lock()
 	// The wheel transport speaks CSS pixels, but rows*cellH is device pixels. Divide
@@ -431,11 +435,19 @@ func (e *ChromiumEngine) SendKey(k Key) {
 	pageStepPx := int(math.Round(float64(e.rows*e.cellH) / e.layoutScale()))
 	ctx := e.ctx
 	e.mu.Unlock()
+	if k.Code == "Home" || k.Code == "End" {
+		e.scrollToEdge(k.Code == "End")
+		return
+	}
 	if dx, dy, ok := scrollKeyDelta(k.Code, pageStepPx); ok {
 		e.dispatchWheel(dx, dy)
 		return
 	}
 	if ctx == nil {
+		return
+	}
+	if params := keyStrokeParams(k.Code, k.Mod); params != nil {
+		e.dispatchInput(ctx, keyStrokeTasks(params))
 		return
 	}
 	ev := input.DispatchKeyEvent(input.KeyChar).

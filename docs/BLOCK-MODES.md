@@ -33,14 +33,20 @@ Sextant is the resolution winner. It beats quadrant on the page by eye, sharper 
 colour cost that matters, so `auto` defaults to it on any allow-listed terminal. No
 corpus colour-error gate was added.
 
-## Why launch flags, not live toggles
+## Launch flags first, live cycles later
 
-Block-mode selection is a launch flag, not a runtime key. The prior live scheme toggle
-(`s`) was already broken: the stream key handler acted only on Tab, so `s` flipped state
-but triggered no redraw or restart, and the capture sizing was hardcoded to quadrant, so
-a half-block toggle sampled a quadrant-sized bitmap. Removing it lost no working
-behaviour. Tab still cycles the backend (block, Sixel, Kitty). A launch flag gives one
-selection model that is testable offline.
+Block-mode selection starts from a launch flag. The prior live scheme toggle
+(`s`) was broken: the stream key handler acted only on the backend-cycle key, so `s`
+flipped state but triggered no redraw or restart, and the capture sizing was hardcoded
+to quadrant, so a half-block toggle sampled a quadrant-sized bitmap. Removing it lost no
+working behaviour, and the launch flag gives one selection model that is testable
+offline. Live switching returned later on the shared backend-switch repaint seam:
+Alt+R cycles the backend (block, Sixel, Kitty), Alt+B cycles the block scheme, and
+Alt+C cycles the colour mode, each clearing and recomposing like a backend switch, so
+a cycle now redraws correctly. Alt+B and Alt+C act only while block is the active
+backend. Both cycles only affect block rendering, so a cycle taken under Kitty or
+Sixel would change hidden state with no visible feedback, and the next block view
+would arrive in an unexpected mode; the key dispatcher drops those chords instead.
 
 ## Capability detection: terminal identity, not a glyph probe
 

@@ -14,10 +14,10 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
-// tabCycleEngine drives the streamSession end to end for the Tab-cycle test. It
-// records every SetBackend name and, on each SetBackend, pushes one fresh frame
-// so the drawing loop repaints with the newly selected backend, mimicking the
-// real engine's restartStream re-emit.
+// tabCycleEngine drives the streamSession end to end for the backend-cycle
+// test. It records every SetBackend name and, on each SetBackend, pushes one
+// fresh frame so the drawing loop repaints with the newly selected backend,
+// mimicking the real engine's restartStream re-emit.
 type tabCycleEngine struct {
 	frames   chan render.Frame
 	kittyPNG string
@@ -50,6 +50,7 @@ func (e *tabCycleEngine) SetCellPx(int, int)          {}
 func (e *tabCycleEngine) Resize(int, int)             {}
 func (e *tabCycleEngine) Navigate(string) error       { return nil }
 func (e *tabCycleEngine) SendKey(string)              {}
+func (e *tabCycleEngine) SendNav(NavAction)           {}
 func (e *tabCycleEngine) SendMouse(MouseEvent)        {}
 func (e *tabCycleEngine) Close() error                { return nil }
 
@@ -88,13 +89,13 @@ func waitFor(d time.Duration, fn func() bool) bool {
 	}
 }
 
-// TestStreamTabCyclesBackend drives the real streamSession.loop through a Tab
-// press and asserts the on-screen backend actually flips. It starts on kitty,
-// presses Tab, and checks that the engine received a SetBackend for the next
-// backend and that the state advanced to block. This locks the whole Tab-cycle
-// wiring through streamSession.handleKey, including the engine restart and
-// repaint at the new backend.
-func TestStreamTabCyclesBackend(t *testing.T) {
+// TestStreamAltRCyclesBackend drives the real streamSession.loop through an
+// Alt+R press and asserts the on-screen backend actually flips. It starts on
+// kitty, presses Alt+R, and checks that the engine received a SetBackend for
+// the next backend and that the state advanced to block. This locks the whole
+// backend-cycle wiring through streamSession.handleKey, including the engine
+// restart and repaint at the new backend.
+func TestStreamAltRCyclesBackend(t *testing.T) {
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
@@ -128,14 +129,14 @@ func TestStreamTabCyclesBackend(t *testing.T) {
 		_ = s.loop(winch, keys)
 	}()
 
-	// Draw one kitty frame first, so the pre-Tab output carries a kitty escape.
+	// Draw one kitty frame first, so the pre-cycle output carries a kitty escape.
 	eng.frames <- render.Frame{EncodedPNG: eng.kittyPNG}
 	if !waitFor(2*time.Second, func() bool { return strings.Contains(out.String(), "\x1b_G") }) {
-		t.Fatalf("no kitty graphics escape before Tab; output = %q", out.String())
+		t.Fatalf("no kitty graphics escape before Alt+R; output = %q", out.String())
 	}
 
-	// Press Tab: it must cycle the state to block and submit a SetBackend.
-	keys <- keyEvent{b: keyTab}
+	// Press Alt+R: it must cycle the state to block and submit a SetBackend.
+	keys <- keyEvent{act: actionCycleBackend}
 
 	if !waitFor(2*time.Second, func() bool {
 		for _, n := range eng.backends() {
@@ -145,14 +146,14 @@ func TestStreamTabCyclesBackend(t *testing.T) {
 		}
 		return false
 	}) {
-		t.Fatalf("Tab did not submit SetBackend(block); got %v", eng.backends())
+		t.Fatalf("Alt+R did not submit SetBackend(block); got %v", eng.backends())
 	}
 	if st.Backend != BackendBlock {
-		t.Fatalf("after Tab, state backend = %d, want BackendBlock", st.Backend)
+		t.Fatalf("after Alt+R, state backend = %d, want BackendBlock", st.Backend)
 	}
 
 	// Quit the loop and stop the reader.
-	keys <- keyEvent{b: 'q'}
+	keys <- keyEvent{b: keyQuitCtrlQ}
 	<-loopDone
 	close(done)
 	_ = pw.Close()
@@ -200,7 +201,7 @@ func TestBackendCycleUsesActiveFrameRepresentation(t *testing.T) {
 }
 
 // TestFPSBlockToKittyClearResetsSGRBeforeErase pins the byte order that keeps
-// the first Kitty frame visible after a Block-to-Kitty Tab with the FPS
+// the first Kitty frame visible after a Block-to-Kitty cycle with the FPS
 // overlay armed. The Block differ leaves the last cell's SGR background
 // active, and terminals erase with the current background (background colour
 // erase), so an unreset ESC[2J fills every cell with a non-default
@@ -234,9 +235,9 @@ func TestFPSBlockToKittyClearResetsSGRBeforeErase(t *testing.T) {
 		fps: &fpsMeter{window: fpsWindow, start: time.Now()},
 	}
 	s.firstDrawn.Store(true)
-	s.handleKey(keyEvent{b: keyTab})
+	s.handleKey(keyEvent{act: actionCycleBackend})
 	if st.Backend != BackendKitty {
-		t.Fatalf("backend after Tab = %v, want Kitty", st.Backend)
+		t.Fatalf("backend after Alt+R = %v, want Kitty", st.Backend)
 	}
 	writer.stop()
 	s.writer = nil
@@ -278,9 +279,9 @@ func TestFPSBlockToKittyClearsBeforeFrameAndResetsDiff(t *testing.T) {
 		fps: &fpsMeter{window: fpsWindow, start: time.Now()},
 	}
 	s.firstDrawn.Store(true)
-	s.handleKey(keyEvent{b: keyTab})
+	s.handleKey(keyEvent{act: actionCycleBackend})
 	if st.Backend != BackendKitty {
-		t.Fatalf("backend after Tab = %v, want Kitty", st.Backend)
+		t.Fatalf("backend after Alt+R = %v, want Kitty", st.Backend)
 	}
 
 	kittyFrame := render.Frame{EncodedPNG: encodedPNG(t, image.NewRGBA(image.Rect(0, 0, 16, 16)))}

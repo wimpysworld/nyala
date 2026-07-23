@@ -34,13 +34,13 @@ func TestNavigateAndStartCaptureOrder(t *testing.T) {
 	e.sizedSurfaceW, e.sizedSurfaceH = e.surfaceSize(e.cols, e.rows)
 	e.sizedScale = e.layoutScale()
 	var order []string
-	e.navigateOp = func(context.Context, string) (cdp.FrameID, cdp.LoaderID, string, bool, error) {
+	e.navigateOp = func(context.Context, string) (cdp.FrameID, cdp.LoaderID, bool, error) {
 		if e.rawQ == nil || e.acks == nil || e.text == nil || e.lifecycle != lifecycle {
 			t.Fatal("navigation ran before frame plumbing was ready")
 		}
 		order = append(order, "navigate", "commit")
 		lifecycle.recordCommit(&cdp.Frame{ID: "main", LoaderID: "loader"})
-		return "main", "loader", "", false, nil
+		return "main", "loader", false, nil
 	}
 	e.startScreencastOp = func(context.Context, int, int, screencastFmt) error {
 		order = append(order, "capture")
@@ -58,8 +58,8 @@ func TestNavigateAndStartCaptureOrder(t *testing.T) {
 func TestNavigateToCommitReturnsNavigationError(t *testing.T) {
 	t.Parallel()
 	want := errors.New("navigation failed")
-	e := &ChromiumEngine{navigateOp: func(context.Context, string) (cdp.FrameID, cdp.LoaderID, string, bool, error) {
-		return "", "", "", false, want
+	e := &ChromiumEngine{navigateOp: func(context.Context, string) (cdp.FrameID, cdp.LoaderID, bool, error) {
+		return "", "", false, want
 	}}
 	if err := e.navigateToCommit(context.Background(), newSessionLifecycle(), "https://example.test"); !errors.Is(err, want) {
 		t.Fatalf("navigate error = %v, want %v", err, want)
@@ -70,8 +70,8 @@ func TestNavigateToCommitCancellation(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	lifecycle := newSessionLifecycle()
-	e := &ChromiumEngine{navigateOp: func(context.Context, string) (cdp.FrameID, cdp.LoaderID, string, bool, error) {
-		return "main", "loader", "", false, nil
+	e := &ChromiumEngine{navigateOp: func(context.Context, string) (cdp.FrameID, cdp.LoaderID, bool, error) {
+		return "main", "loader", false, nil
 	}}
 	done := make(chan error, 1)
 	go func() { done <- e.navigateToCommit(ctx, lifecycle, "https://example.test") }()
@@ -95,9 +95,9 @@ func TestNavigateErrorDocumentStillStartsCapture(t *testing.T) {
 		ctx: ctx, cancel: cancel, backend: backendBlock, rawQ: newRawFrameQueue(1), lifecycle: lifecycle,
 		applySizingOp: func(context.Context, browser.WindowID, int, int, float64) error { return nil },
 	}
-	e.navigateOp = func(context.Context, string) (cdp.FrameID, cdp.LoaderID, string, bool, error) {
+	e.navigateOp = func(context.Context, string) (cdp.FrameID, cdp.LoaderID, bool, error) {
 		lifecycle.recordCommit(&cdp.Frame{ID: "main", LoaderID: "error-loader", UnreachableURL: "https://bad.test"})
-		return "main", "error-loader", "net::ERR_NAME_NOT_RESOLVED", false, nil
+		return "main", "error-loader", false, nil
 	}
 	var starts atomic.Int64
 	e.startScreencastOp = func(context.Context, int, int, screencastFmt) error {

@@ -198,6 +198,86 @@ func TestSendKeyPageStepCSSPixels(t *testing.T) {
 	}
 }
 
+// TestKeyStrokeParams asserts the full-stroke builder: Tab emits rawKeyDown
+// then keyUp with the Tab key and virtual key code 9 and no char event, a
+// shifted Tab carries the CDP Shift modifier on every event, Enter emits
+// rawKeyDown, a char with text "\r", then keyUp with virtual key code 13, and
+// an unmapped code returns nil so it stays on the KeyChar path.
+func TestKeyStrokeParams(t *testing.T) {
+	tab := keyStrokeParams("Tab", 0)
+	if len(tab) != 2 {
+		t.Fatalf("Tab stroke = %d events, want 2 (rawKeyDown, keyUp)", len(tab))
+	}
+	if tab[0].Type != "rawKeyDown" || tab[1].Type != "keyUp" {
+		t.Fatalf("Tab stroke types = %q, %q, want rawKeyDown, keyUp", tab[0].Type, tab[1].Type)
+	}
+	for i, p := range tab {
+		if p.Key != "Tab" || p.Code != "Tab" || p.WindowsVirtualKeyCode != 9 || p.NativeVirtualKeyCode != 9 {
+			t.Fatalf("Tab event %d = key %q code %q vk %d/%d, want Tab/Tab/9/9",
+				i, p.Key, p.Code, p.WindowsVirtualKeyCode, p.NativeVirtualKeyCode)
+		}
+		if p.Modifiers != 0 {
+			t.Fatalf("Tab event %d modifiers = %d, want 0", i, p.Modifiers)
+		}
+	}
+
+	shiftTab := keyStrokeParams("Tab", 8)
+	for i, p := range shiftTab {
+		if p.Modifiers != 8 {
+			t.Fatalf("Shift+Tab event %d modifiers = %d, want 8 (CDP Shift)", i, p.Modifiers)
+		}
+	}
+
+	enter := keyStrokeParams("Enter", 0)
+	if len(enter) != 3 {
+		t.Fatalf("Enter stroke = %d events, want 3 (rawKeyDown, char, keyUp)", len(enter))
+	}
+	if enter[0].Type != "rawKeyDown" || enter[1].Type != "char" || enter[2].Type != "keyUp" {
+		t.Fatalf("Enter stroke types = %q, %q, %q, want rawKeyDown, char, keyUp",
+			enter[0].Type, enter[1].Type, enter[2].Type)
+	}
+	if enter[1].Text != "\r" || enter[1].UnmodifiedText != "\r" {
+		t.Fatalf("Enter char text = %q/%q, want \"\\r\"", enter[1].Text, enter[1].UnmodifiedText)
+	}
+	for i, p := range enter {
+		if p.Key != "Enter" || p.WindowsVirtualKeyCode != 13 {
+			t.Fatalf("Enter event %d = key %q vk %d, want Enter/13", i, p.Key, p.WindowsVirtualKeyCode)
+		}
+	}
+
+	if got := keyStrokeParams("KeyA", 0); got != nil {
+		t.Fatalf("unmapped code built a stroke: %v", got)
+	}
+}
+
+// TestSendKeyEndThenHomeEdges asserts the Home and End edge scroll rides the
+// held wheel-transport offset: End advances the target by edgeScrollPx (the
+// page clamps at its real bottom), and a following Home negates the whole
+// held target, landing it at exactly 0 beside the page's own top clamp. With
+// ctx nil the dispatch is skipped and the held state alone moves, so the test
+// runs without a browser.
+func TestSendKeyEndThenHomeEdges(t *testing.T) {
+	e := New("")
+	e.SetCellPx(8, 16)
+	e.Resize(120, 40) // Z = 1, whole-cell CSS height 16 divides edgeScrollPx
+
+	e.SendKey(Key{Code: "End"})
+	e.mu.Lock()
+	afterEnd := e.scrollYTarget
+	e.mu.Unlock()
+	if afterEnd != edgeScrollPx {
+		t.Fatalf("End scrollYTarget = %d, want %d", afterEnd, edgeScrollPx)
+	}
+
+	e.SendKey(Key{Code: "Home"})
+	e.mu.Lock()
+	y, target := e.scrollY, e.scrollYTarget
+	e.mu.Unlock()
+	if y != 0 || target != 0 {
+		t.Fatalf("Home left scroll at (%d, %d), want (0, 0)", y, target)
+	}
+}
+
 // TestSendKeyPageStepUnscaled asserts the page step equals the raw device height
 // when Z is 1 (an 8 px cell matches the density anchor), so the CSS-pixel divide
 // is a no-op there.

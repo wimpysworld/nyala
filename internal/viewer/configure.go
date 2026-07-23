@@ -26,6 +26,10 @@ import (
 func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, transportFlag string) error {
 	environ := os.Environ()
 	detected := detectColour(environ, cterm.IsTerminal(tty.Fd()))
+	// Record sextant support once, on every path, so the Alt+B scheme cycle
+	// skips the sextant scheme on a terminal that cannot self-draw it,
+	// matching the resolveScheme startup degrade.
+	_, st.sextantOK = SextantSupported(environ)
 
 	overrideValue, overrideSet := os.LookupEnv(cellPxEnv)
 	overridePx, overrideOK, err := parseCellPxOverride(overrideValue, overrideSet)
