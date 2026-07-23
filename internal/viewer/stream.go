@@ -149,8 +149,15 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	// the full detected cycle. setupViewer handed the engine the detected backend;
 	// re-notify it so the engine sizes its capture for the starting backend, not
 	// the detected one.
+	// A forced start can flip the Sixel bottom-row reservation under tmux or
+	// zellij, so re-resize the engine grid when the row count moved from the
+	// detected nomination setupViewer sized for.
+	detectedRows := engineRows(st.Backend, st.mux, st.Rows)
 	applyForcedBackend(st, mode)
 	eng.SetBackend(st.Backend)
+	if forcedRows := engineRows(st.Backend, st.mux, st.Rows); forcedRows != detectedRows {
+		eng.Resize(st.Cols, forcedRows)
+	}
 	// The backend is final now, so arm the engine's kitty-shm decode when the
 	// resolved transport is shm and the session starts on Kitty. Unlink any
 	// unconsumed shm objects when the session ends, however it ends.
@@ -311,9 +318,11 @@ func setupViewer(eng Engine, tty *os.File, colourFlag, kittyTransport string, sc
 
 	// Hand the resolved backend and cell px to the engine before Navigate; the
 	// engine sizes the screencast capture and derives its layout scale from them.
+	// The engine grid may reserve the bottom row (Sixel under tmux or zellij),
+	// so the engine gets engineRows while State keeps the full terminal grid.
 	eng.SetCellPx(state.W, state.H)
 	eng.SetBackend(state.Backend)
-	eng.Resize(cols, rows)
+	eng.Resize(cols, engineRows(state.Backend, state.mux, rows))
 
 	return fd, &state, func() { _ = cterm.Restore(fd, oldState) }, nil
 }
@@ -809,7 +818,9 @@ func (s *streamSession) resize() error {
 	s.st.Resize(nc, nr)
 	// The engine restart runs on the control goroutine so a slow restartStream
 	// never freezes the consumer loop; the loop keeps drawing and handling quit.
-	s.ctl.submit(resizeEngineOp(px, changed, nc, nr))
+	// The engine grid takes engineRows, so the Sixel bottom-row reservation
+	// under tmux and zellij survives a resize while State keeps the full grid.
+	s.ctl.submit(resizeEngineOp(px, changed, nc, engineRows(s.st.Backend, s.st.mux, nr)))
 	if !s.firstDrawn.Load() {
 		return nil
 	}
@@ -844,6 +855,22 @@ func resizeEngineOp(px cellPx, changed bool, cols, rows int) func(Engine) {
 			eng.SetCellPx(px.W, px.H)
 		}
 		eng.Resize(cols, rows)
+	}
+}
+
+// switchBackendOp returns the control-goroutine closure for one Tab backend
+// switch. When the switch flips the Sixel bottom-row reservation under tmux or
+// zellij (Sixel and Block use different engine row counts there), the grid
+// resize rides in the same closure: the one-slot drop-on-full control channel
+// could otherwise drop one half of the pair. The resize runs before
+// SetBackend, so the backend restart, which always runs, lands last at the
+// final grid.
+func switchBackendOp(backend Backend, cols, prevRows, newRows int) func(Engine) {
+	return func(eng Engine) {
+		if newRows != prevRows {
+			eng.Resize(cols, newRows)
+		}
+		eng.SetBackend(backend)
 	}
 }
 
@@ -922,7 +949,9 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		// Cycle the backend off the consumer loop: the engine restart runs on the
 		// control goroutine so a slow restartStream cannot freeze draw or quit.
 		backend := s.st.Backend
-		s.ctl.submit(func(eng Engine) { eng.SetBackend(backend) })
+		s.ctl.submit(switchBackendOp(backend, s.st.Cols,
+			engineRows(previous, s.st.mux, s.st.Rows),
+			engineRows(backend, s.st.mux, s.st.Rows)))
 	}
 	return false
 }

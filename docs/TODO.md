@@ -186,15 +186,30 @@ and research documents.
   palettes, 64-column banks, SWAR rewrites, dithering, transparency work, cgo/native
   integration, wholesale emitter replacement, the 255 repeat ceiling, or a specialised
   decimal formatter without the reopening evidence above.
-- [ ] Add graphics support through tmux, Zellij, and herdr. Keep the present block-only
-  fallback until each path passes capability, placement, resize, scroll, and cleanup
-  tests. Kitty needs protocol-supported placement plus passthrough wrapping. Its
-  placement choice depends on the terminal-validation task in section 1, so do not
-  assume `U=1` before that result. Sixel needs its own passthrough and anchoring checks.
-  Re-test against a tagged tmux release with native Kitty image support before choosing
-  the final Kitty path. Sources:
-  `STAGE-1.md`, "Focus multiplexers", and
-  [TUI decisions](./OVERVIEW.md#decisions-tui-research).
+- [ ] Add graphics support through tmux, Zellij, and herdr. The Sixel leg is
+  implemented pending live validation: tmux and zellij run a reduced handshake
+  (no Kitty APC probe) and offer Sixel when DA1 advertises attribute 4 and real
+  cell pixel geometry is present (the zellij host-chain-live signal); screen
+  and herdr stay block only with no handshake. Sixel under tmux and zellij
+  reserves the bottom terminal row (engine grid at rows-1) to avoid tmux's
+  designed-in top-crop of full-height images and zellij's bare host
+  re-emission scroll bounce; live validation of both fixes (top row present
+  in tmux, no scroll bounce in zellij) is pending. zellij Sixel is demoted to
+  manual: its image id collision drops every third full-replacement frame
+  (see [TERMINAL-COMPATIBILITY.md](./TERMINAL-COMPATIBILITY.md),
+  "Multiplexers"), so auto-detection starts on Block there and Sixel stays
+  reachable through Tab or `--backend=sixel` until the upstream fix ships;
+  tmux Sixel remains auto. Live-validate placement,
+  resize and zoom, scroll, and quit cleanup inside tmux and zellij before
+  ticking this leg. The Kitty legs stay open: tmux native Kitty image support is in review
+  upstream, so re-test against a tagged tmux release before choosing the final
+  Kitty path; zellij passthrough is deferred; herdr's experimental Kitty flag
+  is documented but carries no cell geometry. Kitty placement depends on the
+  terminal-validation task in section 1, so do not assume `U=1` before that
+  result. Sources:
+  `STAGE-1.md`, "Focus multiplexers",
+  [TUI decisions](./OVERVIEW.md#decisions-tui-research), and
+  [TERMINAL-COMPATIBILITY.md](./TERMINAL-COMPATIBILITY.md), "Multiplexers".
 - [x] Keep partial Kitty emission closed unless the sustained real-terminal matrix
   exceeds 16.67 ms per frame in full-frame write, transport, terminal decode, or draw.
   Reopening requires a supported direct-CDP-PNG protocol design and an end-to-end win;

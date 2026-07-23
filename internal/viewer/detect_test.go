@@ -86,6 +86,21 @@ func TestQueryBytesSHM(t *testing.T) {
 	}
 }
 
+// TestReducedQueryBytes pins the multiplexer handshake batch byte for byte:
+// the three cell-size queries, XTVERSION, then the DA1 fence, and no Kitty
+// a=q APC probe. tmux and zellij consume APC without passthrough, so any APC
+// in this batch would vanish unanswered; the batch must stay APC-free.
+func TestReducedQueryBytes(t *testing.T) {
+	got := reducedQueryBytes()
+	want := []byte("\x1b[16t\x1b[14t\x1b[18t\x1b[>0q\x1b[c")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("reducedQueryBytes() = %q, want %q", got, want)
+	}
+	if bytes.Contains(got, []byte("\x1b_G")) {
+		t.Fatalf("reduced batch carries a Kitty APC probe: %q", got)
+	}
+}
+
 // TestProbeSHMLifecycle asserts the probe object is created under /dev/shm
 // with the 1x1 pixel payload and never leaks: the ignored case (the terminal
 // sent no reply and left the object) is removed by unlinkProbeSHM, and the

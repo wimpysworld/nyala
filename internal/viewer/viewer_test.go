@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -599,9 +600,9 @@ func TestRenderFrameNoFit(t *testing.T) {
 	}
 }
 
-// muxKeys is every focus-multiplexer env var multiplexed reads. clearMuxEnv
-// unsets all of them for the current test, registering cleanup, so a host-set
-// TMUX or ZELLIJ does not leak into a false-branch case.
+// muxKeys is every focus-multiplexer env var detectMultiplexer reads.
+// clearMuxEnv unsets all of them for the current test, registering cleanup, so
+// a host-set TMUX or ZELLIJ does not leak into a false-branch case.
 var muxKeys = []string{"TMUX", "ZELLIJ", "HERDR_ENV", "HERDR_PANE_ID", "STY"}
 
 func clearMuxEnv(t *testing.T) {
@@ -612,24 +613,24 @@ func clearMuxEnv(t *testing.T) {
 	}
 }
 
-// TestMultiplexedEnvKeys asserts multiplexed reports true for each focus
-// multiplexer and false when none is set. ZELLIJ is a presence signal: a bare
-// ZELLIJ=0 still gates. herdr needs both HERDR_ENV=1 and HERDR_PANE_ID; one key
-// alone does not gate.
-func TestMultiplexedEnvKeys(t *testing.T) {
+// TestDetectMultiplexer asserts detectMultiplexer reports the right kind for
+// each focus multiplexer and muxNone when none is set. ZELLIJ is a presence
+// signal: a bare ZELLIJ=0 still gates. herdr needs both HERDR_ENV=1 and
+// HERDR_PANE_ID; one key alone does not gate.
+func TestDetectMultiplexer(t *testing.T) {
 	cases := []struct {
 		name string
 		env  map[string]string
-		want bool
+		want multiplexerKind
 	}{
-		{"none set", nil, false},
-		{"tmux", map[string]string{"TMUX": "/tmp/tmux-1000/default,123,0"}, true},
-		{"zellij present", map[string]string{"ZELLIJ": "1"}, true},
-		{"zellij zero is presence", map[string]string{"ZELLIJ": "0"}, true},
-		{"screen", map[string]string{"STY": "1234.pts-0.host"}, true},
-		{"herdr both keys", map[string]string{"HERDR_ENV": "1", "HERDR_PANE_ID": "p1"}, true},
-		{"herdr env only", map[string]string{"HERDR_ENV": "1"}, false},
-		{"herdr pane only", map[string]string{"HERDR_PANE_ID": "p1"}, false},
+		{"none set", nil, muxNone},
+		{"tmux", map[string]string{"TMUX": "/tmp/tmux-1000/default,123,0"}, muxTmux},
+		{"zellij present", map[string]string{"ZELLIJ": "1"}, muxZellij},
+		{"zellij zero is presence", map[string]string{"ZELLIJ": "0"}, muxZellij},
+		{"screen", map[string]string{"STY": "1234.pts-0.host"}, muxScreen},
+		{"herdr both keys", map[string]string{"HERDR_ENV": "1", "HERDR_PANE_ID": "p1"}, muxHerdr},
+		{"herdr env only", map[string]string{"HERDR_ENV": "1"}, muxNone},
+		{"herdr pane only", map[string]string{"HERDR_PANE_ID": "p1"}, muxNone},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -637,33 +638,183 @@ func TestMultiplexedEnvKeys(t *testing.T) {
 			for k, v := range c.env {
 				t.Setenv(k, v)
 			}
-			if got := multiplexed(); got != c.want {
-				t.Fatalf("multiplexed() = %v, want %v", got, c.want)
+			if got := detectMultiplexer(); got != c.want {
+				t.Fatalf("detectMultiplexer() = %v, want %v", got, c.want)
 			}
 		})
 	}
 }
 
-// TestConfigureBackendsSkipsHandshakeUnderMux asserts that under a multiplexer
-// env var configureBackends enables block only and does not run probeTerminal.
-// probeTerminal writes queryBytes() to the tty as its first act, so a tty file
-// left empty after the call proves the handshake did not run. A non-mux baseline
-// proves the same file path does carry a write when the handshake runs.
-func TestConfigureBackendsSkipsHandshakeUnderMux(t *testing.T) {
-	clearMuxEnv(t)
-	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+// TestMultiplexerBackends drives the pure per-multiplexer backend policy:
+// Sixel is offered under tmux and zellij only when DA1 advertised it and the
+// cell geometry is real, Kitty is never offered, screen and herdr stay block
+// only regardless of capability, and the Rio compatibility deny still gates
+// Sixel off.
+func TestMultiplexerBackends(t *testing.T) {
+	cases := []struct {
+		name     string
+		mux      multiplexerKind
+		sixelDA1 bool
+		geometry bool
+		compat   terminalCompatibility
+		want     []Backend
+	}{
+		{"tmux sixel and geometry", muxTmux, true, true, terminalCompatibility{}, []Backend{BackendSixel, BackendBlock}},
+		{"tmux sixel no geometry", muxTmux, true, false, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"tmux no sixel", muxTmux, false, true, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"zellij sixel and geometry", muxZellij, true, true, terminalCompatibility{}, []Backend{BackendSixel, BackendBlock}},
+		{"zellij da1 without geometry is not trusted", muxZellij, true, false, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"zellij no sixel", muxZellij, false, true, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"screen ignores capability", muxScreen, true, true, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"herdr ignores capability", muxHerdr, true, true, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"rio deny gates tmux sixel", muxTmux, true, true, terminalCompatibility{rio04: true}, []Backend{BackendBlock}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := multiplexerBackends(c.mux, c.sixelDA1, c.geometry, c.compat)
+			if !slices.Equal(got, c.want) {
+				t.Fatalf("multiplexerBackends = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
 
-	tty := newTempTTY(t)
+// TestMultiplexerSixelPassesForcedBackend asserts that when the multiplexer
+// policy offers Sixel, an explicit --backend=sixel passes the generic
+// validator, so live testing inside tmux and zellij can force the backend.
+func TestMultiplexerSixelPassesForcedBackend(t *testing.T) {
+	enabled := multiplexerBackends(muxTmux, true, true, terminalCompatibility{})
+	if err := ValidateForcedBackend(ModeSixel, enabled); err != nil {
+		t.Fatalf("ValidateForcedBackend(sixel, %v) = %v, want nil", enabled, err)
+	}
+	if err := ValidateForcedBackend(ModeKitty, enabled); err == nil {
+		t.Fatalf("ValidateForcedBackend(kitty, %v) = nil, want error", enabled)
+	}
+}
+
+// TestMultiplexerStartBackend drives the pure auto-start nomination under a
+// focus multiplexer: tmux starts on the cycle head (Sixel when gated in),
+// zellij demotes the start to Block while Sixel stays in the cycle (its image
+// id collision drops every third full-replacement frame), a failed zellij gate
+// stays Block, and screen and herdr keep their Block-only start.
+func TestMultiplexerStartBackend(t *testing.T) {
+	sixelCycle := []Backend{BackendSixel, BackendBlock}
+	blockOnly := []Backend{BackendBlock}
+	cases := []struct {
+		name    string
+		mux     multiplexerKind
+		enabled []Backend
+		want    Backend
+	}{
+		{"tmux gated in starts sixel", muxTmux, sixelCycle, BackendSixel},
+		{"zellij gated in demotes to block", muxZellij, sixelCycle, BackendBlock},
+		{"zellij failed gate stays block", muxZellij, blockOnly, BackendBlock},
+		{"tmux failed gate stays block", muxTmux, blockOnly, BackendBlock},
+		{"screen stays block", muxScreen, blockOnly, BackendBlock},
+		{"herdr stays block", muxHerdr, blockOnly, BackendBlock},
+		{"empty cycle falls back to block", muxTmux, nil, BackendBlock},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := multiplexerStartBackend(c.mux, c.enabled); got != c.want {
+				t.Fatalf("multiplexerStartBackend(%v, %v) = %v, want %v", c.mux, c.enabled, got, c.want)
+			}
+		})
+	}
+}
+
+// TestZellijForcedSixelStillStarts guards the manual escape hatch: with the
+// zellij demotion applied, --backend=sixel still validates against the enabled
+// cycle and applyForcedBackend starts the session on Sixel.
+func TestZellijForcedSixelStillStarts(t *testing.T) {
 	st := NewState(80, 24)
-	if err := configureBackends(&st, tty, 80, 24, "auto", "auto"); err != nil {
-		t.Fatalf("configureBackends: %v", err)
+	st.SetEnabled(multiplexerBackends(muxZellij, true, true, terminalCompatibility{}))
+	st.Backend = multiplexerStartBackend(muxZellij, st.Enabled)
+	if st.Backend != BackendBlock {
+		t.Fatalf("zellij auto start = %v, want %v", st.Backend, BackendBlock)
 	}
+	if err := ValidateForcedBackend(ModeSixel, st.Enabled); err != nil {
+		t.Fatalf("ValidateForcedBackend(sixel, %v) = %v, want nil", st.Enabled, err)
+	}
+	applyForcedBackend(&st, ModeSixel)
+	if st.Backend != BackendSixel {
+		t.Fatalf("forced backend = %v, want %v", st.Backend, BackendSixel)
+	}
+}
 
-	if len(st.Enabled) != 1 || st.Enabled[0] != BackendBlock {
-		t.Fatalf("enabled = %v, want [BackendBlock]", st.Enabled)
+// TestConfigureBackendsSkipsHandshakeUnderScreenAndHerdr asserts that under
+// GNU screen and herdr configureBackends enables block only and runs no
+// handshake at all. Both probes write their query batch to the tty as a first
+// act, so a tty file left empty after the call proves neither ran. A non-mux
+// baseline proves the same file path does carry a write when the handshake
+// runs.
+func TestConfigureBackendsSkipsHandshakeUnderScreenAndHerdr(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{"screen", map[string]string{"STY": "1234.pts-0.host"}},
+		{"herdr", map[string]string{"HERDR_ENV": "1", "HERDR_PANE_ID": "p1"}},
 	}
-	if n := ttyByteCount(t, tty); n != 0 {
-		t.Fatalf("handshake wrote %d bytes under mux; probeTerminal must not run", n)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clearMuxEnv(t)
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+
+			tty := newTempTTY(t)
+			st := NewState(80, 24)
+			if err := configureBackends(&st, tty, 80, 24, "auto", "auto"); err != nil {
+				t.Fatalf("configureBackends: %v", err)
+			}
+
+			if len(st.Enabled) != 1 || st.Enabled[0] != BackendBlock {
+				t.Fatalf("enabled = %v, want [BackendBlock]", st.Enabled)
+			}
+			if n := ttyByteCount(t, tty); n != 0 {
+				t.Fatalf("handshake wrote %d bytes; no probe must run", n)
+			}
+		})
+	}
+}
+
+// TestConfigureBackendsReducedHandshakeUnderTmuxAndZellij asserts that under
+// tmux and zellij configureBackends writes exactly the reduced query batch
+// (no Kitty APC probe) and, with no replies on the temp-file tty, falls to
+// block only: an unanswered DA1 must never enable Sixel.
+func TestConfigureBackendsReducedHandshakeUnderTmuxAndZellij(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{"tmux", map[string]string{"TMUX": "/tmp/tmux-1000/default,123,0"}},
+		{"zellij", map[string]string{"ZELLIJ": "1"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clearMuxEnv(t)
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+
+			tty := newTempTTY(t)
+			st := NewState(80, 24)
+			if err := configureBackends(&st, tty, 80, 24, "auto", "auto"); err != nil {
+				t.Fatalf("configureBackends: %v", err)
+			}
+
+			if len(st.Enabled) != 1 || st.Enabled[0] != BackendBlock {
+				t.Fatalf("enabled = %v, want [BackendBlock] with no replies", st.Enabled)
+			}
+			wrote := readTTYBytes(t, tty)
+			if !bytes.Equal(wrote, reducedQueryBytes()) {
+				t.Fatalf("handshake wrote %q, want the reduced batch %q", wrote, reducedQueryBytes())
+			}
+			if bytes.Contains(wrote, []byte("\x1b_G")) {
+				t.Fatalf("reduced handshake carried a Kitty APC probe: %q", wrote)
+			}
+		})
 	}
 }
 
@@ -707,6 +858,16 @@ func ttyByteCount(t *testing.T, f *os.File) int64 {
 		t.Fatalf("stat tty: %v", err)
 	}
 	return info.Size()
+}
+
+// readTTYBytes returns everything written to the temp tty file.
+func readTTYBytes(t *testing.T, f *os.File) []byte {
+	t.Helper()
+	data, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatalf("read tty: %v", err)
+	}
+	return data
 }
 
 // TestCellPxDefaultWhenGeometryAbsent asserts that when every geometry report is
