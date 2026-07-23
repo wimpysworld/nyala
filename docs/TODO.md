@@ -189,7 +189,11 @@ and research documents.
 - [ ] Add graphics support through tmux, Zellij, and herdr. The Sixel leg is
   implemented pending live validation: tmux and zellij run a reduced handshake
   (no Kitty APC probe) and offer Sixel when DA1 advertises attribute 4 and real
-  cell pixel geometry is present (the zellij host-chain-live signal); screen
+  cell pixel geometry is present (the zellij host-chain-live signal); tmux
+  additionally needs an XTVERSION identity of 3.6 or later (3.4-3.5a compile
+  in an unraisable 1 MiB DCS input cap that silently discards busy frames,
+  and the 900 KB fallback cannot guarantee that cap on large grids, so those
+  versions get no Sixel at all); screen
   and herdr stay block only with no handshake. Sixel under tmux and zellij
   reserves the bottom terminal row (engine grid at rows-1) to avoid tmux's
   designed-in top-crop of full-height images and zellij's bare host
@@ -200,19 +204,68 @@ and research documents.
   "Multiplexers"), so auto-detection starts on Block there and Sixel stays
   reachable through Tab or `--backend=sixel` until the upstream fix ships;
   tmux Sixel remains auto. tmux Sixel additionally handles high-frame-rate
-  animation: a 900 KB per-frame byte budget on every tmux version caps the
-  throughput of tmux's parse and re-encode pipeline, with the downscale-blur
-  ladder carrying the quality trade (setting the server's
-  `input-buffer-size` to 16 MiB on tmux 3.6+, persisting for the server
-  lifetime, is only a safety net so overshoot frames dodge tmux's silent
-  1 MiB DCS discard), the steady prefix is the bare cursor home with no
-  per-frame erase (dropped after live tmux 3.7b testing showed the erase
+  animation: emission is paced at the latest-wins coalescing seam with a
+  version-tuned floor, 250 ms on tmux 3.7+ (bisected live: 200 ms saturates
+  tmux's ~230 ms per-frame consumption and builds display lag) and 300 ms
+  below 3.7 or on an unknown version (live 3.6a at 250 ms kept its pty
+  writes drained at ~20 ms yet stalled the display periodically and released
+  several frames in a burst, so the backlog sat in its output scheduler
+  toward the host terminal, invisible to the write signal; 300 ms showed no
+  bursts), plus an adaptive back-off to the last
+  frame write duration plus 50 ms, capped at 1 s, because the pty write
+  blocks at tmux's own read pace and so measures saturation directly on any
+  machine, grid, and content; the escalation threshold, probe band, and
+  settle delay derive from the resolved floor. On tmux 3.7+ rate pacing is
+  all the parse and re-encode pipeline needs (live 3.7b runs sustained
+  ~4 MB full-quality frames indefinitely at that pacing), so a successful
+  raise of the server's `input-buffer-size` to 16 MiB (persisting for the
+  server lifetime) carries a raised 15 MiB per-frame budget and frames pass
+  at full quality. On 3.6.x a successful raise carries a 1.5 MB budget
+  instead, an output-stage rate cap of ~5 MB/s at the legacy floor: live
+  3.6a settled at factor 2 (2.5 MB frames, ~8.3 MB/s) kept its pty writes
+  drained at ~21 ms yet replayed a queued backlog on quit, a factor-3 run
+  at the 250 ms floor (~8.8 MB/s) burst identically, and factor 3 trims
+  only ~10 percent off factor 2, so the cure is a byte-rate cap on 3.6's
+  invisible re-encoded output stage, not a deeper fixed factor. A failed
+  raise falls back to a 900 KB budget under tmux's silent 1 MiB DCS discard,
+  with the downscale-blur ladder carrying the quality trade; tmux below 3.6
+  never reaches the fallback because the version gate refuses it Sixel. The ladder also escalates one step on measured
+  write latency with no version gate: an effective interval reaching the
+  floor (a write of 200 ms or more) for two consecutive frames trades one
+  mild blur step for frame rate, because the criterion is whether tmux ever
+  idles: a drained pipe writes tiny frames (3.7b at the floor: 33 ms mean),
+  while 3.6a under an earlier 1.4x threshold held ~215 ms writes at factor 2
+  and never drained its backlog, replaying it on quit. The two write samples
+  after any escalation are skipped as old-factor backlog, so they cannot
+  chain further steps (live 3.6a chained 1.5 -> 4 within four frames). The
+  one-step-weaker probe every 10 budgeted frames is a band-judged trial
+  scoped to the motion episode (settle to settle): it fires only when the
+  last three writes sit inside the 60-percent-of-floor band (150 ms) with
+  no monotonic rise, any in-trial write reaching that band retreats the
+  ladder straight to the pre-probe factor and silences probing until the
+  next settle (retrying a factor the ladder watched fail buys one
+  saturation ramp per retry), and survival needs both the elapsed cadence
+  and a flat-or-falling window inside the band, because live 3.6a showed
+  the saturation ramp outliving the cadence (writes 30 -> 146 ms inside the
+  band, then past it); a still-rising trial stays pending until it
+  stabilises or breaches the band (byte-budget escalations keep the plain
+  cadence). Band judgement is what live 3.6a demanded: tmux's buffers
+  absorbed a failing sharper factor while writes ramped 20 -> 107 ms
+  without ever reaching the 200 ms escalation threshold, so the next,
+  sharper probe tipped the queue and took the blame; the 200 ms two-write
+  streak stays as the saturation backstop at a settled factor. A freshly
+  drained or saturated system therefore does not oscillate between adjacent
+  factors, and an idle stream re-emits the last blurred frame once at
+  factor 1 (settle-to-sharp), with the next episode resuming at the
+  sustained pre-settle factor instead of re-running the discovery cascade
+  (live 3.6a re-walked 1 -> 1.5 -> 2 -> 3 with 400-535 ms writes after
+  every settle). The steady prefix is the bare cursor home with
+  no per-frame erase (dropped after live tmux 3.7b testing showed the erase
   caused the animation strobe and scroll blanking; new frames paint over the
-  old, and tmux's stored-image LRU, capped at 20 on 3.6b+, bounds the stack),
-  DEC 2026 is suppressed for tmux Sixel on every version (tmux does not defer
-  image operations under sync, so the bracket cannot hide an erase), and
-  emission is paced to 300 ms at the latest-wins coalescing seam to dodge
-  tmux's output backoff. Live-validate placement,
+  old, and tmux's stored-image LRU, capped at 20 on 3.6b+, bounds the
+  stack), and DEC 2026 is suppressed for tmux Sixel on every version (tmux
+  does not defer image operations under sync, so the bracket cannot hide an
+  erase). Live-validate placement,
   resize and zoom, scroll, and quit cleanup inside tmux and zellij before
   ticking this leg. The Kitty legs stay open: tmux native Kitty image support is in review
   upstream, so re-test against a tagged tmux release before choosing the final
