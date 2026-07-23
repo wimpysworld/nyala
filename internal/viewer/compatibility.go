@@ -48,8 +48,9 @@ func (s *State) setTerminalCompatibility(termID string, environ []string) {
 }
 
 // syncUpdatesEnabled reports whether the active backend keeps DEC 2026 around
-// its live frame. The Foot compatibility policy is scoped to Sixel, so a backend
-// cycle to Block or Kitty restores the normal fence without changing detection.
+// its live frame. The Foot and tmux compatibility policies are scoped to Sixel,
+// so a backend cycle to Block or Kitty restores the normal fence without
+// changing detection.
 func (s *State) syncUpdatesEnabled() bool {
 	return s.Backend != BackendSixel || !s.compat.sixelSyncUpdatesDisabled
 }

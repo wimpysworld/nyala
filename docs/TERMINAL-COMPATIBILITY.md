@@ -160,6 +160,55 @@ gated on the XTVERSION identity `Zellij(<version>)`, once a zellij release
 ships monotonic image ids. tmux is unaffected: its auto-detection still
 starts on Sixel when the gate passes.
 
+tmux Sixel additionally survives high-frame-rate animation through tmux-only
+measures; zellij, screen, herdr, and native terminals keep their normal
+behaviour:
+
+- Byte budget with adaptive downscale. The viewer encodes each frame against
+  a 900 KB budget on every tmux version. The budget is a throughput cap for
+  tmux's parse and re-encode pipeline, not merely a parser-acceptance cap:
+  live tmux 3.7b measurements with a raised input buffer showed ~4 MB frames
+  blocking each pty write for 223 ms mean and 410 ms max, dropping output to
+  ~3 fps. The budget also keeps a margin under tmux's
+  default 1 MiB input buffer, whose overflow discards the DCS silently. An
+  over-budget frame is downscaled by a ladder factor (1.5, 2, 3, 4) and
+  upscaled back to the exact grid pixel extent before encoding, so the DCS
+  raster keeps covering the full grid while the blur shortens the encoded
+  output; the ladder carries the quality trade. If even the floor factor
+  does not fit, the smallest encode is sent anyway. The working factor is
+  remembered across frames and probed one step weaker roughly once per 60
+  frames, so quality recovers when the content calms down. The 256-colour
+  palette is untouched. With `NYALA_DEBUG_TIMING=1` each frame reports its
+  encoded byte size and active factor on stderr.
+- Input-buffer tuning. tmux 3.6 and later expose the `input-buffer-size`
+  server option (3.5a and earlier do not). When the XTVERSION reply names
+  such a version, Nyala runs `tmux set -s input-buffer-size 16777216` once
+  at startup as a safety net: the occasional frame that overshoots the
+  budget (a ladder-floor overshoot or a probe frame) is parsed instead of
+  silently discarded. The call never changes the budget, and any failure is
+  tolerated silently. The option is not restored on exit: it persists for
+  the tmux server lifetime.
+- No per-frame erase. A steady tmux Sixel frame carries the bare cursor-home
+  prefix, the same as native: each new full-frame image paints over the old
+  one with no blank state in between. tmux stores images on the active screen
+  list, where LRU eviction (capped at 20 images on 3.6b and later) is
+  correct, so the stacked store stays bounded without an erase. Live testing
+  on tmux 3.7b showed an earlier home-plus-erase prefix was the flicker
+  source: the erase painted a visible blank between frames, so animation
+  strobed draw-hold-clear-pause and ordinary page scrolling blanked before
+  each paint. First-draw, resize, and backend-switch clears are unchanged.
+- DEC 2026 suppressed on every version. tmux does not defer image operations
+  under an application synchronised update, so the bracket cannot hide an
+  erase or make an image swap atomic (live-verified on tmux 3.7b). Sixel
+  frames under tmux carry no DEC 2026 markers on any version. Block under
+  tmux keeps the normal fence.
+- Emit pacing. tmux re-encodes stored images for its host terminal, and live
+  testing on tmux 3.7b showed sustained Sixel at ten frames per second kills
+  the pane's image rendering permanently while about three frames per second
+  survives, so Sixel frames are paced to at least 300 ms apart. The pacing
+  sits at the frame-coalescing seam: held-back frames are replaced
+  latest-wins, so no queue grows.
+
 GNU screen blocks graphics passthrough, and herdr consumes graphics sequences
 and reports no cell geometry, so both stay Block only with no handshake.
 herdr's experimental Kitty-only support is deferred.

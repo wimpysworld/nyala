@@ -137,6 +137,11 @@ type State struct {
 	// The viewer draw path is serial, so one renderer owns the whole stream.
 	sixelEnc *sixel.Renderer
 
+	// sixelBudget is the tmux Sixel byte-budget state. configureBackends arms
+	// its limit under tmux only; a zero limit keeps every other environment on
+	// the direct streaming encode.
+	sixelBudget sixelBudget
+
 	// kittyTransport is the effective Kitty transmission medium, resolved once
 	// by configureBackends from the --kitty-transport override, the deny list,
 	// the startup shm probe, and the allow list. It is always direct or shm.
@@ -348,6 +353,9 @@ func (s *State) renderStreamFrame(frame render.Frame, w io.Writer, kittyBelowTex
 		s.sixelEnc = &sixel.Renderer{}
 	}
 	img = s.fitSixelToGrid(img)
+	if s.sixelBudget.limit > 0 {
+		return s.renderSixelBudgeted(img, w)
+	}
 	return s.sixelEnc.Render(render.Frame{Img: img}, w)
 }
 
@@ -377,12 +385,19 @@ func (s *State) fitSixelToGrid(img image.Image) image.Image {
 	if b.Dx() == gridW && dh < s.H {
 		return img
 	}
+	s.ensureScratchPool()
+	return s.scratch.downscale.DownscaleInto(s.scratch.downscaleDst(gridW, gridH), img, s.scratch.pool)
+}
+
+// ensureScratchPool lazily builds the shared rowband pool and its two band
+// drivers on first use, so every scaling caller reuses one persistent worker
+// set and the hot path spawns no goroutine.
+func (s *State) ensureScratchPool() {
 	if s.scratch.pool == nil {
 		s.scratch.pool = rowband.New()
 		s.scratch.downscale = metrics.NewParallelDownscale()
 		s.scratch.compose = block.NewParallelCompose()
 	}
-	return s.scratch.downscale.DownscaleInto(s.scratch.downscaleDst(gridW, gridH), img, s.scratch.pool)
 }
 
 // decodeFramePNG materialises a retained CDP PNG only when a non-Kitty consumer
@@ -446,11 +461,7 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 	if pxW <= 0 || pxH <= 0 {
 		return nil
 	}
-	if s.scratch.pool == nil {
-		s.scratch.pool = rowband.New()
-		s.scratch.downscale = metrics.NewParallelDownscale()
-		s.scratch.compose = block.NewParallelCompose()
-	}
+	s.ensureScratchPool()
 	_, nativeYCbCr := frame.Img.(*image.YCbCr)
 	srcW, srcH := frame.Img.Bounds().Dx(), frame.Img.Bounds().Dy()
 	if nativeYCbCr && pxW <= srcW && pxH <= srcH && (pxW < srcW || pxH < srcH) {
@@ -533,8 +544,8 @@ const (
 // before a frame's render bytes, and seeds the differ for the first draw. The
 // first draw returns the full clearScreen and resets diff so it full-repaints
 // against the blank screen; every later draw returns cursorHome only, so the
-// render overwrites each cell in place with no per-frame full clear. diff may be
-// nil (the graphics backends carry none), in which case no seed runs.
+// render overwrites each cell in place with no per-frame full clear. diff may
+// be nil (the graphics backends carry none), in which case no seed runs.
 func framePrefix(firstDrawn bool, diff *block.GridDiff) string {
 	if firstDrawn {
 		return cursorHome

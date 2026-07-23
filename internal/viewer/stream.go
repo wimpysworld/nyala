@@ -365,6 +365,13 @@ type streamSession struct {
 	// assembledSHM marks the assembled frame as a Kitty shm transmit, so the
 	// handoff to the writer arms the one-in-flight pacing gate. Producer only.
 	assembledSHM bool
+	// assembledTmuxSixel marks the assembled frame as a tmux Sixel frame, so
+	// the handoff to the writer stamps the emit-rate pacing gate. Producer only.
+	assembledTmuxSixel bool
+	// lastTmuxSixel is the instant of the last tmux Sixel frame handoff; the
+	// pacing gate holds the next encode until tmuxSixelMinInterval has passed.
+	// Producer only. The zero value leaves the first frame ungated.
+	lastTmuxSixel time.Time
 	// kittyShmAwait is true while one shm transmit awaits the terminal's
 	// acknowledgement; kittyShmDeadline bounds the wait so a terminal that
 	// stays silent degrades to a conservative self-pace instead of stalling.
@@ -437,7 +444,7 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 		// time bounds the in-flight buffers to two. The kitty-shm ack gate holds
 		// the encode back while one shm transmit is unacknowledged, so at most
 		// one shm frame is in flight and pty latency cannot build.
-		if s.assembled == nil && havePending && len(avail) > 0 && !s.kittySHMGated() {
+		if s.assembled == nil && havePending && len(avail) > 0 && !s.kittySHMGated() && !s.tmuxSixelGated() {
 			buf := avail[len(avail)-1]
 			avail = avail[:len(avail)-1]
 			encodeMS, err := s.assemble(buf, pending)
@@ -459,18 +466,25 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			item = writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed}
 		}
 
-		// While the ack gate alone holds back a pending frame, wake at the
-		// gate deadline so a lost acknowledgement releases the frame without
-		// needing another event. A nil channel never fires.
+		// While a pacing gate alone holds back a pending frame, wake at the
+		// gate deadline so a lost acknowledgement (kitty shm) or an elapsed
+		// emit interval (tmux Sixel) releases the frame without needing
+		// another event. A nil channel never fires.
 		var gateC <-chan time.Time
-		if s.assembled == nil && havePending && len(avail) > 0 && s.kittyShmAwait {
-			gateC = time.After(time.Until(s.kittyShmDeadline))
+		if s.assembled == nil && havePending && len(avail) > 0 {
+			switch {
+			case s.kittyShmAwait:
+				gateC = time.After(time.Until(s.kittyShmDeadline))
+			case s.tmuxSixelGated():
+				gateC = time.After(tmuxSixelMinInterval - time.Since(s.lastTmuxSixel))
+			}
 		}
 
 		select {
 		case readyC <- item:
 			s.assembled = nil
 			s.markKittySHMHandoff()
+			s.markTmuxSixelHandoff()
 		case <-gateC:
 			// The deadline passed; the next kittySHMGated call clears the gate.
 		case <-winch:
@@ -609,6 +623,37 @@ func (s *streamSession) markKittySHMHandoff() {
 	s.kittyShmDeadline = time.Now().Add(kittySHMAckTimeout)
 }
 
+// tmuxSixelMinInterval is the minimum interval between Sixel frame handoffs
+// under tmux. tmux re-encodes every stored image for its host terminal, and
+// live testing on tmux 3.7b showed the failure tracks the DCS sequence rate,
+// not the byte rate: sustained animation at ten frames per second killed the
+// pane's Sixel rendering permanently while roughly three frames per second
+// survived indefinitely at a higher byte rate. The gate holds the encode, not
+// a queue: pending frames keep coalescing latest-wins while it is closed, so
+// no backlog grows.
+const tmuxSixelMinInterval = 300 * time.Millisecond
+
+// tmuxSixelGated reports whether the tmux Sixel emit-rate gate holds the next
+// frame back: only while the active backend is Sixel under tmux and the last
+// Sixel handoff is younger than tmuxSixelMinInterval. Producer goroutine only.
+func (s *streamSession) tmuxSixelGated() bool {
+	if s.st.Backend != BackendSixel || s.st.mux != muxTmux {
+		return false
+	}
+	return time.Since(s.lastTmuxSixel) < tmuxSixelMinInterval
+}
+
+// markTmuxSixelHandoff stamps the emit-rate gate when the frame just handed
+// to the writer was a tmux Sixel frame, so the next frame waits out the
+// minimum interval. Producer goroutine only.
+func (s *streamSession) markTmuxSixelHandoff() {
+	if !s.assembledTmuxSixel {
+		return
+	}
+	s.assembledTmuxSixel = false
+	s.lastTmuxSixel = time.Now()
+}
+
 // handleKittyResponse consumes one Kitty graphics response from the input
 // stream. Any response settles the in-flight shm transmit, so the pacing gate
 // opens. A failure response (no ";OK") while the session is on the Kitty
@@ -676,8 +721,9 @@ func startupQuit(ev keyEvent) bool {
 // assemble builds one frame's whole terminal byte sequence into buf, ready for the
 // writer to present with a single io.Write: the optional DEC 2026 open, the cursor
 // prefix, the rendered frame with its crisp DOM-text overlay, the fps badge, and
-// the optional DEC 2026 close. Foot Sixel omits only the synchronised-update
-// markers; every other backend and terminal keeps them. Assembling the whole unit
+// the optional DEC 2026 close. Foot and tmux Sixel omit only the
+// synchronised-update markers; every other backend and terminal keeps them.
+// Assembling the whole unit
 // into one owned buffer keeps the atomic present where DEC 2026 is active while
 // the producer encodes the next frame in parallel with the current frame's write.
 // Byte order remains identical for every frame, independent of which goroutine
@@ -725,6 +771,7 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	// Tag an shm transmit for the pacing gate and settle any shm failure the
 	// render just recorded: one log line, then direct PNG for the session.
 	s.assembledSHM = s.st.takeKittySHMWrote()
+	s.assembledTmuxSixel = nonScrollingSixel && s.st.mux == muxTmux
 	s.applyKittySHMDemotion()
 
 	// Fold the fps badge into the same buffer where compatibility permits it, gated
@@ -767,6 +814,7 @@ func (s *streamSession) flushAssembled() {
 	s.writer.send(writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed})
 	s.assembled = nil
 	s.markKittySHMHandoff()
+	s.markTmuxSixelHandoff()
 }
 
 // emitControl routes a one-off terminal write (a resize clear, a kitty reset, or an
