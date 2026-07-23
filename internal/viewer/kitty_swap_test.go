@@ -208,11 +208,12 @@ func TestKittyDirectPNGUsesRawPayloadAndIDs(t *testing.T) {
 }
 
 // TestFPSKittyFrameOrder checks the FPS-enabled live path transmits the page at
-// the text-safe z-index, deletes the old image, paints the absolute-positioned
-// badge, and only then closes the synchronised update. The retained PNG body
-// remains byte-for-byte unchanged.
+// the text-safe z-index, deletes the old image, paints the bottom bar, and
+// only then closes the synchronised update. The retained PNG body remains
+// byte-for-byte unchanged.
 func TestFPSKittyFrameOrder(t *testing.T) {
-	st := NewState(8, 4)
+	// 60 columns give the bar room for its full chrome, fps segment included.
+	st := NewState(60, 4)
 	st.Backend = BackendKitty
 	diff := &block.GridDiff{}
 	st.SetDiff(diff)
@@ -235,13 +236,13 @@ func TestFPSKittyFrameOrder(t *testing.T) {
 	out := second.String()
 	transmit := strings.Index(out, "\x1b_Gf=100")
 	deleteOld := strings.Index(out, "a=d")
-	badge := strings.Index(out, "\x1b[1;1H\x1b[0;7m")
+	bar := strings.Index(out, "\x1b[4;1H\x1b[0;7m")
 	syncClose := strings.LastIndex(out, endSyncUpdate)
-	if transmit < 0 || deleteOld < 0 || badge < 0 || syncClose < 0 {
-		t.Fatalf("FPS Kitty output lacks an ordered element: transmit=%d delete=%d badge=%d sync-close=%d", transmit, deleteOld, badge, syncClose)
+	if transmit < 0 || deleteOld < 0 || bar < 0 || syncClose < 0 {
+		t.Fatalf("FPS Kitty output lacks an ordered element: transmit=%d delete=%d bar=%d sync-close=%d", transmit, deleteOld, bar, syncClose)
 	}
-	if transmit >= deleteOld || deleteOld >= badge || badge >= syncClose {
-		t.Fatalf("FPS Kitty order transmit=%d delete=%d badge=%d sync-close=%d", transmit, deleteOld, badge, syncClose)
+	if transmit >= deleteOld || deleteOld >= bar || bar >= syncClose {
+		t.Fatalf("FPS Kitty order transmit=%d delete=%d bar=%d sync-close=%d", transmit, deleteOld, bar, syncClose)
 	}
 	commands := kittyCommands(out)
 	if len(commands) != 2 {
@@ -253,8 +254,11 @@ func TestFPSKittyFrameOrder(t *testing.T) {
 	if strings.Contains(out, "\x1b7") || strings.Contains(out, "\x1b8") {
 		t.Fatal("FPS Kitty frame consumed a saved-cursor slot")
 	}
-	if !strings.Contains(out, "\x1b[0m\x1b[1;1H"+endSyncUpdate) {
-		t.Fatal("FPS Kitty badge did not return home before synchronised close")
+	if !strings.Contains(out, "↑ ") {
+		t.Fatal("FPS Kitty bar lost the fps segment")
+	}
+	if !strings.HasSuffix(out, "\x1b[0m"+endSyncUpdate) {
+		t.Fatal("FPS Kitty bar did not reset the SGR before the synchronised close")
 	}
 	apc := out[transmit:]
 	end := strings.Index(apc, "\x1b\\")

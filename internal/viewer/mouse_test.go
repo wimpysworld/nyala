@@ -119,8 +119,30 @@ func TestDecodeSGRMouse(t *testing.T) {
 		},
 		{name: "wheel release dropped", body: "<64;10;10m"},
 		{name: "buttonless press dropped", body: "<3;1;1M"},
-		{name: "back button dropped", body: "<128;1;1M"},
-		{name: "forward button dropped", body: "<129;1;1M"},
+		{
+			name: "back button press",
+			body: "<128;1;1M",
+			want: MouseEvent{Action: MouseActionPress, Button: MouseButtonBack},
+			ok:   true,
+		},
+		{
+			name: "forward button press",
+			body: "<129;1;1M",
+			want: MouseEvent{Action: MouseActionPress, Button: MouseButtonForward},
+			ok:   true,
+		},
+		{
+			name: "back button release",
+			body: "<130;1;1m",
+			want: MouseEvent{Action: MouseActionRelease, Button: MouseButtonBack},
+			ok:   true,
+		},
+		{
+			name: "forward button release",
+			body: "<131;1;1m",
+			want: MouseEvent{Action: MouseActionRelease, Button: MouseButtonForward},
+			ok:   true,
+		},
 		{name: "negative button dropped", body: "<-1;1;1M"},
 		{name: "two parameters dropped", body: "<0;12M"},
 		{name: "four parameters dropped", body: "<0;1;2;3M"},
@@ -191,7 +213,7 @@ func TestNextEventMouseAPCInterleave(t *testing.T) {
 // consumed whole, like any unrecognised CSI, and the following byte still
 // arrives as a key event.
 func TestNextEventMalformedMouseDropped(t *testing.T) {
-	events := collectEvents(t, "\x1b[<0;12M"+"\x1b[<128;1;1M"+"q")
+	events := collectEvents(t, "\x1b[<0;12M"+"\x1b[<;1;1M"+"q")
 	if len(events) != 1 || events[0].b != 'q' {
 		t.Fatalf("events = %+v, want only the trailing 'q' key", events)
 	}

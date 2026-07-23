@@ -65,11 +65,11 @@ func TestCycleBackendBlockOnly(t *testing.T) {
 
 // TestExitTerminal pins the shared backend exit contract: reset SGR, move below
 // a rendered full-height frame with exactly one CRLF, then disable mouse
-// reporting unconditionally, reset Sixel display mode, restore auto-wrap, and
-// reveal the cursor. An exit before the first frame restores terminal modes in
-// place, without scrolling unrelated content.
+// reporting and bracketed paste unconditionally, reset Sixel display mode,
+// restore auto-wrap, and reveal the cursor. An exit before the first frame
+// restores terminal modes in place, without scrolling unrelated content.
 func TestExitTerminal(t *testing.T) {
-	const want = "\x1b[0m\x1b[24;1H\r\n\x1b[?1002l\x1b[?1006l\x1b[?80l\x1b[?7h\x1b[?25h"
+	const want = "\x1b[0m\x1b[24;1H\r\n\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?80l\x1b[?7h\x1b[?25h"
 	for _, backend := range []Backend{BackendBlock, BackendKitty, BackendSixel} {
 		t.Run(backend.String(), func(t *testing.T) {
 			if got := exitTerminal(24, true); got != want {
@@ -78,7 +78,7 @@ func TestExitTerminal(t *testing.T) {
 		})
 	}
 
-	const restoreInPlace = "\x1b[0m\x1b[?1002l\x1b[?1006l\x1b[?80l\x1b[?7h\x1b[?25h"
+	const restoreInPlace = "\x1b[0m\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?80l\x1b[?7h\x1b[?25h"
 	if got := exitTerminal(24, false); got != restoreInPlace {
 		t.Fatalf("startup exit = %q, want %q", got, restoreInPlace)
 	}
@@ -293,7 +293,8 @@ func TestRenderFrameBlockColourModes(t *testing.T) {
 				t.Fatalf("first draw: %v", err)
 			}
 			out := first.String()
-			for row := range s.Rows {
+			// The compose targets the page grid: the bar reserves the bottom row.
+			for row := range engineRows(s.Rows) {
 				if move := fmt.Sprintf("\x1b[%d;1H", row+1); !strings.Contains(out, move) {
 					t.Fatalf("first draw omitted row %d CUP %q", row, move)
 				}
@@ -361,7 +362,9 @@ func TestRenderFrameGraphicsFillsGrid(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			src := solidImageSize(c.imgW, c.imgH, color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})
 			for _, b := range []Backend{BackendSixel, BackendKitty} {
-				s := NewState(c.cols, c.rows)
+				// The terminal has one extra row for the bar; the page grid
+				// the placement and the Sixel fit target is c.rows.
+				s := NewState(c.cols, c.rows+1)
 				s.Backend = b
 				var buf bytes.Buffer
 				frame := render.Frame{Img: src}
@@ -489,7 +492,7 @@ func newTempTTY(t *testing.T) *os.File {
 // band, not a zoom), and a stale-density frame (both axes short, the post-zoom
 // shape) scales onto the full grid extent.
 func TestFitSixelToGrid(t *testing.T) {
-	st := NewState(10, 4) // cell 8x16 default: grid extent 80x64
+	st := NewState(10, 5) // cell 8x16 default: page grid 10x4, extent 80x64
 	exact := image.NewRGBA(image.Rect(0, 0, 80, 64))
 	if got := st.fitSixelToGrid(exact); got != exact {
 		t.Fatal("exact-extent frame was rescaled, want identity")
@@ -506,13 +509,12 @@ func TestFitSixelToGrid(t *testing.T) {
 }
 
 // TestFitSixelToGridHonoursBottomRowReservation pins the reconciliation
-// between fitSixelToGrid and the engine-grid reservation: an engine-sized
-// (rows-1) frame under tmux passes through unchanged rather than being
-// upscaled back over the reserved row, and a stale full-height frame is
-// rescaled down to the reserved extent.
+// between fitSixelToGrid and the engine-grid bar reservation: an engine-sized
+// (rows-1) frame passes through unchanged rather than being upscaled back
+// over the reserved bar row, and a stale full-height frame is rescaled down
+// to the reserved extent.
 func TestFitSixelToGridHonoursBottomRowReservation(t *testing.T) {
 	st := NewState(8, 4)
-	st.mux = muxTmux
 	st.Backend = BackendSixel
 	gridW, gridH := 8*st.W, 3*st.H // engine grid: rows-1
 
@@ -531,10 +533,14 @@ func TestFitSixelToGridHonoursBottomRowReservation(t *testing.T) {
 }
 
 type streamTestEngine struct {
-	frames     chan render.Frame
-	sendKey    func(string)
-	setBackend func(string)
-	sendNav    func(NavAction)
+	frames         chan render.Frame
+	sendKey        func(string)
+	setBackend     func(string)
+	sendNav        func(NavAction)
+	sendMouse      func(MouseEvent)
+	openURL        func(string)
+	currentURL     string
+	browserVersion string
 }
 
 func (e streamTestEngine) SetBackend(backend Backend) {
@@ -563,7 +569,21 @@ func (e streamTestEngine) SendNav(a NavAction) {
 	}
 }
 
-func (e streamTestEngine) SendMouse(MouseEvent) {}
+func (e streamTestEngine) CurrentURL() string { return e.currentURL }
+
+func (e streamTestEngine) OpenURL(url string) {
+	if e.openURL != nil {
+		e.openURL(url)
+	}
+}
+
+func (e streamTestEngine) BrowserVersion() string { return e.browserVersion }
+
+func (e streamTestEngine) SendMouse(ev MouseEvent) {
+	if e.sendMouse != nil {
+		e.sendMouse(ev)
+	}
+}
 
 func (e streamTestEngine) Close() error { return nil }
 

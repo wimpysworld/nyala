@@ -627,7 +627,10 @@ func runCDPInteropCase(tc cdpInteropCase, caseDir string, result *cdpInteropResu
 		return err
 	}
 
-	state := NewState(cdpInteropCols, cdpInteropRows)
+	// The engine grid at cdpInteropRows is the page grid: the viewer State
+	// carries one extra terminal row for the bottom bar, so the production
+	// compose and placement seams target exactly the captured grid.
+	state := NewState(cdpInteropCols, cdpInteropRows+1)
 	state.Scheme = block.SchemeQuadrant
 	state.Colour = ColourTrue
 	state.Backend = cdpInteropBackend(tc.backend)

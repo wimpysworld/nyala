@@ -17,7 +17,7 @@ func msSince(start time.Time) float64 {
 // writeItem is one unit the writer goroutine emits to the terminal in order. A
 // frame item carries a pooled buffer (buf) the producer assembled plus its encode
 // time; the writer returns the buffer on free after the write. A control item
-// carries one-off bytes (ctrl) for a resize clear, a kitty reset, or an fps badge;
+// carries one-off bytes (ctrl) for a resize clear, a kitty reset, or a bar repaint;
 // it owns no pooled buffer, so the writer emits it and returns nothing. timed
 // gates the write-phase clock read to the armed fps meter. tmuxSixel marks a
 // tmux Sixel frame, whose write is timed unconditionally because the adaptive

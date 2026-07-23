@@ -138,8 +138,14 @@ func TestRioColourCompatibility(t *testing.T) {
 	}
 }
 
-func TestRioKittyTimingKeepsSamplingWithoutBadgeOrBelowText(t *testing.T) {
-	st := NewState(8, 4)
+// TestRioKittyTimingUsesBarLikeAnyTerminal pins the deletion of the Rio FPS
+// suppression: the fps segment lives on the bar row, outside the page image
+// on every backend, so a timed Rio Kitty frame carries the below-text
+// z-index and the bar fps text like any other terminal, and the meter keeps
+// sampling.
+func TestRioKittyTimingUsesBarLikeAnyTerminal(t *testing.T) {
+	// 60 columns give the bar room for its full chrome, fps segment included.
+	st := NewState(60, 4)
 	st.setTerminalCompatibility("Rio 0.4.7", nil)
 	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
 	diff := &block.GridDiff{}
@@ -155,11 +161,11 @@ func TestRioKittyTimingKeepsSamplingWithoutBadgeOrBelowText(t *testing.T) {
 	if _, err := s.assemble(&kitty, kittyFrame); err != nil {
 		t.Fatalf("assemble Rio Kitty frame: %v", err)
 	}
-	if strings.Contains(kitty.String(), "z=") {
-		t.Fatalf("Rio Kitty frame carries below-text z-index: %q", kitty.String())
+	if !strings.Contains(kitty.String(), "z=") {
+		t.Fatalf("timed Rio Kitty frame lost the below-text z-index: %q", kitty.String())
 	}
-	if strings.Contains(kitty.String(), "Out:") {
-		t.Fatalf("Rio Kitty frame carries live badge: %q", kitty.String())
+	if !strings.Contains(kitty.String(), "↑ ") {
+		t.Fatalf("Rio Kitty frame lost the bar fps segment: %q", kitty.String())
 	}
 	if meter.frames != 1 {
 		t.Fatalf("Rio Kitty sampled frames = %d, want 1", meter.frames)
@@ -171,25 +177,16 @@ func TestRioKittyTimingKeepsSamplingWithoutBadgeOrBelowText(t *testing.T) {
 	if _, err := s.assemble(&blockOut, blockFrame); err != nil {
 		t.Fatalf("assemble Rio Block frame: %v", err)
 	}
-	if !strings.Contains(blockOut.String(), "Out:") {
-		t.Fatal("Rio Block frame did not restore the live badge")
+	if !strings.Contains(blockOut.String(), "↑ ") {
+		t.Fatal("Rio Block frame lost the bar fps segment")
 	}
-
-	st.CycleBackend()
-	kitty.Reset()
-	if _, err := s.assemble(&kitty, kittyFrame); err != nil {
-		t.Fatalf("assemble Rio Kitty frame after cycle: %v", err)
-	}
-	if strings.Contains(kitty.String(), "z=") || strings.Contains(kitty.String(), "Out:") {
-		t.Fatal("Rio Kitty frame after cycle restored an unsupported badge or z-index")
-	}
-	if meter.frames != 3 {
-		t.Fatalf("sampled frames after cycling = %d, want 3", meter.frames)
+	if meter.frames != 2 {
+		t.Fatalf("sampled frames after cycling = %d, want 2", meter.frames)
 	}
 
 	var summary strings.Builder
 	meter.printSummary(&summary)
-	if !strings.Contains(summary.String(), "out_frames=3") {
+	if !strings.Contains(summary.String(), "out_frames=2") {
 		t.Fatalf("Rio timing summary = %q, want retained final summary", summary.String())
 	}
 }

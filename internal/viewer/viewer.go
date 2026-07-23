@@ -79,9 +79,8 @@ type State struct {
 	sextantOK bool
 
 	// mux is the focus multiplexer hosting the session, recorded once by
-	// configureBackends. engineRows reads it to reserve the bottom terminal
-	// row for Sixel under tmux; muxNone (the zero value) keeps every
-	// native-terminal path at the full grid.
+	// configureBackends. The backend cycle and the Sixel pacing gates read
+	// it; muxNone is the zero value on a native terminal.
 	mux multiplexerKind
 
 	// cellPxForced records that the NYALA_CELL_PX override supplied cellPx, so a
@@ -381,9 +380,9 @@ func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
 }
 
 // renderStreamFrame draws a live frame and optionally places a Kitty page image
-// below terminal text. The option follows the live-badge policy separately from
-// FPS measurement, so public rendering, diagnostics, non-FPS output, and timed
-// Rio Kitty output retain normal placement.
+// below terminal text. The option follows the armed fps meter separately from
+// FPS measurement, so public rendering, diagnostics, and non-FPS output retain
+// normal placement.
 func (s *State) renderStreamFrame(frame render.Frame, w io.Writer, kittyBelowText bool) error {
 	// The frame's pooled pixel plane, when present, returns to the engine on
 	// every exit: painted, copied into shared memory, or dropped. Release is
@@ -450,11 +449,10 @@ func (s *State) renderStreamFrame(frame render.Frame, w io.Writer, kittyBelowTex
 // engine's floored fractional-density row band, not a zoom, so it draws as-is
 // like today rather than rescaling every frame on a device-pixel-cell
 // terminal. The target height uses the engine grid rows, not the terminal
-// rows: under the tmux bottom-row reservation the engine renders at
-// rows-1, and fitting to the full grid would upscale the frame back over the
-// reserved row.
+// rows: the bottom-row bar reservation renders the page at rows-1, and
+// fitting to the full grid would upscale the frame back over the bar row.
 func (s *State) fitSixelToGrid(img image.Image) image.Image {
-	gridW, gridH := render.GraphicsCaptureSize(s.Cols, engineRows(s.Backend, s.mux, s.Rows), s.W, s.H)
+	gridW, gridH := render.GraphicsCaptureSize(s.Cols, engineRows(s.Rows), s.W, s.H)
 	if gridW <= 0 || gridH <= 0 {
 		return img
 	}
@@ -496,21 +494,21 @@ func decodeFramePNG(data string) (image.Image, error) {
 	return img, nil
 }
 
-// renderBlock composes the source onto the full Cols x Rows grid and writes it
+// renderBlock composes the source onto the Cols x page-rows grid and writes it
 // as SGR cells, honouring the colour toggle: truecolour SGR or xterm-256 SGR.
 // text is the crisp DOM-text overlay folded onto the composed grid; a nil text
 // draws the bitmap alone.
 //
-// The block path composes at the full grid with no aspect-fit letterbox: the
-// engine sizes the block frame to exactly the terminal grid geometry (cols*cellW
-// by rows*cellH device pixels), so the bitmap maps one-to-one onto the Cols x Rows
+// The block path composes at the page grid with no aspect-fit letterbox: the
+// engine sizes the block frame to exactly the page grid geometry (cols*cellW
+// by pageRows*cellH device pixels), so the bitmap maps one-to-one onto the
 // grid. The overlay bins each run in whole-cell coordinates against the same grid,
-// so a full-grid compose keeps the bitmap and the overlay on one horizontal scale.
+// so a whole-grid compose keeps the bitmap and the overlay on one horizontal scale.
 // An aspect-fit would assume a 1:2 cell aspect and letterbox the bitmap onto fewer
 // columns whenever the real terminal cell aspect differs (a 13x27 cell letterboxes
 // 195 columns onto 187), drifting the overlay right of the bitmap by a scale that
-// grows with the column. The graphics backends draw the same engine-sized full-grid
-// bitmap from the top-left, so they fill the whole grid without a placement
+// grows with the column. The graphics backends draw the same engine-sized page-grid
+// bitmap from the top-left, so they fill the whole page area without a placement
 // stage.
 func (s *State) renderBlock(src image.Image, text []render.GlyphRun, w io.Writer) error {
 	grid := s.ComposeBlockFrame(render.Frame{Img: src, Text: text})
@@ -531,14 +529,17 @@ func (s *State) renderBlock(src image.Image, text []render.GlyphRun, w io.Writer
 }
 
 // ComposeBlockFrame returns the exact Block grid consumed by the terminal
-// writer. The Block path reuses State scratch storage, so callers that retain the
-// result across another compose must copy it.
+// writer. It composes at the page grid (engineRows of the terminal rows, the
+// same reduced grid the engine captures at), so the bottom bar row stays
+// outside the composed frame. The Block path reuses State scratch storage, so
+// callers that retain the result across another compose must copy it.
 func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 	if frame.Img == nil {
 		return nil
 	}
-	br := block.Renderer{Cols: s.Cols, Rows: s.Rows, Scheme: s.Scheme}
-	pxW, pxH := schemePixels(s.Scheme, s.Cols, s.Rows)
+	rows := engineRows(s.Rows)
+	br := block.Renderer{Cols: s.Cols, Rows: rows, Scheme: s.Scheme}
+	pxW, pxH := schemePixels(s.Scheme, s.Cols, rows)
 	if pxW <= 0 || pxH <= 0 {
 		return nil
 	}
@@ -632,9 +633,9 @@ func framePrefix(firstDrawn bool, diff *block.GridDiff) string {
 		return cursorHome
 	}
 	if diff != nil {
-		// The first draw clears the loading cue or prior terminal state, so the
-		// differ must full-repaint against the blank screen, not a
-		// retained grid.
+		// The first draw clears the startup bar screen or prior terminal
+		// state, so the differ must full-repaint against the blank screen,
+		// not a retained grid.
 		diff.Reset()
 	}
 	return clearScreen
@@ -681,9 +682,10 @@ const (
 const enterFullScreen = "\x1b[?7l\x1b[?25l"
 
 // exitTerminal returns the teardown sequence for the interactive viewer. It
-// resets SGR attributes, disables mouse reporting unconditionally (pairing
-// the enableMouseReporting write, so a leaked mode cannot spray SGR reports
-// into the shell), resets Sixel display mode, restores auto-wrap, and shows
+// resets SGR attributes, disables mouse reporting and bracketed paste
+// unconditionally (pairing the enableMouseReporting write and a quit taken
+// mid URL edit, so a leaked mode cannot spray reports or paste markers into
+// the shell), resets Sixel display mode, restores auto-wrap, and shows
 // the cursor. Resetting DECSDM here also covers an interrupted Sixel write that
 // did not reach its per-frame reset. After a frame has drawn, it first moves to
 // column one of the final rendered row and emits one CRLF. The necessary
@@ -693,7 +695,7 @@ const enterFullScreen = "\x1b[?7l\x1b[?25l"
 // position, so a startup failure does not displace terminal content.
 func exitTerminal(rows int, drawn bool) string {
 	const reset = "\x1b[0m"
-	const restore = disableMouseReporting + endSixelDisplayMode + "\x1b[?7h\x1b[?25h"
+	const restore = disableMouseReporting + disableBracketedPaste + endSixelDisplayMode + "\x1b[?7h\x1b[?25h"
 	if !drawn || rows <= 0 {
 		return reset + restore
 	}

@@ -53,7 +53,9 @@ func TestRenderBlockComposesFullGridNoLetterbox(t *testing.T) {
 				}
 			}
 
-			st := NewState(c.cols, c.rows)
+			// The terminal has one extra row for the bar; the page grid the
+			// compose targets is c.rows.
+			st := NewState(c.cols, c.rows+1)
 			st.Backend = BackendBlock
 			st.SetDiff(&block.GridDiff{})
 

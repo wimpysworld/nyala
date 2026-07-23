@@ -23,7 +23,9 @@ import (
 // live viewer, decodes the Kitty APC stream with an independent terminal model,
 // and checks framing, chunk continuation, image replacement, and exact pixels.
 func TestKittyTerminalRoundTrip(t *testing.T) {
-	state := NewState(80, 24)
+	// The viewer State carries one extra terminal row for the bottom bar, so
+	// the placement grid keys target the 80x24 page grid.
+	state := NewState(80, 25)
 	state.Backend = BackendKitty
 
 	small := kittyInteropFixture(8, 6, 1)
@@ -105,7 +107,7 @@ func testKittySHMTerminalRoundTrip(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("kitty shm transport is Linux-only")
 	}
-	state := NewState(80, 24)
+	state := NewState(80, 25)
 	state.Backend = BackendKitty
 	state.kittyTransport = KittyTransportSHM
 

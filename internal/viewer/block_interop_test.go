@@ -19,7 +19,9 @@ import (
 // exact grid consumed by the production writer.
 func TestBlockTerminalRoundTrip(t *testing.T) {
 	const cols, rows = 12, 5
-	state := NewState(cols, rows)
+	// The viewer State carries one extra terminal row for the bottom bar, so
+	// the production compose targets exactly the cols x rows frame grid.
+	state := NewState(cols, rows+1)
 	state.Backend = BackendBlock
 	state.Colour = ColourTrue
 	state.SetDiff(&block.GridDiff{})

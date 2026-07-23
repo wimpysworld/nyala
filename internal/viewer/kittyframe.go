@@ -79,20 +79,23 @@ func (s *State) closeKittySHM() {
 }
 
 // encodeKittyPNG transmits a retained CDP PNG unchanged, then deletes the prior
-// double-buffer image. The placement carries the c=/r= grid keys, so the
-// terminal scales the image to the full cell area: after a mid-session zoom the
-// engine delivers the complete viewport at the stale launch paint density, and
-// the grid fit keeps it spanning the terminal (a matching frame scales 1:1).
+// double-buffer image. The placement carries the c=/r= grid keys at the page
+// grid (engineRows of the terminal rows, the same reduced grid the engine
+// captures at), so the terminal scales the image to the page cell area and
+// never over the bottom bar row: after a mid-session zoom the engine delivers
+// the complete viewport at the stale launch paint density, and the grid fit
+// keeps it spanning the page (a matching frame scales 1:1).
 func (s *State) encodeKittyPNG(data string, w io.Writer, belowText bool) error {
 	next := nextKittyID(s.kittyID)
 	if s.kittyEnc == nil {
 		s.kittyEnc = &kitty.LiveEncoder{}
 	}
+	rows := engineRows(s.Rows)
 	var err error
 	if belowText {
-		err = s.kittyEnc.EncodePNGIDAtZ(data, next, kittyFPSPageZ, s.Cols, s.Rows, w)
+		err = s.kittyEnc.EncodePNGIDAtZ(data, next, kittyFPSPageZ, s.Cols, rows, w)
 	} else {
-		err = s.kittyEnc.EncodePNGID(data, next, s.Cols, s.Rows, w)
+		err = s.kittyEnc.EncodePNGID(data, next, s.Cols, rows, w)
 	}
 	if err != nil {
 		return err
@@ -143,10 +146,11 @@ func (s *State) encodeKittySHM(img *image.RGBA, w io.Writer, belowText bool) err
 	if err := obj.Close(); err != nil {
 		return err
 	}
+	rows := engineRows(s.Rows)
 	if belowText {
-		err = s.kittyEnc.EncodeSHMIDAtZ(obj.Name(), width, height, next, kittyFPSPageZ, kittySHMQuiet, s.Cols, s.Rows, w)
+		err = s.kittyEnc.EncodeSHMIDAtZ(obj.Name(), width, height, next, kittyFPSPageZ, kittySHMQuiet, s.Cols, rows, w)
 	} else {
-		err = s.kittyEnc.EncodeSHMID(obj.Name(), width, height, next, kittySHMQuiet, s.Cols, s.Rows, w)
+		err = s.kittyEnc.EncodeSHMID(obj.Name(), width, height, next, kittySHMQuiet, s.Cols, rows, w)
 	}
 	if err != nil {
 		return err
@@ -180,7 +184,8 @@ func copyRGBAPlane(dst []byte, img *image.RGBA) {
 }
 
 // kittyFPSPageZ places the live page below glyphs and non-default cell
-// backgrounds, so Kitty can paint the terminal FPS badge above the image.
+// backgrounds while the fps meter is armed, so terminal text always presents
+// above the image. Crisp DOM text on Kitty depends on this placement.
 const kittyFPSPageZ = -1073741825
 
 // nextKittyID returns the next double-buffer image id, alternating between 1 and

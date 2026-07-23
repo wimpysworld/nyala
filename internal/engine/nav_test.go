@@ -94,3 +94,69 @@ func TestSendNavNoSessionIsNoOp(t *testing.T) {
 		e.SendNav(a) // must not panic or dispatch
 	}
 }
+
+// TestCurrentURL asserts the display URL seam: before the first commit
+// CurrentURL falls back to the launch URL, a recorded commit replaces it, and
+// an empty recorded URL is dropped rather than blanking the display.
+func TestCurrentURL(t *testing.T) {
+	e := New("")
+	const launch = "https://example.org/start"
+	e.mu.Lock()
+	e.url = launch
+	e.mu.Unlock()
+
+	if got := e.CurrentURL(); got != launch {
+		t.Fatalf("CurrentURL() = %q before a commit, want the launch URL %q", got, launch)
+	}
+	const committed = "https://example.org/page#section"
+	e.recordCurrentURL(committed)
+	if got := e.CurrentURL(); got != committed {
+		t.Fatalf("CurrentURL() = %q after a commit, want %q", got, committed)
+	}
+	e.recordCurrentURL("")
+	if got := e.CurrentURL(); got != committed {
+		t.Fatalf("CurrentURL() = %q after an empty record, want %q kept", got, committed)
+	}
+}
+
+// TestOpenURLNavigatesWithoutRewritingLaunchURL asserts the typed-URL engine
+// half: OpenURL navigates through the same runNavigate seam NavHome uses,
+// resets the held scroll offset because the new document starts at the top,
+// and never rewrites the held launch URL NavHome returns to.
+func TestOpenURLNavigatesWithoutRewritingLaunchURL(t *testing.T) {
+	e := New("")
+	const launch = "https://example.org/start"
+	const typed = "https://example.net/typed"
+	var gotURL string
+	e.mu.Lock()
+	e.url = launch
+	e.ctx = context.Background()
+	e.scrollX, e.scrollY, e.scrollYTarget = 12, 340, 340
+	e.navigateOp = func(_ context.Context, url string) (cdp.FrameID, cdp.LoaderID, bool, error) {
+		gotURL = url
+		return "", "", false, nil
+	}
+	e.mu.Unlock()
+
+	e.OpenURL(typed)
+
+	if gotURL != typed {
+		t.Fatalf("OpenURL navigated to %q, want %q", gotURL, typed)
+	}
+	e.mu.Lock()
+	url, x, y, target := e.url, e.scrollX, e.scrollY, e.scrollYTarget
+	e.mu.Unlock()
+	if url != launch {
+		t.Fatalf("OpenURL rewrote the launch URL to %q, want %q kept", url, launch)
+	}
+	if x != 0 || y != 0 || target != 0 {
+		t.Fatalf("OpenURL kept scroll state (%d, %d, %d), want reset to 0", x, y, target)
+	}
+}
+
+// TestOpenURLNoSessionIsNoOp asserts a typed URL before a session exists (nil
+// context) is dropped safely, matching SendNav.
+func TestOpenURLNoSessionIsNoOp(t *testing.T) {
+	e := New("")
+	e.OpenURL("https://example.org") // must not panic or dispatch
+}

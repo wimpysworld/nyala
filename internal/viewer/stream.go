@@ -51,6 +51,18 @@ type Engine interface {
 	// SendNav forwards one navigation request: reload, a history step, or the
 	// launch page. The engine owns the launch URL and the navigation path.
 	SendNav(action NavAction)
+	// CurrentURL returns the last committed main-frame URL, falling back to
+	// the launch URL before the first commit. The engine keeps it fresh
+	// across SPA and fragment navigation; the viewer reads it on repaint.
+	CurrentURL() string
+	// OpenURL navigates to url as a normal navigation, pushing a history
+	// entry. The engine resets its held scroll offset and never rewrites the
+	// launch URL NavHome returns to.
+	OpenURL(url string)
+	// BrowserVersion returns the driven browser's product normalised for
+	// display, for example "Chrome 138.0.7204.49", or an empty string when
+	// unavailable.
+	BrowserVersion() string
 	// SendMouse forwards one decoded mouse event. A wheel step scrolls at the
 	// pointer cell through the engine's wheel transport; a press or release
 	// dispatches a mouse event at the cell centre. The engine owns the
@@ -103,8 +115,9 @@ func syncEngineKittyDecode(eng Engine, st *State) {
 // Stream runs the interactive viewer on tty, drawing the live frames eng pushes,
 // until the user quits. It puts the terminal into raw mode, detects which
 // backends the terminal supports, hands the resolved backend and cell px to the
-// engine so it sizes the screencast capture, then navigates to url. It writes a
-// plain-text loading cue before the first frame and clears it on the first draw.
+// engine so it sizes the screencast capture, then navigates to url. It clears
+// the screen and draws the bottom bar immediately, with a braille spinner in
+// the indicator slot until the first frame replaces it with the backend glyph.
 // It re-fits and restarts the stream on resize, forwards scroll keys, page keys,
 // and the wheel to the engine, cycles the backend on Alt+R, and restores the
 // terminal on exit. It returns an error only on a setup or I/O failure; a clean
@@ -119,8 +132,9 @@ func syncEngineKittyDecode(eng Engine, st *State) {
 // quadrant forces quadrant, and half renders half-block.
 // kittyTransport is the --kitty-transport intent (auto, direct, or shm);
 // configureBackends resolves it against the probe result and the allow and
-// deny lists.
-func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kittyTransport string) (err error) {
+// deny lists. version is the Nyala build version (main.version, ldflags-set)
+// the bar's About mode shows.
+func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kittyTransport, version string) (err error) {
 	scheme := resolveScheme(blocks, os.Environ())
 	// The live fps meter counts every drawn frame for the badge and the quit
 	// summary. Its printSummary defer is registered before setupViewer's restore
@@ -170,16 +184,10 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	// block start overrides a higher-fidelity detected nomination while Alt+R
 	// keeps the full detected cycle. setupViewer handed the engine the detected backend;
 	// re-notify it so the engine sizes its capture for the starting backend, not
-	// the detected one.
-	// A forced start can flip the Sixel bottom-row reservation under tmux,
-	// so re-resize the engine grid when the row count moved from the
-	// detected nomination setupViewer sized for.
-	detectedRows := engineRows(st.Backend, st.mux, st.Rows)
+	// the detected one. The bottom-row bar reservation applies to every
+	// backend, so a forced start never moves the engine grid setupViewer sized.
 	applyForcedBackend(st, mode)
 	eng.SetBackend(st.Backend)
-	if forcedRows := engineRows(st.Backend, st.mux, st.Rows); forcedRows != detectedRows {
-		eng.Resize(st.Cols, forcedRows)
-	}
 	// The backend is final now, so arm the engine's kitty-shm decode when the
 	// resolved transport is shm and the session starts on Kitty. Unlink any
 	// unconsumed shm objects when the session ends, however it ends.
@@ -198,9 +206,6 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	// down with the terminal.
 	defer func() { _ = eng.Close() }()
 
-	if _, werr := io.WriteString(tty, fmt.Sprintf("loading %s\r\n", url)); werr != nil {
-		return werr
-	}
 	winch := make(chan os.Signal, 1)
 	signal.Notify(winch, syscall.SIGWINCH)
 	defer signal.Stop(winch)
@@ -225,8 +230,17 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	diff := &block.GridDiff{}
 	st.SetDiff(diff)
 
-	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, ctl: ctl, diff: diff, fps: fps}
+	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, ctl: ctl, diff: diff, fps: fps, launchURL: url, version: version}
 	session = s
+	// Clear the screen and draw the bar immediately, with a blank page region
+	// and the launch URL: the first user feedback is the bar, not a text cue.
+	// The writer does not exist yet, so emitControl writes the tty directly.
+	var startup bytes.Buffer
+	startup.WriteString(clearScreen)
+	s.appendBar(&startup)
+	if werr := s.emitControl(startup.Bytes()); werr != nil {
+		return werr
+	}
 	// A SIGTERM must restore the terminal before the process dies: a hard
 	// kill would otherwise leave raw mode and mouse reporting enabled, and
 	// the shell would read a stream of SGR mouse reports. The watcher shares
@@ -340,19 +354,20 @@ func setupViewer(eng Engine, tty *os.File, colourFlag, kittyTransport string, sc
 
 	// Hand the resolved backend and cell px to the engine before Navigate; the
 	// engine sizes the screencast capture and derives its layout scale from them.
-	// The engine grid may reserve the bottom row (Sixel under tmux), so the
-	// engine gets engineRows while State keeps the full terminal grid.
+	// The engine grid reserves the bottom bar row, so the engine gets
+	// engineRows while State keeps the full terminal grid.
 	eng.SetCellPx(state.W, state.H)
 	eng.SetBackend(state.Backend)
-	eng.Resize(cols, engineRows(state.Backend, state.mux, rows))
+	eng.Resize(cols, engineRows(rows))
 
 	return fd, &state, func() { _ = cterm.Restore(fd, oldState) }, nil
 }
 
 // streamSession bundles the per-run viewer state the push loop mutates: the
 // engine it forwards to, the State it draws from, the tty it writes to, and the
-// tty fd it reads the resized geometry from. firstDrawn gates the resize clear
-// so no clear lands before the loading cue is replaced by a real frame.
+// tty fd it reads the resized geometry from. firstDrawn selects the first
+// frame's full clear and keeps the bar's indicator on the startup spinner
+// until a real frame draws.
 type streamSession struct {
 	eng Engine
 	st  *State
@@ -406,12 +421,88 @@ type streamSession struct {
 	// Both are producer-goroutine only.
 	kittyShmAwait    bool
 	kittyShmDeadline time.Time
-	// fps is the live fps counter, non-nil only when NYALA_FPS_TIMING is set. When
-	// set, assemble stamps each frame and, where compatibility permits, folds a
-	// rolling usable-fps badge into the frame buffer (rebuilt at most once per
-	// second); when nil the draw path pays only a nil check, so production is
-	// unchanged.
+	// fps is the live fps counter, non-nil only when NYALA_FPS_TIMING is set.
+	// When set, assemble stamps each frame and the bar carries a rolling
+	// usable-fps segment (its text rebuilt at most once per second); when nil
+	// the draw path pays only a nil check, so production is unchanged.
 	fps *fpsMeter
+	// launchURL is the URL Stream navigated to. The bar's URL segment shows
+	// it until the engine records a committed URL. Set once before the loops
+	// start and read-only after.
+	launchURL string
+	// spinner is the startup spinner step. Only waitForNavigate's ticker
+	// advances it, on the producer goroutine.
+	spinner int
+	// version is the Nyala build version the bar's About mode shows. Set
+	// once by Stream and read-only after.
+	version string
+	// barMode selects the bar row's content and input dispatch: chrome,
+	// edit, menu, or about. All bar-mode state below is producer-goroutine
+	// only: the consumer loop dispatches keys, mouse, and repaints on the
+	// one goroutine.
+	barMode barMode
+	// barLay is the segment layout of the last chrome bar repaint, the spans
+	// bar-row mouse hits test against.
+	barLay barLayout
+	// modeSpans is the click-span list of the last menu or About repaint.
+	modeSpans []barSpan
+	// editor is the URL editor; non-nil exactly while barMode is edit.
+	editor *urlEditor
+	// menuSel is the highlighted menu command index.
+	menuSel int
+	// pressed and pressedSet carry the chrome press feedback: the pressed
+	// button renders bold until its release.
+	pressed    barSegmentKind
+	pressedSet bool
+}
+
+// appendBar folds the bottom-bar bytes into buf, cursor-addressed to the
+// bottom terminal row in reverse video: the base-16 palette only, so the bar
+// follows the user's theme. The bar exists only when the terminal is at
+// least two rows tall (one bar row plus one page row); a one-row terminal
+// appends nothing, matching the engineRows reservation. A non-chrome bar
+// mode (edit, menu, about) swaps the row content through appendBarMode. In
+// chrome, the URL comes from Engine.CurrentURL at each repaint, falling back
+// to the launch URL, the indicator shows the startup spinner until the first
+// frame draws, a pressed button renders bold until its release, and the
+// layout is kept for bar-row mouse hit-testing.
+func (s *streamSession) appendBar(buf *bytes.Buffer) {
+	if s.st.Rows < 2 {
+		return
+	}
+	if s.barMode != barModeChrome {
+		s.appendBarMode(buf)
+		return
+	}
+	indicator := backendGlyph(s.st.Backend, s.st.Scheme)
+	if !s.firstDrawn.Load() {
+		indicator = spinnerGlyph(s.spinner)
+	}
+	fps := ""
+	if s.fps != nil {
+		fps = s.fps.barText(time.Now())
+	}
+	content, layout := renderBar(s.st.Cols, barContent{indicator: indicator, url: s.currentURL(), fps: fps})
+	s.barLay = layout
+	// A pressed button holds bold until its release.
+	if s.pressedSet {
+		if seg, ok := layout.segment(s.pressed); ok {
+			content = boldSpan(content, seg.col, seg.width)
+		}
+	}
+	fmt.Fprintf(buf, "\x1b[%d;1H\x1b[0;7m%s\x1b[0m", s.st.Rows, content)
+}
+
+// barBytes returns one standalone bar repaint (the spinner tick, the fps
+// heartbeat, and the post-clear repaints route it through emitControl), or
+// nil when the terminal has no bar row.
+func (s *streamSession) barBytes() []byte {
+	var buf bytes.Buffer
+	s.appendBar(&buf)
+	if buf.Len() == 0 {
+		return nil
+	}
+	return buf.Bytes()
 }
 
 // loop runs the push consumer until the frames or keys channel closes, a quit
@@ -422,11 +513,11 @@ type streamSession struct {
 // switch or a resize never strands this cached handle.
 func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error {
 	frames := s.eng.Frames()
-	// Heartbeat the fps badge so an idle page decays it to a live 0 rather than
-	// freezing it at the last frame's rate. The block backend pushes no frames while
-	// static, so without this a scroll that settles leaves the badge wedged. A nil
-	// channel blocks forever in the select, so an off run (no meter) starts no ticker
-	// and the case never fires.
+	// Heartbeat the bar's fps segment so an idle page decays it to a live 0
+	// rather than freezing it at the last frame's rate. The block backend
+	// pushes no frames while static, so without this a scroll that settles
+	// leaves the segment wedged. A nil channel blocks forever in the select,
+	// so an off run (no meter) starts no ticker and the case never fires.
 	var heartbeat <-chan time.Time
 	if s.fps != nil {
 		t := time.NewTicker(fpsBadgeInterval)
@@ -545,15 +636,11 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 				return err
 			}
 		case now := <-heartbeat:
-			// Route the idle badge refresh through the writer so it never races the
-			// in-flight frame write.
-			if !s.st.fpsBadgeAllowed() {
-				continue
-			}
-			if s.st.Backend == BackendKitty {
-				_ = s.emitControl([]byte(s.fps.refreshAtHome(now)))
-			} else {
-				_ = s.emitControl([]byte(s.fps.refresh(now)))
+			// Refresh the fps text and repaint the bar. The repaint routes
+			// through the writer so it never races an in-flight frame write.
+			s.fps.refresh(now)
+			if b := s.barBytes(); b != nil {
+				_ = s.emitControl(b)
 			}
 		case frame, ok := <-frames:
 			if !ok {
@@ -606,7 +693,9 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 				continue
 			}
 			if ev.mouse != nil {
-				s.handleMouse(*ev.mouse)
+				if s.handleMouse(*ev.mouse) {
+					return nil
+				}
 				continue
 			}
 			if s.handleKey(ev) {
@@ -845,12 +934,27 @@ func (s *streamSession) applyKittySHMDemotion() {
 	syncEngineKittyDecode(s.eng, s.st)
 }
 
+// barSpinnerInterval paces the startup spinner in the bar's indicator slot:
+// fast enough to read as live progress, slow enough to cost nothing.
+const barSpinnerInterval = 90 * time.Millisecond
+
 // waitForNavigate keeps the raw-mode controls live while engine startup runs.
 // Browser launch and CDP setup can block before frames exist, so Ctrl-C and
-// resize handling must not wait for Navigate to return.
+// resize handling must not wait for Navigate to return. A ticker animates the
+// bar's braille spinner until Navigate returns; the first frame then swaps
+// the spinner for the backend glyph.
 func (s *streamSession) waitForNavigate(winch <-chan os.Signal, keys <-chan keyEvent, navigated <-chan error) error {
+	spin := time.NewTicker(barSpinnerInterval)
+	defer spin.Stop()
 	for {
 		select {
+		case <-spin.C:
+			s.spinner++
+			if b := s.barBytes(); b != nil {
+				if err := s.emitControl(b); err != nil {
+					return err
+				}
+			}
 		case <-winch:
 			if err := s.resize(); err != nil {
 				return err
@@ -877,7 +981,7 @@ func startupQuit(ev keyEvent) bool {
 
 // assemble builds one frame's whole terminal byte sequence into buf, ready for the
 // writer to present with a single io.Write: the optional DEC 2026 open, the cursor
-// prefix, the rendered frame with its crisp DOM-text overlay, the fps badge, and
+// prefix, the rendered frame with its crisp DOM-text overlay, the bottom bar, and
 // the optional DEC 2026 close. Foot and tmux Sixel omit only the
 // synchronised-update markers; every other backend and terminal keeps them.
 // Assembling the whole unit
@@ -886,11 +990,12 @@ func startupQuit(ev keyEvent) bool {
 // Byte order remains identical for every frame, independent of which goroutine
 // writes it.
 //
-// The first frame emits the full clearScreen (via framePrefix) to wipe the loading
-// cue; steady frames emit cursorHome only. It returns the encode time, the
-// RenderStreamFrame span alone (matching the out_encode split), when the fps meter
-// is armed, or zero when off (no clock read). buf is one of the two ping-pong
-// buffers; the producer owns it until the writer returns it on free.
+// The first frame emits the full clearScreen (via framePrefix) to wipe the
+// startup bar screen; steady frames emit cursorHome only. The bar rides inside
+// the sync bracket, so bar and frame present atomically. It returns the encode
+// time, the RenderStreamFrame span alone (matching the out_encode split), when
+// the fps meter is armed, or zero when off (no clock read). buf is one of the
+// two ping-pong buffers; the producer owns it until the writer returns it on free.
 func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeMS float64, err error) {
 	buf.Reset()
 	prefix := framePrefix(s.firstDrawn.Load(), s.diff)
@@ -915,7 +1020,7 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	if nonScrollingSixel {
 		buf.WriteString(beginSixelDisplayMode)
 	}
-	kittyBelowText := timed && s.st.Backend == BackendKitty && s.st.fpsBadgeAllowed()
+	kittyBelowText := timed && s.st.Backend == BackendKitty
 	if rerr := s.st.renderStreamFrame(frame, buf, kittyBelowText); rerr != nil {
 		return 0, rerr
 	}
@@ -931,30 +1036,18 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	s.assembledTmuxSixel = nonScrollingSixel && s.st.mux == muxTmux
 	s.applyKittySHMDemotion()
 
-	// Fold the fps badge into the same buffer where compatibility permits it, gated
-	// behind NYALA_FPS_TIMING. Where DEC 2026 is active it sits inside the bracket: painted
-	// after the close it flickered out during a scroll, when back-to-back frames each
-	// present the grid alone before the un-synced badge lands. The badge is a
-	// cursor-positioned overlay, so it never enters the block grid the differ tracks
-	// and leaves the golden-gated compose bytes untouched. Kitty uses absolute home
-	// moves because image placement already preserves that tracked position; Block
-	// and Sixel preserve their current position with the saved-cursor slot.
-	// recordPaint is deferred until the writer returns the buffer, because the write
-	// time is known only then.
 	if s.fps != nil {
-		now := time.Now()
 		// The engine stamps frames received after main-frame first contentful paint.
 		// That lifecycle marker opens one backend-neutral warm-up gate, including
-		// direct Kitty frames and text-free pages.
-		s.fps.tick(now, frame.AfterFCP)
-		if s.st.fpsBadgeAllowed() {
-			if s.st.Backend == BackendKitty {
-				buf.WriteString(s.fps.badgeAtHome(now))
-			} else {
-				buf.WriteString(s.fps.badge(now))
-			}
-		}
+		// direct Kitty frames and text-free pages. recordPaint is deferred until
+		// the writer returns the buffer, because the write time is known only then.
+		s.fps.tick(time.Now(), frame.AfterFCP)
 	}
+	// Fold the bottom bar into the same buffer so bar and frame present
+	// atomically where DEC 2026 is active. The bar is a cursor-positioned
+	// bottom-row overlay outside the page grid, so it never enters the block
+	// grid the differ tracks and no backend paints over it.
+	s.appendBar(buf)
 	if syncUpdates {
 		buf.WriteString(endSyncUpdate)
 	}
@@ -974,8 +1067,8 @@ func (s *streamSession) flushAssembled() {
 	s.markTmuxSixelHandoff()
 }
 
-// emitControl routes a one-off terminal write (a resize clear, a kitty reset, or an
-// fps badge) so it stays ordered against the frame writes. In the draw loop it
+// emitControl routes a one-off terminal write (a resize clear, a kitty reset, or a
+// bar repaint) so it stays ordered against the frame writes. In the draw loop it
 // flushes any assembled frame, then queues the bytes on the single writer, so the
 // control write never interleaves with an in-flight frame's bytes. Before the
 // writer exists (a startup resize) or after it stops, it writes the tty directly.
@@ -986,8 +1079,8 @@ func (s *streamSession) flushAssembled() {
 // control bytes), so while inside it the producer is not draining eng.Frames() for
 // up to about two write spans. This is transient: the engine collector parks on its
 // cap-2 buffer and resumes the moment emitControl returns. In production it fires
-// only on a rare resize or backend cycle, because the per-second heartbeat runs
-// only when the fps meter is armed.
+// only on a rare resize, backend cycle, or startup spinner tick, because the
+// per-second heartbeat runs only when the fps meter is armed.
 func (s *streamSession) emitControl(b []byte) error {
 	if s.writer == nil {
 		_, err := s.tty.Write(b)
@@ -1003,8 +1096,9 @@ func (s *streamSession) emitControl(b []byte) error {
 // terminal font-size change (zoom) moves the cell pixel pair with the grid, so
 // it re-derives the pair from the winsize and hands a changed pair to the
 // engine with the restart; resizeCellPx keeps the old pair when the override is
-// forced or the winsize reports nothing. It clears the screen only once a frame
-// has drawn, so the loading cue is not wiped before the first frame replaces it.
+// forced or the winsize reports nothing. It clears the screen and repaints the
+// bar at the new geometry; a pre-frame resize is safe because the bar repaint
+// follows every clear.
 func (s *streamSession) resize() error {
 	nc, nr, err := cterm.GetSize(s.fd)
 	if err != nil {
@@ -1023,16 +1117,15 @@ func (s *streamSession) resize() error {
 	s.st.Resize(nc, nr)
 	// The engine restart runs on the control goroutine so a slow restartStream
 	// never freezes the consumer loop; the loop keeps drawing and handling quit.
-	// The engine grid takes engineRows, so the Sixel bottom-row reservation
-	// under tmux survives a resize while State keeps the full grid.
-	s.ctl.submit(resizeEngineOp(px, changed, nc, engineRows(s.st.Backend, s.st.mux, nr)))
-	if !s.firstDrawn.Load() {
-		return nil
-	}
+	// The engine grid takes engineRows, so the bottom-row bar reservation
+	// survives a resize while State keeps the full grid.
+	s.ctl.submit(resizeEngineOp(px, changed, nc, engineRows(nr)))
 	// The resize clears the screen, so the differ full-repaints the next frame
 	// even when the grid dimensions are unchanged. The clear routes through the
 	// writer so it never races an in-flight frame write.
-	s.diff.Reset()
+	if s.diff != nil {
+		s.diff.Reset()
+	}
 	var ctl bytes.Buffer
 	if s.st.Backend == BackendKitty {
 		// A Kitty placement survives the ANSI clear, so a resize that shrank the
@@ -1045,6 +1138,7 @@ func (s *streamSession) resize() error {
 		s.kittyShmAwait = false
 	}
 	ctl.WriteString(clearScreen)
+	s.appendBar(&ctl)
 	return s.emitControl(ctl.Bytes())
 }
 
@@ -1064,42 +1158,103 @@ func resizeEngineOp(px cellPx, changed bool, cols, rows int) func(Engine) {
 }
 
 // switchBackendOp returns the control-goroutine closure for one backend
-// switch. When the switch flips the Sixel bottom-row reservation under tmux
-// (Sixel and Block use different engine row counts there), the grid
-// resize rides in the same closure: the one-slot drop-on-full control channel
-// could otherwise drop one half of the pair. The resize runs before
-// SetBackend, so the backend restart, which always runs, lands last at the
-// final grid.
-func switchBackendOp(backend Backend, cols, prevRows, newRows int) func(Engine) {
+// switch or a same-backend restart. The engine grid never moves on a switch:
+// the bottom-row bar reservation applies to every backend, so SetBackend
+// restarts the stream at the grid the engine already holds.
+func switchBackendOp(backend Backend) func(Engine) {
 	return func(eng Engine) {
-		if newRows != prevRows {
-			eng.Resize(cols, newRows)
-		}
 		eng.SetBackend(backend)
 	}
 }
 
-// handleMouse forwards one decoded mouse event to the engine off the input
-// loop through the keySender worker, the same stall policy as scroll keys, so
-// a wedged browser never freezes quit or draw.
-func (s *streamSession) handleMouse(ev MouseEvent) {
+// handleMouse routes one decoded mouse event by bar mode and row and reports
+// whether it quits the session (a menu Quit click). The side buttons
+// dispatch history navigation from any row. In edit mode a page-region press
+// cancels the editor without navigating and nothing forwards to CDP; in menu
+// and About modes a bar-row press hits the mode's spans and any other press
+// closes the mode. In chrome, bar-row events go to bar hit-testing and every
+// other event forwards to the engine off the input loop through the
+// keySender worker, the same stall policy as scroll keys, so a wedged
+// browser never freezes quit or draw.
+func (s *streamSession) handleMouse(ev MouseEvent) (quit bool) {
+	if ev.Button == MouseButtonBack || ev.Button == MouseButtonForward {
+		if s.barMode == barModeChrome && ev.Action == MouseActionPress {
+			nav := NavBack
+			if ev.Button == MouseButtonForward {
+				nav = NavForward
+			}
+			s.forwardNav(nav)
+		}
+		return false
+	}
+	onBar := s.onBarRow(ev.Row)
+	switch s.barMode {
+	case barModeEdit:
+		if !onBar && ev.Action == MouseActionPress {
+			s.leaveEdit()
+		}
+		return false
+	case barModeMenu, barModeAbout:
+		if ev.Action != MouseActionPress {
+			return false
+		}
+		if !onBar {
+			s.leaveMode()
+			return false
+		}
+		item, ok := spanAt(s.modeSpans, ev.Col+1)
+		if !ok {
+			return false
+		}
+		if item == barSpanClose {
+			s.leaveMode()
+			return false
+		}
+		if s.barMode == barModeMenu {
+			s.menuSel = item
+			return s.activateMenu(item)
+		}
+		return false
+	}
+	if onBar {
+		s.handleBarMouse(ev)
+		return false
+	}
 	if s.keySender != nil {
 		s.keySender.sendMouse(ev)
-		return
+		return false
 	}
 	s.eng.SendMouse(ev)
+	return false
 }
 
 // handleKey forwards one key to the engine or handles the viewer hotkeys and
-// reports whether the user asked to quit. A scroll key forwards its code; the
-// engine owns the offset. Tab, Shift+Tab, and Enter forward to the page as
-// full key strokes for native focus traversal and activation. Alt+R cycles
-// the backend and restarts the stream at the new capture size; Alt+B and
-// Alt+C cycle the Block glyph scheme and colour mode. Both cycles only affect
-// Block rendering, so they are no-ops unless Block is the active backend:
-// cycling under a graphics backend would change hidden state with no visible
+// reports whether the user asked to quit. A non-chrome bar mode owns the
+// whole keyboard first: the URL editor takes every key including the Alt
+// chords, and the menu and About rows take their navigation keys, so nothing
+// leaks to CDP while a mode is open. In chrome, a scroll key forwards its
+// code (the engine owns the offset); Tab, Shift+Tab, and Enter forward to
+// the page as full key strokes for native focus traversal and activation;
+// Ctrl+L opens the URL editor and Alt+F the menu; Alt+R cycles the backend
+// and restarts the stream at the new capture size; Alt+B and Alt+C cycle the
+// Block glyph scheme and colour mode. Both cycles only affect Block
+// rendering, so they are no-ops unless Block is the active backend: cycling
+// under a graphics backend would change hidden state with no visible
 // feedback, and the user would later land on Block in an unexpected mode.
+// Assembled runes and pastes are dropped in chrome: printables stay reserved
+// for future page form input.
 func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
+	switch s.barMode {
+	case barModeEdit:
+		return s.handleEditKey(ev)
+	case barModeMenu:
+		return s.handleMenuKey(ev)
+	case barModeAbout:
+		return s.handleAboutKey(ev)
+	}
+	if ev.r != 0 || ev.paste != "" {
+		return false
+	}
 	if ev.scroll != ScrollNone {
 		s.forwardKey(scrollKeyCode(ev.scroll))
 		return false
@@ -1111,6 +1266,10 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 	switch act {
 	case actionQuit:
 		return true
+	case actionEditURL:
+		s.enterEdit()
+	case actionOpenMenu:
+		s.enterMenu()
 	case actionFocusNext:
 		s.forwardKey("Tab")
 	case actionFocusPrev:
@@ -1198,25 +1357,25 @@ func (s *streamSession) cycleBackend(reverse bool) {
 		// one stint, never the session.
 		s.st.rearmKittySHM()
 	}
-	if s.st.Backend != previous && s.firstDrawn.Load() {
+	if s.st.Backend != previous {
 		// Every backend change erases the screen before the new backend's
 		// first frame, one shared rule for all transitions. Leaving Block,
 		// the old glyphs and cell backgrounds would otherwise sit under the
 		// next graphics frame (and under Kitty's FPS page image, which
 		// places below text). Leaving Sixel, the old raster persists over
-		// cells the terminal believes unchanged. Entering Sixel under
-		// tmux, the reserved bottom row keeps the previous backend's
-		// cells because the rows-1 frame never overwrites it. Reset the SGR
+		// cells the terminal believes unchanged. Reset the SGR
 		// first: the Block differ leaves the last cell's background active,
 		// and terminals erase with the current background (background
 		// colour erase). Invalidate the differ against the blank terminal,
 		// so the next Block frame full-repaints instead of skipping cells
-		// matching the previous Block stint. Gated on firstDrawn so a
-		// pre-frame cycle never wipes the loading cue, matching resize.
+		// matching the previous Block stint. The bar repaints after the
+		// clear with the new backend's indicator, so a pre-frame cycle is
+		// safe, matching resize.
 		if s.diff != nil {
 			s.diff.Reset()
 		}
 		ctl.WriteString(sgrReset + clearScreen)
+		s.appendBar(&ctl)
 	}
 	if ctl.Len() > 0 {
 		_ = s.emitControl(ctl.Bytes())
@@ -1228,10 +1387,7 @@ func (s *streamSession) cycleBackend(reverse bool) {
 	syncEngineKittyDecode(s.eng, s.st)
 	// Cycle the backend off the consumer loop: the engine restart runs on the
 	// control goroutine so a slow restartStream cannot freeze draw or quit.
-	backend := s.st.Backend
-	s.ctl.submit(switchBackendOp(backend, s.st.Cols,
-		engineRows(previous, s.st.mux, s.st.Rows),
-		engineRows(backend, s.st.mux, s.st.Rows)))
+	s.ctl.submit(switchBackendOp(s.st.Backend))
 }
 
 // recomposeBlock repaints the live Block view after a scheme or colour cycle
@@ -1249,11 +1405,11 @@ func (s *streamSession) recomposeBlock(changed bool) {
 	if s.diff != nil {
 		s.diff.Reset()
 	}
-	if s.firstDrawn.Load() {
-		_ = s.emitControl([]byte(sgrReset + clearScreen))
-	}
-	rows := engineRows(s.st.Backend, s.st.mux, s.st.Rows)
-	s.ctl.submit(switchBackendOp(s.st.Backend, s.st.Cols, rows, rows))
+	var ctl bytes.Buffer
+	ctl.WriteString(sgrReset + clearScreen)
+	s.appendBar(&ctl)
+	_ = s.emitControl(ctl.Bytes())
+	s.ctl.submit(switchBackendOp(s.st.Backend))
 }
 
 // keySender serialises forwarded input (scroll keys and mouse events) away
@@ -1303,6 +1459,12 @@ func (s *keySender) sendMouse(ev MouseEvent) {
 // keys, so a reload never overtakes an earlier queued key.
 func (s *keySender) sendNav(a NavAction) {
 	s.enqueue(func(e Engine) { e.SendNav(a) })
+}
+
+// sendOpen queues one typed-URL navigation for the worker on the same queue
+// as keys, so a commit never overtakes an earlier queued key.
+func (s *keySender) sendOpen(url string) {
+	s.enqueue(func(e Engine) { e.OpenURL(url) })
 }
 
 // enqueue appends one forward closure with a non-blocking wake, so the input
@@ -1362,10 +1524,10 @@ const fpsTimingEnv = "NYALA_FPS_TIMING="
 // the last second of draws rather than the whole session.
 const fpsWindow = time.Second
 
-// fpsBadgeInterval bounds how often the badge string is rebuilt, so the fps text
-// repaints at most once per second: the meter counts every draw, but the badge
-// string is regenerated no more than once per interval and the cached string is
-// reused between rebuilds.
+// fpsBadgeInterval bounds how often the bar's fps text is rebuilt, so it
+// changes at most once per second: the meter counts every draw, but the text
+// is regenerated no more than once per interval and the cached string is
+// reused between rebuilds. The idle heartbeat runs at the same interval.
 const fpsBadgeInterval = time.Second
 
 // fpsPeakHold is how long the badge holds the highest In/Out it has seen. The
@@ -1416,11 +1578,9 @@ type fpsMeter struct {
 	writeSum    float64
 	writeMax    float64
 
-	badgeStr   string    // cached escape-wrapped badge, rebuilt at most once per interval
-	badgeAt    time.Time // instant badgeStr was last rebuilt
-	haveBadge  bool      // set once badgeStr holds a real string
-	badgeHome  bool      // badgeStr uses absolute home positioning for Kitty
-	badgeWidth int       // widest badge body emitted, so shorter values clear its full span
+	text     string    // cached bar fps text, rebuilt at most once per interval
+	textAt   time.Time // instant text was last rebuilt
+	haveText bool      // set once text holds a real string
 
 	peaks []fpsSample // trailing fpsPeakHold window of In/Out samples, for the badge peak
 
@@ -1549,66 +1709,36 @@ func (m *fpsMeter) windowRate() float64 {
 	return float64(len(m.times)-1) / span
 }
 
-// badge returns the escape-wrapped badge string to write this draw. It rebuilds
-// the string (the only per-call allocation) at most once per fpsBadgeInterval and
-// returns the cached string between rebuilds, so the fps text refreshes about once
-// per second while the badge stays painted over every frame.
-func (m *fpsMeter) badge(now time.Time) string {
-	return m.positionedBadge(now, false)
-}
-
-// badgeAtHome returns the cached Kitty badge using absolute cursor movement at
-// both ends. Kitty image placement leaves the cursor at the tracked home, so the
-// trailing CUP restores that known position without consuming a saved-cursor
-// slot.
-func (m *fpsMeter) badgeAtHome(now time.Time) string {
-	return m.positionedBadge(now, true)
-}
-
-func (m *fpsMeter) positionedBadge(now time.Time, atHome bool) string {
-	if !m.haveBadge || m.badgeHome != atHome || now.Sub(m.badgeAt) >= fpsBadgeInterval {
-		return m.formatPositionedBadge(now, atHome)
+// barText returns the fps segment body for the bottom bar. It rebuilds the
+// string (the only per-call allocation) at most once per fpsBadgeInterval and
+// returns the cached string between rebuilds, so the fps text refreshes about
+// once per second while the bar repaints on every frame.
+func (m *fpsMeter) barText(now time.Time) string {
+	if !m.haveText || now.Sub(m.textAt) >= fpsBadgeInterval {
+		m.formatBarText(now)
 	}
-	return m.badgeStr
+	return m.text
 }
 
-// formatPositionedBadge rebuilds and caches the badge string at now. With an
-// ingest reporter it shows "In: X.X / Out: Y.Y fps (N)"; both rates are
-// windowed, so both decay live when idle. Without one it shows
-// "Out: Y.Y fps (N)" alone. N is the cumulative received-frame total, which
-// never decays: a frozen N with "--" rates is a stalled or idle stream, while a
-// moving N with "--" rates is delivery the peak window has already aged out.
-// It is the sole per-call allocation and the single place the badge escape is
-// built. The SGR opens with a reset then reverse ("\x1b[0;7m"): the reset
-// clears the grid's ambient colour so reverse inverts the terminal default, not
-// whatever page colour the differ left active, which otherwise tinted the badge
-// from a scrolled-away cell.
-func (m *fpsMeter) formatPositionedBadge(now time.Time, atHome bool) string {
+// formatBarText rebuilds and caches the fps text at now, the compact
+// "↓ NN.n │ ↑ NN.n │ ≌ N" segment: ↓ is the ingest rate (frames arriving
+// from the engine, the ingest reporter's windowed rate), ↑ the output rate
+// (frames written to the terminal, the meter's own paint window rate), and
+// ≌ prefixes N, the cumulative received-frame total. Both rates are windowed
+// to one decimal and decay live when idle; N never decays, so a frozen N
+// with "--" rates is a stalled or idle stream, while a moving N with "--"
+// rates is delivery the peak window has already aged out. Without an ingest
+// reporter the ↓ field is absent. The text carries no escapes and no
+// positioning; the bar owns placement and style.
+func (m *fpsMeter) formatBarText(now time.Time) {
 	in, out := m.peakRates()
-	prefix, suffix := "\x1b7\x1b[1;1H", "\x1b[0m\x1b8"
-	if atHome {
-		prefix, suffix = "\x1b[1;1H", "\x1b[0m\x1b[1;1H"
-	}
-	total := strconv.Itoa(m.received)
+	sep := " " + barSeparator + " "
+	m.text = "↑ " + fpsField(out) + sep + "≌ " + strconv.Itoa(m.received)
 	if m.ingest != nil {
-		inField, outField := fpsField(in), fpsField(out)
-		width := len(" In:  / Out:  fps () ") + len(inField) + len(outField) + len(total)
-		if width > m.badgeWidth {
-			m.badgeWidth = width
-		}
-		m.badgeStr = fmt.Sprintf("%s\x1b[0;7m In: %s / Out: %s fps (%s) %*s%s", prefix, inField, outField, total, m.badgeWidth-width, "", suffix)
-	} else {
-		outField := fpsField(out)
-		width := len(" Out:  fps () ") + len(outField) + len(total)
-		if width > m.badgeWidth {
-			m.badgeWidth = width
-		}
-		m.badgeStr = fmt.Sprintf("%s\x1b[0;7m Out: %s fps (%s) %*s%s", prefix, outField, total, m.badgeWidth-width, "", suffix)
+		m.text = "↓ " + fpsField(in) + sep + m.text
 	}
-	m.badgeAt = now
-	m.haveBadge = true
-	m.badgeHome = atHome
-	return m.badgeStr
+	m.textAt = now
+	m.haveText = true
 }
 
 // fpsField renders one badge rate: the value to one decimal, or "--" when it is
@@ -1655,21 +1785,12 @@ func (m *fpsMeter) peakRates() (in, out float64) {
 }
 
 // refresh ages the trailing window out to now without recording a frame, then
-// rebuilds the badge. The draw loop calls it on a heartbeat between frames, so an
-// idle page (the block backend pushes no frames while static) decays the live rate
-// to 0 instead of freezing the badge at its last value. It records no frame and
-// touches no summary stat, so a heartbeat never inflates the counted-frame total.
-func (m *fpsMeter) refresh(now time.Time) string {
-	return m.refreshPositioned(now, false)
-}
-
-// refreshAtHome refreshes the idle Kitty badge and restores the tracked home
-// with absolute cursor movement.
-func (m *fpsMeter) refreshAtHome(now time.Time) string {
-	return m.refreshPositioned(now, true)
-}
-
-func (m *fpsMeter) refreshPositioned(now time.Time, atHome bool) string {
+// rebuilds the fps text. The draw loop calls it on a heartbeat between frames,
+// so an idle page (the block backend pushes no frames while static) decays the
+// live rate to 0 instead of freezing the text at its last value. It records no
+// frame and touches no summary stat, so a heartbeat never inflates the
+// counted-frame total.
+func (m *fpsMeter) refresh(now time.Time) {
 	cutoff := now.Add(-m.window)
 	drop := 0
 	for drop < len(m.times) && m.times[drop].Before(cutoff) {
@@ -1677,9 +1798,9 @@ func (m *fpsMeter) refreshPositioned(now time.Time, atHome bool) string {
 	}
 	m.times = m.times[drop:]
 	// Sample the (now decayed) rate so the peak window ages out on idle too: once a
-	// burst is older than fpsPeakHold the badge falls back to 0.
+	// burst is older than fpsPeakHold the text falls back to 0.
 	m.samplePeak(now)
-	return m.formatPositionedBadge(now, atHome)
+	m.formatBarText(now)
 }
 
 // printSummary writes one compact fps summary line to w after the session ends. It

@@ -55,12 +55,6 @@ func (s *State) syncUpdatesEnabled() bool {
 	return s.Backend != BackendSixel || !s.compat.sixelSyncUpdatesDisabled
 }
 
-// fpsBadgeAllowed reports whether the active backend should paint the live FPS
-// badge. Rio 0.4.x suppresses it only on Kitty, so cycling to Block restores it.
-func (s *State) fpsBadgeAllowed() bool {
-	return s.Backend != BackendKitty || s.compat.kittyFPSBadgeAllowed()
-}
-
 // rio04XTVERSION reports whether identity names an affected Rio 0.4.x release.
 // Patch and pre-release suffixes do not alter the compatibility range.
 func rio04XTVERSION(identity string) bool {
@@ -95,11 +89,6 @@ func rioEnvironmentFallback(environ []string) bool {
 
 // sixelAllowed reports whether a detected Sixel capability is usable.
 func (c terminalCompatibility) sixelAllowed() bool {
-	return !c.rio04
-}
-
-// kittyFPSBadgeAllowed reports whether Kitty can present Nyala's live FPS badge.
-func (c terminalCompatibility) kittyFPSBadgeAllowed() bool {
 	return !c.rio04
 }
 
