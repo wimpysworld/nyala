@@ -61,57 +61,42 @@ func tmuxSixelSupported(termID string) bool {
 // multiplexerBackends returns the backend cycle offered under a focus
 // multiplexer. Kitty is never offered: tmux and zellij consume the Kitty APC
 // protocol without passthrough, and screen and herdr pass no graphics at all.
-// Sixel is offered under tmux and zellij only, and only when the DA1 reply
-// advertised attribute 4, the resolved cell pixel geometry is real, and
-// terminal compatibility allows Sixel. tmux additionally requires an
-// XTVERSION identity of 3.6 or later (tmuxSixelSupported): older tmux caps
-// DCS input at an unraisable 1 MiB and discards busy frames silently. tmux
-// advertises DA1 Sixel only when both its build and its outer terminal
-// support it, so its DA1 is honest; zellij answers DA1 with Sixel
-// unconditionally, so the geometry gate carries the host-chain-live signal
-// there (zellij synthesises pane pixel geometry only after its own startup
-// query to the host succeeded). Without real geometry the Sixel surface would
-// be sized from the 8x16 fallback and render at the wrong physical scale, so
-// both multiplexers require it. screen and herdr stay block only.
+// Sixel is offered under tmux only, and only when the DA1 reply advertised
+// attribute 4, the resolved cell pixel geometry is real, terminal
+// compatibility allows Sixel, and the XTVERSION identity is 3.6 or later
+// (tmuxSixelSupported): older tmux caps DCS input at an unraisable 1 MiB and
+// discards busy frames silently. tmux advertises DA1 Sixel only when both its
+// build and its outer terminal support it, so its DA1 is honest, and without
+// real geometry the Sixel surface would be sized from the 8x16 fallback and
+// render at the wrong physical scale. zellij never enters the Sixel branch,
+// regardless of DA1 and geometry: zellij 0.31+ re-encodes Sixel but allocates
+// image ids as the current store size (sixel.rs next_image_id) instead of
+// monotonically, so a full-frame-replacement stream collides ids and drops
+// every third frame, and its bare re-emission of visible image chunks to the
+// host breaks scrolling (the page appears to scroll, then snaps back). Both
+// are zellij-side defects with no Nyala-side workaround; blocking Sixel keeps
+// them from presenting as Nyala bugs, so zellij stays block only. Lift the
+// block, gated on the XTVERSION identity Zellij(<version>), once a zellij
+// release fixes both. screen and herdr stay block only.
 func multiplexerBackends(mux multiplexerKind, termID string, sixelDA1, realGeometry bool, compat terminalCompatibility) []Backend {
-	muxOK := (mux == muxTmux && tmuxSixelSupported(termID)) || mux == muxZellij
-	if muxOK && sixelDA1 && realGeometry && compat.sixelAllowed() {
+	if mux == muxTmux && tmuxSixelSupported(termID) && sixelDA1 && realGeometry && compat.sixelAllowed() {
 		return []Backend{BackendSixel, BackendBlock}
 	}
 	return []Backend{BackendBlock}
 }
 
-// multiplexerStartBackend nominates the backend auto-detection starts on under
-// a focus multiplexer, from the enabled cycle multiplexerBackends resolved.
-// tmux, screen, and herdr start on the head of the cycle, the highest-fidelity
-// backend. zellij starts on Block even when Sixel is enabled: zellij allocates
-// Sixel image ids as the current store size (sixel.rs next_image_id) instead
-// of monotonically, so a full-frame-replacement stream collides ids every
-// third frame and zellij's end-of-frame reap (grid.rs read_changes) deletes
-// the just-inserted image before serialising it to the host, dropping the
-// picture. Sixel stays in the cycle, so Tab and --backend=sixel still reach
-// it. Lift this demotion in the compatibility policy, gated on the XTVERSION
-// identity Zellij(<version>), once a zellij release ships monotonic image ids.
-func multiplexerStartBackend(mux multiplexerKind, enabled []Backend) Backend {
-	if mux == muxZellij || len(enabled) == 0 {
-		return BackendBlock
-	}
-	return enabled[0]
-}
-
 // engineRows is the pure engine-grid row decision: the row count the engine
 // lays out, renders, and captures at for one backend under one multiplexer.
-// Sixel under tmux or zellij reserves the bottom terminal row, so the frame is
-// (rows-1) cells of pixel height and the last row stays blank. tmux rescales
-// any Sixel image taller than pane rows minus one, keeping the bottom rows and
-// cropping the top, so a full-height frame always loses its top row; zellij
-// re-serialises visible image chunks to the host terminal bare (no DECSDM), so
-// a frame whose bottom pixel row reaches the host's bottom cell row scrolls
-// the host one line per frame. Every other backend, and every backend on a
-// native terminal, keeps the full grid. rows below two pass through unchanged,
-// so a one-row terminal never shrinks to an empty grid.
+// Sixel under tmux reserves the bottom terminal row, so the frame is (rows-1)
+// cells of pixel height and the last row stays blank: tmux rescales any Sixel
+// image taller than pane rows minus one, keeping the bottom rows and cropping
+// the top, so a full-height frame always loses its top row. Every other
+// backend, and every backend on a native terminal, keeps the full grid (Sixel
+// never runs under zellij, screen, or herdr, so no other multiplexer needs
+// the reservation). rows below two pass through unchanged, so a one-row
+// terminal never shrinks to an empty grid.
 func engineRows(backend Backend, mux multiplexerKind, rows int) int {
-	if backend == BackendSixel && (mux == muxTmux || mux == muxZellij) && rows >= 2 {
+	if backend == BackendSixel && mux == muxTmux && rows >= 2 {
 		return rows - 1
 	}
 	return rows

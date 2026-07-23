@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-// TestEngineRows pins the pure engine-grid row decision: Sixel under tmux or
-// zellij reserves the bottom terminal row, every other backend-multiplexer
-// pair keeps the full grid, and a grid below two rows never shrinks.
+// TestEngineRows pins the pure engine-grid row decision: Sixel under tmux
+// reserves the bottom terminal row, every other backend-multiplexer pair
+// keeps the full grid, and a grid below two rows never shrinks.
 func TestEngineRows(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -17,7 +17,7 @@ func TestEngineRows(t *testing.T) {
 		want    int
 	}{
 		{"sixel under tmux reserves bottom row", BackendSixel, muxTmux, 24, 23},
-		{"sixel under zellij reserves bottom row", BackendSixel, muxZellij, 24, 23},
+		{"sixel under zellij keeps full grid", BackendSixel, muxZellij, 24, 24},
 		{"block under tmux keeps full grid", BackendBlock, muxTmux, 24, 24},
 		{"block under zellij keeps full grid", BackendBlock, muxZellij, 24, 24},
 		{"kitty under tmux keeps full grid", BackendKitty, muxTmux, 24, 24},
@@ -27,7 +27,7 @@ func TestEngineRows(t *testing.T) {
 		{"sixel under herdr keeps full grid", BackendSixel, muxHerdr, 24, 24},
 		{"two rows reserve to one", BackendSixel, muxTmux, 2, 1},
 		{"one row never shrinks", BackendSixel, muxTmux, 1, 1},
-		{"zero rows pass through", BackendSixel, muxZellij, 0, 0},
+		{"zero rows pass through", BackendSixel, muxTmux, 0, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -77,12 +77,13 @@ func TestDetectMultiplexer(t *testing.T) {
 }
 
 // TestMultiplexerBackends drives the pure per-multiplexer backend policy:
-// Sixel is offered under tmux and zellij only when DA1 advertised it and the
-// cell geometry is real, tmux additionally needs an XTVERSION identity of 3.6
-// or later (older tmux caps DCS input at an unraisable 1 MiB and discards
-// busy frames silently), Kitty is never offered, screen and herdr stay block
-// only regardless of capability, and the Rio compatibility deny still gates
-// Sixel off.
+// Sixel is offered under tmux only, when DA1 advertised it, the cell geometry
+// is real, and the XTVERSION identity is 3.6 or later (older tmux caps DCS
+// input at an unraisable 1 MiB and discards busy frames silently), Kitty is
+// never offered, zellij refuses Sixel regardless of capability (its image id
+// collision drops every third full-replacement frame and its bare host
+// re-emission breaks scrolling), screen and herdr stay block only regardless
+// of capability, and the Rio compatibility deny still gates Sixel off.
 func TestMultiplexerBackends(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -101,10 +102,8 @@ func TestMultiplexerBackends(t *testing.T) {
 		{"tmux unknown identity fails the version gate", muxTmux, "", true, true, terminalCompatibility{}, []Backend{BackendBlock}},
 		{"tmux sixel no geometry", muxTmux, "tmux 3.7b", true, false, terminalCompatibility{}, []Backend{BackendBlock}},
 		{"tmux no sixel", muxTmux, "tmux 3.7b", false, true, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"zellij sixel and geometry", muxZellij, "Zellij(0.43.1)", true, true, terminalCompatibility{}, []Backend{BackendSixel, BackendBlock}},
-		{"zellij da1 without geometry is not trusted", muxZellij, "Zellij(0.43.1)", true, false, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"zellij no sixel", muxZellij, "Zellij(0.43.1)", false, true, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"zellij ignores the tmux version gate", muxZellij, "", true, true, terminalCompatibility{}, []Backend{BackendSixel, BackendBlock}},
+		{"zellij refuses sixel despite da1 and geometry", muxZellij, "Zellij(0.43.1)", true, true, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"zellij without capability stays block", muxZellij, "Zellij(0.43.1)", false, false, terminalCompatibility{}, []Backend{BackendBlock}},
 		{"screen ignores capability", muxScreen, "", true, true, terminalCompatibility{}, []Backend{BackendBlock}},
 		{"herdr ignores capability", muxHerdr, "", true, true, terminalCompatibility{}, []Backend{BackendBlock}},
 		{"rio deny gates tmux sixel", muxTmux, "tmux 3.7b", true, true, terminalCompatibility{rio04: true}, []Backend{BackendBlock}},
@@ -132,52 +131,25 @@ func TestMultiplexerSixelPassesForcedBackend(t *testing.T) {
 	}
 }
 
-// TestMultiplexerStartBackend drives the pure auto-start nomination under a
-// focus multiplexer: tmux starts on the cycle head (Sixel when gated in),
-// zellij demotes the start to Block while Sixel stays in the cycle (its image
-// id collision drops every third full-replacement frame), a failed zellij gate
-// stays Block, and screen and herdr keep their Block-only start.
-func TestMultiplexerStartBackend(t *testing.T) {
-	sixelCycle := []Backend{BackendSixel, BackendBlock}
-	blockOnly := []Backend{BackendBlock}
-	cases := []struct {
-		name    string
-		mux     multiplexerKind
-		enabled []Backend
-		want    Backend
-	}{
-		{"tmux gated in starts sixel", muxTmux, sixelCycle, BackendSixel},
-		{"zellij gated in demotes to block", muxZellij, sixelCycle, BackendBlock},
-		{"zellij failed gate stays block", muxZellij, blockOnly, BackendBlock},
-		{"tmux failed gate stays block", muxTmux, blockOnly, BackendBlock},
-		{"screen stays block", muxScreen, blockOnly, BackendBlock},
-		{"herdr stays block", muxHerdr, blockOnly, BackendBlock},
-		{"empty cycle falls back to block", muxTmux, nil, BackendBlock},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := multiplexerStartBackend(c.mux, c.enabled); got != c.want {
-				t.Fatalf("multiplexerStartBackend(%v, %v) = %v, want %v", c.mux, c.enabled, got, c.want)
-			}
-		})
-	}
-}
-
-// TestZellijForcedSixelStillStarts guards the manual escape hatch: with the
-// zellij demotion applied, --backend=sixel still validates against the enabled
-// cycle and applyForcedBackend starts the session on Sixel.
-func TestZellijForcedSixelStillStarts(t *testing.T) {
+// TestZellijSixelBlocked pins the zellij Sixel block end to end: with DA1
+// advertised and real geometry the enabled cycle stays Block only, so
+// auto-detection starts on Block, Tab never reaches Sixel, and
+// --backend=sixel fails the generic validator with the standard
+// unsupported-backend error, no zellij-specific error path.
+func TestZellijSixelBlocked(t *testing.T) {
 	st := NewState(80, 24)
 	st.SetEnabled(multiplexerBackends(muxZellij, "Zellij(0.43.1)", true, true, terminalCompatibility{}))
-	st.Backend = multiplexerStartBackend(muxZellij, st.Enabled)
 	if st.Backend != BackendBlock {
 		t.Fatalf("zellij auto start = %v, want %v", st.Backend, BackendBlock)
 	}
-	if err := ValidateForcedBackend(ModeSixel, st.Enabled); err != nil {
-		t.Fatalf("ValidateForcedBackend(sixel, %v) = %v, want nil", st.Enabled, err)
+	if got := st.CycleBackend(); got != BackendBlock {
+		t.Fatalf("Tab cycle = %v, want %v", got, BackendBlock)
 	}
-	applyForcedBackend(&st, ModeSixel)
-	if st.Backend != BackendSixel {
-		t.Fatalf("forced backend = %v, want %v", st.Backend, BackendSixel)
+	err := ValidateForcedBackend(ModeSixel, st.Enabled)
+	if err == nil {
+		t.Fatalf("ValidateForcedBackend(sixel, %v) = nil, want error", st.Enabled)
+	}
+	if want := `viewer: backend "sixel" is not supported by this terminal`; err.Error() != want {
+		t.Fatalf("forced-backend error = %q, want %q", err.Error(), want)
 	}
 }

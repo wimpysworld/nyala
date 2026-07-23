@@ -188,21 +188,22 @@ and research documents.
   decimal formatter without the reopening evidence above.
 - [ ] Add graphics support through tmux, Zellij, and herdr. The Sixel leg is
   implemented pending live validation: tmux and zellij run a reduced handshake
-  (no Kitty APC probe) and offer Sixel when DA1 advertises attribute 4 and real
-  cell pixel geometry is present (the zellij host-chain-live signal); tmux
-  additionally needs an XTVERSION identity of 3.6 or later (3.4-3.5a compile
+  (no Kitty APC probe); tmux offers Sixel when DA1 advertises attribute 4,
+  real cell pixel geometry is present, and the XTVERSION identity is 3.6 or
+  later (3.4-3.5a compile
   in an unraisable 1 MiB DCS input cap that silently discards busy frames,
   and the 900 KB fallback cannot guarantee that cap on large grids, so those
   versions get no Sixel at all); screen
-  and herdr stay block only with no handshake. Sixel under tmux and zellij
+  and herdr stay block only with no handshake. Sixel under tmux
   reserves the bottom terminal row (engine grid at rows-1) to avoid tmux's
-  designed-in top-crop of full-height images and zellij's bare host
-  re-emission scroll bounce; live validation of both fixes (top row present
-  in tmux, no scroll bounce in zellij) is pending. zellij Sixel is demoted to
-  manual: its image id collision drops every third full-replacement frame
+  designed-in top-crop of full-height images. zellij Sixel is blocked
+  outright: live testing showed zellij drops every third full-replacement
+  frame (image id collision) and breaks page scrolling (its bare host
+  re-emission scrolls then snaps back), both zellij-side defects
   (see [TERMINAL-COMPATIBILITY.md](./TERMINAL-COMPATIBILITY.md),
-  "Multiplexers"), so auto-detection starts on Block there and Sixel stays
-  reachable through Tab or `--backend=sixel` until the upstream fix ships;
+  "Multiplexers"), so Nyala blocks Sixel there to keep them from presenting
+  as Nyala bugs, `--backend=sixel` fails the standard unsupported-backend
+  check, and Block is the zellij backend until the upstream fixes ship;
   tmux Sixel remains auto. tmux Sixel additionally handles high-frame-rate
   animation: emission is paced at the latest-wins coalescing seam with a
   version-tuned floor, 250 ms on tmux 3.7+ (bisected live: 200 ms saturates

@@ -12,8 +12,9 @@ import (
 // runs no handshake and offers block only: screen blocks graphics passthrough
 // and herdr consumes graphics sequences. Under tmux or zellij it runs the
 // reduced handshake (no Kitty APC probe, which both consume silently) and
-// offers Sixel per multiplexerBackends; Kitty is never offered under a
-// multiplexer, and the auto start follows multiplexerStartBackend. Otherwise
+// offers Sixel per multiplexerBackends, which admits tmux only and keeps
+// zellij block only; Kitty is never offered under a multiplexer, and the auto
+// start is the cycle head SetEnabled nominates. Otherwise
 // it runs the full terminal handshake and offers a
 // graphics backend only when the terminal confirms it. The colour mode resolves
 // on every path after terminal compatibility, so no multiplexer early return
@@ -95,7 +96,6 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 		st.kittyTransport = resolveKittyTransport(transportFlag, "", false, runtime.GOOS)
 		realGeometry := overrideOK || winOK || res.cellPxOK
 		st.SetEnabled(multiplexerBackends(mux, res.TermID, res.Sixel, realGeometry, st.compat))
-		st.Backend = multiplexerStartBackend(mux, st.Enabled)
 		return nil
 	}
 

@@ -149,8 +149,8 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	// the full detected cycle. setupViewer handed the engine the detected backend;
 	// re-notify it so the engine sizes its capture for the starting backend, not
 	// the detected one.
-	// A forced start can flip the Sixel bottom-row reservation under tmux or
-	// zellij, so re-resize the engine grid when the row count moved from the
+	// A forced start can flip the Sixel bottom-row reservation under tmux,
+	// so re-resize the engine grid when the row count moved from the
 	// detected nomination setupViewer sized for.
 	detectedRows := engineRows(st.Backend, st.mux, st.Rows)
 	applyForcedBackend(st, mode)
@@ -318,8 +318,8 @@ func setupViewer(eng Engine, tty *os.File, colourFlag, kittyTransport string, sc
 
 	// Hand the resolved backend and cell px to the engine before Navigate; the
 	// engine sizes the screencast capture and derives its layout scale from them.
-	// The engine grid may reserve the bottom row (Sixel under tmux or zellij),
-	// so the engine gets engineRows while State keeps the full terminal grid.
+	// The engine grid may reserve the bottom row (Sixel under tmux), so the
+	// engine gets engineRows while State keeps the full terminal grid.
 	eng.SetCellPx(state.W, state.H)
 	eng.SetBackend(state.Backend)
 	eng.Resize(cols, engineRows(state.Backend, state.mux, rows))
@@ -1002,7 +1002,7 @@ func (s *streamSession) resize() error {
 	// The engine restart runs on the control goroutine so a slow restartStream
 	// never freezes the consumer loop; the loop keeps drawing and handling quit.
 	// The engine grid takes engineRows, so the Sixel bottom-row reservation
-	// under tmux and zellij survives a resize while State keeps the full grid.
+	// under tmux survives a resize while State keeps the full grid.
 	s.ctl.submit(resizeEngineOp(px, changed, nc, engineRows(s.st.Backend, s.st.mux, nr)))
 	if !s.firstDrawn.Load() {
 		return nil
@@ -1042,8 +1042,8 @@ func resizeEngineOp(px cellPx, changed bool, cols, rows int) func(Engine) {
 }
 
 // switchBackendOp returns the control-goroutine closure for one Tab backend
-// switch. When the switch flips the Sixel bottom-row reservation under tmux or
-// zellij (Sixel and Block use different engine row counts there), the grid
+// switch. When the switch flips the Sixel bottom-row reservation under tmux
+// (Sixel and Block use different engine row counts there), the grid
 // resize rides in the same closure: the one-slot drop-on-full control channel
 // could otherwise drop one half of the pair. The resize runs before
 // SetBackend, so the backend restart, which always runs, lands last at the
@@ -1115,8 +1115,8 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 			// the old glyphs and cell backgrounds would otherwise sit under the
 			// next graphics frame (and under Kitty's FPS page image, which
 			// places below text). Leaving Sixel, the old raster persists over
-			// cells the terminal believes unchanged. Entering Sixel under tmux
-			// or zellij, the reserved bottom row keeps the previous backend's
+			// cells the terminal believes unchanged. Entering Sixel under
+			// tmux, the reserved bottom row keeps the previous backend's
 			// cells because the rows-1 frame never overwrites it. Reset the SGR
 			// first: the Block differ leaves the last cell's background active,
 			// and terminals erase with the current background (background
