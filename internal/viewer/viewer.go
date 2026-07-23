@@ -75,8 +75,8 @@ type State struct {
 
 	// mux is the focus multiplexer hosting the session, recorded once by
 	// configureBackends. engineRows reads it to reserve the bottom terminal
-	// row for Sixel under tmux and zellij; muxNone (the zero value) keeps
-	// every native-terminal path at the full grid.
+	// row for Sixel under tmux; muxNone (the zero value) keeps every
+	// native-terminal path at the full grid.
 	mux multiplexerKind
 
 	// cellPxForced records that the NYALA_CELL_PX override supplied cellPx, so a
@@ -369,7 +369,7 @@ func (s *State) renderStreamFrame(frame render.Frame, w io.Writer, kittyBelowTex
 // engine's floored fractional-density row band, not a zoom, so it draws as-is
 // like today rather than rescaling every frame on a device-pixel-cell
 // terminal. The target height uses the engine grid rows, not the terminal
-// rows: under the tmux and zellij bottom-row reservation the engine renders at
+// rows: under the tmux bottom-row reservation the engine renders at
 // rows-1, and fitting to the full grid would upscale the frame back over the
 // reserved row.
 func (s *State) fitSixelToGrid(img image.Image) image.Image {

@@ -88,15 +88,13 @@ still printed.
 
 `Host mode` under Block means the glyph mode follows the outer terminal:
 multiplexers pass the host's identity variables through, so an allow-listed
-host gets sextants and an unknown host gets quadrants. `Manual` under Sixel
-means the backend is enabled and selectable through Tab or `--backend=sixel`,
-but auto-detection does not start on it. Notes record the gates and limits
-explained in the prose below.
+host gets sextants and an unknown host gets quadrants. Notes record the gates
+and limits explained in the prose below.
 
 | Multiplexer | Block | Sixel | Kitty | Notes |
 |---|---|---|---|---|
 | tmux | Host mode | Yes | No | Needs tmux 3.6 or later built with `--enable-sixel`; the Debian, Ubuntu, Homebrew, and nixpkgs builds enable it. 3.6b or newer is recommended. Honest DA1 gate plus real cell geometry plus the XTVERSION 3.6+ version gate. Auto-detection starts on Sixel. Bottom row reserved. Live-tested. |
-| zellij | Host mode | Manual | No | zellij 0.31.0 or later re-encodes Sixel but drops every third full-replacement frame (image id collision), so auto-detection starts on Block. DA1 is advertised unconditionally, so real cell geometry gates non-Sixel hosts. Bottom row reserved. Live-tested. |
+| zellij | Host mode | No | No | Sixel is blocked outright: zellij 0.31.0 or later re-encodes Sixel but drops every third full-replacement frame (image id collision) and breaks page scrolling (scroll-then-snap-back). Both are zellij defects. Block is the zellij backend. Live-tested. |
 | GNU screen | Host mode | No | No | Blocks graphics passthrough entirely; no handshake runs. |
 | herdr | Host mode | No | No | Consumes graphics sequences, reports no cell geometry, and has no passthrough. Experimental Kitty-only support is deferred. |
 
@@ -106,7 +104,7 @@ Kitty probe is not sent there and the capability stays undetected. Under tmux
 and zellij Nyala runs a reduced handshake instead: the cell-size queries,
 XTVERSION, and the DA1 fence, with no Kitty APC probe.
 
-Sixel under tmux and zellij is gated per multiplexer:
+Sixel under tmux is gated three ways:
 
 - tmux stores and re-emits Sixel natively when built with `--enable-sixel`;
   the Debian, Ubuntu, Homebrew, and nixpkgs builds enable it. tmux advertises
@@ -125,52 +123,43 @@ Sixel under tmux and zellij is gated per multiplexer:
   fails with the standard "not supported by this terminal" error. Prefer 3.6b
   or newer over 3.6 and 3.6a: 3.6b fixes an image-eviction use-after-free in
   the stored-image LRU.
-- zellij 0.31.0 and later decodes, crops per pane, and re-encodes Sixel, on
-  by default. zellij answers DA1 with `?62;4c` unconditionally, even when its
-  host terminal cannot render Sixel, so DA1 alone is not a sufficient gate.
-  zellij synthesises pane-relative pixel geometry (the winsize pixel fields
-  and the `CSI 14t`/`16t` replies) only after its own startup query to the
-  host succeeded, so Nyala also requires real cell pixel geometry before
-  offering Sixel: the host-chain-live signal. zellij answers XTVERSION as
-  `Zellij(<version>)`.
-- The geometry requirement applies under tmux too. Without real cell pixel
-  geometry the Sixel surface would be sized from the 8x16 fallback and render
-  at the wrong physical scale, so Nyala stays on Block.
+- Real cell pixel geometry must be present. Without it the Sixel surface
+  would be sized from the 8x16 fallback and render at the wrong physical
+  scale, so Nyala stays on Block.
 
-Sixel under tmux and zellij reserves the bottom terminal row: the engine grid
-runs at rows-1, so the frame is one cell row short and the last row stays
-blank. Two independent bottom-row faults force this, both root-caused from
-multiplexer source:
+Sixel under zellij is blocked outright, regardless of DA1 and geometry. Live
+testing surfaced two zellij-side defects, both root-caused from zellij
+source, that would present as Nyala bugs:
 
-- tmux's `screen_write_sixelimage` unconditionally rescales any Sixel image
-  taller than pane rows minus one, keeping the bottom rows and cropping the
-  top; the last pane row is reserved for the cursor. A full-pane-height frame
-  therefore always loses its top row. This is designed-in behaviour and will
-  not change upstream.
+- zellij's `sixel.rs::next_image_id` allocates image ids as the current store
+  size instead of monotonically, so a stream that replaces the whole frame
+  each time (Nyala's exact pattern) collides ids every third frame, and the
+  end-of-frame reap in `grid.rs::read_changes` deletes the just-inserted
+  image before serialising it to the host. The picture vanishes every third
+  frame. zellij issue #5125 reports the same id-collision pattern.
 - zellij honours Nyala's DECSDM wrap inside its own grid but re-serialises the
   visible image chunks to the host terminal bare, with no DECSDM and the host
-  in scrolling mode. When the frame's bottom pixel row reaches the host's
-  bottom cell row, the host scrolls one line per frame and zellij's absolute
-  repaint snaps it back: a scroll-then-snap-back judder during page scrolling.
-  This is a zellij defect that deserves an upstream report.
+  in scrolling mode. Page scrolling does not work: the host scrolls, then
+  zellij's absolute repaint snaps it back.
 
-The reservation costs one blank row under both multiplexers. Block keeps the
+No Nyala-side workaround exists for either, so `multiplexerBackends` never
+offers Sixel under zellij: auto-detection and Tab stay on Block, and
+`--backend=sixel` fails with the standard "not supported by this terminal"
+error, the same shape as the tmux pre-3.6 refusal. Kitty stays blocked as
+under every multiplexer, so Block is the zellij backend. Lift the block in
+the compatibility policy, gated on the XTVERSION identity `Zellij(<version>)`,
+once a zellij release fixes both defects. (zellij answers DA1 with `?62;4c`
+unconditionally and XTVERSION as `Zellij(<version>)`; neither is consulted
+while the block stands.)
+
+Sixel under tmux reserves the bottom terminal row: the engine grid runs at
+rows-1, so the frame is one cell row short and the last row stays blank.
+tmux's `screen_write_sixelimage` unconditionally rescales any Sixel image
+taller than pane rows minus one, keeping the bottom rows and cropping the
+top; the last pane row is reserved for the cursor. A full-pane-height frame
+therefore always loses its top row. This is designed-in behaviour and will
+not change upstream. The reservation costs one blank row; Block keeps the
 full grid there, and native terminals are unaffected on every backend.
-
-zellij additionally drops every third full-replacement Sixel frame. Its
-`sixel.rs::next_image_id` allocates image ids as the current store size
-instead of monotonically, so a stream that replaces the whole frame each time
-(Nyala's exact pattern) collides ids every third frame, and the end-of-frame
-reap in `grid.rs::read_changes` deletes the just-inserted image before
-serialising it to the host. The symptom is the picture vanishing every third
-frame, perceived as a rhythmic scroll bounce during page scrolling. zellij
-issue #5125 reports the same id-collision pattern. No Nyala-side workaround
-exists, so under zellij auto-detection starts on Block and Sixel stays
-selectable through Tab or `--backend=sixel` (`multiplexerStartBackend` in
-`internal/viewer/viewer.go`). Lift the demotion in the compatibility policy,
-gated on the XTVERSION identity `Zellij(<version>)`, once a zellij release
-ships monotonic image ids. tmux is unaffected: its auto-detection still
-starts on Sixel when the gate passes.
 
 tmux Sixel additionally survives high-frame-rate animation through tmux-only
 measures; zellij, screen, herdr, and native terminals keep their normal
