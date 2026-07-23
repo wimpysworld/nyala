@@ -59,6 +59,21 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 			st.cellPx = res.cellPx
 		}
 		st.setTerminalCompatibility(res.TermID, environ)
+		if mux == muxTmux {
+			// tmux Sixel drops DEC 2026 on every version. tmux does not defer
+			// image operations under an application sync, so the bracket buys
+			// nothing for Sixel frames (live-verified on 3.7b). The flag rides
+			// the same compatibility seam as the Foot policy and scopes to
+			// Sixel via syncUpdatesEnabled, so Block under tmux keeps its
+			// fence.
+			st.compat.sixelSyncUpdatesDisabled = true
+			// tmux re-encodes each Sixel frame for its host terminal, so the
+			// Sixel path caps each frame's bytes to keep that pipeline fast.
+			// tmux 3.6 and later also raise the server's input-buffer-size
+			// option as a safety net against silent DCS discard on overshoot.
+			st.sixelBudget.limit = resolveTmuxSixelBudget(res.TermID, runTmux)
+			st.sixelBudget.debug = os.Getenv(debugTimingEnv) != ""
+		}
 		st.Colour = resolveCompatibleColour(colourFlag, environ, detected, st.compat)
 		// The reduced handshake sent no Kitty probe, so the transport resolves
 		// with no identity and no probe result: an explicit override still

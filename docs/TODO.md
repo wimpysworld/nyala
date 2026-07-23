@@ -199,7 +199,20 @@ and research documents.
   (see [TERMINAL-COMPATIBILITY.md](./TERMINAL-COMPATIBILITY.md),
   "Multiplexers"), so auto-detection starts on Block there and Sixel stays
   reachable through Tab or `--backend=sixel` until the upstream fix ships;
-  tmux Sixel remains auto. Live-validate placement,
+  tmux Sixel remains auto. tmux Sixel additionally handles high-frame-rate
+  animation: a 900 KB per-frame byte budget on every tmux version caps the
+  throughput of tmux's parse and re-encode pipeline, with the downscale-blur
+  ladder carrying the quality trade (setting the server's
+  `input-buffer-size` to 16 MiB on tmux 3.6+, persisting for the server
+  lifetime, is only a safety net so overshoot frames dodge tmux's silent
+  1 MiB DCS discard), the steady prefix is the bare cursor home with no
+  per-frame erase (dropped after live tmux 3.7b testing showed the erase
+  caused the animation strobe and scroll blanking; new frames paint over the
+  old, and tmux's stored-image LRU, capped at 20 on 3.6b+, bounds the stack),
+  DEC 2026 is suppressed for tmux Sixel on every version (tmux does not defer
+  image operations under sync, so the bracket cannot hide an erase), and
+  emission is paced to 300 ms at the latest-wins coalescing seam to dodge
+  tmux's output backoff. Live-validate placement,
   resize and zoom, scroll, and quit cleanup inside tmux and zellij before
   ticking this leg. The Kitty legs stay open: tmux native Kitty image support is in review
   upstream, so re-test against a tagged tmux release before choosing the final
