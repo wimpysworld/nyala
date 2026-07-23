@@ -42,21 +42,40 @@ func detectMultiplexer() multiplexerKind {
 	return muxNone
 }
 
+// tmuxSixelSupported reports whether the tmux version named by the XTVERSION
+// identity may carry Sixel at all: 3.6 and later. tmux 3.4 through 3.5a
+// compile in a 1 MiB DCS input cap with no input-buffer-size option to raise
+// it, so any busy frame over 1 MiB is silently discarded (the original
+// invisible black-screen failure). The 900 KB fallback budget cannot
+// guarantee that cap on large grids: the ladder floor at factor 4 encodes
+// ~1.45 MB and the smallest-anyway rule would feed tmux frames it throws
+// away with no signal. Those versions are also untested, and the ecosystem
+// answer for them is shrink or refuse, so Nyala refuses. An unknown or
+// unparsed identity fails the gate, matching the conservative treatment of
+// unknown versions elsewhere.
+func tmuxSixelSupported(termID string) bool {
+	major, minor, ok := parseTmuxVersion(termID)
+	return ok && (major > 3 || (major == 3 && minor >= 6))
+}
+
 // multiplexerBackends returns the backend cycle offered under a focus
 // multiplexer. Kitty is never offered: tmux and zellij consume the Kitty APC
 // protocol without passthrough, and screen and herdr pass no graphics at all.
 // Sixel is offered under tmux and zellij only, and only when the DA1 reply
 // advertised attribute 4, the resolved cell pixel geometry is real, and
-// terminal compatibility allows Sixel. tmux advertises DA1 Sixel only when
-// both its build and its outer terminal support it, so its DA1 is honest;
-// zellij answers DA1 with Sixel unconditionally, so the geometry gate carries
-// the host-chain-live signal there (zellij synthesises pane pixel geometry
-// only after its own startup query to the host succeeded). Without real
-// geometry the Sixel surface would be sized from the 8x16 fallback and render
-// at the wrong physical scale, so both multiplexers require it. screen and
-// herdr stay block only.
-func multiplexerBackends(mux multiplexerKind, sixelDA1, realGeometry bool, compat terminalCompatibility) []Backend {
-	if (mux == muxTmux || mux == muxZellij) && sixelDA1 && realGeometry && compat.sixelAllowed() {
+// terminal compatibility allows Sixel. tmux additionally requires an
+// XTVERSION identity of 3.6 or later (tmuxSixelSupported): older tmux caps
+// DCS input at an unraisable 1 MiB and discards busy frames silently. tmux
+// advertises DA1 Sixel only when both its build and its outer terminal
+// support it, so its DA1 is honest; zellij answers DA1 with Sixel
+// unconditionally, so the geometry gate carries the host-chain-live signal
+// there (zellij synthesises pane pixel geometry only after its own startup
+// query to the host succeeded). Without real geometry the Sixel surface would
+// be sized from the 8x16 fallback and render at the wrong physical scale, so
+// both multiplexers require it. screen and herdr stay block only.
+func multiplexerBackends(mux multiplexerKind, termID string, sixelDA1, realGeometry bool, compat terminalCompatibility) []Backend {
+	muxOK := (mux == muxTmux && tmuxSixelSupported(termID)) || mux == muxZellij
+	if muxOK && sixelDA1 && realGeometry && compat.sixelAllowed() {
 		return []Backend{BackendSixel, BackendBlock}
 	}
 	return []Backend{BackendBlock}

@@ -46,7 +46,10 @@ func TestConfigureBackendsSkipsHandshakeUnderScreenAndHerdr(t *testing.T) {
 // TestConfigureBackendsReducedHandshakeUnderTmuxAndZellij asserts that under
 // tmux and zellij configureBackends writes exactly the reduced query batch
 // (no Kitty APC probe) and, with no replies on the temp-file tty, falls to
-// block only: an unanswered DA1 must never enable Sixel.
+// block only: an unanswered DA1 must never enable Sixel. The Sixel budget
+// must stay unarmed too: with no XTVERSION reply the tmux version gate
+// fails, so resolveTmuxSixelBudget (which would arm at least the 900 KB
+// fallback, and mutates the tmux server on 3.6+) must never run.
 func TestConfigureBackendsReducedHandshakeUnderTmuxAndZellij(t *testing.T) {
 	cases := []struct {
 		name string
@@ -70,6 +73,9 @@ func TestConfigureBackendsReducedHandshakeUnderTmuxAndZellij(t *testing.T) {
 
 			if len(st.Enabled) != 1 || st.Enabled[0] != BackendBlock {
 				t.Fatalf("enabled = %v, want [BackendBlock] with no replies", st.Enabled)
+			}
+			if st.sixelBudget.limit != 0 {
+				t.Fatalf("sixel budget limit = %d, want 0: the failed version gate must skip budget arming", st.sixelBudget.limit)
 			}
 			wrote := readTTYBytes(t, tty)
 			if !bytes.Equal(wrote, reducedQueryBytes()) {

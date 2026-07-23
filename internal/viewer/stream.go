@@ -369,9 +369,15 @@ type streamSession struct {
 	// the handoff to the writer stamps the emit-rate pacing gate. Producer only.
 	assembledTmuxSixel bool
 	// lastTmuxSixel is the instant of the last tmux Sixel frame handoff; the
-	// pacing gate holds the next encode until tmuxSixelMinInterval has passed.
-	// Producer only. The zero value leaves the first frame ungated.
+	// pacing gate holds the next encode until the effective emit interval
+	// (tmuxSixelInterval) has passed. Producer only. The zero value leaves the
+	// first frame ungated.
 	lastTmuxSixel time.Time
+	// tmuxSixelWriteDur is the duration of the last tmux Sixel frame write,
+	// measured by the writer goroutine and returned on free. It stretches the
+	// next emit interval past a saturated pipe's consumption time. Producer
+	// only; the zero value keeps the interval at the floor.
+	tmuxSixelWriteDur time.Duration
 	// kittyShmAwait is true while one shm transmit awaits the terminal's
 	// acknowledgement; kittyShmDeadline bounds the wait so a terminal that
 	// stays silent degrades to a conservative self-pace instead of stalling.
@@ -463,7 +469,7 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 		var item writeItem
 		if s.assembled != nil {
 			readyC = w.ready
-			item = writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed}
+			item = writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed, tmuxSixel: s.assembledTmuxSixel}
 		}
 
 		// While a pacing gate alone holds back a pending frame, wake at the
@@ -476,8 +482,18 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			case s.kittyShmAwait:
 				gateC = time.After(time.Until(s.kittyShmDeadline))
 			case s.tmuxSixelGated():
-				gateC = time.After(tmuxSixelMinInterval - time.Since(s.lastTmuxSixel))
+				gateC = time.After(s.tmuxSixelInterval() - time.Since(s.lastTmuxSixel))
 			}
+		}
+
+		// While the tmux Sixel stream is idle with the last emit blurred, wake
+		// once the idle threshold passes to re-emit that frame at full
+		// quality. The settle encode resets the ladder and drops the retained
+		// source, so the timer disarms until a new budgeted frame goes out
+		// and cannot loop. A nil channel never fires.
+		var settleC <-chan time.Time
+		if s.assembled == nil && !havePending && len(avail) > 0 && s.tmuxSixelSettlePending() {
+			settleC = time.After(s.tmuxSixelSettleDelay() - time.Since(s.lastTmuxSixel))
 		}
 
 		select {
@@ -487,6 +503,21 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			s.markTmuxSixelHandoff()
 		case <-gateC:
 			// The deadline passed; the next kittySHMGated call clears the gate.
+		case <-settleC:
+			// The idle threshold passed with the last emit blurred: assemble
+			// the full-quality settle frame into a spare buffer. The next
+			// iteration hands it off through the normal tmux Sixel path, so
+			// it stamps the pacing gate like any frame; firing two pacing
+			// intervals after the last handoff keeps the gate already open.
+			buf := avail[len(avail)-1]
+			avail = avail[:len(avail)-1]
+			if err := s.assembleSettle(buf); err != nil {
+				return err
+			}
+			s.assembled = buf
+			s.assembledEncodeMS = 0
+			s.assembledTimed = false
+			s.assembledTmuxSixel = true
 		case <-winch:
 			if err := s.resize(); err != nil {
 				return err
@@ -539,6 +570,9 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			// (the meter is single-goroutine) and return the buffer to the free set.
 			if s.fps != nil && fi.timed {
 				s.fps.recordPaint(fi.encodeMS, fi.writeMS)
+			}
+			if fi.tmuxSixel {
+				s.recordTmuxSixelWrite(fi.writeDur)
 			}
 			avail = append(avail, fi.buf)
 		case ev, ok := <-keys:
@@ -623,24 +657,87 @@ func (s *streamSession) markKittySHMHandoff() {
 	s.kittyShmDeadline = time.Now().Add(kittySHMAckTimeout)
 }
 
-// tmuxSixelMinInterval is the minimum interval between Sixel frame handoffs
-// under tmux. tmux re-encodes every stored image for its host terminal, and
-// live testing on tmux 3.7b showed the failure tracks the DCS sequence rate,
-// not the byte rate: sustained animation at ten frames per second killed the
-// pane's Sixel rendering permanently while roughly three frames per second
-// survived indefinitely at a higher byte rate. The gate holds the encode, not
-// a queue: pending frames keep coalescing latest-wins while it is closed, so
-// no backlog grows.
-const tmuxSixelMinInterval = 300 * time.Millisecond
+// tmuxSixelMinInterval is the hard floor between Sixel frame handoffs under
+// tmux 3.7 and later, bisected live on tmux 3.7b with ~4 MB full-quality
+// frames. tmux consumes such a frame in about 230 ms, so at 200 ms the pty
+// write blocked for the full consumption time (228 ms mean), a downstream
+// backlog built, and the display lagged live content, replaying the queue on
+// quit. At 250 ms writes stay cheap (33 ms mean) and tmux drains fully
+// between frames. Sustained animation at 100 ms killed the pane's Sixel
+// rendering permanently, so the failure tracks the DCS sequence rate, not
+// the byte rate; the floor stays conservative to guard that rate-kill. The
+// gate holds the encode, not a queue: pending frames keep coalescing
+// latest-wins while it is closed, so no backlog grows. The effective floor
+// resolves per session through resolveTmuxSixelMinInterval and lands on
+// sixelBudget.minInterval; this constant is the 3.7-and-later value and the
+// zero-value fallback.
+const tmuxSixelMinInterval = 250 * time.Millisecond
+
+// tmuxSixelMinIntervalLegacy is the pacing floor below tmux 3.7 and when the
+// tmux version is unknown. Live tmux 3.6a at the 250 ms floor showed
+// periodic display stalls followed by a rapid release of several frames even
+// though the pty writes stayed fully drained at ~20 ms: the backlog sits in
+// 3.6a's output scheduler toward the host terminal, which the write-duration
+// signal cannot observe, so no adaptive back-off can catch it. The same
+// content at 300 ms showed no bursts, so older tmux pays the wider floor.
+const tmuxSixelMinIntervalLegacy = 300 * time.Millisecond
+
+// tmuxSixelWriteMargin is the headroom added to the last measured tmux Sixel
+// frame write duration when it stretches the emit interval past the floor,
+// so tmux gets slack to drain fully between frames instead of running flat
+// out at its own consumption pace.
+const tmuxSixelWriteMargin = 50 * time.Millisecond
+
+// tmuxSixelMaxInterval caps the adaptive emit interval, so one pathological
+// write cannot freeze the stream: even a write that blocked for seconds
+// releases the next frame within a second.
+const tmuxSixelMaxInterval = time.Second
+
+// tmuxSixelInterval returns the effective emit interval for the next tmux
+// Sixel frame: the resolved floor, stretched to the last write duration plus
+// the margin when tmux consumed the previous frame slower than the floor,
+// and capped at the ceiling. A large frame leaves Nyala only as fast as tmux
+// reads it from the pty, so the write duration is a direct saturation
+// signal: a healthy pipe writes in tens of milliseconds and keeps the floor,
+// while a saturated pipe blocks the write for tmux's full consumption time,
+// which varies with machine, grid, and content. The most recent write drives
+// the interval with no smoothing: the write blocks at tmux's own read pace,
+// so one sample is already ground truth and reacting within one frame beats
+// averaging in stale ones. Producer goroutine only.
+func (s *streamSession) tmuxSixelInterval() time.Duration {
+	floor := s.st.sixelBudget.floor()
+	iv := s.tmuxSixelWriteDur + tmuxSixelWriteMargin
+	if iv <= floor {
+		return floor
+	}
+	return min(iv, tmuxSixelMaxInterval)
+}
+
+// recordTmuxSixelWrite folds one measured tmux Sixel frame write duration
+// into the adaptive pacing state and the downscale-ladder state, and, under
+// NYALA_DEBUG_TIMING, reports the write and the next effective interval on
+// stderr beside the per-frame budget line. Producer goroutine only: the
+// writer goroutine measures the duration, returns it on the free channel,
+// and the producer folds it in here, so both the pacing state and the
+// sixelBudget ladder stay single-goroutine.
+func (s *streamSession) recordTmuxSixelWrite(d time.Duration) {
+	s.tmuxSixelWriteDur = d
+	s.st.sixelBudget.recordWrite(d)
+	if s.st.sixelBudget.debug {
+		fmt.Fprintf(os.Stderr, "nyala timing: sixel write_ms=%d next_interval_ms=%d\n",
+			d.Milliseconds(), s.tmuxSixelInterval().Milliseconds())
+	}
+}
 
 // tmuxSixelGated reports whether the tmux Sixel emit-rate gate holds the next
 // frame back: only while the active backend is Sixel under tmux and the last
-// Sixel handoff is younger than tmuxSixelMinInterval. Producer goroutine only.
+// Sixel handoff is younger than the effective emit interval. Producer
+// goroutine only.
 func (s *streamSession) tmuxSixelGated() bool {
 	if s.st.Backend != BackendSixel || s.st.mux != muxTmux {
 		return false
 	}
-	return time.Since(s.lastTmuxSixel) < tmuxSixelMinInterval
+	return time.Since(s.lastTmuxSixel) < s.tmuxSixelInterval()
 }
 
 // markTmuxSixelHandoff stamps the emit-rate gate when the frame just handed
@@ -652,6 +749,44 @@ func (s *streamSession) markTmuxSixelHandoff() {
 	}
 	s.assembledTmuxSixel = false
 	s.lastTmuxSixel = time.Now()
+}
+
+// tmuxSixelSettleIntervals is how many effective pacing intervals the tmux
+// Sixel stream must stay idle after the last handoff before the blurred last
+// frame is re-emitted at full quality: two, so the settle can never race the
+// emit gate and a live animation, which hands a frame off inside every
+// interval, never triggers it.
+const tmuxSixelSettleIntervals = 2
+
+// tmuxSixelSettleDelay returns the idle span before the settle-to-sharp
+// emit fires. It follows the effective interval, not the floor, so the
+// settle never fires into a pipe the last write measured as saturated.
+// Producer goroutine only.
+func (s *streamSession) tmuxSixelSettleDelay() time.Duration {
+	return tmuxSixelSettleIntervals * s.tmuxSixelInterval()
+}
+
+// tmuxSixelSettlePending reports whether the idle settle-to-sharp emit is
+// armed: the session is on Sixel under tmux and the budget state holds a
+// blurred last emit with its retained source. Producer goroutine only.
+func (s *streamSession) tmuxSixelSettlePending() bool {
+	return s.st.Backend == BackendSixel && s.st.mux == muxTmux && s.st.sixelSettleNeeded()
+}
+
+// assembleSettle builds the one-shot settle frame into buf: the retained
+// last budgeted frame re-encoded at full quality, wrapped like a steady tmux
+// Sixel frame (bare cursor-home prefix, DECSDM bracket, no DEC 2026 markers,
+// which tmux Sixel drops on every version). The caller hands it off as a
+// normal tmux Sixel frame, so the handoff stamps the pacing gate.
+func (s *streamSession) assembleSettle(buf *bytes.Buffer) error {
+	buf.Reset()
+	buf.WriteString(cursorHome)
+	buf.WriteString(beginSixelDisplayMode)
+	if err := s.st.renderSixelSettle(buf); err != nil {
+		return err
+	}
+	buf.WriteString(endSixelDisplayMode)
+	return nil
 }
 
 // handleKittyResponse consumes one Kitty graphics response from the input
@@ -811,7 +946,7 @@ func (s *streamSession) flushAssembled() {
 	if s.writer == nil || s.assembled == nil {
 		return
 	}
-	s.writer.send(writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed})
+	s.writer.send(writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed, tmuxSixel: s.assembledTmuxSixel})
 	s.assembled = nil
 	s.markKittySHMHandoff()
 	s.markTmuxSixelHandoff()

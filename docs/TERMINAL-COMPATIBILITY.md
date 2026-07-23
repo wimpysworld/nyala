@@ -95,7 +95,7 @@ explained in the prose below.
 
 | Multiplexer | Block | Sixel | Kitty | Notes |
 |---|---|---|---|---|
-| tmux | Host mode | Yes | No | Needs tmux 3.4 or later built with `--enable-sixel`; the Debian, Ubuntu, Homebrew, and nixpkgs builds enable it. Honest DA1 gate plus real cell geometry. Auto-detection starts on Sixel. Bottom row reserved. Live-tested. |
+| tmux | Host mode | Yes | No | Needs tmux 3.6 or later built with `--enable-sixel`; the Debian, Ubuntu, Homebrew, and nixpkgs builds enable it. 3.6b or newer is recommended. Honest DA1 gate plus real cell geometry plus the XTVERSION 3.6+ version gate. Auto-detection starts on Sixel. Bottom row reserved. Live-tested. |
 | zellij | Host mode | Manual | No | zellij 0.31.0 or later re-encodes Sixel but drops every third full-replacement frame (image id collision), so auto-detection starts on Block. DA1 is advertised unconditionally, so real cell geometry gates non-Sixel hosts. Bottom row reserved. Live-tested. |
 | GNU screen | Host mode | No | No | Blocks graphics passthrough entirely; no handshake runs. |
 | herdr | Host mode | No | No | Consumes graphics sequences, reports no cell geometry, and has no passthrough. Experimental Kitty-only support is deferred. |
@@ -108,11 +108,23 @@ XTVERSION, and the DA1 fence, with no Kitty APC probe.
 
 Sixel under tmux and zellij is gated per multiplexer:
 
-- tmux 3.4 and later stores and re-emits Sixel natively when built with
-  `--enable-sixel`; the Debian, Ubuntu, Homebrew, and nixpkgs builds enable
-  it. tmux advertises DA1 attribute 4 only when both its build and its outer
-  terminal support Sixel, so its DA1 reply is an honest gate. tmux answers
-  XTVERSION with `tmux 3.x`.
+- tmux stores and re-emits Sixel natively when built with `--enable-sixel`;
+  the Debian, Ubuntu, Homebrew, and nixpkgs builds enable it. tmux advertises
+  DA1 attribute 4 only when both its build and its outer terminal support
+  Sixel, so its DA1 reply is an honest gate. tmux answers XTVERSION with
+  `tmux 3.x`, and Nyala requires that version to be 3.6 or later; an unknown
+  or unparsed identity fails the gate. tmux 3.4 through 3.5a compile in a
+  1 MiB DCS input cap with no `input-buffer-size` option to raise it, so any
+  busy frame over 1 MiB is silently discarded: the original invisible
+  black-screen failure. The 900 KB fallback budget cannot guarantee that cap
+  on large grids (the downscale ladder floor at factor 4 encodes ~1.45 MB
+  and the smallest-anyway rule would feed tmux frames it throws away with no
+  signal), those versions are untested, and the ecosystem answer for them is
+  shrink or refuse, so Nyala refuses: tmux below 3.6 gets no Sixel and stays
+  on Block. Sixel then leaves the backend cycle entirely, so `--backend=sixel`
+  fails with the standard "not supported by this terminal" error. Prefer 3.6b
+  or newer over 3.6 and 3.6a: 3.6b fixes an image-eviction use-after-free in
+  the stored-image LRU.
 - zellij 0.31.0 and later decodes, crops per pane, and re-encodes Sixel, on
   by default. zellij answers DA1 with `?62;4c` unconditionally, even when its
   host terminal cannot render Sixel, so DA1 alone is not a sufficient gate.
@@ -164,30 +176,111 @@ tmux Sixel additionally survives high-frame-rate animation through tmux-only
 measures; zellij, screen, herdr, and native terminals keep their normal
 behaviour:
 
-- Byte budget with adaptive downscale. The viewer encodes each frame against
-  a 900 KB budget on every tmux version. The budget is a throughput cap for
-  tmux's parse and re-encode pipeline, not merely a parser-acceptance cap:
-  live tmux 3.7b measurements with a raised input buffer showed ~4 MB frames
-  blocking each pty write for 223 ms mean and 410 ms max, dropping output to
-  ~3 fps. The budget also keeps a margin under tmux's
-  default 1 MiB input buffer, whose overflow discards the DCS silently. An
+- Byte budget with adaptive downscale. On tmux 3.7 and later rate pacing is
+  all tmux needs: live 3.7b runs with no per-frame erase sustained ~4 MB
+  full-quality frames indefinitely at the paced rate, tmux consuming each
+  frame in about 230 ms. So once the input-buffer-size raise succeeds, the
+  per-frame budget on 3.7+ is 15 MiB and frames pass at full quality. On
+  3.6.x a successful raise carries a 1.5 MB budget instead, an output-stage
+  rate cap of ~5 MB/s at the 300 ms legacy floor: live 3.6a with the ladder
+  settled at factor 2 (2.5 MB frames, 300 ms pacing, ~8.3 MB/s) kept its
+  pty writes fully drained at ~21 ms, yet quitting replayed a queued
+  backlog, and an earlier factor-3 run at the 250 ms floor (~8.8 MB/s)
+  burst identically. The bottleneck is 3.6's re-encoded output toward the
+  host terminal, invisible to every write-duration signal, and factor 3
+  trims only ~10 percent off factor 2 on such content, so the cure is a
+  byte-rate cap, not a deeper fixed factor. Where the set fails the budget
+  falls back to 900 KB, keeping a margin under tmux's default 1 MiB input
+  buffer, whose overflow discards the DCS silently; that parser cap is then
+  the tighter bound. tmux below 3.6 never reaches the fallback: the version
+  gate refuses Sixel there outright. An
   over-budget frame is downscaled by a ladder factor (1.5, 2, 3, 4) and
   upscaled back to the exact grid pixel extent before encoding, so the DCS
   raster keeps covering the full grid while the blur shortens the encoded
   output; the ladder carries the quality trade. If even the floor factor
-  does not fit, the smallest encode is sent anyway. The working factor is
-  remembered across frames and probed one step weaker roughly once per 60
-  frames, so quality recovers when the content calms down. The 256-colour
-  palette is untouched. With `NYALA_DEBUG_TIMING=1` each frame reports its
-  encoded byte size and active factor on stderr.
-- Input-buffer tuning. tmux 3.6 and later expose the `input-buffer-size`
-  server option (3.5a and earlier do not). When the XTVERSION reply names
-  such a version, Nyala runs `tmux set -s input-buffer-size 16777216` once
-  at startup as a safety net: the occasional frame that overshoots the
-  budget (a ladder-floor overshoot or a probe frame) is parsed instead of
-  silently discarded. The call never changes the budget, and any failure is
-  tolerated silently. The option is not restored on exit: it persists for
-  the tmux server lifetime.
+  does not fit, the smallest encode is sent anyway. The ladder also
+  escalates on measured write latency, with no version gate: when the
+  effective pacing interval (write duration plus the 50 ms margin) reaches
+  the resolved pacing floor (a write of 200 ms or more at the 250 ms floor,
+  250 ms or more at the legacy 300 ms floor) for two consecutive frames,
+  the ladder steps one factor, trading one mild blur step for frame rate.
+  After any escalation the next two write samples are skipped: they measure
+  backlog encoded at the old factor (frames in flight through the writer
+  handoff plus tmux's own buffered input), and counting them chained the
+  ladder 1.5 -> 4 within four frames on live 3.6a before the new factor's
+  true cost was ever observed. Only a fresh slow streak measured after the
+  skip escalates again.
+  The criterion is whether tmux ever idles between frames, not whether a
+  write exceeds some multiple of the floor: a healthy drained pipe shows
+  tiny writes (tmux 3.7b at the floor: 33 ms mean, 40 ms max), while
+  sustained writes near the floor mean tmux runs at exact capacity with
+  zero slack, so backlog built during earlier bursts never drains and
+  replays on quit. Measured live under an earlier 1.4x-floor threshold,
+  tmux 3.6a held ~215 ms writes at factor 2 (under that threshold, so
+  escalation stopped) and never drained its backlog. The working factor is
+  remembered across frames, and quality recovery runs per motion episode: an
+  episode spans from the first budgeted frame after a settle emit (or
+  session start) to the next settle. Within an episode the ladder probes one
+  step weaker every 10 budgeted frames (about three seconds at the pacing
+  rate). A probe is a band-judged trial: while it is pending, any recorded
+  write reaching the probe band (60 percent of the resolved floor: 150 ms at
+  250 ms, 180 ms at the legacy 300 ms) fails it
+  at once, the ladder retreats straight to the pre-probe factor, and
+  probing is silenced for the rest of the episode: the ladder just watched
+  that sharper factor fail, so retrying it during sustained motion only
+  buys one brief saturation ramp per retry (live 3.6a at factor 2, just
+  over capacity, breathed quality on a ~15 s period under timed retries).
+  The trial survives only when the full 10-frame cadence has elapsed AND
+  the last three recorded writes are flat or falling with every one inside
+  the band; a window still rising at the cadence keeps the trial pending
+  until it either stabilises (survival) or crosses the band (retreat), so
+  no trial-length cap is needed. Survival keeps probing enabled,
+  so the ladder may step sharper again after the cool-down. Judging by the
+  band, not the escalation threshold, is what live 3.6a demanded: tmux's
+  buffers absorb a failing sharper factor, so writes ramped 20 -> 107 ms
+  across the cadence without ever reaching the 200 ms escalation threshold,
+  the trial was judged survived, and the next, sharper probe tipped the
+  accumulated queue (255-341 ms writes) and took the blame, hunting forever
+  with a lag spike each cycle. The stability requirement is what a later
+  3.6a run at the 300 ms floor demanded: the saturation ramp outlives the
+  trial window, with writes climbing 30 -> 146 ms across the ten-frame
+  cadence while staying inside the 180 ms band, so a cadence-only trial
+  declared survival, the writes then climbed to 250-296 ms, the escalation
+  backstop fired, and the ladder hunted on a cool-down cycle. A sharper probe also fires only when the
+  last three recorded writes all sit inside the band with no monotonic
+  rise: steady jitter (18, 20, 19 ms) passes, while a ramp (69, 83, 90 ms)
+  means tmux is buffering content the pipe cannot sustain, so probing
+  sharper mid-ramp would tip that queue. After a latency escalation the
+  probe stays suppressed for the cool-down (40 budgeted frames, about ten
+  seconds), because the freshly drained pipe writes tiny frames that would
+  otherwise re-sharpen it within the normal cadence and flap the ladder.
+  Full recovery belongs to the settle: the idle settle emit always shows
+  the page sharp at factor 1, and the next episode resumes at the sustained
+  pre-settle factor behind the same cool-down instead of re-running the
+  discovery cascade (live 3.6a resumed at factor 1 after every settle and
+  re-walked 1 -> 1.5 -> 2 -> 3 with 400-535 ms writes each time motion
+  returned). The 200 ms two-write escalation streak stays unchanged as the
+  hard backstop for content that gets heavier mid-episode; it never touches
+  the probing state. Byte-budget escalations keep the plain cadence.
+  The 256-colour palette is untouched. With `NYALA_DEBUG_TIMING=1` each
+  frame reports its encoded byte size and active factor on stderr.
+- Input-buffer raise. tmux 3.6 and later expose the `input-buffer-size`
+  server option (3.5a and earlier do not, which is one reason the version
+  gate refuses them Sixel entirely). When the XTVERSION reply names such a
+  version, Nyala runs `tmux set -s input-buffer-size 16777216` once at
+  startup; a successful set carries the version-tuned budget (15 MiB on
+  3.7+, 1.5 MB on 3.6.x, where the raise still protects ladder-floor frames
+  that overshoot the cap), and a failure keeps the 900 KB fallback. When the
+  version gate fails, no set runs at all: the tmux server is not mutated for
+  a session that will never send Sixel. The option is not restored on exit:
+  it persists for the tmux server lifetime.
+- Idle settle-to-sharp. When the Sixel stream goes idle for two effective
+  pacing intervals and the last emitted frame was blurred (ladder factor above 1),
+  the viewer re-encodes that frame at factor 1 and emits it once, so a
+  settled page always shows crisp text. The settle emit counts as a normal
+  paced handoff, ends the motion episode (the next episode resumes at the
+  remembered pre-settle factor with probing re-enabled), and disarms until
+  a new budgeted frame goes out.
 - No per-frame erase. A steady tmux Sixel frame carries the bare cursor-home
   prefix, the same as native: each new full-frame image paints over the old
   one with no blank state in between. tmux stores images on the active screen
@@ -204,10 +297,29 @@ behaviour:
   tmux keeps the normal fence.
 - Emit pacing. tmux re-encodes stored images for its host terminal, and live
   testing on tmux 3.7b showed sustained Sixel at ten frames per second kills
-  the pane's image rendering permanently while about three frames per second
-  survives, so Sixel frames are paced to at least 300 ms apart. The pacing
-  sits at the frame-coalescing seam: held-back frames are replaced
-  latest-wins, so no queue grows.
+  the pane's image rendering permanently, so Sixel frames are paced by a
+  version-tuned floor: 250 ms on tmux 3.7 and later, 300 ms below 3.7 or
+  when the version is unknown. The 250 ms value was bisected live on 3.7b
+  with ~4 MB full-quality frames, which tmux consumes in about 230 ms each.
+  A large frame leaves Nyala only as fast as tmux reads it from the pty, so
+  the frame write duration is a direct saturation signal: at 200 ms pacing
+  the pty write blocked for the full consumption time, a downstream backlog
+  built, and the display lagged live content, while at 250 ms writes stay at
+  ~33 ms and tmux drains fully between frames. The write signal is blind to
+  one stage, though: live tmux 3.6a at a settled factor kept its pty writes
+  fully drained (~20 ms) at the 250 ms floor yet showed periodic display
+  stalls followed by a rapid release of several frames, so the backlog sat
+  in 3.6a's output scheduler toward the host terminal, past the pty. The
+  same content at 300 ms showed no bursts, so older and unknown tmux pay the
+  wider floor. The escalation threshold, probe band, and settle delay all
+  derive from the resolved floor. Because the consumption time varies with
+  machine, grid, and content, the pacing backs off adaptively above the
+  floor: the next interval is the last measured write duration plus a 50 ms
+  margin whenever that exceeds the floor, capped at 1 s so one pathological
+  write cannot freeze the stream. The pacing sits at the frame-coalescing
+  seam: held-back frames are replaced latest-wins, so no queue grows. With
+  `NYALA_DEBUG_TIMING=1` each write reports its duration and the next
+  effective interval on stderr.
 
 GNU screen blocks graphics passthrough, and herdr consumes graphics sequences
 and reports no cell geometry, so both stay Block only with no handshake.

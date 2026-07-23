@@ -67,12 +67,26 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 			// Sixel via syncUpdatesEnabled, so Block under tmux keeps its
 			// fence.
 			st.compat.sixelSyncUpdatesDisabled = true
-			// tmux re-encodes each Sixel frame for its host terminal, so the
-			// Sixel path caps each frame's bytes to keep that pipeline fast.
-			// tmux 3.6 and later also raise the server's input-buffer-size
-			// option as a safety net against silent DCS discard on overshoot.
-			st.sixelBudget.limit = resolveTmuxSixelBudget(res.TermID, runTmux)
-			st.sixelBudget.debug = os.Getenv(debugTimingEnv) != ""
+			// Sixel is version-gated to tmux 3.6 and later
+			// (tmuxSixelSupported). When the gate fails no Sixel flows, so
+			// the tmux server mutation inside resolveTmuxSixelBudget is
+			// skipped and the budget and floor stay unarmed.
+			if tmuxSixelSupported(res.TermID) {
+				// A successful input-buffer-size raise carries a
+				// version-tuned budget: the raised full-quality budget on
+				// 3.7+, where rate pacing alone suffices, and the 1.5 MB
+				// output-stage rate cap on 3.6.x, whose re-encoded output
+				// toward the host terminal saturates invisibly at higher
+				// byte rates. A failed set keeps the 900 KB fallback under
+				// the default 1 MiB input buffer.
+				st.sixelBudget.limit = resolveTmuxSixelBudget(res.TermID, runTmux)
+				// The pacing floor is version-tuned: tmux 3.7 and later
+				// drain their output scheduler at 250 ms, while 3.6.x needs
+				// 300 ms to avoid stall-and-burst release toward the host
+				// terminal.
+				st.sixelBudget.minInterval = resolveTmuxSixelMinInterval(res.TermID)
+				st.sixelBudget.debug = os.Getenv(debugTimingEnv) != ""
+			}
 		}
 		st.Colour = resolveCompatibleColour(colourFlag, environ, detected, st.compat)
 		// The reduced handshake sent no Kitty probe, so the transport resolves
@@ -80,7 +94,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 		// wins and auto falls back to direct.
 		st.kittyTransport = resolveKittyTransport(transportFlag, "", false, runtime.GOOS)
 		realGeometry := overrideOK || winOK || res.cellPxOK
-		st.SetEnabled(multiplexerBackends(mux, res.Sixel, realGeometry, st.compat))
+		st.SetEnabled(multiplexerBackends(mux, res.TermID, res.Sixel, realGeometry, st.compat))
 		st.Backend = multiplexerStartBackend(mux, st.Enabled)
 		return nil
 	}

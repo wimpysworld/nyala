@@ -120,6 +120,36 @@ func TestStreamWriterOrdersItemsUnderSlowTTY(t *testing.T) {
 	}
 }
 
+// TestStreamWriterMeasuresTmuxSixelWriteDuration pins the seam the adaptive tmux
+// pacing gate feeds on: a tmux Sixel item returns its write duration on free even
+// with the fps meter off (timed false), while a plain untimed item pays no clock
+// read and returns none.
+func TestStreamWriterMeasuresTmuxSixelWriteDuration(t *testing.T) {
+	const delay = 20 * time.Millisecond
+	tty := &slowWriter{delay: delay}
+	w := newStreamWriter(tty)
+
+	buf := bytes.NewBufferString("frame")
+	w.send(writeItem{buf: buf, tmuxSixel: true})
+	fi := <-w.free
+	if !fi.tmuxSixel {
+		t.Fatal("free item lost the tmux Sixel tag")
+	}
+	if fi.writeDur < delay {
+		t.Fatalf("writeDur = %v, want at least the %v tty delay", fi.writeDur, delay)
+	}
+	if fi.writeMS != 0 {
+		t.Fatalf("untimed item recorded writeMS = %v for the fps meter, want 0", fi.writeMS)
+	}
+
+	w.send(writeItem{buf: buf})
+	fi = <-w.free
+	if fi.writeDur != 0 || fi.tmuxSixel {
+		t.Fatalf("plain item returned writeDur = %v, tmuxSixel = %v, want zero and false", fi.writeDur, fi.tmuxSixel)
+	}
+	w.stop()
+}
+
 // TestStreamWriterStopDrainsQueuedItems asserts stop drains the item already handed
 // off before the writer exits, closes done, and never writes after it returns, so a
 // teardown loses no in-flight frame and leaves no goroutine writing the terminal.
