@@ -1,7 +1,6 @@
 package viewer
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -9,7 +8,6 @@ import (
 	"image/color"
 	"io"
 	"os"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -113,146 +111,6 @@ func TestSetEnabledNominatesCeiling(t *testing.T) {
 			}
 			if last := s.Enabled[len(s.Enabled)-1]; last != c.wantLast {
 				t.Fatalf("last enabled = %d, want %d (block floor)", last, c.wantLast)
-			}
-		})
-	}
-}
-
-// TestResolveScheme asserts the interactive --blocks resolution: half and
-// quadrant map straight through, auto and sextant render sextant on a supported
-// terminal and degrade to quadrant on an unsupported one.
-func TestResolveScheme(t *testing.T) {
-	supportedEnv := []string{"TERM=xterm-kitty"}
-	unsupportedEnv := []string{"TERM=xterm-256color"}
-	cases := []struct {
-		name   string
-		blocks string
-		env    []string
-		scheme block.Scheme
-	}{
-		{"quadrant", "quadrant", supportedEnv, block.SchemeQuadrant},
-		{"half", "half", supportedEnv, block.SchemeHalfBlock},
-		{"auto supported", "auto", supportedEnv, block.SchemeSextant},
-		{"auto unsupported", "auto", unsupportedEnv, block.SchemeQuadrant},
-		{"sextant supported", "sextant", supportedEnv, block.SchemeSextant},
-		{"sextant unsupported", "sextant", unsupportedEnv, block.SchemeQuadrant},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := resolveScheme(c.blocks, c.env); got != c.scheme {
-				t.Errorf("resolveScheme(%q, env) = %d, want %d", c.blocks, got, c.scheme)
-			}
-		})
-	}
-}
-
-// TestDecodeCSI asserts the CSI body decoder maps the arrow finals A/B/C/D and
-// the PageUp/PageDown bodies 5~/6~ to their scroll keys, and rejects an
-// unrecognised body (here the Home key, ESC [ H).
-func TestDecodeCSI(t *testing.T) {
-	cases := []struct {
-		body string
-		want ScrollKey
-		ok   bool
-	}{
-		{"A", ScrollUp, true},
-		{"B", ScrollDown, true},
-		{"C", ScrollRight, true},
-		{"D", ScrollLeft, true},
-		{"5~", ScrollPageUp, true},
-		{"6~", ScrollPageDown, true},
-		{"H", ScrollNone, false},
-		{"", ScrollNone, false},
-	}
-	for _, c := range cases {
-		t.Run(c.body, func(t *testing.T) {
-			got, ok := decodeCSI([]byte(c.body))
-			if ok != c.ok || got != c.want {
-				t.Fatalf("decodeCSI(%q) = (%d, %v), want (%d, %v)", c.body, got, ok, c.want, c.ok)
-			}
-		})
-	}
-}
-
-// TestNextEventCSI asserts the reader resolves whole CSI escape sequences into
-// scroll events: each arrow and PageUp/PageDown sequence yields one scroll
-// keyEvent, a plain byte yields a byte event, an unrecognised CSI sequence (Home,
-// ESC [ H) is dropped, and a bare ESC passes through as a byte event. It reads
-// from a bufio.Reader the way readKeys does, so it pins the multi-byte parse.
-func TestNextEventCSI(t *testing.T) {
-	cases := []struct {
-		name       string
-		in         string
-		wantScroll ScrollKey
-		wantByte   byte
-		wantEmit   bool
-	}{
-		{"up arrow", "\x1b[A", ScrollUp, 0, true},
-		{"down arrow", "\x1b[B", ScrollDown, 0, true},
-		{"right arrow", "\x1b[C", ScrollRight, 0, true},
-		{"left arrow", "\x1b[D", ScrollLeft, 0, true},
-		{"page up", "\x1b[5~", ScrollPageUp, 0, true},
-		{"page down", "\x1b[6~", ScrollPageDown, 0, true},
-		{"plain byte", "q", ScrollNone, 'q', true},
-		{"tab byte", "\t", ScrollNone, keyTab, true},
-		{"unknown csi dropped", "\x1b[H", ScrollNone, 0, false},
-		{"bare esc passthrough", "\x1bq", ScrollNone, keyEsc, true},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			br := bufio.NewReader(strings.NewReader(c.in))
-			first, err := br.ReadByte()
-			if err != nil {
-				t.Fatalf("read first byte: %v", err)
-			}
-			ev, emit := nextEvent(br, first)
-			if emit != c.wantEmit {
-				t.Fatalf("nextEvent emit = %v, want %v", emit, c.wantEmit)
-			}
-			if !emit {
-				return
-			}
-			if ev.scroll != c.wantScroll {
-				t.Fatalf("nextEvent scroll = %d, want %d", ev.scroll, c.wantScroll)
-			}
-			if ev.scroll == ScrollNone && ev.b != c.wantByte {
-				t.Fatalf("nextEvent byte = %q, want %q", ev.b, c.wantByte)
-			}
-		})
-	}
-}
-
-// TestReadKeysKeepsQuitKeysAfterDownArrow asserts a Down-arrow CSI sequence
-// does not swallow later quit keys from the same input stream.
-func TestReadKeysKeepsQuitKeysAfterDownArrow(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want byte
-	}{
-		{"q", "\x1b[Bq", 'q'},
-		{"ctrl-c", "\x1b[B\x03", keyQuitCtrlC},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			done := make(chan struct{})
-			defer close(done)
-			keys := readKeys(strings.NewReader(c.in), done)
-
-			first, ok := <-keys
-			if !ok {
-				t.Fatalf("first event missing, want Down arrow")
-			}
-			if first.scroll != ScrollDown {
-				t.Fatalf("first event scroll = %d, want ScrollDown", first.scroll)
-			}
-
-			second, ok := <-keys
-			if !ok {
-				t.Fatalf("second event missing, want %q", c.want)
-			}
-			if second.scroll != ScrollNone || second.b != c.want {
-				t.Fatalf("second event = %+v, want byte %q", second, c.want)
 			}
 		})
 	}
@@ -600,239 +458,14 @@ func TestRenderFrameNoFit(t *testing.T) {
 	}
 }
 
-// muxKeys is every focus-multiplexer env var detectMultiplexer reads.
-// clearMuxEnv unsets all of them for the current test, registering cleanup, so
-// a host-set TMUX or ZELLIJ does not leak into a false-branch case.
-var muxKeys = []string{"TMUX", "ZELLIJ", "HERDR_ENV", "HERDR_PANE_ID", "STY"}
-
+// clearMuxEnv unsets every focus-multiplexer env var in muxKeys for the
+// current test, registering cleanup, so a host-set TMUX or ZELLIJ does not
+// leak into a false-branch case.
 func clearMuxEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range muxKeys {
 		t.Setenv(k, "") // register the cleanup restore
 		os.Unsetenv(k)  // then remove it so LookupEnv reports absent
-	}
-}
-
-// TestDetectMultiplexer asserts detectMultiplexer reports the right kind for
-// each focus multiplexer and muxNone when none is set. ZELLIJ is a presence
-// signal: a bare ZELLIJ=0 still gates. herdr needs both HERDR_ENV=1 and
-// HERDR_PANE_ID; one key alone does not gate.
-func TestDetectMultiplexer(t *testing.T) {
-	cases := []struct {
-		name string
-		env  map[string]string
-		want multiplexerKind
-	}{
-		{"none set", nil, muxNone},
-		{"tmux", map[string]string{"TMUX": "/tmp/tmux-1000/default,123,0"}, muxTmux},
-		{"zellij present", map[string]string{"ZELLIJ": "1"}, muxZellij},
-		{"zellij zero is presence", map[string]string{"ZELLIJ": "0"}, muxZellij},
-		{"screen", map[string]string{"STY": "1234.pts-0.host"}, muxScreen},
-		{"herdr both keys", map[string]string{"HERDR_ENV": "1", "HERDR_PANE_ID": "p1"}, muxHerdr},
-		{"herdr env only", map[string]string{"HERDR_ENV": "1"}, muxNone},
-		{"herdr pane only", map[string]string{"HERDR_PANE_ID": "p1"}, muxNone},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			clearMuxEnv(t)
-			for k, v := range c.env {
-				t.Setenv(k, v)
-			}
-			if got := detectMultiplexer(); got != c.want {
-				t.Fatalf("detectMultiplexer() = %v, want %v", got, c.want)
-			}
-		})
-	}
-}
-
-// TestMultiplexerBackends drives the pure per-multiplexer backend policy:
-// Sixel is offered under tmux and zellij only when DA1 advertised it and the
-// cell geometry is real, Kitty is never offered, screen and herdr stay block
-// only regardless of capability, and the Rio compatibility deny still gates
-// Sixel off.
-func TestMultiplexerBackends(t *testing.T) {
-	cases := []struct {
-		name     string
-		mux      multiplexerKind
-		sixelDA1 bool
-		geometry bool
-		compat   terminalCompatibility
-		want     []Backend
-	}{
-		{"tmux sixel and geometry", muxTmux, true, true, terminalCompatibility{}, []Backend{BackendSixel, BackendBlock}},
-		{"tmux sixel no geometry", muxTmux, true, false, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"tmux no sixel", muxTmux, false, true, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"zellij sixel and geometry", muxZellij, true, true, terminalCompatibility{}, []Backend{BackendSixel, BackendBlock}},
-		{"zellij da1 without geometry is not trusted", muxZellij, true, false, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"zellij no sixel", muxZellij, false, true, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"screen ignores capability", muxScreen, true, true, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"herdr ignores capability", muxHerdr, true, true, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"rio deny gates tmux sixel", muxTmux, true, true, terminalCompatibility{rio04: true}, []Backend{BackendBlock}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := multiplexerBackends(c.mux, c.sixelDA1, c.geometry, c.compat)
-			if !slices.Equal(got, c.want) {
-				t.Fatalf("multiplexerBackends = %v, want %v", got, c.want)
-			}
-		})
-	}
-}
-
-// TestMultiplexerSixelPassesForcedBackend asserts that when the multiplexer
-// policy offers Sixel, an explicit --backend=sixel passes the generic
-// validator, so live testing inside tmux and zellij can force the backend.
-func TestMultiplexerSixelPassesForcedBackend(t *testing.T) {
-	enabled := multiplexerBackends(muxTmux, true, true, terminalCompatibility{})
-	if err := ValidateForcedBackend(ModeSixel, enabled); err != nil {
-		t.Fatalf("ValidateForcedBackend(sixel, %v) = %v, want nil", enabled, err)
-	}
-	if err := ValidateForcedBackend(ModeKitty, enabled); err == nil {
-		t.Fatalf("ValidateForcedBackend(kitty, %v) = nil, want error", enabled)
-	}
-}
-
-// TestMultiplexerStartBackend drives the pure auto-start nomination under a
-// focus multiplexer: tmux starts on the cycle head (Sixel when gated in),
-// zellij demotes the start to Block while Sixel stays in the cycle (its image
-// id collision drops every third full-replacement frame), a failed zellij gate
-// stays Block, and screen and herdr keep their Block-only start.
-func TestMultiplexerStartBackend(t *testing.T) {
-	sixelCycle := []Backend{BackendSixel, BackendBlock}
-	blockOnly := []Backend{BackendBlock}
-	cases := []struct {
-		name    string
-		mux     multiplexerKind
-		enabled []Backend
-		want    Backend
-	}{
-		{"tmux gated in starts sixel", muxTmux, sixelCycle, BackendSixel},
-		{"zellij gated in demotes to block", muxZellij, sixelCycle, BackendBlock},
-		{"zellij failed gate stays block", muxZellij, blockOnly, BackendBlock},
-		{"tmux failed gate stays block", muxTmux, blockOnly, BackendBlock},
-		{"screen stays block", muxScreen, blockOnly, BackendBlock},
-		{"herdr stays block", muxHerdr, blockOnly, BackendBlock},
-		{"empty cycle falls back to block", muxTmux, nil, BackendBlock},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := multiplexerStartBackend(c.mux, c.enabled); got != c.want {
-				t.Fatalf("multiplexerStartBackend(%v, %v) = %v, want %v", c.mux, c.enabled, got, c.want)
-			}
-		})
-	}
-}
-
-// TestZellijForcedSixelStillStarts guards the manual escape hatch: with the
-// zellij demotion applied, --backend=sixel still validates against the enabled
-// cycle and applyForcedBackend starts the session on Sixel.
-func TestZellijForcedSixelStillStarts(t *testing.T) {
-	st := NewState(80, 24)
-	st.SetEnabled(multiplexerBackends(muxZellij, true, true, terminalCompatibility{}))
-	st.Backend = multiplexerStartBackend(muxZellij, st.Enabled)
-	if st.Backend != BackendBlock {
-		t.Fatalf("zellij auto start = %v, want %v", st.Backend, BackendBlock)
-	}
-	if err := ValidateForcedBackend(ModeSixel, st.Enabled); err != nil {
-		t.Fatalf("ValidateForcedBackend(sixel, %v) = %v, want nil", st.Enabled, err)
-	}
-	applyForcedBackend(&st, ModeSixel)
-	if st.Backend != BackendSixel {
-		t.Fatalf("forced backend = %v, want %v", st.Backend, BackendSixel)
-	}
-}
-
-// TestConfigureBackendsSkipsHandshakeUnderScreenAndHerdr asserts that under
-// GNU screen and herdr configureBackends enables block only and runs no
-// handshake at all. Both probes write their query batch to the tty as a first
-// act, so a tty file left empty after the call proves neither ran. A non-mux
-// baseline proves the same file path does carry a write when the handshake
-// runs.
-func TestConfigureBackendsSkipsHandshakeUnderScreenAndHerdr(t *testing.T) {
-	cases := []struct {
-		name string
-		env  map[string]string
-	}{
-		{"screen", map[string]string{"STY": "1234.pts-0.host"}},
-		{"herdr", map[string]string{"HERDR_ENV": "1", "HERDR_PANE_ID": "p1"}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			clearMuxEnv(t)
-			for k, v := range c.env {
-				t.Setenv(k, v)
-			}
-
-			tty := newTempTTY(t)
-			st := NewState(80, 24)
-			if err := configureBackends(&st, tty, 80, 24, "auto", "auto"); err != nil {
-				t.Fatalf("configureBackends: %v", err)
-			}
-
-			if len(st.Enabled) != 1 || st.Enabled[0] != BackendBlock {
-				t.Fatalf("enabled = %v, want [BackendBlock]", st.Enabled)
-			}
-			if n := ttyByteCount(t, tty); n != 0 {
-				t.Fatalf("handshake wrote %d bytes; no probe must run", n)
-			}
-		})
-	}
-}
-
-// TestConfigureBackendsReducedHandshakeUnderTmuxAndZellij asserts that under
-// tmux and zellij configureBackends writes exactly the reduced query batch
-// (no Kitty APC probe) and, with no replies on the temp-file tty, falls to
-// block only: an unanswered DA1 must never enable Sixel.
-func TestConfigureBackendsReducedHandshakeUnderTmuxAndZellij(t *testing.T) {
-	cases := []struct {
-		name string
-		env  map[string]string
-	}{
-		{"tmux", map[string]string{"TMUX": "/tmp/tmux-1000/default,123,0"}},
-		{"zellij", map[string]string{"ZELLIJ": "1"}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			clearMuxEnv(t)
-			for k, v := range c.env {
-				t.Setenv(k, v)
-			}
-
-			tty := newTempTTY(t)
-			st := NewState(80, 24)
-			if err := configureBackends(&st, tty, 80, 24, "auto", "auto"); err != nil {
-				t.Fatalf("configureBackends: %v", err)
-			}
-
-			if len(st.Enabled) != 1 || st.Enabled[0] != BackendBlock {
-				t.Fatalf("enabled = %v, want [BackendBlock] with no replies", st.Enabled)
-			}
-			wrote := readTTYBytes(t, tty)
-			if !bytes.Equal(wrote, reducedQueryBytes()) {
-				t.Fatalf("handshake wrote %q, want the reduced batch %q", wrote, reducedQueryBytes())
-			}
-			if bytes.Contains(wrote, []byte("\x1b_G")) {
-				t.Fatalf("reduced handshake carried a Kitty APC probe: %q", wrote)
-			}
-		})
-	}
-}
-
-// TestConfigureBackendsRunsHandshakeWithoutMux is the skip-handshake baseline:
-// with no mux env var set, configureBackends calls probeTerminal, which writes
-// the query batch to the tty. A non-empty tty file proves the handshake ran, so
-// the empty-file assertion under mux is meaningful, not vacuous.
-func TestConfigureBackendsRunsHandshakeWithoutMux(t *testing.T) {
-	clearMuxEnv(t)
-
-	tty := newTempTTY(t)
-	st := NewState(80, 24)
-	if err := configureBackends(&st, tty, 80, 24, "auto", "auto"); err != nil {
-		t.Fatalf("configureBackends: %v", err)
-	}
-
-	if n := ttyByteCount(t, tty); n == 0 {
-		t.Fatalf("handshake wrote no bytes without mux; probeTerminal should run")
 	}
 }
 
@@ -848,121 +481,6 @@ func newTempTTY(t *testing.T) *os.File {
 	}
 	t.Cleanup(func() { _ = f.Close() })
 	return f
-}
-
-// ttyByteCount returns the number of bytes written to the temp tty file.
-func ttyByteCount(t *testing.T, f *os.File) int64 {
-	t.Helper()
-	info, err := f.Stat()
-	if err != nil {
-		t.Fatalf("stat tty: %v", err)
-	}
-	return info.Size()
-}
-
-// readTTYBytes returns everything written to the temp tty file.
-func readTTYBytes(t *testing.T, f *os.File) []byte {
-	t.Helper()
-	data, err := os.ReadFile(f.Name())
-	if err != nil {
-		t.Fatalf("read tty: %v", err)
-	}
-	return data
-}
-
-// TestCellPxDefaultWhenGeometryAbsent asserts that when every geometry report is
-// absent the resolved cell pixel size is the 8x16 default (8 wide, 16 tall). The
-// source of truth is cellraster.CellPxW (8) and cellraster.CellPxH (16).
-// NewState seeds these, and a temp file tty has no winsize and no handshake reply,
-// so the chain rests on them.
-func TestCellPxDefaultWhenGeometryAbsent(t *testing.T) {
-	if cellraster.CellPxW != 8 || cellraster.CellPxH != 16 {
-		t.Fatalf("raster default = %dx%d, want 8x16 (pinned Route A raster in docs/STAGE-0.md)", cellraster.CellPxW, cellraster.CellPxH)
-	}
-	st := NewState(80, 24)
-	if st.W != 8 || st.H != 16 {
-		t.Fatalf("default cell px = %dx%d, want 8x16", st.W, st.H)
-	}
-}
-
-// TestCellPxInBounds exercises the real winsize sanity window. winsizeCellPixels
-// reads a live ioctl, so the bound is split into the pure cellPx.inBounds, which
-// this table drives directly with the boundary values. That puts the real
-// comparison operators under test: flipping a < to <= at an edge fails a case
-// here. A derived cell px is accepted only when 4..32 wide and 8..64 tall.
-func TestCellPxInBounds(t *testing.T) {
-	if winsizeMinCellW != 4 || winsizeMaxCellW != 32 {
-		t.Fatalf("width bound = %d..%d, want 4..32", winsizeMinCellW, winsizeMaxCellW)
-	}
-	if winsizeMinCellH != 8 || winsizeMaxCellH != 64 {
-		t.Fatalf("height bound = %d..%d, want 8..64", winsizeMinCellH, winsizeMaxCellH)
-	}
-	cases := []struct {
-		name string
-		pxX  int
-		pxY  int
-		want bool
-	}{
-		{"in range", 8, 16, true},
-		{"min edge", winsizeMinCellW, winsizeMinCellH, true},
-		{"max edge", winsizeMaxCellW, winsizeMaxCellH, true},
-		{"width below min", winsizeMinCellW - 1, 16, false},
-		{"width above max", winsizeMaxCellW + 1, 16, false},
-		{"height below min", 8, winsizeMinCellH - 1, false},
-		{"height above max", 8, winsizeMaxCellH + 1, false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := (cellPx{W: c.pxX, H: c.pxY}).inBounds(); got != c.want {
-				t.Fatalf("cellPx{%d, %d}.inBounds() = %v, want %v", c.pxX, c.pxY, got, c.want)
-			}
-		})
-	}
-}
-
-// TestDeriveCellPixels exercises the pure core of winsizeCellPixels with
-// synthetic winsize fields the live ioctl cannot supply. It pins the named
-// 32000x0 bogus report: Ypixel 0 trips the zero-guard, so it resolves to ok=false
-// before any division. It also pins a healthy report, a derived cell px outside
-// the sanity window, and the round-to-nearest rule on both axes: a fractional
-// device-pixel cell (xpixel no exact multiple of cols) rounds to the nearest
-// integer cell instead of flooring, so the derived surface can overshoot the
-// reported pixels by under half a cell per axis but never undershoots by up to a
-// full cell (the Ghostty/WezTerm zoom-out shrink).
-func TestDeriveCellPixels(t *testing.T) {
-	cases := []struct {
-		name                     string
-		xpixel, ypixel, col, row int
-		wantX, wantY             int
-		wantOK                   bool
-	}{
-		{"healthy 80x24 at 8x16", 640, 384, 80, 24, 8, 16, true},
-		{"32000x0 bogus winsize", 32000, 0, 80, 24, 0, 0, false},
-		{"zero xpixel", 0, 384, 80, 24, 0, 0, false},
-		{"zero col", 640, 384, 0, 24, 0, 0, false},
-		{"zero row", 640, 384, 80, 0, 0, 0, false},
-		{"derived cell px too wide", 32000, 384, 80, 24, 0, 0, false},
-		// 688/80 = 8.6: floor lost 48 px of surface (0.6 px per column), round
-		// overshoots by only 32 px. 404/24 = 16.83 rounds up the same way.
-		{"fractional cell rounds up", 688, 404, 80, 24, 9, 17, true},
-		// 675/80 = 8.4375 and 392/24 = 16.33 sit under the half-cell midpoint,
-		// so both round down to the floor value.
-		{"fractional cell rounds down", 675, 392, 80, 24, 8, 16, true},
-		// Mixed axes: width rounds down (8.4375), height rounds up (16.83).
-		{"fractional axes round independently", 675, 404, 80, 24, 8, 17, true},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			px, ok := deriveCellPixels(c.xpixel, c.ypixel, c.col, c.row)
-			if ok != c.wantOK {
-				t.Fatalf("deriveCellPixels(%d,%d,%d,%d) ok = %v, want %v",
-					c.xpixel, c.ypixel, c.col, c.row, ok, c.wantOK)
-			}
-			if ok && (px.W != c.wantX || px.H != c.wantY) {
-				t.Fatalf("cell px = %dx%d, want %dx%d", px.W, px.H, c.wantX, c.wantY)
-			}
-		})
-	}
 }
 
 // TestFitSixelToGrid pins the Sixel grid fit: a frame at the grid extent
@@ -987,59 +505,28 @@ func TestFitSixelToGrid(t *testing.T) {
 	}
 }
 
-// TestParseCellPxOverride exercises the NYALA_CELL_PX override parser. It pins
-// the diagnostic knob: a valid "WxH" resolves to that cell size and takes
-// precedence, an unset value resolves to ok=false, and any malformed value fails
-// loudly with an error rather than falling back.
-func TestParseCellPxOverride(t *testing.T) {
-	cases := []struct {
-		name         string
-		value        string
-		set          bool
-		wantW, wantH int
-		wantOK       bool
-		wantErr      bool
-	}{
-		{name: "unset", value: "", set: false, wantOK: false},
-		{name: "valid 16x33", value: "16x33", set: true, wantW: 16, wantH: 33, wantOK: true},
-		{name: "empty set value", value: "", set: true, wantErr: true},
-		{name: "no separator", value: "1633", set: true, wantErr: true},
-		{name: "non-integer width", value: "axb", set: true, wantErr: true},
-		{name: "trailing junk", value: "16x33px", set: true, wantErr: true},
-		{name: "zero width", value: "0x33", set: true, wantErr: true},
-		{name: "zero height", value: "16x0", set: true, wantErr: true},
-		{name: "negative width", value: "-16x33", set: true, wantErr: true},
-		{name: "negative height", value: "16x-33", set: true, wantErr: true},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			px, ok, err := parseCellPxOverride(c.value, c.set)
-			if c.wantErr {
-				if err == nil {
-					t.Fatalf("parseCellPxOverride(%q, %v) err = nil, want error", c.value, c.set)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("parseCellPxOverride(%q, %v): %v", c.value, c.set, err)
-			}
-			if ok != c.wantOK {
-				t.Fatalf("ok = %v, want %v", ok, c.wantOK)
-			}
-			if ok && (px.W != c.wantW || px.H != c.wantH) {
-				t.Fatalf("cell px = %dx%d, want %dx%d", px.W, px.H, c.wantW, c.wantH)
-			}
-		})
-	}
-}
+// TestFitSixelToGridHonoursBottomRowReservation pins the reconciliation
+// between fitSixelToGrid and the engine-grid reservation: an engine-sized
+// (rows-1) frame under tmux passes through unchanged rather than being
+// upscaled back over the reserved row, and a stale full-height frame is
+// rescaled down to the reserved extent.
+func TestFitSixelToGridHonoursBottomRowReservation(t *testing.T) {
+	st := NewState(8, 4)
+	st.mux = muxTmux
+	st.Backend = BackendSixel
+	gridW, gridH := 8*st.W, 3*st.H // engine grid: rows-1
 
-// TestWinsizeCellPixelsNonTTY pins the ioctl-failure fall-through the 8x16
-// default relies on. A non-terminal fd has no winsize, so the ioctl fails and
-// winsizeCellPixels returns ok=false before the pure core runs.
-func TestWinsizeCellPixelsNonTTY(t *testing.T) {
-	tty := newTempTTY(t)
-	if _, ok := winsizeCellPixels(tty.Fd(), 80, 24); ok {
-		t.Fatalf("winsizeCellPixels on a non-tty returned ok=true, want false")
+	engineSized := image.NewRGBA(image.Rect(0, 0, gridW, gridH))
+	if got := st.fitSixelToGrid(engineSized); got != engineSized {
+		t.Fatalf("engine-sized frame was rescaled: bounds %v, want unchanged %v",
+			got.Bounds(), engineSized.Bounds())
+	}
+
+	fullHeight := image.NewRGBA(image.Rect(0, 0, gridW, 4*st.H))
+	got := st.fitSixelToGrid(fullHeight)
+	if got.Bounds().Dx() != gridW || got.Bounds().Dy() != gridH {
+		t.Fatalf("full-height frame fit = %v, want %dx%d (reserved bottom row)",
+			got.Bounds(), gridW, gridH)
 	}
 }
 
