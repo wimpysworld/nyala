@@ -416,12 +416,14 @@ func writeImageSamples(w io.Writer, img image.Image) {
 
 func measureInternalRender(t *testing.T, tc internalRenderCase, frames [2]render.Frame) internalRenderResult {
 	t.Helper()
+	// One extra terminal row for the bottom bar keeps the compose grid at
+	// exactly the captured frame grid.
 	state := State{
 		Backend: tc.backend,
 		Scheme:  block.SchemeQuadrant,
 		Colour:  ColourTrue,
 		Cols:    tc.width / internalRenderCellW,
-		Rows:    tc.height / internalRenderCellH,
+		Rows:    tc.height/internalRenderCellH + 1,
 	}
 	if tc.backend == BackendBlock {
 		state.SetDiff(&block.GridDiff{})

@@ -37,7 +37,9 @@ func trueColourBenchFrame(cols, rows, phase int) render.Frame {
 }
 
 func trueColourBenchState(cols, rows int) *State {
-	s := NewState(cols, rows)
+	// One extra terminal row for the bottom bar keeps the compose grid at
+	// exactly cols x rows, matching the benchmark frames.
+	s := NewState(cols, rows+1)
 	s.SetEnabled([]Backend{BackendBlock})
 	s.SetDiff(&block.GridDiff{})
 	return &s

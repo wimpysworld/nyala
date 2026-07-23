@@ -79,6 +79,50 @@ func (e *ChromiumEngine) SendNav(a NavAction) {
 	e.dispatchInput(ctx, navDispatchAction(a))
 }
 
+// OpenURL navigates the page to url as a normal navigation, pushing a history
+// entry, through the same raw Page.navigate path and bounded dispatch timeout
+// NavHome uses, so a wedged browser drops the request instead of parking the
+// caller. It resets the held scroll offset because the new document starts at
+// the top. It never rewrites the held launch URL: NavHome permanently returns
+// to the page Nyala was launched with.
+func (e *ChromiumEngine) OpenURL(url string) {
+	e.mu.Lock()
+	ctx := e.ctx
+	e.scrollX, e.scrollY, e.scrollYTarget = 0, 0, 0
+	e.mu.Unlock()
+	if ctx == nil {
+		return
+	}
+	runCtx, cancel := context.WithTimeout(ctx, inputDispatchTimeout)
+	defer cancel()
+	_, _, _, _ = e.runNavigate(runCtx, url)
+}
+
+// CurrentURL returns the last committed main-frame URL, falling back to the
+// launch URL before the first commit. watchLifecycle records commits and
+// within-document navigation, so the value tracks SPA and fragment moves.
+func (e *ChromiumEngine) CurrentURL() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.currentURL != "" {
+		return e.currentURL
+	}
+	return e.url
+}
+
+// recordCurrentURL stores the committed main-frame URL CurrentURL reports.
+// watchLifecycle calls it for main-frame Page.frameNavigated and
+// Page.navigatedWithinDocument events; an empty URL is dropped so a sparse
+// event never blanks the display back to the launch URL.
+func (e *ChromiumEngine) recordCurrentURL(url string) {
+	if url == "" {
+		return
+	}
+	e.mu.Lock()
+	e.currentURL = url
+	e.mu.Unlock()
+}
+
 // navDispatchAction builds the chromedp action one non-home NavAction runs: a
 // raw Page.reload, or a history step through Page.getNavigationHistory and
 // Page.navigateToHistoryEntry. Neither waits for the page to load, matching

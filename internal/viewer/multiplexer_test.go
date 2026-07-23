@@ -5,40 +5,6 @@ import (
 	"testing"
 )
 
-// TestEngineRows pins the pure engine-grid row decision: Sixel under tmux
-// reserves the bottom terminal row, every other backend-multiplexer pair
-// keeps the full grid, and a grid below two rows never shrinks.
-func TestEngineRows(t *testing.T) {
-	cases := []struct {
-		name    string
-		backend Backend
-		mux     multiplexerKind
-		rows    int
-		want    int
-	}{
-		{"sixel under tmux reserves bottom row", BackendSixel, muxTmux, 24, 23},
-		{"sixel under zellij keeps full grid", BackendSixel, muxZellij, 24, 24},
-		{"block under tmux keeps full grid", BackendBlock, muxTmux, 24, 24},
-		{"block under zellij keeps full grid", BackendBlock, muxZellij, 24, 24},
-		{"kitty under tmux keeps full grid", BackendKitty, muxTmux, 24, 24},
-		{"sixel on native terminal keeps full grid", BackendSixel, muxNone, 24, 24},
-		{"block on native terminal keeps full grid", BackendBlock, muxNone, 24, 24},
-		{"sixel under screen keeps full grid", BackendSixel, muxScreen, 24, 24},
-		{"sixel under herdr keeps full grid", BackendSixel, muxHerdr, 24, 24},
-		{"two rows reserve to one", BackendSixel, muxTmux, 2, 1},
-		{"one row never shrinks", BackendSixel, muxTmux, 1, 1},
-		{"zero rows pass through", BackendSixel, muxTmux, 0, 0},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := engineRows(tc.backend, tc.mux, tc.rows); got != tc.want {
-				t.Fatalf("engineRows(%v, %v, %d) = %d, want %d",
-					tc.backend, tc.mux, tc.rows, got, tc.want)
-			}
-		})
-	}
-}
-
 // muxKeys is every focus-multiplexer env var detectMultiplexer reads.
 // clearMuxEnv unsets all of them for the current test, registering cleanup, so
 // a host-set TMUX or ZELLIJ does not leak into a false-branch case.

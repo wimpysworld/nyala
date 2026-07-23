@@ -36,9 +36,23 @@ type ChromiumEngine struct {
 	cancel context.CancelFunc
 
 	// Page state held outside chromedp for crash recovery.
-	url     string // current URL
+	url     string // launch URL, recorded once by Navigate and never rewritten
 	scrollX int    // current scroll offset X in CSS pixels
 	scrollY int    // dispatched scroll offset Y in CSS pixels (block: whole-cell snapped)
+
+	// currentURL is the last committed main-frame URL, recorded by
+	// watchLifecycle from Page.frameNavigated and kept fresh by
+	// Page.navigatedWithinDocument for SPA and fragment navigation. It is
+	// display state only: crash recovery and NavHome navigate to url. Empty
+	// before the first commit, when CurrentURL falls back to the launch URL.
+	currentURL string
+
+	// browserProduct is the raw Browser.getVersion product string (for
+	// example "HeadlessChrome/138.0.7204.49"), fetched once at session start
+	// and cached for the engine lifetime, so a crash rebuild does not refetch
+	// it. BrowserVersion normalises it for display. Empty when the fetch has
+	// not run or failed.
+	browserProduct string
 
 	// scrollYTarget is the raw intended vertical scroll offset in CSS pixels before
 	// whole-cell snapping. On the block backend dispatchWheel accumulates every raw

@@ -165,7 +165,7 @@ func TestRunValidURLPassesValidation(t *testing.T) {
 			}
 			defer r.Close()
 			defer w.Close()
-			err = Run(CLI{URL: raw}, r)
+			err = Run(CLI{URL: raw}, "dev", r)
 			if err == nil {
 				t.Fatalf("Run(%q): want the not-a-terminal error, got nil", raw)
 			}
@@ -183,7 +183,7 @@ func TestRunValidURLPassesValidation(t *testing.T) {
 // before the viewer runs, so Run returns the scheme error and never reaches the
 // tty guard or a browser launch.
 func TestRunInvalidURLReturnsSchemeError(t *testing.T) {
-	err := Run(CLI{URL: "ftp://example.com"}, nil)
+	err := Run(CLI{URL: "ftp://example.com"}, "dev", nil)
 	if err == nil {
 		t.Fatalf("Run(ftp): want an error, got nil")
 	}

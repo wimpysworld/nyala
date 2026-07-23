@@ -134,3 +134,25 @@ func TestMainFrameFCPStampsOnlyLaterFrames(t *testing.T) {
 		t.Fatalf("FCP-gated ingest frames = %d, want 1", got)
 	}
 }
+
+// TestIsMainFrame asserts the within-document URL gate: no frame matches
+// before the first commit, then only the committed main frame matches, so a
+// subframe navigatedWithinDocument event never updates the display URL.
+func TestIsMainFrame(t *testing.T) {
+	t.Parallel()
+	var nilLifecycle *sessionLifecycle
+	if nilLifecycle.isMainFrame("main") {
+		t.Fatal("nil lifecycle matched a frame")
+	}
+	lifecycle := newSessionLifecycle()
+	if lifecycle.isMainFrame("main") {
+		t.Fatal("pre-commit lifecycle matched a frame")
+	}
+	lifecycle.recordCommit(&cdp.Frame{ID: "main", LoaderID: "loader"})
+	if !lifecycle.isMainFrame("main") {
+		t.Fatal("committed main frame did not match")
+	}
+	if lifecycle.isMainFrame("subframe") {
+		t.Fatal("subframe matched the main frame")
+	}
+}

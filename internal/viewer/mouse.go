@@ -29,11 +29,18 @@ const (
 	MouseButtonMiddle
 	// MouseButtonRight is the secondary button (SGR button 2).
 	MouseButtonRight
+	// MouseButtonBack is a side back button (SGR buttons 8 and 10). The
+	// viewer dispatches it as history navigation and never forwards it.
+	MouseButtonBack
+	// MouseButtonForward is a side forward button (SGR buttons 9 and 11).
+	// The viewer dispatches it as history navigation and never forwards it.
+	MouseButtonForward
 )
 
 // SGR mouse report bits on the button number b. Modifiers are bitmasks on top
 // of the button bits, never exact values, so a modified press still decodes.
-// sgrExtra marks buttons 8-11 (back, forward), which Nyala drops.
+// sgrExtra marks buttons 8-11 (back, forward), which the viewer dispatches
+// as history navigation.
 const (
 	sgrModShift = 4
 	sgrModAlt   = 8
@@ -76,11 +83,13 @@ type MouseEvent struct {
 // 1-based coordinates, then final 'M' (press) or 'm' (release). Buttons and
 // modifiers decode by bitmask on b. motion reports a recognised motion event
 // (bit 32); the caller drops it (motion dispatch is deferred) so its bytes
-// never leak as key input. ok is false for a body that is not a well-formed
-// SGR mouse report the viewer handles: wrong shape, non-numeric parameters,
-// buttons 8-11 (bit 128), a wheel release, or the buttonless b&3 == 3.
-// Terminals can emit zero or negative coordinates; the decode clamps them
-// non-negative and the engine clamps to the grid.
+// never leak as key input. The side buttons 8-11 (bit 128) decode as
+// MouseButtonBack (even) and MouseButtonForward (odd) for history
+// navigation. ok is false for a body that is not a well-formed SGR mouse
+// report the viewer handles: wrong shape, non-numeric parameters, a wheel
+// release, or the buttonless b&3 == 3. Terminals can emit zero or negative
+// coordinates; the decode clamps them non-negative and the engine clamps to
+// the grid.
 func decodeSGRMouse(body []byte) (ev MouseEvent, motion, ok bool) {
 	n := len(body)
 	if n < 2 || body[0] != '<' {
@@ -103,10 +112,18 @@ func decodeSGRMouse(body []byte) (ev MouseEvent, motion, ok bool) {
 	if b&sgrMotion != 0 {
 		return MouseEvent{}, true, true
 	}
-	if b&sgrExtra != 0 {
-		return MouseEvent{}, false, false
-	}
 	ev = MouseEvent{Col: max(x-1, 0), Row: max(y-1, 0), Mod: cdpModifiers(b)}
+	if b&sgrExtra != 0 {
+		ev.Button = MouseButtonBack
+		if b&1 != 0 {
+			ev.Button = MouseButtonForward
+		}
+		ev.Action = MouseActionRelease
+		if final == 'M' {
+			ev.Action = MouseActionPress
+		}
+		return ev, false, true
+	}
 	if b&sgrWheel != 0 {
 		if final != 'M' {
 			return MouseEvent{}, false, false

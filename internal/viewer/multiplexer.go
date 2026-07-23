@@ -84,20 +84,3 @@ func multiplexerBackends(mux multiplexerKind, termID string, sixelDA1, realGeome
 	}
 	return []Backend{BackendBlock}
 }
-
-// engineRows is the pure engine-grid row decision: the row count the engine
-// lays out, renders, and captures at for one backend under one multiplexer.
-// Sixel under tmux reserves the bottom terminal row, so the frame is (rows-1)
-// cells of pixel height and the last row stays blank: tmux rescales any Sixel
-// image taller than pane rows minus one, keeping the bottom rows and cropping
-// the top, so a full-height frame always loses its top row. Every other
-// backend, and every backend on a native terminal, keeps the full grid (Sixel
-// never runs under zellij, screen, or herdr, so no other multiplexer needs
-// the reservation). rows below two pass through unchanged, so a one-row
-// terminal never shrinks to an empty grid.
-func engineRows(backend Backend, mux multiplexerKind, rows int) int {
-	if backend == BackendSixel && mux == muxTmux && rows >= 2 {
-		return rows - 1
-	}
-	return rows
-}

@@ -23,8 +23,10 @@ func TestDecodeCSI(t *testing.T) {
 		{"6~", ScrollPageDown, true},
 		{"H", ScrollHome, true},
 		{"1~", ScrollHome, true},
+		{"7~", ScrollHome, true},
 		{"F", ScrollEnd, true},
 		{"4~", ScrollEnd, true},
+		{"8~", ScrollEnd, true},
 		{"99~", ScrollNone, false},
 		{"", ScrollNone, false},
 	}
@@ -50,6 +52,7 @@ func TestDecodeCSIAction(t *testing.T) {
 	}{
 		{"Z", actionFocusPrev, true},
 		{"15~", actionReload, true},
+		{"3~", actionDelete, true},
 		{"1;3D", actionBack, true},
 		{"1;3C", actionForward, true},
 		{"1;3H", actionOpenHome, true},
@@ -80,6 +83,7 @@ func TestByteKeyAction(t *testing.T) {
 		{"ctrl-q", keyQuitCtrlQ, actionQuit},
 		{"ctrl-c", keyQuitCtrlC, actionQuit},
 		{"ctrl-r", keyCtrlR, actionReload},
+		{"ctrl-l", keyCtrlL, actionEditURL},
 		{"tab", keyTab, actionFocusNext},
 		{"enter", keyEnter, actionActivate},
 		{"plain q", 'q', actionNone},
@@ -165,7 +169,9 @@ func TestNextEventActions(t *testing.T) {
 		{"alt-shift-b", "\x1bB", actionCycleBlocksReverse},
 		{"alt-c", "\x1bc", actionCycleColour},
 		{"alt-shift-c", "\x1bC", actionCycleColourReverse},
+		{"alt-f", "\x1bf", actionOpenMenu},
 		{"backtab", "\x1b[Z", actionFocusPrev},
+		{"delete", "\x1b[3~", actionDelete},
 		{"f5", "\x1b[15~", actionReload},
 		{"alt-left", "\x1b[1;3D", actionBack},
 		{"alt-right", "\x1b[1;3C", actionForward},
@@ -228,4 +234,138 @@ func TestReadKeysKeepsQuitKeysAfterDownArrow(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNextEventUTF8Runes asserts the reader assembles multi-byte UTF-8 into
+// whole rune events (two, three, and four byte forms), leaves ASCII as byte
+// events, and drops stray continuation bytes and malformed sequences without
+// swallowing the byte that follows them.
+func TestNextEventUTF8Runes(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want rune
+	}{
+		{"two byte", "é", 'é'},
+		{"three byte", "→", '→'},
+		{"four byte", "\U0001f9a1", '\U0001f9a1'},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			br := bufio.NewReader(strings.NewReader(c.in + "x"))
+			first, err := br.ReadByte()
+			if err != nil {
+				t.Fatalf("read first byte: %v", err)
+			}
+			ev, emit := nextEvent(br, first)
+			if !emit {
+				t.Fatalf("nextEvent dropped %q", c.in)
+			}
+			if ev.r != c.want {
+				t.Fatalf("nextEvent rune = %q, want %q", ev.r, c.want)
+			}
+			rest, err := br.ReadByte()
+			if err != nil || rest != 'x' {
+				t.Fatalf("trailing byte after %q = %q, %v; want 'x'", c.in, rest, err)
+			}
+		})
+	}
+
+	t.Run("stray continuation dropped", func(t *testing.T) {
+		br := bufio.NewReader(strings.NewReader("\x80x"))
+		first, _ := br.ReadByte()
+		if _, emit := nextEvent(br, first); emit {
+			t.Fatal("stray continuation byte emitted an event")
+		}
+		if rest, err := br.ReadByte(); err != nil || rest != 'x' {
+			t.Fatalf("byte after stray continuation = %q, %v; want 'x'", rest, err)
+		}
+	})
+	t.Run("cut sequence unreads the cutter", func(t *testing.T) {
+		br := bufio.NewReader(strings.NewReader("\xc3x"))
+		first, _ := br.ReadByte()
+		if _, emit := nextEvent(br, first); emit {
+			t.Fatal("cut UTF-8 sequence emitted an event")
+		}
+		if rest, err := br.ReadByte(); err != nil || rest != 'x' {
+			t.Fatalf("byte after cut sequence = %q, %v; want 'x'", rest, err)
+		}
+	})
+}
+
+// TestNextEventLoneEsc asserts the buffered-byte lone-Esc detection: an ESC
+// with nothing buffered behind it (a bare Esc key press arrives alone in its
+// read burst) emits an ESC byte event immediately, while an ESC with a
+// buffered chord letter behind it stays an Alt chord.
+func TestNextEventLoneEsc(t *testing.T) {
+	br := bufio.NewReader(strings.NewReader("\x1b"))
+	first, err := br.ReadByte()
+	if err != nil {
+		t.Fatalf("read first byte: %v", err)
+	}
+	ev, emit := nextEvent(br, first)
+	if !emit || ev.b != keyEsc || ev.act != actionNone {
+		t.Fatalf("lone Esc = (%+v, %v), want an ESC byte event", ev, emit)
+	}
+
+	br = bufio.NewReader(strings.NewReader("\x1br"))
+	first, _ = br.ReadByte()
+	ev, emit = nextEvent(br, first)
+	if !emit || ev.act != actionCycleBackend {
+		t.Fatalf("buffered chord = (%+v, %v), want the Alt+R action", ev, emit)
+	}
+}
+
+// TestNextEventBracketedPaste asserts a bracketed paste (CSI 200~ to
+// CSI 201~) arrives as one paste event carrying the payload whole, including
+// newlines and embedded escape bytes, and that the byte after the terminator
+// still arrives as a key. An empty paste is dropped.
+func TestNextEventBracketedPaste(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain", "\x1b[200~https://example.org/\x1b[201~", "https://example.org/"},
+		{"multi-line kept whole", "\x1b[200~one\ntwo\rthree\x1b[201~", "one\ntwo\rthree"},
+		{"embedded escape", "\x1b[200~a\x1b[Zb\x1b[201~", "a\x1b[Zb"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			br := bufio.NewReader(strings.NewReader(c.in + "x"))
+			first, err := br.ReadByte()
+			if err != nil {
+				t.Fatalf("read first byte: %v", err)
+			}
+			ev, emit := nextEvent(br, first)
+			if !emit {
+				t.Fatalf("nextEvent dropped the paste %q", c.in)
+			}
+			if ev.paste != c.want {
+				t.Fatalf("paste = %q, want %q", ev.paste, c.want)
+			}
+			rest, err := br.ReadByte()
+			if err != nil || rest != 'x' {
+				t.Fatalf("trailing byte after paste = %q, %v; want 'x'", rest, err)
+			}
+		})
+	}
+
+	t.Run("empty paste dropped", func(t *testing.T) {
+		br := bufio.NewReader(strings.NewReader("\x1b[200~\x1b[201~x"))
+		first, _ := br.ReadByte()
+		if _, emit := nextEvent(br, first); emit {
+			t.Fatal("empty paste emitted an event")
+		}
+		if rest, err := br.ReadByte(); err != nil || rest != 'x' {
+			t.Fatalf("byte after empty paste = %q, %v; want 'x'", rest, err)
+		}
+	})
+	t.Run("unterminated paste dropped", func(t *testing.T) {
+		br := bufio.NewReader(strings.NewReader("\x1b[200~orphan"))
+		first, _ := br.ReadByte()
+		if _, emit := nextEvent(br, first); emit {
+			t.Fatal("unterminated paste emitted an event")
+		}
+	})
 }

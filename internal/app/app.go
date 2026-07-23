@@ -56,8 +56,9 @@ type CLI struct {
 // Run dispatches a parsed CLI on the given tty. It prepends https:// when the
 // URL has no scheme, accepts http, https, and file, and rejects any other
 // scheme with a clear error. It runs the interactive viewer and constructs the
-// Chromium engine from the validated URL and the --browser flag.
-func Run(cli CLI, tty *os.File) error {
+// Chromium engine from the validated URL and the --browser flag. version is
+// the build version main plumbs through for the viewer's About line.
+func Run(cli CLI, version string, tty *os.File) error {
 	target, err := normaliseURL(cli.URL)
 	if err != nil {
 		return err
@@ -65,7 +66,7 @@ func Run(cli CLI, tty *os.File) error {
 	chromium := engine.New(cli.Browser)
 	chromium.SetDisableFrameRateLimit(cli.DisableFrameRateLimit)
 	eng := engineAdapter{chromium}
-	return viewer.Stream(eng, target, tty, cli.Color, cli.Backend, cli.Blocks, cli.KittyTransport)
+	return viewer.Stream(eng, target, tty, cli.Color, cli.Backend, cli.Blocks, cli.KittyTransport, version)
 }
 
 // engineAdapter wraps a ChromiumEngine to satisfy viewer.Engine. The viewer

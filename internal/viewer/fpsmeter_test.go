@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/x/vt"
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
@@ -37,23 +36,23 @@ func TestFPSMeterWindowRate(t *testing.T) {
 	}
 }
 
-func TestFPSMeterBadgeRebuildsAtMostOncePerSecond(t *testing.T) {
+func TestFPSMeterBarTextRebuildsAtMostOncePerSecond(t *testing.T) {
 	m := &fpsMeter{window: time.Second}
 	base := time.Unix(0, 0)
 	m.tick(base, true)
-	first := m.badge(base)
-	if !strings.Contains(first, "fps") {
-		t.Fatalf("badge missing text: %q", first)
+	first := m.barText(base)
+	if !strings.Contains(first, "↑ ") {
+		t.Fatalf("fps text missing the output rate: %q", first)
 	}
 	// A draw 500ms later reuses the cached string.
 	m.tick(base.Add(500*time.Millisecond), true)
-	if got := m.badge(base.Add(500 * time.Millisecond)); got != first {
-		t.Fatalf("badge rebuilt inside the interval: %q vs %q", got, first)
+	if got := m.barText(base.Add(500 * time.Millisecond)); got != first {
+		t.Fatalf("fps text rebuilt inside the interval: %q vs %q", got, first)
 	}
 	// A draw a full second on rebuilds it.
 	m.tick(base.Add(1100*time.Millisecond), true)
-	if got := m.badge(base.Add(1100 * time.Millisecond)); got == "" {
-		t.Fatal("badge empty after the interval")
+	if got := m.barText(base.Add(1100 * time.Millisecond)); got == "" {
+		t.Fatal("fps text empty after the interval")
 	}
 }
 
@@ -120,91 +119,36 @@ type fakeIngest struct {
 func (f fakeIngest) IngestFPS(time.Time) float64       { return f.fps }
 func (f fakeIngest) IngestSummary() render.IngestStats { return f.stats }
 
-// TestFPSMeterBadgeInOut checks the badge shows both streams when an ingest reporter
-// is wired, and Out only when it is not.
-func TestFPSMeterBadgeInOut(t *testing.T) {
+// TestFPSMeterBarTextInOut checks the compact fps text `↓ NN.n │ ↑ NN.n │ ≌ N`
+// shows both rates when an ingest reporter is wired, the ↑ output rate alone
+// when it is not, and carries no escapes or positioning: the bar owns
+// placement and style.
+func TestFPSMeterBarTextInOut(t *testing.T) {
 	base := time.Unix(0, 0)
 
 	withIn := &fpsMeter{window: time.Second, ingest: fakeIngest{fps: 24}}
 	withIn.countReceived(2)
 	withIn.tick(base, true)
 	withIn.tick(base.Add(100*time.Millisecond), true)
-	b := withIn.badge(base.Add(100 * time.Millisecond))
-	if !strings.Contains(b, "In: 24.0") || !strings.Contains(b, "Out:") {
-		t.Fatalf("badge %q missing In/Out with a reporter", b)
+	b := withIn.barText(base.Add(100 * time.Millisecond))
+	if !strings.Contains(b, "↓ 24.0 "+barSeparator+" ↑ 10.0") {
+		t.Fatalf("fps text %q missing the ↓/↑ rates with a reporter", b)
 	}
-	if !strings.Contains(b, "fps (2)") {
-		t.Fatalf("badge %q missing the cumulative received total", b)
+	if !strings.Contains(b, barSeparator+" ≌ 2") {
+		t.Fatalf("fps text %q missing the ≌ cumulative received total", b)
+	}
+	if strings.ContainsRune(b, '\x1b') {
+		t.Fatalf("fps text %q carries an escape; the bar owns placement", b)
 	}
 
 	outOnly := &fpsMeter{window: time.Second}
 	outOnly.tick(base, true)
-	b = outOnly.badge(base)
-	if strings.Contains(b, "In:") || !strings.Contains(b, "Out:") {
-		t.Fatalf("badge %q should be Out-only with no reporter", b)
+	b = outOnly.barText(base)
+	if strings.Contains(b, "↓") || !strings.Contains(b, "↑ ") {
+		t.Fatalf("fps text %q should be output-only with no reporter", b)
 	}
-	if !strings.Contains(b, "fps (0)") {
-		t.Fatalf("badge %q missing the cumulative received total without a reporter", b)
-	}
-}
-
-func TestFPSMeterKittyBadgeUsesAbsoluteHome(t *testing.T) {
-	m := &fpsMeter{window: time.Second}
-	base := time.Unix(0, 0)
-	m.tick(base, true)
-
-	badge := m.badgeAtHome(base)
-	if strings.Contains(badge, "\x1b7") || strings.Contains(badge, "\x1b8") {
-		t.Fatalf("Kitty badge %q consumed a saved-cursor slot", badge)
-	}
-	if strings.Count(badge, "\x1b[1;1H") != 2 || !strings.HasSuffix(badge, "\x1b[0m\x1b[1;1H") {
-		t.Fatalf("Kitty badge %q did not use absolute home at both ends", badge)
-	}
-
-	heartbeat := m.refreshAtHome(base.Add(2 * time.Second))
-	if strings.Contains(heartbeat, "\x1b7") || strings.Contains(heartbeat, "\x1b8") {
-		t.Fatalf("Kitty heartbeat %q consumed a saved-cursor slot", heartbeat)
-	}
-	if strings.Count(heartbeat, "\x1b[1;1H") != 2 || !strings.HasSuffix(heartbeat, "\x1b[0m\x1b[1;1H") {
-		t.Fatalf("Kitty heartbeat %q did not return to absolute home", heartbeat)
-	}
-}
-
-// TestFPSMeterShortBadgeClearsPreviousWidth decodes a long badge followed by an
-// idle badge through a VT. Every cell in the old footprint must carry the new
-// badge or a reverse-video space, with no old glyph or style left at the tail.
-func TestFPSMeterShortBadgeClearsPreviousWidth(t *testing.T) {
-	const cols = 48
-	base := time.Unix(0, 0)
-	m := &fpsMeter{window: time.Second, ingest: fakeIngest{fps: 123.4}}
-	m.tick(base, true)
-	m.tick(base.Add(100*time.Millisecond), true)
-
-	terminal := vt.NewEmulator(cols, 1)
-	if _, err := terminal.Write([]byte(m.badge(base.Add(100 * time.Millisecond)))); err != nil {
-		t.Fatalf("write long badge: %v", err)
-	}
-	longWidth := m.badgeWidth
-
-	m.ingest = fakeIngest{}
-	shortBody := " In: -- / Out: -- fps (0) "
-	if longWidth <= len(shortBody) {
-		t.Fatalf("long badge width = %d, want more than short width %d", longWidth, len(shortBody))
-	}
-	if _, err := terminal.Write([]byte(m.refresh(base.Add(4 * time.Second)))); err != nil {
-		t.Fatalf("write short badge: %v", err)
-	}
-
-	wantText := shortBody + strings.Repeat(" ", longWidth-len(shortBody))
-	wantStyle := terminal.CellAt(0, 0).Style
-	for col, want := range []byte(wantText) {
-		cell := terminal.CellAt(col, 0)
-		if cell.Content != string(want) {
-			t.Errorf("cell %d content = %q, want %q", col, cell.Content, string(want))
-		}
-		if !cell.Style.Equal(&wantStyle) {
-			t.Errorf("cell %d style = %+v, want %+v", col, cell.Style, wantStyle)
-		}
+	if !strings.Contains(b, "≌ 0") {
+		t.Fatalf("fps text %q missing the cumulative received total without a reporter", b)
 	}
 }
 
@@ -269,9 +213,9 @@ func TestFPSMeterMedian(t *testing.T) {
 	}
 }
 
-// TestFPSMeterRefreshDecaysIdle checks the heartbeat refresh ages the badge out to a
-// live 0 once a burst is older than the peak-hold window, instead of freezing it,
-// and counts no frame.
+// TestFPSMeterRefreshDecaysIdle checks the heartbeat refresh ages the fps text
+// out to a live 0 once a burst is older than the peak-hold window, instead of
+// freezing it, and counts no frame.
 func TestFPSMeterRefreshDecaysIdle(t *testing.T) {
 	m := &fpsMeter{window: time.Second}
 	base := time.Unix(0, 0)
@@ -279,23 +223,25 @@ func TestFPSMeterRefreshDecaysIdle(t *testing.T) {
 	for i := range 5 {
 		m.tick(base.Add(time.Duration(i)*100*time.Millisecond), true)
 	}
-	if got := m.badge(base.Add(400 * time.Millisecond)); !strings.Contains(got, "10.0 fps") {
-		t.Fatalf("badge after burst: got %q, want 10.0 fps", got)
+	if got := m.barText(base.Add(400 * time.Millisecond)); !strings.Contains(got, "↑ 10.0") {
+		t.Fatalf("fps text after burst: got %q, want ↑ 10.0", got)
 	}
 	framesAfterBurst := m.frames
 	// Frames stop. A heartbeat past the fpsPeakHold window (last burst sample at
 	// 400ms, hold 3s) ages every sample out, so the peak decays to idle ("--") rather
 	// than freezing at 10 fps.
-	if got := m.refresh(base.Add(3600 * time.Millisecond)); !strings.Contains(got, "Out: -- fps") {
-		t.Fatalf("badge after idle refresh: got %q, want idle Out: -- fps", got)
+	m.refresh(base.Add(3600 * time.Millisecond))
+	if got := m.barText(base.Add(3600 * time.Millisecond)); !strings.Contains(got, "↑ --") {
+		t.Fatalf("fps text after idle refresh: got %q, want idle ↑ --", got)
 	}
 	if m.frames != framesAfterBurst {
 		t.Fatalf("refresh counted a phantom frame: got %d, want %d", m.frames, framesAfterBurst)
 	}
 }
 
-// TestFPSMeterPeakHold checks the badge holds a burst's rate across the hold window,
-// so a sub-second scroll burst stays readable, then fades once it ages out.
+// TestFPSMeterPeakHold checks the fps text holds a burst's rate across the hold
+// window, so a sub-second scroll burst stays readable, then fades once it ages
+// out.
 func TestFPSMeterPeakHold(t *testing.T) {
 	m := &fpsMeter{window: time.Second}
 	base := time.Unix(0, 0)
@@ -303,14 +249,16 @@ func TestFPSMeterPeakHold(t *testing.T) {
 	for i := range 5 {
 		m.tick(base.Add(time.Duration(i)*100*time.Millisecond), true)
 	}
-	// One second on, well inside the 3s hold, the badge still shows the burst peak
+	// One second on, well inside the 3s hold, the text still shows the burst peak
 	// even though the instantaneous window has decayed.
-	if got := m.refresh(base.Add(1400 * time.Millisecond)); !strings.Contains(got, "10.0 fps") {
-		t.Fatalf("badge inside hold: got %q, want the held 10.0 fps", got)
+	m.refresh(base.Add(1400 * time.Millisecond))
+	if got := m.barText(base.Add(1400 * time.Millisecond)); !strings.Contains(got, "↑ 10.0") {
+		t.Fatalf("fps text inside hold: got %q, want the held ↑ 10.0", got)
 	}
 	// Past the hold window the peak fades to idle ("--").
-	if got := m.refresh(base.Add(3600 * time.Millisecond)); !strings.Contains(got, "Out: -- fps") {
-		t.Fatalf("badge past hold: got %q, want idle Out: -- fps", got)
+	m.refresh(base.Add(3600 * time.Millisecond))
+	if got := m.barText(base.Add(3600 * time.Millisecond)); !strings.Contains(got, "↑ --") {
+		t.Fatalf("fps text past hold: got %q, want idle ↑ --", got)
 	}
 }
 

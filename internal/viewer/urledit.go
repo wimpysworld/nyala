@@ -1,0 +1,176 @@
+package viewer
+
+import (
+	"strings"
+
+	"github.com/mattn/go-runewidth"
+)
+
+// urlEditor is the bar's hand-rolled single-line URL editor: a rune slice, a
+// rune-index cursor, and a horizontal viewport offset that follows the cursor
+// so a URL wider than the bar stays editable. It is pure: the session feeds
+// it decoded keys and renders its view, so every operation is testable
+// without a terminal.
+type urlEditor struct {
+	text   []rune
+	cursor int // rune index of the insertion point, 0..len(text)
+	offset int // rune index of the leftmost visible rune
+}
+
+// newURLEditor returns an editor prefilled with text and the cursor at the
+// end, the URL edit mode entry state.
+func newURLEditor(text string) *urlEditor {
+	r := []rune(text)
+	return &urlEditor{text: r, cursor: len(r)}
+}
+
+// String returns the edited text.
+func (e *urlEditor) String() string {
+	return string(e.text)
+}
+
+// insertRune inserts r at the cursor and advances past it.
+func (e *urlEditor) insertRune(r rune) {
+	e.text = append(e.text[:e.cursor], append([]rune{r}, e.text[e.cursor:]...)...)
+	e.cursor++
+}
+
+// insertText inserts a paste at the cursor as one unit. Newlines and carriage
+// returns are stripped, so a multi-line paste cannot smuggle an Enter, and
+// other control characters are dropped.
+func (e *urlEditor) insertText(s string) {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		e.insertRune(r)
+	}
+}
+
+// backspace deletes the rune before the cursor.
+func (e *urlEditor) backspace() {
+	if e.cursor == 0 {
+		return
+	}
+	e.text = append(e.text[:e.cursor-1], e.text[e.cursor:]...)
+	e.cursor--
+}
+
+// deleteForward deletes the rune under the cursor (the Delete key).
+func (e *urlEditor) deleteForward() {
+	if e.cursor >= len(e.text) {
+		return
+	}
+	e.text = append(e.text[:e.cursor], e.text[e.cursor+1:]...)
+}
+
+// moveLeft steps the cursor one rune left.
+func (e *urlEditor) moveLeft() {
+	if e.cursor > 0 {
+		e.cursor--
+	}
+}
+
+// moveRight steps the cursor one rune right.
+func (e *urlEditor) moveRight() {
+	if e.cursor < len(e.text) {
+		e.cursor++
+	}
+}
+
+// moveHome moves the cursor to the start (Ctrl+A, Home).
+func (e *urlEditor) moveHome() {
+	e.cursor = 0
+}
+
+// moveEnd moves the cursor to the end (Ctrl+E, End).
+func (e *urlEditor) moveEnd() {
+	e.cursor = len(e.text)
+}
+
+// killToEnd deletes from the cursor to the end (Ctrl+K).
+func (e *urlEditor) killToEnd() {
+	e.text = e.text[:e.cursor]
+}
+
+// clearAll empties the editor (Ctrl+U).
+func (e *urlEditor) clearAll() {
+	e.text = e.text[:0]
+	e.cursor = 0
+}
+
+// deleteWord deletes the word before the cursor (Ctrl+W): trailing spaces
+// first, then the non-space run, the readline unix-word-rubout rule.
+func (e *urlEditor) deleteWord() {
+	i := e.cursor
+	for i > 0 && e.text[i-1] == ' ' {
+		i--
+	}
+	for i > 0 && e.text[i-1] != ' ' {
+		i--
+	}
+	e.text = append(e.text[:i], e.text[e.cursor:]...)
+	e.cursor = i
+}
+
+// view renders the editor into a width-cell window: it slides the viewport
+// offset so the cursor stays visible (reserving one cell for a cursor at the
+// end of the text), then returns the visible text, cell-measured and cut to
+// the window, and the cursor's 0-based cell column inside it. A non-positive
+// width returns an empty view.
+func (e *urlEditor) view(width int) (visible string, cursorCell int) {
+	if width < 1 {
+		return "", 0
+	}
+	if e.offset > e.cursor {
+		e.offset = e.cursor
+	}
+	if e.offset < 0 {
+		e.offset = 0
+	}
+	// Slide the window right until the cells from the offset up to the
+	// cursor's insertion point fit inside width-1, leaving the cursor cell
+	// itself visible.
+	for e.offset < e.cursor && cellSpan(e.text[e.offset:e.cursor]) > width-1 {
+		e.offset++
+	}
+	var b strings.Builder
+	used := 0
+	for _, r := range e.text[e.offset:] {
+		w := runewidth.RuneWidth(r)
+		if used+w > width {
+			break
+		}
+		b.WriteRune(r)
+		used += w
+	}
+	return b.String(), cellSpan(e.text[e.offset:e.cursor])
+}
+
+// cellSpan measures a rune slice in terminal cells.
+func cellSpan(rs []rune) int {
+	w := 0
+	for _, r := range rs {
+		w += runewidth.RuneWidth(r)
+	}
+	return w
+}
+
+// commitURL applies the schemeless commit rule to the edited text: a scheme
+// passes through unchanged, schemeless text containing a dot gains https://,
+// and schemeless text without a dot (or an empty line) is refused so the
+// editor stays open rather than navigating somewhere surprising. A search
+// fallback, if it ever arrives, is a launch flag, keeping Nyala stateless.
+func commitURL(text string) (string, bool) {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return "", false
+	}
+	if strings.Contains(t, "://") {
+		return t, true
+	}
+	if !strings.Contains(t, ".") {
+		return "", false
+	}
+	return "https://" + t, true
+}

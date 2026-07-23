@@ -37,6 +37,9 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	scrollX, scrollY := e.scrollX, e.scrollY
 	cx, cy := wheelCentre(e.cols, e.rows, e.cellW, e.cellH, e.layoutScale())
 	e.mu.Unlock()
+	// Cache the browser product for BrowserVersion once per engine; a rebuild
+	// reuses the cache and a failure degrades to an empty version string.
+	e.fetchBrowserVersion(ctx)
 
 	// Feed a bounded, drop-oldest queue to a small pool of decode
 	// workers, so several frames decode in parallel and the block-backend frame rate is
@@ -334,6 +337,18 @@ func (s *sessionLifecycle) recordFCP(frameID cdp.FrameID, loaderID ...cdp.Loader
 	return true
 }
 
+// isMainFrame reports whether frameID is the recorded main frame, so the
+// lifecycle watcher applies within-document URL updates from the top frame
+// only and ignores subframe events. It is false before the first commit.
+func (s *sessionLifecycle) isMainFrame(frameID cdp.FrameID) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mainFrame != "" && frameID == s.mainFrame
+}
+
 func (s *sessionLifecycle) popMatching(frameID cdp.FrameID, loaderID cdp.LoaderID) (navigationCommit, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -380,13 +395,22 @@ func (e *ChromiumEngine) afterMainFrameFCP() bool {
 }
 
 // watchLifecycle records top-frame commits, latches the matching main-frame FCP,
-// and retains the existing late-reflow and layout-shift triggers. It attaches
-// before raw navigation and before screencast start.
+// and retains the existing late-reflow and layout-shift triggers. It also
+// records the committed main-frame URL for CurrentURL, kept fresh across SPA
+// and fragment moves by Page.navigatedWithinDocument. It attaches before raw
+// navigation and before screencast start.
 func (e *ChromiumEngine) watchLifecycle(ctx context.Context, lifecycle *sessionLifecycle) {
 	chromedp.ListenTarget(ctx, func(ev any) {
 		switch t := ev.(type) {
 		case *page.EventFrameNavigated:
 			lifecycle.recordCommit(t.Frame)
+			if t.Frame != nil && t.Frame.ParentID == "" {
+				e.recordCurrentURL(t.Frame.URL)
+			}
+		case *page.EventNavigatedWithinDocument:
+			if lifecycle.isMainFrame(t.FrameID) {
+				e.recordCurrentURL(t.URL)
+			}
 		case *page.EventLifecycleEvent:
 			switch t.Name {
 			case "DOMContentLoaded":

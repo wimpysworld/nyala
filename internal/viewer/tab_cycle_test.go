@@ -51,6 +51,9 @@ func (e *tabCycleEngine) Resize(int, int)             {}
 func (e *tabCycleEngine) Navigate(string) error       { return nil }
 func (e *tabCycleEngine) SendKey(string)              {}
 func (e *tabCycleEngine) SendNav(NavAction)           {}
+func (e *tabCycleEngine) CurrentURL() string          { return "" }
+func (e *tabCycleEngine) OpenURL(string)              {}
+func (e *tabCycleEngine) BrowserVersion() string      { return "" }
 func (e *tabCycleEngine) SendMouse(MouseEvent)        {}
 func (e *tabCycleEngine) Close() error                { return nil }
 
