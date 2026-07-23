@@ -906,17 +906,15 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		previous := s.st.Backend
 		wasKitty := previous == BackendKitty
 		s.st.CycleBackend()
+		// One control buffer carries the whole switch clear, routed through the
+		// writer so it stays ordered against the frames and never races an
+		// in-flight write. Best-effort: a write failure surfaces on the next
+		// frame via the writer's error channel.
+		var ctl bytes.Buffer
 		if wasKitty && s.st.Backend != BackendKitty {
 			// Free both double-buffer images when leaving kitty, so the terminal keeps
-			// no stale image and a later return rebuilds from id 1. Capture the reset
-			// bytes and route them through the writer so they stay ordered against the
-			// frames and never race an in-flight write. Best-effort: a write failure
-			// surfaces on the next frame via the writer's error channel.
-			var kb bytes.Buffer
-			_ = s.st.resetKitty(&kb)
-			if kb.Len() > 0 {
-				_ = s.emitControl(kb.Bytes())
-			}
+			// no stale image and a later return rebuilds from id 1.
+			_ = s.st.resetKitty(&ctl)
 			// Drop the shm pacing gate with the stint, so a stale in-flight
 			// wait cannot gate the next stint's first frame against the old
 			// stream's deadline.
@@ -928,18 +926,28 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 			// one stint, never the session.
 			s.st.rearmKittySHM()
 		}
-		if previous == BackendBlock && s.st.Backend == BackendKitty && s.fps != nil && s.st.fpsBadgeAllowed() {
-			// Block leaves glyphs and cell backgrounds across the page. Kitty's FPS
-			// image sits below both, so clear them before the first restarted Kitty
-			// frame and invalidate the differ against the blank terminal. Reset the
-			// SGR first: the Block differ leaves the last cell's background active,
-			// and terminals erase with the current background (background colour
-			// erase), so a bare clear fills every cell with a non-default background
-			// that occludes the kittyFPSPageZ page image on Kitty and Ghostty.
+		if s.st.Backend != previous && s.firstDrawn.Load() {
+			// Every backend change erases the screen before the new backend's
+			// first frame, one shared rule for all transitions. Leaving Block,
+			// the old glyphs and cell backgrounds would otherwise sit under the
+			// next graphics frame (and under Kitty's FPS page image, which
+			// places below text). Leaving Sixel, the old raster persists over
+			// cells the terminal believes unchanged. Entering Sixel under tmux
+			// or zellij, the reserved bottom row keeps the previous backend's
+			// cells because the rows-1 frame never overwrites it. Reset the SGR
+			// first: the Block differ leaves the last cell's background active,
+			// and terminals erase with the current background (background
+			// colour erase). Invalidate the differ against the blank terminal,
+			// so the next Block frame full-repaints instead of skipping cells
+			// matching the previous Block stint. Gated on firstDrawn so a
+			// pre-frame Tab never wipes the loading cue, matching resize.
 			if s.diff != nil {
 				s.diff.Reset()
 			}
-			_ = s.emitControl([]byte(sgrReset + clearScreen))
+			ctl.WriteString(sgrReset + clearScreen)
+		}
+		if ctl.Len() > 0 {
+			_ = s.emitControl(ctl.Bytes())
 		}
 		// Align the engine's kitty-shm decode with the new backend before the
 		// restart, so frames after the switch arrive in the right form: planes

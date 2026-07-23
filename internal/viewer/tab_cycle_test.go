@@ -233,6 +233,7 @@ func TestFPSBlockToKittyClearResetsSGRBeforeErase(t *testing.T) {
 		eng: eng, st: &st, tty: out, ctl: ctl, diff: diff, writer: writer,
 		fps: &fpsMeter{window: fpsWindow, start: time.Now()},
 	}
+	s.firstDrawn.Store(true)
 	s.handleKey(keyEvent{b: keyTab})
 	if st.Backend != BackendKitty {
 		t.Fatalf("backend after Tab = %v, want Kitty", st.Backend)
@@ -276,6 +277,7 @@ func TestFPSBlockToKittyClearsBeforeFrameAndResetsDiff(t *testing.T) {
 		eng: eng, st: &st, tty: out, ctl: ctl, diff: diff, writer: writer,
 		fps: &fpsMeter{window: fpsWindow, start: time.Now()},
 	}
+	s.firstDrawn.Store(true)
 	s.handleKey(keyEvent{b: keyTab})
 	if st.Backend != BackendKitty {
 		t.Fatalf("backend after Tab = %v, want Kitty", st.Backend)
