@@ -80,6 +80,12 @@ type State struct {
 	cellPx                        // terminal cell pixel size for graphics scaling
 	compat  terminalCompatibility // terminal-specific rendering compatibility policy
 
+	// mux is the focus multiplexer hosting the session, recorded once by
+	// configureBackends. engineRows reads it to reserve the bottom terminal
+	// row for Sixel under tmux and zellij; muxNone (the zero value) keeps
+	// every native-terminal path at the full grid.
+	mux multiplexerKind
+
 	// cellPxForced records that the NYALA_CELL_PX override supplied cellPx, so a
 	// resize never re-derives the pair from the winsize and the diagnostic
 	// geometry stays pinned for the whole run.
@@ -485,9 +491,12 @@ func (s *State) renderStreamFrame(frame render.Frame, w io.Writer, kittyBelowTex
 // returns unchanged, and a height-only shortfall under one cell is the
 // engine's floored fractional-density row band, not a zoom, so it draws as-is
 // like today rather than rescaling every frame on a device-pixel-cell
-// terminal.
+// terminal. The target height uses the engine grid rows, not the terminal
+// rows: under the tmux and zellij bottom-row reservation the engine renders at
+// rows-1, and fitting to the full grid would upscale the frame back over the
+// reserved row.
 func (s *State) fitSixelToGrid(img image.Image) image.Image {
-	gridW, gridH := render.GraphicsCaptureSize(s.Cols, s.Rows, s.W, s.H)
+	gridW, gridH := render.GraphicsCaptureSize(s.Cols, engineRows(s.Backend, s.mux, s.Rows), s.W, s.H)
 	if gridW <= 0 || gridH <= 0 {
 		return img
 	}
@@ -863,12 +872,16 @@ func exitTerminal(rows int, drawn bool) string {
 }
 
 // configureBackends decides which backends the cycle offers and resolves the
-// real cell pixel size, then writes both into st. Behind a multiplexer (TMUX,
-// ZELLIJ, herdr, or STY set) it offers block only because Nyala does not use
-// graphics passthrough. Otherwise it runs one terminal handshake and offers a
+// real cell pixel size, then writes both into st. Under GNU screen or herdr it
+// runs no handshake and offers block only: screen blocks graphics passthrough
+// and herdr consumes graphics sequences. Under tmux or zellij it runs the
+// reduced handshake (no Kitty APC probe, which both consume silently) and
+// offers Sixel per multiplexerBackends; Kitty is never offered under a
+// multiplexer, and the auto start follows multiplexerStartBackend. Otherwise
+// it runs the full terminal handshake and offers a
 // graphics backend only when the terminal confirms it. The colour mode resolves
-// on every path after terminal compatibility, so the multiplexer early return
-// cannot strand it at the NewState default. A NYALA_CELL_PX override (a diagnostic
+// on every path after terminal compatibility, so no multiplexer early return
+// can strand it at the NewState default. A NYALA_CELL_PX override (a diagnostic
 // and harness knob) takes precedence over the ioctl and handshake cell; a
 // malformed override returns an error so the run fails loudly. transportFlag is
 // the --kitty-transport intent; the effective transport resolves here, once,
@@ -892,14 +905,32 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 		st.cellPx = winPx
 	}
 
-	if multiplexed() {
+	mux := detectMultiplexer()
+	st.mux = mux
+	switch mux {
+	case muxScreen, muxHerdr:
 		st.setTerminalCompatibility("", environ)
 		st.Colour = resolveCompatibleColour(colourFlag, environ, detected, st.compat)
-		// No handshake runs under a multiplexer, so the transport resolves
-		// with no identity and no probe: an explicit override still wins and
-		// auto falls back to direct.
+		// No handshake runs here, so the transport resolves with no identity
+		// and no probe: an explicit override still wins and auto falls back
+		// to direct.
 		st.kittyTransport = resolveKittyTransport(transportFlag, "", false, runtime.GOOS)
 		st.SetEnabled([]Backend{BackendBlock})
+		return nil
+	case muxTmux, muxZellij:
+		res := probeTerminalReduced(tty, cols, rows)
+		if !overrideOK && !winOK {
+			st.cellPx = res.cellPx
+		}
+		st.setTerminalCompatibility(res.TermID, environ)
+		st.Colour = resolveCompatibleColour(colourFlag, environ, detected, st.compat)
+		// The reduced handshake sent no Kitty probe, so the transport resolves
+		// with no identity and no probe result: an explicit override still
+		// wins and auto falls back to direct.
+		st.kittyTransport = resolveKittyTransport(transportFlag, "", false, runtime.GOOS)
+		realGeometry := overrideOK || winOK || res.cellPxOK
+		st.SetEnabled(multiplexerBackends(mux, res.Sixel, realGeometry, st.compat))
+		st.Backend = multiplexerStartBackend(mux, st.Enabled)
 		return nil
 	}
 
@@ -929,25 +960,100 @@ func enabledBackends(res probeResult, compat terminalCompatibility) []Backend {
 	return append(enabled, BackendBlock)
 }
 
-// multiplexed reports whether the viewer runs under a focus multiplexer: tmux
-// (TMUX), zellij (ZELLIJ present, any value), herdr (HERDR_ENV=1 with
-// HERDR_PANE_ID present), or GNU screen (STY). A bare ZELLIJ=0 is a presence
-// signal, not a truth value; herdr needs both keys so a stray var does not gate
-// graphics off. Nyala offers block only under a multiplexer because it does not
-// use graphics passthrough there.
-func multiplexed() bool {
-	if os.Getenv("TMUX") != "" || os.Getenv("STY") != "" {
-		return true
+// multiplexerKind identifies the focus multiplexer hosting the session, or
+// muxNone when the viewer talks to the terminal directly.
+type multiplexerKind int
+
+const (
+	// muxNone means no focus multiplexer is detected.
+	muxNone multiplexerKind = iota
+	// muxTmux is tmux, detected through TMUX.
+	muxTmux
+	// muxZellij is zellij, detected through ZELLIJ presence, any value.
+	muxZellij
+	// muxScreen is GNU screen, detected through STY.
+	muxScreen
+	// muxHerdr is herdr, detected through HERDR_ENV=1 with HERDR_PANE_ID present.
+	muxHerdr
+)
+
+// detectMultiplexer reports which focus multiplexer hosts the viewer: tmux
+// (TMUX), GNU screen (STY), zellij (ZELLIJ present, any value), or herdr
+// (HERDR_ENV=1 with HERDR_PANE_ID present). A bare ZELLIJ=0 is a presence
+// signal, not a truth value; herdr needs both keys so a stray var does not
+// gate graphics off.
+func detectMultiplexer() multiplexerKind {
+	if os.Getenv("TMUX") != "" {
+		return muxTmux
+	}
+	if os.Getenv("STY") != "" {
+		return muxScreen
 	}
 	if _, ok := os.LookupEnv("ZELLIJ"); ok {
-		return true
+		return muxZellij
 	}
 	if os.Getenv("HERDR_ENV") == "1" {
 		if _, ok := os.LookupEnv("HERDR_PANE_ID"); ok {
-			return true
+			return muxHerdr
 		}
 	}
-	return false
+	return muxNone
+}
+
+// multiplexerBackends returns the backend cycle offered under a focus
+// multiplexer. Kitty is never offered: tmux and zellij consume the Kitty APC
+// protocol without passthrough, and screen and herdr pass no graphics at all.
+// Sixel is offered under tmux and zellij only, and only when the DA1 reply
+// advertised attribute 4, the resolved cell pixel geometry is real, and
+// terminal compatibility allows Sixel. tmux advertises DA1 Sixel only when
+// both its build and its outer terminal support it, so its DA1 is honest;
+// zellij answers DA1 with Sixel unconditionally, so the geometry gate carries
+// the host-chain-live signal there (zellij synthesises pane pixel geometry
+// only after its own startup query to the host succeeded). Without real
+// geometry the Sixel surface would be sized from the 8x16 fallback and render
+// at the wrong physical scale, so both multiplexers require it. screen and
+// herdr stay block only.
+func multiplexerBackends(mux multiplexerKind, sixelDA1, realGeometry bool, compat terminalCompatibility) []Backend {
+	if (mux == muxTmux || mux == muxZellij) && sixelDA1 && realGeometry && compat.sixelAllowed() {
+		return []Backend{BackendSixel, BackendBlock}
+	}
+	return []Backend{BackendBlock}
+}
+
+// multiplexerStartBackend nominates the backend auto-detection starts on under
+// a focus multiplexer, from the enabled cycle multiplexerBackends resolved.
+// tmux, screen, and herdr start on the head of the cycle, the highest-fidelity
+// backend. zellij starts on Block even when Sixel is enabled: zellij allocates
+// Sixel image ids as the current store size (sixel.rs next_image_id) instead
+// of monotonically, so a full-frame-replacement stream collides ids every
+// third frame and zellij's end-of-frame reap (grid.rs read_changes) deletes
+// the just-inserted image before serialising it to the host, dropping the
+// picture. Sixel stays in the cycle, so Tab and --backend=sixel still reach
+// it. Lift this demotion in the compatibility policy, gated on the XTVERSION
+// identity Zellij(<version>), once a zellij release ships monotonic image ids.
+func multiplexerStartBackend(mux multiplexerKind, enabled []Backend) Backend {
+	if mux == muxZellij || len(enabled) == 0 {
+		return BackendBlock
+	}
+	return enabled[0]
+}
+
+// engineRows is the pure engine-grid row decision: the row count the engine
+// lays out, renders, and captures at for one backend under one multiplexer.
+// Sixel under tmux or zellij reserves the bottom terminal row, so the frame is
+// (rows-1) cells of pixel height and the last row stays blank. tmux rescales
+// any Sixel image taller than pane rows minus one, keeping the bottom rows and
+// cropping the top, so a full-height frame always loses its top row; zellij
+// re-serialises visible image chunks to the host terminal bare (no DECSDM), so
+// a frame whose bottom pixel row reaches the host's bottom cell row scrolls
+// the host one line per frame. Every other backend, and every backend on a
+// native terminal, keeps the full grid. rows below two pass through unchanged,
+// so a one-row terminal never shrinks to an empty grid.
+func engineRows(backend Backend, mux multiplexerKind, rows int) int {
+	if backend == BackendSixel && (mux == muxTmux || mux == muxZellij) && rows >= 2 {
+		return rows - 1
+	}
+	return rows
 }
 
 // cellPx is a terminal cell's pixel size: the width and height of one character

@@ -21,6 +21,10 @@ type probeResult struct {
 	KittySHM bool   // the terminal answered the kitty shm transport query with OK for its image id
 	TermID   string // XTVERSION reply text, e.g. "kitty 0.40.1"; empty when the terminal ignores the query
 	cellPx          // resolved cell pixel size
+
+	// cellPxOK records that a handshake reply resolved cellPx. False means the
+	// embedded pair is the seeded 8x16 fallback, not real terminal geometry.
+	cellPxOK bool
 }
 
 // kittyDirectID and kittySHMID are the image ids of the two kitty graphics
@@ -68,6 +72,42 @@ func queryBytes(shmName string) []byte {
 	return b.Bytes()
 }
 
+// reducedQueryBytes builds the multiplexer handshake write: the three
+// cell-size queries, the XTVERSION identity query, then the DA1 fence. It
+// carries no Kitty a=q APC probe because tmux and zellij consume APC without
+// passthrough: the probe would vanish unanswered, so Kitty must stay
+// undetected there. zellij never answers XTVERSION, which is harmless because
+// the DA1 fence still bounds the read.
+func reducedQueryBytes() []byte {
+	var b bytes.Buffer
+	b.WriteString("\x1b[16t")
+	b.WriteString("\x1b[14t")
+	b.WriteString("\x1b[18t")
+	b.WriteString("\x1b[>0q")
+	b.WriteString(ansi.RequestPrimaryDeviceAttributes)
+	return b.Bytes()
+}
+
+// probeTerminalReduced runs the multiplexer handshake on the raw tty: it
+// writes reducedQueryBytes, reads to the DA1 fence, and parses the Sixel
+// attribute, the XTVERSION identity, and the cell pixel size. Kitty and
+// KittySHM stay false because no Kitty probe is sent. On any I/O error it
+// returns a zero result, so detection fails closed to block only.
+func probeTerminalReduced(tty *os.File, cols, rows int) probeResult {
+	res := probeResult{cellPx: cellPx{W: cellraster.CellPxW, H: cellraster.CellPxH}}
+	if _, err := tty.Write(reducedQueryBytes()); err != nil {
+		return res
+	}
+	buf := readUntilDA1(int(tty.Fd()))
+	res.Sixel = parseDA1Sixel(buf)
+	res.TermID = parseXTVersion(buf)
+	if px, ok := parseCellPixels(buf, cols, rows); ok {
+		res.cellPx = px
+		res.cellPxOK = true
+	}
+	return res
+}
+
 // probeTerminal runs one handshake on the raw tty and returns the detected
 // support and cell pixel size. cols and rows are the terminal size in cells from
 // GetSize, used to derive a cell pixel size from the text-area reply when needed.
@@ -100,6 +140,7 @@ func probeTerminal(tty *os.File, cols, rows int) probeResult {
 	res.TermID = parseXTVersion(buf)
 	if px, ok := parseCellPixels(buf, cols, rows); ok {
 		res.cellPx = px
+		res.cellPxOK = true
 	}
 	return res
 }
