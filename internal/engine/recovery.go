@@ -21,9 +21,11 @@ import (
 // registers a crash watcher, starts the stream and consuming frame loop, then
 // dispatches navigation to the held URL without waiting for full page load. The
 // returned channel is closed when the page reports Target.targetCrashed, so the
-// supervisor can rebuild. All session state (URL, scroll, backend, cell px) is
-// read from the engine, never from a dead context, so a rebuild resumes where the
-// crash left off.
+// supervisor can rebuild. All session state (scroll, backend, cell px) is read
+// from the engine, never from a dead context. A rebuild navigates to the held
+// launch URL (Navigate records it once and OpenURL never rewrites it), keeping
+// the backend and cell state; the held scroll offset replays only when the
+// crashed page was that launch URL, after its first contentful paint.
 func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	timer := newLoadTimer()
 	if err = e.launch(e.browserFlag); err != nil {
@@ -36,6 +38,12 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	frames := e.frames
 	closing := e.closing
 	scrollX, scrollY := e.scrollX, e.scrollY
+	if e.currentURL != "" && e.currentURL != url {
+		// The rebuild target is the launch URL, not the crashed page, so a
+		// stale offset from another document must not replay onto it.
+		scrollX, scrollY = 0, 0
+		e.scrollX, e.scrollY, e.scrollYTarget = 0, 0, 0
+	}
 	cx, cy := wheelCentre(e.cols, e.rows, e.cellW, e.cellH, e.layoutScale())
 	e.mu.Unlock()
 	// Cache the browser product for BrowserVersion once per engine; a rebuild
@@ -139,10 +147,21 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// snapshot separately waits for this main frame's first contentful paint.
 	go e.runTextSync(ctx, ts, reSnap, reflow, scroll, reEmit)
 	if scrollX != 0 || scrollY != 0 {
-		wheel := input.DispatchMouseEvent(input.MouseWheel, cx, cy).
-			WithDeltaX(float64(scrollX)).
-			WithDeltaY(float64(scrollY))
-		_ = chromedp.Run(ctx, wheel)
+		// Replay the held offset only after the main frame's first
+		// contentful paint: at commit the document has no height yet, so
+		// Chromium would clamp the wheel to zero and lose the position. The
+		// goroutine is session-scoped; teardown cancels ctx and ends it.
+		go func() {
+			select {
+			case <-lifecycle.fcp:
+			case <-ctx.Done():
+				return
+			}
+			wheel := input.DispatchMouseEvent(input.MouseWheel, cx, cy).
+				WithDeltaX(float64(scrollX)).
+				WithDeltaY(float64(scrollY))
+			_ = chromedp.Run(ctx, wheel)
+		}()
 	}
 	return crashed, nil
 }
