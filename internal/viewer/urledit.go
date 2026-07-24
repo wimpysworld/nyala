@@ -156,18 +156,31 @@ func cellSpan(rs []rune) int {
 	return w
 }
 
-// commitURL applies the schemeless commit rule to the edited text: a scheme
-// passes through unchanged, schemeless text containing a dot gains https://,
-// and schemeless text without a dot (or an empty line) is refused so the
-// editor stays open rather than navigating somewhere surprising. A search
-// fallback, if it ever arrives, is a launch flag, keeping Nyala stateless.
+// commitURL applies the schemeless commit rule to the edited text: an
+// allowlisted scheme (http, https, or file, the launch-URL policy) passes
+// through unchanged, any other scheme is refused, schemeless text containing
+// a dot gains https://, and schemeless text without a dot (or an empty line)
+// is refused so the editor stays open rather than navigating somewhere
+// surprising. The scheme allowlist is a security boundary: page.Navigate
+// executes a committed javascript: URL in the current page's origin (self-XSS
+// on an authenticated page), so javascript:, data:, and every other scheme
+// never reach it. A search fallback, if it ever arrives, is a launch flag,
+// keeping Nyala stateless.
 func commitURL(text string) (string, bool) {
 	t := strings.TrimSpace(text)
 	if t == "" {
 		return "", false
 	}
-	if strings.Contains(t, "://") {
-		return t, true
+	if scheme, _, ok := strings.Cut(t, "://"); ok {
+		switch strings.ToLower(scheme) {
+		case "http", "https", "file":
+			return t, true
+		}
+		return "", false
+	}
+	low := strings.ToLower(t)
+	if strings.HasPrefix(low, "javascript:") || strings.HasPrefix(low, "data:") {
+		return "", false
 	}
 	if !strings.Contains(t, ".") {
 		return "", false
