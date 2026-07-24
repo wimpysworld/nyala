@@ -103,7 +103,15 @@ Nyala never offers the Kitty backend under a multiplexer. tmux and zellij
 consume the Kitty APC protocol silently without passthrough, so the startup
 Kitty probe is not sent there and the capability stays undetected. Under tmux
 and zellij Nyala runs a reduced handshake instead: the cell-size queries,
-XTVERSION, and the DA1 fence, with no Kitty APC probe.
+XTVERSION, and the DA1 fence, with no Kitty APC probe. tmux native Kitty image
+support is in review upstream; re-test against a tagged tmux release before
+considering a Kitty path under tmux. zellij Kitty passthrough is deferred.
+Unicode placeholders (`U=1`) render only on kitty itself, so no multiplexer
+path may assume them.
+
+The tmux and zellij graphics legs completed on 2026-07-23: placement, resize
+and zoom, scroll, and quit cleanup are live-validated inside both, with the
+workaround and compatibility gates below implemented.
 
 Sixel under tmux is gated three ways:
 

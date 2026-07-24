@@ -13,8 +13,7 @@ The KMSCON quadrant fallback was verified by the owner on a real KMSCON TTY via 
 What remains for later stages: the diff writer, REP, and the text-only monochrome readout are deferred; the chromedp screencast replaces the PNG in Stage 3; and Bubble Tea chrome wraps the viewer in Stage 4. The Sixel and Kitty overlay is retired because the graphics backends render the page bitmap with its own text and Stage 4 has no separate overlay consumer.
 
 This paragraph records the Stage 2 boundary. Stage 3 later delivered the Chromium
-screencast and Block grid diff writer; current open work is indexed in
-[`TODO.md`](./TODO.md).
+screencast and Block grid diff writer; current open work is tracked in Linear.
 
 ## Objective and scope
 

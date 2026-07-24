@@ -39,7 +39,7 @@ future tuning, not a gate: sustained FPS on KMSCON and the target emulators,
 terminal-side PNG decode and draw latency, the `scrollMatchTolerancePx` frame-sync
 tolerance, and the advisory DOM box drift. The CEF fallback stays documented and
 is not required because CDP performance has already exceeded the owner's expectations.
-[`TODO.md`](./TODO.md) is the canonical index.
+Open work is tracked in Linear.
 
 ## Objective and scope
 
@@ -83,7 +83,7 @@ Out of scope, with promotion bars where applicable:
 Later status: live Kitty now passes the CDP PNG directly, so the historical decoded
 damage design does not describe its normal path. Current partial-emission work is
 conditional on terminal measurements and a supported protocol route; see
-[`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
+[`PERFORMANCE.md`](./PERFORMANCE.md#top-recommendations-ranked-by-impact-vs-effort).
 
 ## Work as built
 
@@ -552,8 +552,8 @@ cell. The page laid out with proportional fonts, so a run of N graphemes did not
 occupy `N*cellW` pixels, and the box-to-cell mapping binned the text off its true
 column. This fix forces the page onto the cell grid before capture, repairs the
 mapping, and gates the corpus against placement error. It is a correction to the
-Stage 3 overlay, not the Stage 4 UI. Current alignment follow-up is tracked under
-[Close Block correctness gaps](./TODO.md#4-close-block-correctness-gaps).
+Stage 3 overlay, not the Stage 4 UI. Current alignment follow-up is tracked in
+Linear.
 
 ### Document-creation font forcing
 

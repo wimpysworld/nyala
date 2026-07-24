@@ -11,7 +11,7 @@ All 14 proposal acceptance criteria are met, each with a test, validated by inde
 What remains for later stages: the crisp text overlay arrives in Stage 2, the chromedp screencast replaces the PNG in Stage 3, and Bubble Tea chrome wraps the viewer in Stage 4. OSC 11 light/dark theming and the per-multiplexer background quirks belong to Stage 4. Multiplexer graphics passthrough and the DCS colour round-trip are not planned for any near stage (see Out of scope).
 
 This paragraph records the Stage 1 boundary. Stages 2 and 3 are now built; current
-open work is indexed in [`TODO.md`](./TODO.md), and the DCS round trip is closed.
+open work is tracked in Linear, and the DCS round trip is closed.
 
 ## Objective and scope
 

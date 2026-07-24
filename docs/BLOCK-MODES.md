@@ -22,8 +22,7 @@ Interactive path (`internal/viewer`):
   quadrant by eye (see below).
 - The fallback ladder is sextant to quadrant only. Half stays reachable through
   `--blocks=half`.
-- Fallback is silent. An in-app toast for the sextant-to-quadrant degrade is a separate
-  later task; see `docs/TODO.md`.
+- Fallback is silent by owner decision; no in-app toast is planned.
 
 Capture path: resolution is deterministic, not terminal-dependent, so a bundle is
 comparable across runs. `auto` resolves to quadrant; an explicit `sextant` or `half` is
@@ -83,7 +82,7 @@ A terminal matches on any of its markers. An unmatched terminal is unsupported.
 
 iTerm2 defaults to unsupported to avoid its 3.5.x vertical-gap seam. Name-only matching
 cannot exclude the bad version alone, so the whole terminal is excluded. Widening the
-list and adding version gating are open follow-ups; see `docs/TODO.md`.
+list and adding version gating are open follow-ups, tracked in Linear.
 
 ### Multiplexer handling
 
@@ -200,9 +199,8 @@ densest mosaic but monochrome, so it does not fit Nyala's coloured page backgrou
 
 ## Open follow-ups
 
-Tracked in `docs/TODO.md`: widening the allow-list as each terminal is eyeballed for
-inter-row bleed (with a possible sextant test card and version gating), and the in-app
-fallback toast.
+Tracked in Linear: widening the allow-list as each terminal is eyeballed for
+inter-row bleed (with a possible sextant test card and version gating).
 
 ## References
 

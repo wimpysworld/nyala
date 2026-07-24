@@ -52,8 +52,7 @@ emitter cut production-shaped full-encode p90 by 28.22% to 49.63% and are retain
 Long-count RLE is retained with an 8192 repeat ceiling.
 Kitty backend optimisation is complete. Partial Kitty transport remains closed unless
 the sustained real-terminal matrix exceeds 16.67 ms per frame in write, transport,
-terminal decode, or draw and a supported protocol path exists; see
-[`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
+terminal decode, or draw and a supported protocol path exists.
 
 The full headless `pprof` and five-sample `go test -bench` pass completed on
 2026-07-14. Its measured rankings, limits, and profile-gated decisions are in
@@ -62,8 +61,9 @@ The accepted direct native-YCbCr Block follow-up and its matched q80-q100 sweep
 are in [the same record](#direct-native-ycbcr-block-grid-2026-07-15).
 The colour-conversion follow-up and the resulting Block and Sixel benchmark order
 are in [the 2026-07-15 research record](#colour-conversion-research-2026-07-15).
-Real-terminal decode, draw, write, FPS, and tearing measurements remain separate
-pending work in [`TODO.md`](./TODO.md#1-validate-the-stage-3-browser).
+Real-terminal decode, draw, write, FPS, and tearing measurements completed; the
+Sixel matrix is recorded in
+[`TERMINAL-COMPATIBILITY.md`](./TERMINAL-COMPATIBILITY.md), "Sixel performance".
 
 ---
 
@@ -488,7 +488,6 @@ Also landed on the load-time theme, beyond the ranked list:
     prove an end-to-end win. Direct Kitty PNG has no decoded bitmap, the tested `a=f`
     edit was not portable, and no supported design exists. Do not decode every PNG to
     recreate the old plan.
-    See [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
     Impact conditional, effort large.
 11. **[CLOSED - 1fd21a0]** **Compose hot-path cleanup.** Landed: scalar quadrant
     /sextant colour sums (~8-12% faster) and per-run display width cached at decode so
@@ -502,8 +501,7 @@ Also landed on the load-time theme, beyond the ranked list:
     pointer would show a stale frame). Near-zero benefit, real correctness trap.
     Closed; do not pursue.
 12. **Off-screen super-viewport buffer** (browsh's 6x) to cut CDP round-trips on
-    scroll. Track the implementation gate in
-    [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
+    scroll. The implementation gate is tracked in Linear.
     Impact 7, effort large.
 13. **CLOSED (2026-07-07): font pre-warm done, launch-Run batching skipped.** The rec had
     two halves. Half B (pre-warm the embedded font so `fonts.ready` does not serialise text
@@ -3626,7 +3624,7 @@ not motion-only. That is a separate, unbuilt item.
   the Block backend. Direct Kitty PNG is the standalone-terminal path. Graphics
   passthrough remains conditional work; do not prescribe `U=1` until placeholder
   support is re-tested on the exact target releases. See
-  [`TODO.md`](./TODO.md#2-improve-graphics-transport-where-measurements-justify-it).
+  [`TERMINAL-COMPATIBILITY.md`](./TERMINAL-COMPATIBILITY.md), "Multiplexers".
 - RESOLVED: the load-time split (Chromium spawn, navigation-to-first-paint, Nyala's
   setup round-trips) is answered by the recommendation 4 timing (`screencast_started`
   ~191 ms, dominated by Chromium's own launch). Recommendation 13 is now closed on that
@@ -4045,8 +4043,7 @@ Plan9 assembly the Go toolchain assembles), MIT-licensed, with SIMD IDCT and
 upsample paths for both release targets (amd64 AVX2, arm64 NEON). It returns a
 native `image.YCbCr`, which Block composes directly into the final grid without an
 intermediate RGBA surface. Real-arm64 performance validation is not required because
-the upstream projects publish their SIMD implementation details, as tracked in
-[`TODO.md`](./TODO.md#1-validate-the-stage-3-browser).
+the upstream projects publish their SIMD implementation details.
 The only genuinely faster option is a cgo binding to libjpeg-turbo (about 4.8x),
 but that flips Nyala from a clean `GOOS`/`GOARCH` cross-build to a per-target C
 toolchain, so its speed does not pay for its cost here. The WASM route
@@ -4112,8 +4109,7 @@ Anchored to stdlib at about 56 ms per 7 MP frame:
 
 The amd64 spike completed and `gen2brain/jpegn` was adopted. The criteria below
 record the pre-adoption test. Real-arm64 performance validation is not required
-because the upstream projects publish their SIMD implementation details, as recorded in
-[`TODO.md`](./TODO.md#1-validate-the-stage-3-browser).
+because the upstream projects publish their SIMD implementation details.
 
 Historical criteria:
 
@@ -4261,4 +4257,5 @@ bitmap onto the resized grid (the transient WezTerm Block misalignment). The
 fps badge also appends a cumulative received-frame total,
 `In: -- / Out: -- fps (N)`, because a frozen total distinguishes this class
 of stall from an idle page, the ambiguity that delayed this diagnosis. The
-exact-density relaunch option is recorded in `TODO.md` section 5.
+exact-density relaunch option was later dropped by owner decision: viewer-side
+grid scaling covers mid-session zoom.

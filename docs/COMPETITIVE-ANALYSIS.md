@@ -76,7 +76,7 @@ It published no timings, so it remains subjective evidence
 | Project and path | Work avoided | Work retained | Expected workload bias |
 |---|---|---|---|
 | Nyala Block | Parallel decode prevents one JPEG decoder from setting the arrival ceiling. Fused YCbCr averaging avoids a full RGBA conversion and allocation before cell composition. | Accepted frames still cover the viewport. Terminal cell output can become byte-bound. | Strong when decode and composition fit the frame budget. Terminal throughput matters under high-entropy motion ([Nyala Block results](./PERFORMANCE.md#large-surface-decode-cut-no-downscaling-2026-07-06)). |
-| Nyala Kitty | Direct CDP PNG pass-through removes base64 decode, PNG decode, pixel packing, zlib, and base64 re-encode inside Nyala. | Full PNG frames still cross the terminal protocol and must be decoded and drawn by the terminal. | Strong full-frame path. The terminal PNG implementation can set the end-to-end ceiling ([closed Kitty work](./TODO.md#closed-or-stale-roadmap-entries)). |
+| Nyala Kitty | Direct CDP PNG pass-through removes base64 decode, PNG decode, pixel packing, zlib, and base64 re-encode inside Nyala. | Full PNG frames still cross the terminal protocol and must be decoded and drawn by the terminal. | Strong full-frame path. The terminal PNG implementation can set the end-to-end ceiling ([closed Kitty work](./PERFORMANCE.md#top-recommendations-ranked-by-impact-vs-effort)). |
 | Nyala Sixel | Bounded parallel mapping and band emission, a capped colour sample, long RLE counts, and plane bounds reduce CPU and bytes without changing the accepted output of the measured optimisation pair. | Full accepted frames are decoded, quantised, encoded, written, decoded, and drawn. | Strong full-frame Sixel path. Sparse changes still pay full-frame costs ([controlled sweep](./PERFORMANCE.md#capture-removal-and-combined-sixel-sweep-2026-07-18)). |
 | Carbonyl cell path | Chromium damage rectangles bound conversion work. Cell double buffering avoids rewriting unchanged cells. Cursor and SGR reuse cut control bytes. | Changed character cells still require colour mapping and terminal output. | Strong for sparse page damage and character-cell output ([renderer](https://github.com/fathyb/carbonyl/blob/ab80a27/src/output/renderer.rs), [painter](https://github.com/fathyb/carbonyl/blob/ab80a27/src/output/painter.rs)). |
 | jmagly image paths | Sixel skips inactive planes and uses RLE. Its palette is exact at 256 colours or fewer, then uses RGB332. | Live Kitty, iTerm2, and Sixel image paths encode full frames. The pinned implementation is scalar and does not show parallel encoding. | Useful full-frame image support, with no current achieved-rate comparison ([Sixel source](https://github.com/jmagly/carbonyl/blob/74e028ee3800b33eb93bd80d996bef7c9852e375/src/output/sixel.rs), [terminal image source](https://github.com/jmagly/carbonyl/blob/74e028ee3800b33eb93bd80d996bef7c9852e375/src/output/terminal_image.rs)). |
@@ -105,8 +105,7 @@ They are hypotheses for the direct benchmark, not launch claims.
 
 Nyala will not pursue damage tracking merely to chase these positions. Damage
 tracking, dirty tiles, and partial Sixel output remain outside the accepted roadmap.
-Reopening them needs an explicit owner decision
-([Nyala roadmap](./TODO.md#closed-or-stale-roadmap-entries)).
+Reopening them needs an explicit owner decision.
 
 ## The coward's lever
 
@@ -122,8 +121,7 @@ bounded Sixel mapping and band output, colour sampling, plane bounds, and longer
 runs ([Nyala performance record](./PERFORMANCE.md)).
 
 Downscaling is the last option. It requires specific, explicit owner approval and
-must remain outside the active roadmap until that approval exists
-([Nyala roadmap](./TODO.md#closed-or-stale-roadmap-entries)). It must never enter a
+must remain outside the active roadmap until that approval exists. It must never enter a
 benchmark silently or support a like-for-like claim.
 
 Competitor-native tuning and reduced-fidelity tests still have value, but they are
@@ -232,7 +230,7 @@ Risks:
 
 ## Primary source set
 
-- Nyala: [performance record](./PERFORMANCE.md), [roadmap](./TODO.md), and
+- Nyala: [performance record](./PERFORMANCE.md) and
   [architecture](./OVERVIEW.md).
 - Carbonyl original: [v0.0.3 release](https://github.com/fathyb/carbonyl/releases/tag/v0.0.3),
   [architecture article](https://fathy.fr/carbonyl),

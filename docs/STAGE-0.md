@@ -22,7 +22,7 @@ Terminals were verified by the owner during Stage 0 review (not by an automated 
 What remains for later stages: capability detection matures in Stage 1 (a basic detector landed early, see `d4d44df`), the crisp text overlay arrives in Stage 2, the chromedp screencast replaces the PNG in Stage 3, and Bubble Tea chrome wraps the viewer in Stage 4.
 
 This paragraph records the Stage 0 boundary. Stages 1 through 3 are now built; current
-open work is indexed in [`TODO.md`](./TODO.md).
+open work is tracked in Linear.
 
 ## Objective and scope
 
