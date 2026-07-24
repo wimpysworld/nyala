@@ -428,6 +428,63 @@ func TestHandleMouseSideButtons(t *testing.T) {
 	}
 }
 
+// TestBarModesRefuseOneRowTerminal pins the invisible-modal guard: on a
+// one-row terminal the bar cannot draw (appendBar emits nothing below two
+// rows), so Ctrl+L and Alt+F must not enter a mode that would swallow keys
+// with no visible feedback.
+func TestBarModesRefuseOneRowTerminal(t *testing.T) {
+	st := NewState(80, 1)
+	s := dispatchSession(streamTestEngine{currentURL: "https://example.org/"}, &st)
+
+	s.handleKey(keyEvent{b: keyCtrlL})
+	if s.barMode != barModeChrome || s.editor != nil {
+		t.Fatalf("Ctrl+L entered edit mode on a one-row terminal: mode %d", s.barMode)
+	}
+	s.handleKey(keyEvent{act: actionOpenMenu})
+	if s.barMode != barModeChrome {
+		t.Fatalf("Alt+F entered menu mode on a one-row terminal: mode %d", s.barMode)
+	}
+	if out := s.tty.(interface{ String() string }).String(); strings.Contains(out, showCursor) {
+		t.Fatalf("refused edit entry still wrote terminal escapes: %q", out)
+	}
+}
+
+// TestExitBarModeIfHidden pins the resize half of the invisible-modal guard:
+// a shrink below two rows closes an open bar mode, and edit mode also turns
+// bracketed paste off and hides the cursor again.
+func TestExitBarModeIfHidden(t *testing.T) {
+	s, st := modeSession(t, streamTestEngine{currentURL: "https://example.org/"})
+	s.handleKey(keyEvent{b: keyCtrlL})
+	if s.barMode != barModeEdit {
+		t.Fatalf("Ctrl+L did not enter edit mode: %d", s.barMode)
+	}
+
+	st.Resize(80, 1)
+	s.exitBarModeIfHidden()
+	if s.barMode != barModeChrome || s.editor != nil {
+		t.Fatalf("shrink kept the invisible edit mode open: mode %d", s.barMode)
+	}
+	out := s.tty.(interface{ String() string }).String()
+	if !strings.Contains(out, disableBracketedPaste) || !strings.Contains(out, hideCursor) {
+		t.Fatalf("edit exit escapes missing from %q", out)
+	}
+
+	// The menu closes the same way, and a tall terminal keeps its mode.
+	st.Resize(80, 24)
+	s.handleKey(keyEvent{act: actionOpenMenu})
+	st.Resize(80, 1)
+	s.exitBarModeIfHidden()
+	if s.barMode != barModeChrome {
+		t.Fatalf("shrink kept the invisible menu open: mode %d", s.barMode)
+	}
+	st.Resize(80, 24)
+	s.handleKey(keyEvent{act: actionOpenMenu})
+	s.exitBarModeIfHidden()
+	if s.barMode != barModeMenu {
+		t.Fatalf("a tall terminal lost its menu mode: %d", s.barMode)
+	}
+}
+
 // TestCurrentURLStripsControls pins the display boundary: a page-controlled
 // URL with smuggled C0 or C1 bytes repaints without them, so the bar never
 // hands the terminal an escape introducer inside its SGR run.
