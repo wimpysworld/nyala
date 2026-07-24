@@ -34,6 +34,7 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	ctx := e.ctx
 	url := e.url
 	frames := e.frames
+	closing := e.closing
 	scrollX, scrollY := e.scrollX, e.scrollY
 	cx, cy := wheelCentre(e.cols, e.rows, e.cellW, e.cellH, e.layoutScale())
 	e.mu.Unlock()
@@ -120,8 +121,16 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// Dispatch raw Page.navigate and wait only for its matching main-frame commit.
 	// Capture starts after that commit, so about:blank can never enter the raw queue
 	// or clear the viewer's loading cue. Full load and held subresources do not gate
-	// progressive image delivery.
-	if err = e.navigateAndStartCapture(ctx, lifecycle, url); err != nil {
+	// progressive image delivery. The navGuard context aborts the unbounded
+	// commit and readiness waits when the renderer crashes or Close begins:
+	// on the supervised rebuild path this code runs on the supervisor
+	// goroutine, and a navigation that never commits (a hung proxy, a
+	// captive portal, a second renderer crash) would otherwise park the
+	// supervisor forever and deadlock Close on supDone.
+	navCtx, stopGuard := navGuard(ctx, crashed, closing)
+	err = e.navigateAndStartCapture(ctx, navCtx, lifecycle, url)
+	stopGuard()
+	if err != nil {
 		e.teardownSession()
 		return nil, err
 	}
@@ -138,13 +147,37 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	return crashed, nil
 }
 
+// navGuard derives a context for the startup navigation waits that is
+// cancelled when the session crashes or the engine starts closing, so
+// waitForCommit and the capture-readiness wait can never park the caller
+// forever. The returned stop func releases the watcher; call it as soon as the
+// guarded waits finish.
+func navGuard(ctx context.Context, crashed, closing <-chan struct{}) (context.Context, func()) {
+	navCtx, cancel := context.WithCancel(ctx)
+	stopped := make(chan struct{})
+	go func() {
+		defer cancel()
+		select {
+		case <-crashed:
+		case <-closing:
+		case <-stopped:
+		}
+	}()
+	var once sync.Once
+	return navCtx, func() { once.Do(func() { close(stopped) }) }
+}
+
 // navigateAndStartCapture is the startup ordering seam: prepared plumbing first,
-// raw navigation second, matching commit third, and initial capture last.
-func (e *ChromiumEngine) navigateAndStartCapture(ctx context.Context, lifecycle *sessionLifecycle, url string) error {
-	if err := e.navigateToCommit(ctx, lifecycle, url); err != nil {
+// raw navigation second, matching commit third, and initial capture last. ctx is
+// the session context; waitCtx bounds the navigation and readiness waits (the
+// navGuard cancels it on a crash or Close) and must never reach the screencast
+// start, whose session-identity check compares Done channels and would treat a
+// derived context as a foreign session and silently skip the start.
+func (e *ChromiumEngine) navigateAndStartCapture(ctx, waitCtx context.Context, lifecycle *sessionLifecycle, url string) error {
+	if err := e.navigateToCommit(waitCtx, lifecycle, url); err != nil {
 		return err
 	}
-	return e.startCaptureAfterCommit(ctx, lifecycle)
+	return e.startCaptureAfterCommit(ctx, waitCtx, lifecycle)
 }
 
 // startCaptureAfterCommit starts capture at the navigation commit. Chromium can
@@ -152,16 +185,18 @@ func (e *ChromiumEngine) navigateAndStartCapture(ctx context.Context, lifecycle 
 // committed renderer becomes active. That specific state waits for the matching
 // main frame's DOMContentLoaded lifecycle event and retries once. This is an
 // event-driven readiness retry, not a load wait or timer; a held subresource does
-// not delay it.
-func (e *ChromiumEngine) startCaptureAfterCommit(ctx context.Context, lifecycle *sessionLifecycle) error {
+// not delay it. The readiness wait selects on waitCtx so a crash or Close
+// releases it; the screencast starts take the session ctx, which carries the
+// identity transitionScreencastLocked validates.
+func (e *ChromiumEngine) startCaptureAfterCommit(ctx, waitCtx context.Context, lifecycle *sessionLifecycle) error {
 	err := e.startInitialScreencast(ctx)
 	if !pageNotActive(err) {
 		return err
 	}
 	select {
 	case <-lifecycle.domReady:
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-waitCtx.Done():
+		return waitCtx.Err()
 	}
 	return e.startInitialScreencast(ctx)
 }
