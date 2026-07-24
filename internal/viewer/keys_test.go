@@ -153,6 +153,20 @@ func TestNextEventCSI(t *testing.T) {
 	}
 }
 
+// TestNextEventCSIBodyBounded asserts the CSI reader drops a body that never
+// reaches a final byte within maxCSIBody, matching the paste and APC caps, so
+// garbage input cannot grow the buffer without limit.
+func TestNextEventCSIBodyBounded(t *testing.T) {
+	br := bufio.NewReader(strings.NewReader("\x1b[" + strings.Repeat("1;", maxCSIBody) + "A"))
+	first, err := br.ReadByte()
+	if err != nil {
+		t.Fatalf("read first byte: %v", err)
+	}
+	if _, emit := nextEvent(br, first); emit {
+		t.Fatal("over-long CSI body emitted an event")
+	}
+}
+
 // TestNextEventActions asserts the reader resolves the command escape
 // sequences into action events: the Alt chords (ESC+letter, Shift carried by
 // case), the backtab, F5, and the Alt-modified cursor keys. A trailing byte
