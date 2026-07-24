@@ -8,29 +8,35 @@ import (
 )
 
 // TestHistoryTarget asserts the history step maths: a step inside the entry
-// list returns the target index, and a step off either end reports not-ok so
-// the dispatch is a quiet no-op.
+// list returns the target index, about:blank entries (Chromium's initial
+// blank document) are skipped rather than landed on, and a step off either
+// end reports not-ok so the dispatch is a quiet no-op.
 func TestHistoryTarget(t *testing.T) {
+	pages := []string{"https://a.example/", "https://b.example/", "https://c.example/", "https://d.example/"}
 	cases := []struct {
 		name    string
 		current int64
-		count   int
+		urls    []string
 		delta   int
 		want    int
 		ok      bool
 	}{
-		{"back mid-list", 2, 4, -1, 1, true},
-		{"forward mid-list", 1, 4, 1, 2, true},
-		{"back at first", 0, 4, -1, 0, false},
-		{"forward at last", 3, 4, 1, 0, false},
-		{"empty history", 0, 0, -1, 0, false},
+		{"back mid-list", 2, pages, -1, 1, true},
+		{"forward mid-list", 1, pages, 1, 2, true},
+		{"back at first", 0, pages, -1, 0, false},
+		{"forward at last", 3, pages, 1, 0, false},
+		{"empty history", 0, nil, -1, 0, false},
+		{"zero delta is not a step", 1, pages, 0, 0, false},
+		{"back skips the initial blank", 1, []string{"about:blank", "https://a.example/"}, -1, 0, false},
+		{"back skips a blank to a page", 2, []string{"https://a.example/", "about:blank", "https://b.example/"}, -1, 0, true},
+		{"forward skips a blank to a page", 0, []string{"https://a.example/", "about:blank", "https://b.example/"}, 1, 2, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, ok := historyTarget(c.current, c.count, c.delta)
+			got, ok := historyTarget(c.current, c.urls, c.delta)
 			if got != c.want || ok != c.ok {
-				t.Fatalf("historyTarget(%d, %d, %d) = (%d, %v), want (%d, %v)",
-					c.current, c.count, c.delta, got, ok, c.want, c.ok)
+				t.Fatalf("historyTarget(%d, %v, %d) = (%d, %v), want (%d, %v)",
+					c.current, c.urls, c.delta, got, ok, c.want, c.ok)
 			}
 		})
 	}
