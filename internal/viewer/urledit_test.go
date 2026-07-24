@@ -72,6 +72,21 @@ func TestURLEditorInsertTextStripsNewlines(t *testing.T) {
 	}
 }
 
+// TestURLEditorInsertRuneDropsControls pins the single insertion choke point:
+// C0, DEL, and C1 runes are dropped whether typed or pasted, so an xterm-family
+// terminal never receives a C1 escape introducer from the repainted row.
+func TestURLEditorInsertRuneDropsControls(t *testing.T) {
+	e := newURLEditor("")
+	for _, r := range []rune{0x07, 0x7f, 0x80, 0x9b, 0x9f} {
+		e.insertRune(r)
+	}
+	e.insertRune('a')
+	e.insertText("b\u009bc")
+	if got := e.String(); got != "abc" {
+		t.Fatalf("editor text = %q, want control runes dropped", got)
+	}
+}
+
 // TestURLEditorViewFollowsCursor pins the horizontal viewport: the window
 // slides right so the cursor stays visible on a long URL, slides back left
 // when the cursor returns to the start, and reports the cursor cell inside

@@ -29,22 +29,33 @@ func (e *urlEditor) String() string {
 	return string(e.text)
 }
 
-// insertRune inserts r at the cursor and advances past it.
+// insertRune inserts r at the cursor and advances past it. C0 and C1 control
+// characters and DEL are dropped here, the single insertion choke point, so
+// neither a typed rune nor a paste can smuggle a control byte the repaint
+// would hand to the terminal.
 func (e *urlEditor) insertRune(r rune) {
+	if isControlRune(r) {
+		return
+	}
 	e.text = append(e.text[:e.cursor], append([]rune{r}, e.text[e.cursor:]...)...)
 	e.cursor++
 }
 
 // insertText inserts a paste at the cursor as one unit. Newlines and carriage
 // returns are stripped, so a multi-line paste cannot smuggle an Enter, and
-// other control characters are dropped.
+// other control characters are dropped by insertRune.
 func (e *urlEditor) insertText(s string) {
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
-			continue
-		}
 		e.insertRune(r)
 	}
+}
+
+// isControlRune reports whether r is a C0 control, DEL, or a C1 control, the
+// characters the editor and the bar's URL display refuse: an xterm-family
+// terminal treats a C1 byte as an escape introducer, so none may reach a bar
+// write.
+func isControlRune(r rune) bool {
+	return r < 0x20 || (r >= 0x7f && r <= 0x9f)
 }
 
 // backspace deletes the rune before the cursor.
