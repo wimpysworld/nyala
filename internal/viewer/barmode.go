@@ -172,14 +172,34 @@ const (
 
 // currentURL returns the engine's last committed URL, falling back to the
 // launch URL before the first commit, the string the bar and the editor
-// prefill show.
+// prefill show. The page controls that URL, so control characters are
+// stripped here at the display boundary: the bar writes it inside an SGR run,
+// and a smuggled C0 or C1 byte would otherwise reach the terminal as an
+// escape.
 func (s *streamSession) currentURL() string {
+	url := s.launchURL
 	if s.eng != nil {
 		if current := s.eng.CurrentURL(); current != "" {
-			return current
+			url = current
 		}
 	}
-	return s.launchURL
+	return stripControls(url)
+}
+
+// stripControls removes C0 controls, DEL, and C1 controls from s, returning s
+// unchanged (no allocation) when it is already clean.
+func stripControls(s string) string {
+	if !strings.ContainsFunc(s, isControlRune) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if !isControlRune(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // repaintBar repaints the bar row through the ordered control path; a

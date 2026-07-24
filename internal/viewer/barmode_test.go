@@ -427,3 +427,13 @@ func TestHandleMouseSideButtons(t *testing.T) {
 		t.Fatalf("side buttons forwarded to the engine: %v", forwarded)
 	}
 }
+
+// TestCurrentURLStripsControls pins the display boundary: a page-controlled
+// URL with smuggled C0 or C1 bytes repaints without them, so the bar never
+// hands the terminal an escape introducer inside its SGR run.
+func TestCurrentURLStripsControls(t *testing.T) {
+	s, _ := modeSession(t, streamTestEngine{currentURL: "https://e.org/\x1b]0;x\x07pq"})
+	if got := s.currentURL(); got != "https://e.org/]0;xpq" {
+		t.Fatalf("currentURL = %q, want control bytes stripped", got)
+	}
+}
