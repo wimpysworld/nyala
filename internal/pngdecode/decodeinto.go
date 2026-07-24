@@ -47,6 +47,10 @@ const (
 // cannot hold the decoded image at four bytes per pixel.
 var ErrDstTooSmall = errors.New("pngdecode: destination plane too small")
 
+// maxDecodeDim bounds each IHDR dimension the fast path accepts, so the
+// 4*w*h size arithmetic cannot overflow int and admit a too-small dst.
+const maxDecodeDim = 1 << 20
+
 // errFormat is the generic malformed-stream error for the fast path. The
 // fallback path surfaces the upstream decoder's richer errors instead.
 var errFormat = errors.New("pngdecode: invalid PNG stream")
@@ -114,7 +118,10 @@ func DecodeInto(r io.Reader, dst []byte) (w, h int, err error) {
 	if !fast || w <= 0 || h <= 0 {
 		return fallbackInto(head, nil, r, dst)
 	}
-	if len(dst) < 4*w*h {
+	// The dimension cap keeps 4*w*h inside the int range: unchecked uint32
+	// dimensions could overflow the size check and admit a dst far too small.
+	// Chromium screencast frames sit orders of magnitude under it.
+	if w > maxDecodeDim || h > maxDecodeDim || len(dst) < 4*w*h {
 		return 0, 0, ErrDstTooSmall
 	}
 

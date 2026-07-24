@@ -168,6 +168,25 @@ func TestDecodeIntoDstTooSmall(t *testing.T) {
 	}
 }
 
+// TestDecodeIntoRejectsOverflowingDimensions proves the fast path refuses
+// IHDR dimensions whose 4*w*h would overflow int and slip past the size
+// check, admitting a far-too-small dst.
+func TestDecodeIntoRejectsOverflowingDimensions(t *testing.T) {
+	t.Parallel()
+	var b bytes.Buffer
+	b.WriteString(pngHeader)
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], 0xFFFFFFF0) // width
+	binary.BigEndian.PutUint32(ihdr[4:8], 0xFFFFFFF0) // height
+	ihdr[8] = 8                                       // bit depth
+	ihdr[9] = 2                                       // truecolour: the fast-path shape
+	writeChunk(&b, "IHDR", ihdr)
+	dst := make([]byte, 64)
+	if _, _, err := DecodeInto(bytes.NewReader(b.Bytes()), dst); !errors.Is(err, ErrDstTooSmall) {
+		t.Fatalf("DecodeInto error = %v, want ErrDstTooSmall", err)
+	}
+}
+
 // TestDimensions checks the IHDR size peek and its non-PNG rejection.
 func TestDimensions(t *testing.T) {
 	t.Parallel()
