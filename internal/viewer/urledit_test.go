@@ -114,9 +114,11 @@ func TestURLEditorViewWideRunes(t *testing.T) {
 	}
 }
 
-// TestCommitURL pins the schemeless commit rule: a scheme passes through,
-// a dotted schemeless host gains https://, and dotless or empty text is
-// refused so the editor stays open.
+// TestCommitURL pins the commit rule: an allowlisted scheme (http, https,
+// file) passes through, any other scheme is refused (javascript: would
+// execute in the committed page's origin, a self-XSS), a dotted schemeless
+// host gains https://, and dotless or empty text is refused so the editor
+// stays open.
 func TestCommitURL(t *testing.T) {
 	cases := []struct {
 		name string
@@ -125,12 +127,20 @@ func TestCommitURL(t *testing.T) {
 		ok   bool
 	}{
 		{"scheme passes", "https://example.org/", "https://example.org/", true},
+		{"http scheme passes", "http://example.org/", "http://example.org/", true},
+		{"scheme case-insensitive", "HTTPS://example.org/", "HTTPS://example.org/", true},
 		{"file scheme passes", "file:///tmp/page.html", "file:///tmp/page.html", true},
 		{"dotted host gains https", "example.org/page", "https://example.org/page", true},
 		{"surrounding space trimmed", "  example.org  ", "https://example.org", true},
 		{"dotless refused", "example", "", false},
 		{"empty refused", "", "", false},
 		{"spaces refused", "   ", "", false},
+		{"javascript authority form refused", "javascript://x%0aalert(1)", "", false},
+		{"javascript opaque form refused", "javascript:document.cookie", "", false},
+		{"javascript case refused", "JavaScript:alert(1)", "", false},
+		{"data scheme refused", "data:text/html,<script>1</script>", "", false},
+		{"chrome scheme refused", "chrome://settings", "", false},
+		{"embedded https does not launder", "javascript:fetch('https://evil/')", "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
