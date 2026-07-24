@@ -47,7 +47,13 @@ func TestNavigateAndStartCaptureOrder(t *testing.T) {
 		return nil
 	}
 
-	if err := e.navigateAndStartCapture(ctx, lifecycle, "https://example.test"); err != nil {
+	// The waits run under a navGuard-derived context, as startSession wires
+	// them. Capture must still start: it takes the session ctx, because the
+	// screencast transition validates session identity by Done-channel
+	// equality and would silently skip a start on a derived context.
+	waitCtx, stop := navGuard(ctx, make(chan struct{}), make(chan struct{}))
+	defer stop()
+	if err := e.navigateAndStartCapture(ctx, waitCtx, lifecycle, "https://example.test"); err != nil {
 		t.Fatalf("navigate and start capture: %v", err)
 	}
 	if want := []string{"navigate", "commit", "capture"}; !reflect.DeepEqual(order, want) {
@@ -86,6 +92,76 @@ func TestNavigateToCommitCancellation(t *testing.T) {
 	}
 }
 
+// TestNavGuardAbortsCommitWaitOnCrash pins the rebuild-path deadlock fix: a
+// navigation whose commit never arrives is released when the session crashes,
+// so the supervisor goroutine (which runs startSession on the rebuild path)
+// can never park forever and deadlock Close on supDone.
+func TestNavGuardAbortsCommitWaitOnCrash(t *testing.T) {
+	t.Parallel()
+	crashed := make(chan struct{})
+	closing := make(chan struct{})
+	navCtx, stop := navGuard(context.Background(), crashed, closing)
+	defer stop()
+	lifecycle := newSessionLifecycle()
+	e := &ChromiumEngine{navigateOp: func(context.Context, string) (cdp.FrameID, cdp.LoaderID, bool, error) {
+		return "main", "loader", false, nil // the matching commit never arrives
+	}}
+	done := make(chan error, 1)
+	go func() { done <- e.navigateToCommit(navCtx, lifecycle, "https://hung.test") }()
+	close(crashed)
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("commit wait after crash = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("commit wait ignored the crash signal")
+	}
+}
+
+// TestNavGuardAbortsCommitWaitOnClose pins the Close half of the guard: a
+// Close during a non-committing navigation releases the wait instead of
+// blocking behind it.
+func TestNavGuardAbortsCommitWaitOnClose(t *testing.T) {
+	t.Parallel()
+	crashed := make(chan struct{})
+	closing := make(chan struct{})
+	navCtx, stop := navGuard(context.Background(), crashed, closing)
+	defer stop()
+	lifecycle := newSessionLifecycle()
+	e := &ChromiumEngine{navigateOp: func(context.Context, string) (cdp.FrameID, cdp.LoaderID, bool, error) {
+		return "main", "loader", false, nil
+	}}
+	done := make(chan error, 1)
+	go func() { done <- e.navigateToCommit(navCtx, lifecycle, "https://hung.test") }()
+	close(closing)
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("commit wait after close = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("commit wait ignored the closing signal")
+	}
+}
+
+// TestNavGuardStopReleasesWatcher pins the guard release: stop is idempotent
+// and ends the watcher goroutine, which cancels the derived context on exit
+// so no context resources leak.
+func TestNavGuardStopReleasesWatcher(t *testing.T) {
+	t.Parallel()
+	crashed := make(chan struct{})
+	closing := make(chan struct{})
+	navCtx, stop := navGuard(context.Background(), crashed, closing)
+	stop()
+	stop() // idempotent
+	select {
+	case <-navCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("watcher did not release the derived context after stop")
+	}
+}
+
 func TestNavigateErrorDocumentStillStartsCapture(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -104,7 +180,7 @@ func TestNavigateErrorDocumentStillStartsCapture(t *testing.T) {
 		starts.Add(1)
 		return nil
 	}
-	if err := e.navigateAndStartCapture(ctx, lifecycle, "https://bad.test"); err != nil {
+	if err := e.navigateAndStartCapture(ctx, ctx, lifecycle, "https://bad.test"); err != nil {
 		t.Fatalf("error document startup: %v", err)
 	}
 	if got := starts.Load(); got != 1 {
