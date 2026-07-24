@@ -296,6 +296,9 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 	}
 	body := []byte{}
 	for {
+		if len(body) > maxCSIBody {
+			return keyEvent{}, false
+		}
 		c, err := br.ReadByte()
 		if err != nil {
 			return keyEvent{}, false
@@ -406,6 +409,12 @@ func readPasteBody(br *bufio.Reader) (string, bool) {
 	}
 	return "", false
 }
+
+// maxCSIBody bounds a CSI body read, matching the paste and APC caps, so
+// garbage input that opens a CSI but never sends a final byte cannot grow the
+// buffer without limit. The longest recognised body is an SGR mouse report of
+// a few dozen bytes.
+const maxCSIBody = 256
 
 // maxAPCBody bounds an APC body read, so garbage input that opens an APC but
 // never terminates it cannot grow the buffer without limit. A Kitty graphics
