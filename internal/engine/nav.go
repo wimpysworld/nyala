@@ -38,15 +38,21 @@ func navHistoryDelta(a NavAction) int {
 }
 
 // historyTarget returns the navigation-history entry index a step of delta
-// from current lands on, and ok=false when the step runs off either end of
-// the count entries, so a Back on the first entry or a Forward on the last is
-// a quiet no-op rather than a CDP error.
-func historyTarget(current int64, count, delta int) (int, bool) {
-	target := int(current) + delta
-	if target < 0 || target >= count {
+// from current lands on, skipping about:blank entries (the initial blank
+// document Chromium seeds the session with), and ok=false when the step runs
+// off either end of the entry URLs, so a Back on the launch page or a Forward
+// on the last entry is a quiet no-op rather than a blank screen or a CDP
+// error. A zero delta is not a history step and reports not-ok.
+func historyTarget(current int64, urls []string, delta int) (int, bool) {
+	if delta == 0 {
 		return 0, false
 	}
-	return target, true
+	for target := int(current) + delta; target >= 0 && target < len(urls); target += delta {
+		if urls[target] != "about:blank" {
+			return target, true
+		}
+	}
+	return 0, false
 }
 
 // SendNav forwards one navigation request to the page through the same bounded
@@ -140,7 +146,11 @@ func navDispatchAction(a NavAction) chromedp.Action {
 		if err != nil {
 			return err
 		}
-		target, ok := historyTarget(current, len(entries), delta)
+		urls := make([]string, len(entries))
+		for i, entry := range entries {
+			urls[i] = entry.URL
+		}
+		target, ok := historyTarget(current, urls, delta)
 		if !ok {
 			return nil
 		}
