@@ -1115,6 +1115,9 @@ func (s *streamSession) resize() error {
 		s.st.cellPx = px
 	}
 	s.st.Resize(nc, nr)
+	// A shrink below two rows hides the bar, so an open bar mode must close
+	// rather than keep swallowing keys invisibly.
+	s.exitBarModeIfHidden()
 	// The engine restart runs on the control goroutine so a slow restartStream
 	// never freezes the consumer loop; the loop keeps drawing and handling quit.
 	// The engine grid takes engineRows, so the bottom-row bar reservation

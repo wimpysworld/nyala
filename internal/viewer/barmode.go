@@ -212,8 +212,13 @@ func (s *streamSession) repaintBar() {
 
 // enterEdit swaps the bar to URL edit mode: the editor prefills the current
 // URL with the cursor at the end, bracketed paste turns on, and the terminal
-// cursor shows so the repaint can park it at the edit position.
+// cursor shows so the repaint can park it at the edit position. A one-row
+// terminal has no bar row to draw the editor on, so entering would swallow
+// keys in an invisible modal; the request is ignored instead.
 func (s *streamSession) enterEdit() {
+	if s.st.Rows < 2 {
+		return
+	}
 	s.barMode = barModeEdit
 	s.pressedSet = false
 	s.editor = newURLEditor(s.currentURL())
@@ -255,8 +260,13 @@ func (s *streamSession) openURL(url string) {
 	s.eng.OpenURL(url)
 }
 
-// enterMenu swaps the bar to menu mode with the first command highlighted.
+// enterMenu swaps the bar to menu mode with the first command highlighted. A
+// one-row terminal has no bar row to draw the menu on, so entering would
+// swallow keys in an invisible modal; the request is ignored instead.
 func (s *streamSession) enterMenu() {
+	if s.st.Rows < 2 {
+		return
+	}
 	s.barMode = barModeMenu
 	s.pressedSet = false
 	s.menuSel = 0
@@ -273,6 +283,21 @@ func (s *streamSession) enterAbout() {
 func (s *streamSession) leaveMode() {
 	s.barMode = barModeChrome
 	s.repaintBar()
+}
+
+// exitBarModeIfHidden restores chrome mode when a resize left the terminal
+// with no bar row: a mode that cannot draw must not keep swallowing keys as
+// an invisible modal. Leaving edit mode also turns bracketed paste off and
+// hides the cursor again.
+func (s *streamSession) exitBarModeIfHidden() {
+	if s.st.Rows >= 2 || s.barMode == barModeChrome {
+		return
+	}
+	if s.barMode == barModeEdit {
+		s.leaveEdit()
+		return
+	}
+	s.leaveMode()
 }
 
 // activateMenu runs the registry command at index i and reports whether it
