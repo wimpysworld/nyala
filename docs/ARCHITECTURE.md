@@ -1310,8 +1310,8 @@ decode-every-frame consumer streams JPEG q90.
   the terminal.
 - The DCS/OSC colour round-trip dropped: it fails on three target platforms
   (details under Colour).
-- Burning glyphs into the bitmap rejected permanently: it recreates Browsh's
-  fuzzy text.
+- Burning glyphs into the bitmap rejected permanently: it drops text back under
+  the 10 px legibility floor.
 - Damage tracking, dirty tiles, and partial graphics emission are out of
   scope by owner decision; reopening needs owner sign-off,
   terminal-presented measurements, and a sustained full-frame path over

@@ -132,8 +132,8 @@ terminals.
 **Crisp text, justified by a legibility floor.** `Cell.Text` and
 `Cell.Wide` joined the grid; positioned glyph runs composite over the
 bitmap, the grapheme wins the cell, and wide glyphs claim two cells and
-clip rather than half-emit. The bitmap alone renders text as fuzzy blocks,
-the Browsh failure mode; OCR calibration set the floor at 10 px legible,
+clip rather than half-emit. The bitmap alone renders text as fuzzy blocks;
+OCR calibration set the floor at 10 px legible,
 8 px not (character error rate 0.23), and body text sits below it. The
 overlay is gated by an exact-template matcher at CER 0 plus a WCAG AA
 4.5:1 contrast count.
