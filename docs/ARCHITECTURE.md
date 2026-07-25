@@ -333,6 +333,17 @@ convert to CSS pixels at the cell centre, divided by Z so the click lands
 where the frame drew the cell. The engine owns the scroll offset as the single
 source of truth and re-applies it after crash recovery.
 
+A pointer wheel report carries a direction, not a magnitude, so both axes take
+the same fixed 120 CSS px step per report and the deltas follow the DOM
+convention CDP speaks: positive `deltaX` scrolls towards the document's right
+edge, so a wheel-right report increases `scrollLeft`. A pointer wheel also
+carries the report's modifier bits, so a page reading `shiftKey` or `ctrlKey`
+on a wheel event sees what the user held. Keyboard scrolling and
+crash-recovery replay carry no modifiers and stay position-independent. A
+DevTools-injected Ctrl+wheel does not drive browser-level zoom, so the CSS
+layout the renderer is sized to cannot shift underneath it; a live test watches
+that assumption.
+
 ### Crash recovery and concurrency
 
 A supervisor goroutine (`supervise` in `recovery.go`) owns the session. It

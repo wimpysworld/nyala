@@ -117,6 +117,74 @@ func TestSendMouseWheelAtPointer(t *testing.T) {
 	}
 }
 
+// TestWheelParams pins the CDP mouseWheel dispatch shape: the event type, the
+// signed deltas on each axis, the CSS position, and the modifier bits. The
+// modifier assertion is the load-bearing one: the wheel path used to build its
+// dispatch without modifiers, so a Shift or Ctrl wheel reached the page bare and
+// a listener reading shiftKey saw nothing.
+func TestWheelParams(t *testing.T) {
+	p := wheelParams(12.5, 34.75, wheelTickPx, 0, cdpModShiftBits)
+	if p.Type != input.MouseWheel {
+		t.Errorf("wheel type = %q, want %q", p.Type, input.MouseWheel)
+	}
+	if p.DeltaX != wheelTickPx || p.DeltaY != 0 {
+		t.Errorf("horizontal wheel deltas = (%g, %g), want (%d, 0)", p.DeltaX, p.DeltaY, wheelTickPx)
+	}
+	if p.X != 12.5 || p.Y != 34.75 {
+		t.Errorf("wheel position = (%g, %g), want (12.5, 34.75)", p.X, p.Y)
+	}
+	if p.Modifiers != cdpModShiftBits {
+		t.Errorf("wheel modifiers = %d, want %d (Shift)", p.Modifiers, cdpModShiftBits)
+	}
+
+	left := wheelParams(0, 0, -wheelTickPx, 0, 0)
+	if left.DeltaX != -wheelTickPx || left.DeltaY != 0 {
+		t.Errorf("wheel-left deltas = (%g, %g), want (%d, 0)", left.DeltaX, left.DeltaY, -wheelTickPx)
+	}
+	down := wheelParams(0, 0, 0, wheelTickPx, cdpModCtrlBits)
+	if down.DeltaY != wheelTickPx || down.DeltaX != 0 {
+		t.Errorf("wheel-down deltas = (%g, %g), want (0, %d)", down.DeltaX, down.DeltaY, wheelTickPx)
+	}
+	if down.Modifiers != cdpModCtrlBits {
+		t.Errorf("wheel-down modifiers = %d, want %d (Ctrl)", down.Modifiers, cdpModCtrlBits)
+	}
+}
+
+// TestSendMouseHorizontalWheelKeepsVertical asserts a horizontal report moves
+// the held horizontal offset by one fixed 120 CSS px step per report, signed by
+// direction, and leaves the vertical offset and its whole-cell snap target
+// untouched, so the vertical path is unchanged by a sideways scroll. With ctx
+// nil the held offsets observe the transport without a browser.
+func TestSendMouseHorizontalWheelKeepsVertical(t *testing.T) {
+	e := New("")
+	e.SetCellPx(8, 16)
+	e.Resize(120, 40)
+
+	for i := 1; i <= 3; i++ {
+		e.SendMouse(MouseEvent{Action: MouseActionWheel, WheelDX: 1, Mod: cdpModShiftBits, Col: 3, Row: 4})
+		e.mu.Lock()
+		sx, sy, target := e.scrollX, e.scrollY, e.scrollYTarget
+		e.mu.Unlock()
+		if want := i * wheelTickPx; sx != want {
+			t.Fatalf("after %d wheel-right reports scrollX = %d, want %d (120 px each)", i, sx, want)
+		}
+		if sy != 0 || target != 0 {
+			t.Fatalf("wheel-right moved the vertical offset to (%d, %d), want (0, 0)", sy, target)
+		}
+	}
+
+	e.SendMouse(MouseEvent{Action: MouseActionWheel, WheelDX: -1, Col: 3, Row: 4})
+	e.mu.Lock()
+	sx, sy := e.scrollX, e.scrollY
+	e.mu.Unlock()
+	if want := 2 * wheelTickPx; sx != want {
+		t.Fatalf("wheel-left scrollX = %d, want %d (one step back)", sx, want)
+	}
+	if sy != 0 {
+		t.Fatalf("wheel-left moved the vertical offset to %d, want 0", sy)
+	}
+}
+
 // TestNextClickCountSynthesis drives the pure clickCount synthesis with
 // explicit timestamps: presses chain within the 400 ms window on the same
 // cell and button, cap at 3, and reset on movement, window expiry, or a
@@ -237,9 +305,13 @@ func TestMouseParamsMove(t *testing.T) {
 	}
 }
 
-// cdpModShiftBits is the CDP Shift modifier bit, spelled here so the move
-// dispatch test asserts against the protocol value rather than a bare literal.
-const cdpModShiftBits = 8
+// cdpModShiftBits and cdpModCtrlBits are the CDP Shift and Ctrl modifier bits,
+// spelled here so the dispatch tests assert against the protocol values rather
+// than bare literals.
+const (
+	cdpModCtrlBits  = 2
+	cdpModShiftBits = 8
+)
 
 // TestSendMouseMoveKeepsClickChain asserts a drag move leaves the click chain
 // alone: two presses on one cell with a move between them still report a

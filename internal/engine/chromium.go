@@ -484,17 +484,19 @@ func (e *ChromiumEngine) SendScroll(dy int) {
 
 // dispatchWheel scrolls the page by dx, dy CSS pixels at the viewport centre.
 // Keyboard scrolling and crash-recovery replay take this path, so their
-// behaviour is position-independent and unchanged by pointer wheels.
+// behaviour is position-independent and unchanged by pointer wheels. Neither
+// carries a modifier, so it dispatches none.
 func (e *ChromiumEngine) dispatchWheel(dx, dy int) {
-	e.dispatchWheelFrom(dx, dy, false, 0, 0)
+	e.dispatchWheelFrom(dx, dy, 0, false, 0, 0)
 }
 
 // dispatchWheelAt scrolls the page by dx, dy CSS pixels through the same
-// transport with the event positioned at the given terminal cell, so a
-// pointer wheel scrolls the scrollable element under the pointer rather than
-// the viewport centre.
-func (e *ChromiumEngine) dispatchWheelAt(dx, dy, col, row int) {
-	e.dispatchWheelFrom(dx, dy, true, col, row)
+// transport with the event positioned at the given terminal cell and carrying
+// the report's CDP modifier bits, so a pointer wheel scrolls the scrollable
+// element under the pointer rather than the viewport centre and a page reading
+// shiftKey or ctrlKey on the wheel event sees what the user held.
+func (e *ChromiumEngine) dispatchWheelAt(dx, dy, mod, col, row int) {
+	e.dispatchWheelFrom(dx, dy, mod, true, col, row)
 }
 
 // dispatchWheelFrom scrolls the page by dx, dy CSS pixels through the one scroll
@@ -513,7 +515,7 @@ func (e *ChromiumEngine) dispatchWheelAt(dx, dy, col, row int) {
 // keeps repeated small scrolls from drifting. The quantisation applies to keyboard
 // and pointer wheels alike. Horizontal scroll and graphics backends are unchanged.
 // synthesizeScrollGesture is deliberately not used.
-func (e *ChromiumEngine) dispatchWheelFrom(dx, dy int, atCell bool, col, row int) {
+func (e *ChromiumEngine) dispatchWheelFrom(dx, dy, mod int, atCell bool, col, row int) {
 	e.mu.Lock()
 	e.scrollX += dx
 	e.scrollYTarget += dy
@@ -546,10 +548,7 @@ func (e *ChromiumEngine) dispatchWheelFrom(dx, dy int, atCell bool, col, row int
 	if dx == 0 && dyDispatch == 0 {
 		return
 	}
-	ev := input.DispatchMouseEvent(input.MouseWheel, cx, cy).
-		WithDeltaX(float64(dx)).
-		WithDeltaY(float64(dyDispatch))
-	e.dispatchInput(ctx, ev)
+	e.dispatchInput(ctx, wheelParams(cx, cy, dx, dyDispatch, mod))
 }
 
 // wheelPositionLocked returns the CSS-pixel wheel dispatch position, read
