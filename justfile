@@ -295,6 +295,22 @@ kitty-transport-bench:
     fi
     NYALA_KITTY_BENCH=1 go test -tags kittybench -run '^TestKittyTransportBenchmark$' -v -count=1 ./internal/viewer/
 
+# Record the demo GIF from nyala.tape. VHS records the Block backend only: its
+# xterm.js emulator cannot show Kitty or Sixel output. The nixpkgs vhs package
+# bundles the ttyd and ffmpeg it needs.
+vhs: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    command -v vhs >/dev/null || {
+        printf '%s\n' 'just vhs: vhs not found; the nixpkgs package bundles ttyd and ffmpeg' >&2
+        exit 1
+    }
+
+    mkdir -p assets
+    # The tape runs ./nyala, so it records the binary just built in this worktree.
+    vhs nyala.tape
+
 # Tidy Go modules
 tidy:
     @go mod tidy

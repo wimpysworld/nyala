@@ -84,11 +84,13 @@ The format policy follows the consumer:
   backends.
 
 Measurements set this policy. Direct Kitty pass-through cut Nyala framing
-from 51.95 ms to 0.014 ms per frame. Composing Block cells from native
-YCbCr cut matched q90 processing 42.95% (18.012 to 10.276 ms at 2560x2880),
-leaving 6.39 ms median headroom inside the 16.67 ms 60 fps budget. q90 beat
-q80 on fidelity (PSNR 45.234 to 49.021 dB, SSIM 0.995468 to 0.997696) and
-beat q95 and q100 on headroom: q100 leaves 0.53 ms and doubles the payload.
+from 51.95 ms to 0.014 ms per frame on the focused 2560x2880 benchmark,
+and 45.99 to 0.027 ms on real CDP payloads. Composing Block cells from
+native YCbCr cut matched q90 processing 42.95% (18.012 to 10.276 ms at
+2560x2880), leaving 6.39 ms median headroom inside the 16.67 ms 60 fps
+budget. q90 beat q80 on fidelity (PSNR 45.234 to 49.021 dB, SSIM 0.995468
+to 0.997696) and beat q95 and q100 on headroom: q100 leaves 0.53 ms and
+doubles the payload.
 
 ### Engines
 
@@ -172,7 +174,7 @@ out at `surf/Z` CSS pixels while Chromium paints the full device surface.
 Block anchors 8 CSS pixels per column (`blockCellCSSW`) and graphics anchors
 16 (`graphicsCellCSSW`), each held to a 1024 px layout floor so a narrow grid
 keeps a desktop layout. Block's 8 is half the graphics anchor because its
-raster is 2 sub-cells per cell; Browsh's measured 9 CSS px per column is the
+raster is 2 sub-cells per cell; Browsh's hardcoded 9 CSS px per column is the
 prior art. The anchor exists because terminals disagree on the unit of the
 cell size they report: at the same physical window Kitty reports a 16x33
 cell (logical points) while Ghostty and WezTerm report 26x53 (device
@@ -253,11 +255,12 @@ image cannot be split.
 
 Three decode libraries are pinned on the hot path, all pure Go. JPEG:
 `gen2brain/jpegn` (SIMD, native YCbCr output, stdlib fallback on
-ErrUnsupported), 1.85x to 2.45x over stdlib (about 56 down to 23 to 30 ms
-at 7 MP); cgo libjpeg-turbo at 4.8x was rejected because `CGO_ENABLED=1`
-breaks the clean cross-build. Base64: `emmansun/base64`, because CDP wraps
-every frame in base64 JSON with no binary path, 7.6x over stdlib plus a
-further 4.06x from the pooled zero-copy decode; the Kitty payload encoder
+ErrUnsupported), 1.85x to 2.45x over stdlib (a projected 56 down to 23 to
+30 ms at 7 MP); cgo libjpeg-turbo at 4.8x was rejected because
+`CGO_ENABLED=1` breaks the clean cross-build. Base64: `emmansun/base64`,
+because CDP wraps every frame in base64 JSON with no binary path, 7.6x
+over stdlib plus a further 4.06x from the pooled zero-copy decode; the
+Kitty payload encoder
 shares it (about 53x on encode). PNG: `woozymasta/png` (SIMD unfilter,
 byte-identical on 1011 of 1011 real PNGs, about 54% faster), dispatched by
 the 8-byte PNG magic rather than registration, because a second "png"
@@ -357,7 +360,8 @@ bitmap entirely and paints every glyph as a full crisp terminal cell. The
 overlay is always legible whatever size the page asked for.
 
 Burning glyphs into the bitmap is rejected permanently. It re-rasterises text
-into fuzzy pixels, the Browsh failure mode Nyala exists to avoid.
+into pixels at whatever size the page asked for, dropping it back under the
+10 px floor the overlay exists to clear.
 
 ### Font forcing
 
@@ -720,8 +724,9 @@ assembler arms it). Any shm failure demotes the current stint to direct PNG.
 
 JPEG q90 is the shm capture format because PNG plane decode is
 content-scaled (96.9 ms on live pages) while JPEG q90 is content-stable
-(17.2 ms) at 44% of the payload. The aquarium progression reads 12.7 fps
-direct, 24.4 shm PNG, 59.8 shm JPEG, locked to the 60 Hz cap; an uncapped
+(17.2 ms); on the codec fixture it is 44% of the PNG payload. The aquarium
+progression reads 12.7 fps direct, 24.4 shm PNG, 59.8 shm JPEG, locked to
+the 60 Hz cap; an uncapped
 run (82.6 in, 72.9 out) proves 60 is Chromium's cap, not the pipeline's.
 
 Frame discipline avoids blanking:
@@ -764,8 +769,9 @@ shape:
   re-quantisation, registers within CIEDE2000 2.3 of an old entry freeze;
   geometry changes invalidate. Per-frame re-quantisation changed 202.7 of
   255 registers per frame pair with unchanged-pixel dE up to 15.99; reuse
-  changed none with dE 0.000, and warm reuse measured 45.8% faster. Fixed
-  palettes were rejected for losing 7.6 to 12.2 dB PSNR.
+  changed none with dE 0.000. A fixed-palette experiment showed the speed
+  (warm encode 45.8% faster) but cost 7.6 to 12.2 dB PSNR, so fixed
+  palettes were rejected; delta-triggered reuse keeps the quality.
 - A 64K per-frame pixel sample cap feeding the quantiser, so palette cost
   does not scale with grid size: -30.39% on combined decode plus encode for
   +1.75% payload, with all 800 swept features staying above 3:1 contrast.
@@ -999,10 +1005,11 @@ letting them pass silently. Live Chromium integration tests sit behind the
 receive before any drop, from Out, stamped at draw. Under the pipelined
 writer, `out_write` measures the terminal's ingest rate, not Nyala work. A
 gap between the In and Out counts is the latest-wins coalescer working, not
-loss. Controlled benchmarks report the median of five `-benchmem` samples
-on a pinned host. The internal rendering test drives the production
-`RenderStreamFrame` path into a counting writer, so it measures Nyala's
-byte generation and excludes the terminal.
+loss. Go benchmarks report the median of five `-benchmem` samples on a
+pinned host; the controlled backend sweep reports the median of six
+independent process p90s. The internal rendering test drives the
+production `RenderStreamFrame` path into a counting writer, so it measures
+Nyala's byte generation and excludes the terminal.
 
 Twice, a 5-10x stage optimisation moved the frame rate by zero because the
 wall sat elsewhere. So the rule is the end-to-end budget, 16.67 ms per
@@ -1011,9 +1018,11 @@ threshold traces to a measurement. The walls fell in order: the browser
 render (26 fps WebGL until `--enable-gpu`), the JPEG decode (33 fps until
 the parallel pool), then the terminal itself.
 
-The internal ceilings per frame, from the internal rendering test: Kitty
-pass-through about 0.01 ms; Block 0.7 to 1.1 ms p90 with zero allocations;
-Sixel 14.55 to 21.65 ms p90 after the encoder work.
+The internal ceilings per frame, from the internal rendering test across
+1920x1080, 2560x1600, and 2560x2880: Kitty pass-through 0.008 to 0.073 ms;
+Block 1.10 to 3.72 ms p90 with zero allocations. The Sixel encoder
+benchmark spans the same three surfaces at 14.55 to 21.65 ms p90 after the
+encoder work.
 
 The terminal sets the delivered rate once Nyala's side clears the budget.
 Block at 2560x2880 full motion holds 60 fps on kitty, Alacritty, and foot.
