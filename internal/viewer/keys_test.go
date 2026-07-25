@@ -404,3 +404,28 @@ func TestNextEventBracketedPaste(t *testing.T) {
 		}
 	})
 }
+
+// TestNextEventPasteBound pins the 1 MiB paste bound now that a paste reaches
+// the page: a payload at the bound is delivered whole, and one byte past it is
+// rejected outright rather than truncated, so an oversized paste never reaches
+// the browser and cannot grow the reader's buffer without limit.
+func TestNextEventPasteBound(t *testing.T) {
+	if maxPasteBody != 1<<20 {
+		t.Fatalf("maxPasteBody = %d, want 1 MiB", maxPasteBody)
+	}
+	atBound := strings.Repeat("a", maxPasteBody)
+	br := bufio.NewReader(strings.NewReader("\x1b[200~" + atBound + pasteEnd))
+	first, _ := br.ReadByte()
+	ev, emit := nextEvent(br, first)
+	if !emit || len(ev.paste) != maxPasteBody {
+		t.Fatalf("paste at the bound = %d bytes (emit %v), want %d delivered whole",
+			len(ev.paste), emit, maxPasteBody)
+	}
+
+	over := strings.Repeat("a", maxPasteBody+1)
+	br = bufio.NewReader(strings.NewReader("\x1b[200~" + over + pasteEnd))
+	first, _ = br.ReadByte()
+	if ev, emit := nextEvent(br, first); emit {
+		t.Fatalf("oversized paste emitted %d bytes, want rejection", len(ev.paste))
+	}
+}

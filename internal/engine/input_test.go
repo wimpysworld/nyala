@@ -352,14 +352,17 @@ func TestPrintableKeyIdentity(t *testing.T) {
 	}
 }
 
-// TestSendTextWithoutSessionIsInert asserts SendText drops the text when no
-// browser session is attached rather than dispatching or panicking, matching
-// the SendKey contract that a wedged or absent browser never parks the caller.
+// TestSendTextWithoutSessionIsInert asserts SendText and SendPaste drop their
+// payload when no browser session is attached rather than dispatching or
+// panicking, matching the SendKey contract that a wedged or absent browser
+// never parks the caller.
 func TestSendTextWithoutSessionIsInert(t *testing.T) {
 	e := New("")
 	e.SendText("a")
 	e.SendText("日本語")
 	e.SendText("")
+	e.SendPaste("pasted text")
+	e.SendPaste("")
 
 	e.mu.Lock()
 	failures := e.inputFailures

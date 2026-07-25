@@ -536,6 +536,7 @@ type streamTestEngine struct {
 	frames         chan render.Frame
 	sendKey        func(string)
 	sendText       func(string)
+	sendPaste      func(string)
 	setBackend     func(string)
 	sendNav        func(NavAction)
 	sendMouse      func(MouseEvent)
@@ -567,6 +568,12 @@ func (e streamTestEngine) SendKey(code string) {
 func (e streamTestEngine) SendText(text string) {
 	if e.sendText != nil {
 		e.sendText(text)
+	}
+}
+
+func (e streamTestEngine) SendPaste(text string) {
+	if e.sendPaste != nil {
+		e.sendPaste(text)
 	}
 }
 

@@ -159,6 +159,15 @@ func printableKeyIdentity(c byte) (code string, vkey int64) {
 	}
 }
 
+// inputCtx snapshots the session context an input dispatch runs under. It is
+// nil before the first navigate and after teardown, so the caller drops the
+// event rather than dispatching into a dead session.
+func (e *ChromiumEngine) inputCtx() context.Context {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.ctx
+}
+
 // SendText forwards typed text to the focused element. A single ASCII
 // character dispatches a full keyDown/keyUp stroke, so the page sees the key
 // press and Chromium keeps its default action for it; longer or multi-byte text
@@ -170,14 +179,30 @@ func (e *ChromiumEngine) SendText(text string) {
 	if text == "" {
 		return
 	}
-	e.mu.Lock()
-	ctx := e.ctx
-	e.mu.Unlock()
+	ctx := e.inputCtx()
 	if ctx == nil {
 		return
 	}
 	if params := printableStroke(text); params != nil {
 		e.dispatchInput(ctx, keyStrokeTasks(params))
+		return
+	}
+	e.dispatchInput(ctx, input.InsertText(text))
+}
+
+// SendPaste inserts one pasted unit at the caret through Input.insertText, so
+// the whole payload lands atomically however long it is. Paste never takes the
+// typed-character stroke SendText uses, not even for a one-character payload: a
+// paste is not a key press, so it must report no keydown and run no key default
+// action, and a pasted space must not scroll the page. Empty text is a no-op,
+// and the dispatch is bounded like every other input, so a wedged browser drops
+// the paste rather than parking the caller.
+func (e *ChromiumEngine) SendPaste(text string) {
+	if text == "" {
+		return
+	}
+	ctx := e.inputCtx()
+	if ctx == nil {
 		return
 	}
 	e.dispatchInput(ctx, input.InsertText(text))

@@ -158,8 +158,13 @@ func TestEditModeLifecycle(t *testing.T) {
 		t.Fatalf("editor prefill = %q, want the current URL", s.editor.String())
 	}
 	out := s.tty.(interface{ String() string }).String()
-	if !strings.Contains(out, enableBracketedPaste) || !strings.Contains(out, showCursor) {
+	if !strings.Contains(out, showCursor) {
 		t.Fatalf("edit entry escapes missing from %q", out)
+	}
+	// Bracketed paste belongs to the session, not the mode: entering must not
+	// re-enable it, so leaving cannot turn the page's paste route off.
+	if strings.Contains(out, enableBracketedPaste) {
+		t.Fatalf("edit entry toggled the session paste mode: %q", out)
 	}
 
 	// All input routes to the editor: an Alt chord cycles nothing and a
@@ -210,8 +215,30 @@ func TestEditModeRefusesDotlessCommit(t *testing.T) {
 		t.Fatalf("Esc did not cancel cleanly: mode %d, opened %v", s.barMode, opened)
 	}
 	out := s.tty.(interface{ String() string }).String()
-	if !strings.Contains(out, disableBracketedPaste) || !strings.Contains(out, hideCursor) {
+	if !strings.Contains(out, hideCursor) {
 		t.Fatalf("edit exit escapes missing from %q", out)
+	}
+	if strings.Contains(out, disableBracketedPaste) {
+		t.Fatalf("edit exit turned the session paste mode off: %q", out)
+	}
+}
+
+// TestBracketedPasteIsSessionWide pins the paste mode as session state, not
+// mode state: the enable and disable are the DEC 2004 pair, and every teardown
+// emits the disable whether or not a frame drew, so a normal quit, a signal,
+// and a startup error all leave the shell with paste markers off.
+func TestBracketedPasteIsSessionWide(t *testing.T) {
+	if enableBracketedPaste != "\x1b[?2004h" || disableBracketedPaste != "\x1b[?2004l" {
+		t.Fatalf("paste mode pair = %q/%q, want ?2004h/?2004l",
+			enableBracketedPaste, disableBracketedPaste)
+	}
+	for _, drawn := range []bool{true, false} {
+		for _, rows := range []int{24, 1, 0} {
+			if got := exitTerminal(rows, drawn); !strings.Contains(got, disableBracketedPaste) {
+				t.Fatalf("exitTerminal(%d, %t) = %q, want it to contain %q",
+					rows, drawn, got, disableBracketedPaste)
+			}
+		}
 	}
 }
 
@@ -450,8 +477,8 @@ func TestBarModesRefuseOneRowTerminal(t *testing.T) {
 }
 
 // TestExitBarModeIfHidden pins the resize half of the invisible-modal guard:
-// a shrink below two rows closes an open bar mode, and edit mode also turns
-// bracketed paste off and hides the cursor again.
+// a shrink below two rows closes an open bar mode, and edit mode also hides the
+// cursor again.
 func TestExitBarModeIfHidden(t *testing.T) {
 	s, st := modeSession(t, streamTestEngine{currentURL: "https://example.org/"})
 	s.handleKey(keyEvent{b: keyCtrlL})
@@ -465,7 +492,7 @@ func TestExitBarModeIfHidden(t *testing.T) {
 		t.Fatalf("shrink kept the invisible edit mode open: mode %d", s.barMode)
 	}
 	out := s.tty.(interface{ String() string }).String()
-	if !strings.Contains(out, disableBracketedPaste) || !strings.Contains(out, hideCursor) {
+	if !strings.Contains(out, hideCursor) {
 		t.Fatalf("edit exit escapes missing from %q", out)
 	}
 

@@ -940,8 +940,8 @@ viewport. Enter commits; schemeless input with a dot gains `https://`, and
 only http, https, and file schemes pass, so a committed `javascript:` URL can
 never execute in the page origin. Esc cancels; a lone Esc is told apart from
 an escape sequence by the buffered-byte check on the reader. A focus flag
-routes every key to the editor and none to CDP while editing, and bracketed
-paste is enabled only in edit mode. Menu mode opens via ☰ or Alt+F (F10 is
+routes every key to the editor and none to CDP while editing, and a paste in
+edit mode lands in the editor line rather than the page. Menu mode opens via ☰ or Alt+F (F10 is
 avoided; terminals grab it) and offers About and Quit from a command registry.
 
 Chrome-mode key bindings live in `internal/viewer/keys.go`. Rendering: Alt+R
@@ -964,6 +964,15 @@ in the viewer. Multi-byte and longer text insert atomically through
 synthesis. Text shares the serialised key worker, so typing and page keys
 reach the engine in arrival order and a wedged browser drops input instead of
 freezing quit or draw.
+
+Bracketed paste (mode 2004) is a session mode, enabled beside mouse reporting
+after the startup handshake and disabled by `exitTerminal` on every teardown.
+It is not scoped to the URL editor: with the mode off, a paste would arrive as
+loose bytes and type character by character, so a pasted newline would press
+Enter and submit a form. A paste outside a bar mode forwards through
+`SendPaste`, which always uses `Input.insertText`, so the whole payload lands
+atomically and a one-character paste reports no key press and runs no key
+default action. The parser's 1 MiB paste bound is unchanged.
 
 Home is the launch URL, permanently; there is no home-page configuration
 because a shell alias does that job and the binary stays stateless. The bar

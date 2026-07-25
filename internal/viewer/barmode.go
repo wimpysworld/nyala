@@ -159,8 +159,10 @@ func renderBarEdit(cols int, e *urlEditor) (string, int) {
 	return prompt + runewidth.FillRight(visible, cols-pw), pw + cursorCell + 1
 }
 
-// Edit-mode terminal controls. Bracketed paste (mode 2004) is on only while
-// the editor is focused, so a paste arrives as one unit; the cursor, hidden
+// Terminal controls for paste and the cursor. Bracketed paste (mode 2004) is
+// on for the whole session, enabled beside the full-screen escapes and
+// disabled by exitTerminal on every teardown, so every paste arrives as one
+// unit whether it lands in the page or the URL editor. The cursor, hidden
 // globally by enterFullScreen, shows only while the editor parks it at the
 // edit position.
 const (
@@ -211,10 +213,11 @@ func (s *streamSession) repaintBar() {
 }
 
 // enterEdit swaps the bar to URL edit mode: the editor prefills the current
-// URL with the cursor at the end, bracketed paste turns on, and the terminal
-// cursor shows so the repaint can park it at the edit position. A one-row
-// terminal has no bar row to draw the editor on, so entering would swallow
-// keys in an invisible modal; the request is ignored instead.
+// URL with the cursor at the end and the terminal cursor shows so the repaint
+// can park it at the edit position. Bracketed paste is already on for the
+// session, so the mode leaves it alone. A one-row terminal has no bar row to
+// draw the editor on, so entering would swallow keys in an invisible modal; the
+// request is ignored instead.
 func (s *streamSession) enterEdit() {
 	if s.st.Rows < 2 {
 		return
@@ -223,18 +226,19 @@ func (s *streamSession) enterEdit() {
 	s.pressedSet = false
 	s.editor = newURLEditor(s.currentURL())
 	var buf bytes.Buffer
-	buf.WriteString(enableBracketedPaste + showCursor)
+	buf.WriteString(showCursor)
 	s.appendBar(&buf)
 	_ = s.emitControl(buf.Bytes())
 }
 
-// leaveEdit restores chrome mode from the editor: bracketed paste turns off
-// and the terminal cursor hides again.
+// leaveEdit restores chrome mode from the editor: the terminal cursor hides
+// again. Bracketed paste stays on, so the next paste reaches the page as one
+// unit.
 func (s *streamSession) leaveEdit() {
 	s.barMode = barModeChrome
 	s.editor = nil
 	var buf bytes.Buffer
-	buf.WriteString(disableBracketedPaste + hideCursor)
+	buf.WriteString(hideCursor)
 	s.appendBar(&buf)
 	_ = s.emitControl(buf.Bytes())
 }
@@ -287,8 +291,7 @@ func (s *streamSession) leaveMode() {
 
 // exitBarModeIfHidden restores chrome mode when a resize left the terminal
 // with no bar row: a mode that cannot draw must not keep swallowing keys as
-// an invisible modal. Leaving edit mode also turns bracketed paste off and
-// hides the cursor again.
+// an invisible modal. Leaving edit mode also hides the cursor again.
 func (s *streamSession) exitBarModeIfHidden() {
 	if s.st.Rows >= 2 || s.barMode == barModeChrome {
 		return
