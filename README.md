@@ -80,32 +80,32 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 | Binding | Action |
 |---|---|
 | Printable keys | Type into the focused page field |
-| `Space` | Type a space in a focused field, otherwise scroll down |
-| `Backspace` | Delete backwards in the focused page field |
-| `Esc` | Send Escape to the page |
+| <kbd>Space</kbd> | Type a space in a focused field, otherwise scroll down |
+| <kbd>Backspace</kbd> | Delete backwards in the focused page field |
+| <kbd>Esc</kbd> | Send Escape to the page |
 | Paste | Insert the clipboard into the focused page field |
-| `Ctrl+F` | Find on the page; `Enter` searches, `Down` / `Up` step the matches, `Esc` closes |
-| `Alt+W` | Copy the page selection to the terminal clipboard |
-| Arrow keys | Scroll by one line step |
-| `PgUp` / `PgDn` | Scroll by one viewport height |
-| `Home` | Scroll to top |
-| `End` | Scroll to bottom |
-| `Tab` | Focus next page element |
-| `Shift+Tab` | Focus previous page element |
-| `Enter` | Activate focused element |
-| `Alt+Home` | Open home page (the URL Nyala was launched with) |
-| `Ctrl+R` | Reload page |
-| `F5` | Reload page |
-| `Alt+Left` | Go back |
-| `Alt+Right` | Go forward |
-| `Ctrl+Q` | Quit |
-| `Ctrl+C` | Interrupt |
-| `Alt+R` | Cycle rendering backend |
-| `Alt+Shift+R` | Cycle rendering backend backwards |
-| `Alt+B` | Cycle Block mode: Half -> Quadrant -> Sextant (Block backend only) |
-| `Alt+Shift+B` | Cycle Block mode backwards (Block backend only) |
-| `Alt+C` | Cycle colour mode: True Colour -> 256-colour -> Monochrome (Block backend only) |
-| `Alt+Shift+C` | Cycle colour mode backwards (Block backend only) |
+| <kbd>Ctrl</kbd>+<kbd>F</kbd> | Find on the page; <kbd>Enter</kbd> searches, <kbd>Down</kbd> / <kbd>Up</kbd> step the matches, <kbd>Esc</kbd> closes |
+| <kbd>Alt</kbd>+<kbd>W</kbd> | Copy the page selection to the terminal clipboard |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Scroll by one line step |
+| <kbd>PgUp</kbd> / <kbd>PgDn</kbd> | Scroll by one viewport height |
+| <kbd>Home</kbd> | Scroll to top |
+| <kbd>End</kbd> | Scroll to bottom |
+| <kbd>Tab</kbd> | Focus next page element |
+| <kbd>Shift</kbd>+<kbd>Tab</kbd> | Focus previous page element |
+| <kbd>Enter</kbd> | Activate focused element |
+| <kbd>Alt</kbd>+<kbd>Home</kbd> | Open home page (the URL Nyala was launched with) |
+| <kbd>Ctrl</kbd>+<kbd>R</kbd> | Reload page |
+| <kbd>F5</kbd> | Reload page |
+| <kbd>Alt</kbd>+<kbd>Left</kbd> | Go back |
+| <kbd>Alt</kbd>+<kbd>Right</kbd> | Go forward |
+| <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | Interrupt |
+| <kbd>Alt</kbd>+<kbd>R</kbd> | Cycle rendering backend |
+| <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> | Cycle rendering backend backwards |
+| <kbd>Alt</kbd>+<kbd>B</kbd> | Cycle Block mode: Half -> Quadrant -> Sextant (Block backend only) |
+| <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> | Cycle Block mode backwards (Block backend only) |
+| <kbd>Alt</kbd>+<kbd>C</kbd> | Cycle colour mode: True Colour -> 256-colour -> Monochrome (Block backend only) |
+| <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> | Cycle colour mode backwards (Block backend only) |
 
 Notes:
 
