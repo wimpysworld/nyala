@@ -198,6 +198,71 @@ func TestMouseParams(t *testing.T) {
 	}
 }
 
+// TestMouseParamsMove pins the drag dispatch shape: a move reports the
+// mouseMoved type, keeps the held button in both the name and the pressed
+// buttons mask (which is what makes Chromium treat it as a drag rather than a
+// hover), preserves the modifier bits, and carries clickCount 0 because it
+// starts no click. Modifier preservation is pinned deliberately: a synthetic
+// move that lost the modifier bits would break shift-extend drag-selection.
+func TestMouseParamsMove(t *testing.T) {
+	cases := []struct {
+		button MouseButton
+		want   input.MouseButton
+		mask   int64
+	}{
+		{MouseButtonLeft, input.Left, 1},
+		{MouseButtonRight, input.Right, 2},
+		{MouseButtonMiddle, input.Middle, 4},
+	}
+	for _, c := range cases {
+		p := mouseParams(MouseActionMove, c.button, cdpModShiftBits, 0, 12.5, 34.75)
+		if p.Type != input.MouseMoved {
+			t.Errorf("move type = %q, want %q", p.Type, input.MouseMoved)
+		}
+		if p.Button != c.want {
+			t.Errorf("move button = %q, want %q", p.Button, c.want)
+		}
+		if p.Buttons != c.mask {
+			t.Errorf("move buttons mask = %d, want %d (the held button)", p.Buttons, c.mask)
+		}
+		if p.Modifiers != cdpModShiftBits {
+			t.Errorf("move modifiers = %d, want %d", p.Modifiers, cdpModShiftBits)
+		}
+		if p.ClickCount != 0 {
+			t.Errorf("move clickCount = %d, want 0", p.ClickCount)
+		}
+		if p.X != 12.5 || p.Y != 34.75 {
+			t.Errorf("move position = (%g, %g), want (12.5, 34.75)", p.X, p.Y)
+		}
+	}
+}
+
+// cdpModShiftBits is the CDP Shift modifier bit, spelled here so the move
+// dispatch test asserts against the protocol value rather than a bare literal.
+const cdpModShiftBits = 8
+
+// TestSendMouseMoveKeepsClickChain asserts a drag move leaves the click chain
+// alone: two presses on one cell with a move between them still report a
+// double click, so dragging inside a double-click gesture cannot break word
+// selection. With no browser context the dispatch is skipped and the held
+// state alone moves, so it runs browser-free.
+func TestSendMouseMoveKeepsClickChain(t *testing.T) {
+	e := New("")
+	e.SetCellPx(8, 16)
+	e.Resize(120, 40)
+
+	e.SendMouse(MouseEvent{Action: MouseActionPress, Button: MouseButtonLeft, Col: 2, Row: 3})
+	e.SendMouse(MouseEvent{Action: MouseActionMove, Button: MouseButtonLeft, Col: 5, Row: 9})
+	e.SendMouse(MouseEvent{Action: MouseActionPress, Button: MouseButtonLeft, Col: 2, Row: 3})
+
+	e.mu.Lock()
+	got := e.click
+	e.mu.Unlock()
+	if got.count != 2 || got.col != 2 || got.row != 3 {
+		t.Errorf("click chain = %+v, want count 2 on the press cell (2, 3)", got)
+	}
+}
+
 // TestSendMousePressTracksChain asserts a press without a browser context
 // still advances the click chain under mu, so the first dispatch after a
 // rebuild carries the right count.

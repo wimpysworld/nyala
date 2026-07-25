@@ -130,6 +130,8 @@ func mouseAction(a viewer.MouseAction) engine.MouseAction {
 		return engine.MouseActionRelease
 	case viewer.MouseActionWheel:
 		return engine.MouseActionWheel
+	case viewer.MouseActionMove:
+		return engine.MouseActionMove
 	default:
 		return engine.MouseActionPress
 	}

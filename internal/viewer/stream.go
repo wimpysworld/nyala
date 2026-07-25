@@ -469,6 +469,12 @@ type streamSession struct {
 	// button renders bold until its release.
 	pressed    barSegmentKind
 	pressedSet bool
+	// dragOnPage is the pointer capture: true from a chrome press on the page
+	// region until the matching release, so the drag's motion keeps reaching
+	// the page even over the bar row, and motion from a bar press or with no
+	// press at all reaches nothing. A release clears it, including a release
+	// for a button never pressed, which finds it already false.
+	dragOnPage bool
 }
 
 // appendBar folds the bottom-bar bytes into buf, cursor-addressed to the
@@ -1194,6 +1200,14 @@ func switchBackendOp(backend Backend) func(Engine) {
 // other event forwards to the engine off the input loop through the
 // keySender worker, the same stall policy as scroll keys, so a wedged
 // browser never freezes quit or draw.
+//
+// A press captures the pointer for the surface under it until the release, the
+// way a browser does, so a drag is one whole gesture: a drag that started on
+// the page keeps reaching the page even once the pointer crosses the bar row
+// (the engine clamps the cell to its grid, so the drag tracks the bottom row),
+// and a drag that started on the bar row never injects page motion, because the
+// bar has no draggable control. Motion with no capture is dropped, and a bar
+// mode taking over input drops the capture with it.
 func (s *streamSession) handleMouse(ev MouseEvent) (quit bool) {
 	if ev.Button == MouseButtonBack || ev.Button == MouseButtonForward {
 		if s.barMode == barModeChrome && ev.Action == MouseActionPress {
@@ -1206,6 +1220,13 @@ func (s *streamSession) handleMouse(ev MouseEvent) (quit bool) {
 		return false
 	}
 	onBar := s.onBarRow(ev.Row)
+	if s.barMode != barModeChrome {
+		// A bar mode owns input, so any page gesture in flight is over: drop the
+		// capture here, because the mode swallows the release that would
+		// otherwise clear it. Without this, a page press, a Ctrl+L, and a
+		// release would leave the capture armed for the rest of the session.
+		s.dragOnPage = false
+	}
 	switch s.barMode {
 	case barModeEdit:
 		if !onBar && ev.Action == MouseActionPress {
@@ -1234,16 +1255,50 @@ func (s *streamSession) handleMouse(ev MouseEvent) (quit bool) {
 		}
 		return false
 	}
+	switch ev.Action {
+	case MouseActionPress:
+		s.dragOnPage = !onBar
+	case MouseActionMove:
+		if !s.dragOnPage {
+			return false
+		}
+		s.forwardMouse(ev)
+		return false
+	case MouseActionRelease:
+		captured := s.dragOnPage
+		s.dragOnPage = false
+		if s.pressedSet {
+			// Any release ends the bar's press feedback, including one that
+			// landed off the bar row, so a bold button cannot stick.
+			s.pressedSet = false
+			s.repaintBar()
+		}
+		// Only a captured gesture's release belongs to the page. Without a
+		// matching press the page never saw the gesture, so forwarding a bare
+		// release would click whatever now sits under the pointer.
+		if captured {
+			s.forwardMouse(ev)
+		}
+		return false
+	}
 	if onBar {
 		s.handleBarMouse(ev)
 		return false
 	}
+	s.forwardMouse(ev)
+	return false
+}
+
+// forwardMouse forwards one mouse event to the engine off the input loop
+// through the keySender worker, so a wedged browser never freezes quit or
+// draw. A drag's motion reports ride the same queue as its press and release,
+// so the gesture reaches the page in order.
+func (s *streamSession) forwardMouse(ev MouseEvent) {
 	if s.keySender != nil {
 		s.keySender.sendMouse(ev)
-		return false
+		return
 	}
 	s.eng.SendMouse(ev)
-	return false
 }
 
 // handleKey forwards one key to the engine or handles the viewer hotkeys and

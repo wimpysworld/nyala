@@ -17,6 +17,10 @@ const (
 	// MouseActionWheel is one wheel step; WheelDX and WheelDY carry the
 	// direction. Wheel reports are press-only.
 	MouseActionWheel
+	// MouseActionMove is pointer motion with a button held (SGR bit 32 under
+	// mode 1002), the reports a drag is made of. Button carries the held
+	// button, so the engine can report it as the drag's pressed button.
+	MouseActionMove
 )
 
 // MouseButton identifies the pointer button of a decoded press or release.
@@ -81,39 +85,44 @@ type MouseEvent struct {
 
 // decodeSGRMouse parses one SGR mouse CSI body: '<' then "b;x;y" with
 // 1-based coordinates, then final 'M' (press) or 'm' (release). Buttons and
-// modifiers decode by bitmask on b. motion reports a recognised motion event
-// (bit 32); the caller drops it (motion dispatch is deferred) so its bytes
-// never leak as key input. The side buttons 8-11 (bit 128) decode as
+// modifiers decode by bitmask on b. Motion (bit 32) decodes as
+// MouseActionMove carrying the held button and the modifiers, the reports a
+// drag is made of; mode 1002 reports motion only while a button is held, so
+// buttonless motion (b&3 == 3) and motion with a side button held are dropped
+// as no drag of the page. The side buttons 8-11 (bit 128) decode as
 // MouseButtonBack (even) and MouseButtonForward (odd) for history
 // navigation. ok is false for a body that is not a well-formed SGR mouse
 // report the viewer handles: wrong shape, non-numeric parameters, a wheel
 // release, or the buttonless b&3 == 3. Terminals can emit zero or negative
 // coordinates; the decode clamps them non-negative and the engine clamps to
 // the grid.
-func decodeSGRMouse(body []byte) (ev MouseEvent, motion, ok bool) {
+func decodeSGRMouse(body []byte) (ev MouseEvent, ok bool) {
 	n := len(body)
 	if n < 2 || body[0] != '<' {
-		return MouseEvent{}, false, false
+		return MouseEvent{}, false
 	}
 	final := body[n-1]
 	if final != 'M' && final != 'm' {
-		return MouseEvent{}, false, false
+		return MouseEvent{}, false
 	}
 	parts := strings.Split(string(body[1:n-1]), ";")
 	if len(parts) != 3 {
-		return MouseEvent{}, false, false
+		return MouseEvent{}, false
 	}
 	b, errB := strconv.Atoi(parts[0])
 	x, errX := strconv.Atoi(parts[1])
 	y, errY := strconv.Atoi(parts[2])
 	if errB != nil || errX != nil || errY != nil || b < 0 {
-		return MouseEvent{}, false, false
+		return MouseEvent{}, false
 	}
-	if b&sgrMotion != 0 {
-		return MouseEvent{}, true, true
-	}
+	motion := b&sgrMotion != 0
 	ev = MouseEvent{Col: max(x-1, 0), Row: max(y-1, 0), Mod: cdpModifiers(b)}
 	if b&sgrExtra != 0 {
+		// A side button never drags the page: it is a history request, taken
+		// on its press alone.
+		if motion {
+			return MouseEvent{}, false
+		}
 		ev.Button = MouseButtonBack
 		if b&1 != 0 {
 			ev.Button = MouseButtonForward
@@ -122,11 +131,11 @@ func decodeSGRMouse(body []byte) (ev MouseEvent, motion, ok bool) {
 		if final == 'M' {
 			ev.Action = MouseActionPress
 		}
-		return ev, false, true
+		return ev, true
 	}
 	if b&sgrWheel != 0 {
-		if final != 'M' {
-			return MouseEvent{}, false, false
+		if final != 'M' || motion {
+			return MouseEvent{}, false
 		}
 		ev.Action = MouseActionWheel
 		switch b & 3 {
@@ -139,7 +148,7 @@ func decodeSGRMouse(body []byte) (ev MouseEvent, motion, ok bool) {
 		default:
 			ev.WheelDX = 1
 		}
-		return ev, false, true
+		return ev, true
 	}
 	switch b & 3 {
 	case 0:
@@ -149,13 +158,17 @@ func decodeSGRMouse(body []byte) (ev MouseEvent, motion, ok bool) {
 	case 2:
 		ev.Button = MouseButtonRight
 	default:
-		return MouseEvent{}, false, false
+		return MouseEvent{}, false
 	}
-	ev.Action = MouseActionRelease
-	if final == 'M' {
+	switch {
+	case motion:
+		ev.Action = MouseActionMove
+	case final == 'M':
 		ev.Action = MouseActionPress
+	default:
+		ev.Action = MouseActionRelease
 	}
-	return ev, false, true
+	return ev, true
 }
 
 // cdpModifiers translates the SGR modifier bits on b (Shift 4, Alt 8,
