@@ -85,6 +85,7 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 | `Esc` | Send Escape to the page |
 | Paste | Insert the clipboard into the focused page field |
 | `Ctrl+F` | Find on the page; `Enter` next, `Shift+Enter` previous, `Esc` closes |
+| `Alt+W` | Copy the page selection to the terminal clipboard |
 | Arrow keys | Scroll by one line step |
 | `PgUp` / `PgDn` | Scroll by one viewport height |
 | `Home` | Scroll to top |
@@ -110,6 +111,7 @@ Notes:
 
 - Typing goes to the page, so plain `q` does not quit. Use `Ctrl+Q`. Chromium decides what a key does: `Space` types in a focused field and scrolls the page otherwise, with no focus tracking in Nyala.
 - A paste arrives as one unit, up to 1 MiB, so a pasted newline never submits a form by accident. Inside the URL editor the paste lands in the URL instead.
+- Select page text by dragging, double-clicking a word, or triple-clicking a line. Selecting copies nothing; `Alt+W` or the ☰ menu's Copy sends it to the clipboard over OSC 52. Selections over 74,994 bytes are refused rather than truncated, so a silent half-copy cannot happen. `Shift`-drag is still your terminal's own selection.
 - Find searches when you press `Enter`, not as you type, because each search repaints every match in the page. `Shift+Enter` needs a terminal with the Kitty keyboard protocol; `Down` and `Up` step next and previous everywhere.
 - `Alt+Home` returns to the URL Nyala was launched with, for the lifetime of the process. It is a normal navigation, so `Alt+Left` goes back to the page you were on.
 - The Block mode and colour cycles skip modes the terminal cannot render (see [Terminal compatibility](#terminal-compatibility)).

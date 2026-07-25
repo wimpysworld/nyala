@@ -69,6 +69,7 @@ func (e *resizeOpEngine) FindNext()                   {}
 func (e *resizeOpEngine) FindPrev()                   {}
 func (e *resizeOpEngine) FindClear()                  {}
 func (e *resizeOpEngine) FindState() FindState        { return FindState{} }
+func (e *resizeOpEngine) Selection() string           { return "" }
 func (e *resizeOpEngine) SendMouse(MouseEvent)        {}
 func (e *resizeOpEngine) Close() error                { return nil }
 

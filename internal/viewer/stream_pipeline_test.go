@@ -94,6 +94,7 @@ func (e *pipeEngine) FindNext()                   {}
 func (e *pipeEngine) FindPrev()                   {}
 func (e *pipeEngine) FindClear()                  {}
 func (e *pipeEngine) FindState() FindState        { return FindState{} }
+func (e *pipeEngine) Selection() string           { return "" }
 func (e *pipeEngine) SendMouse(MouseEvent)        {}
 func (e *pipeEngine) Close() error                { return nil }
 

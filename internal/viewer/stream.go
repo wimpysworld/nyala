@@ -91,6 +91,12 @@ type Engine interface {
 	// the browser, so a repaint always has a value: a search in flight reports
 	// Pending with the previous counts, and a dropped dispatch reports Failed.
 	FindState() FindState
+	// Selection returns the text the page has selected, for an explicit copy to
+	// the terminal clipboard. It is empty when the page holds no selection, when
+	// the selection is over the copy bound, and when the read did not land, so
+	// the viewer treats all three as nothing to copy. It reads the page, never
+	// the terminal clipboard.
+	Selection() string
 	// SendMouse forwards one decoded mouse event. A wheel step scrolls at the
 	// pointer cell through the engine's wheel transport; a press or release
 	// dispatches a mouse event at the cell centre. The engine owns the
@@ -266,6 +272,12 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	keySender := newKeySender(eng)
 	defer keySender.close()
 
+	// clip carries a copied selection from the input worker, which read it from
+	// the page, back to the consumer loop, which owns the terminal writes. Cap 1
+	// is enough: a copy is one user action, and the worker's send waits on the
+	// loop rather than dropping the text.
+	clip := make(chan string, 1)
+
 	// The control goroutine runs the engine restarts (Resize, SetBackend) off the
 	// consumer loop, so a slow restartStream cannot freeze draw, keys, and quit
 	// handling. It stops when Stream returns and the deferred close(done) fires.
@@ -278,7 +290,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	diff := &block.GridDiff{}
 	st.SetDiff(diff)
 
-	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, ctl: ctl, diff: diff, fps: fps, launchURL: url, version: version}
+	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, clip: clip, ctl: ctl, diff: diff, fps: fps, launchURL: url, version: version}
 	session = s
 	// Clear the screen and draw the bar immediately, with a blank page region
 	// and the launch URL: the first user feedback is the bar, not a text cue.
@@ -425,8 +437,12 @@ type streamSession struct {
 	tty       io.Writer
 	fd        uintptr
 	keySender *keySender
-	ctl       *control
-	diff      *block.GridDiff
+	// clip delivers a copied selection from the input worker to the consumer
+	// loop, which writes it as OSC 52 through the ordered control path. It is nil
+	// on a session with no worker, which reads and writes inline instead.
+	clip chan string
+	ctl  *control
+	diff *block.GridDiff
 	// firstDrawn is atomic because the producer goroutine writes it per frame
 	// while Stream's SIGTERM watcher reads it for the teardown escapes.
 	firstDrawn   atomic.Bool
@@ -827,6 +843,11 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			if s.handleKey(ev) {
 				return nil
 			}
+		case text := <-s.clip:
+			// A copy read the page's selection on the input worker; the write
+			// belongs here, on the goroutine that owns the terminal, so the
+			// sequence stays ordered against the frames and the bar.
+			s.writeClipboard(text)
 		case err := <-w.errc:
 			// The writer hit a terminal write error; surface it as an I/O failure the
 			// same way the serial path did.
@@ -1428,7 +1449,8 @@ func (s *streamSession) forwardMouse(ev MouseEvent) {
 // forwards its code (the engine owns the offset); Tab, Shift+Tab, and Enter
 // forward to the page as full key strokes for native focus traversal and
 // activation; Ctrl+L opens the URL editor, Ctrl+F the find field, and Alt+F the
-// menu; Alt+R cycles the backend and restarts the stream at the new capture
+// menu; Alt+W copies the page's selection to the terminal clipboard;
+// Alt+R cycles the backend and restarts the stream at the new capture
 // size; Alt+B and Alt+C cycle the
 // Block glyph scheme and colour mode. Both cycles only affect Block
 // rendering, so they are no-ops unless Block is the active backend: cycling
@@ -1478,6 +1500,8 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		s.enterFind()
 	case actionOpenMenu:
 		s.enterMenu()
+	case actionCopySelection:
+		s.copySelection()
 	case actionFocusNext:
 		s.forwardKey("Tab")
 	case actionFocusPrev:
@@ -1737,6 +1761,25 @@ func (s *keySender) sendFindNext() {
 // sendFindPrev queues one step to the previous match on the same queue as keys.
 func (s *keySender) sendFindPrev() {
 	s.enqueue(func(e Engine) { e.FindPrev() })
+}
+
+// sendCopy queues one selection read on the same queue as keys, so it never
+// overtakes an earlier keystroke and a slow read never blocks the input loop. The
+// worker posts the text on out for the consumer loop to write, and posts nothing
+// when there is nothing to copy. The send waits on the loop rather than dropping
+// the text, and gives up on close, so a copy taken as the session ends cannot
+// park the worker.
+func (s *keySender) sendCopy(out chan<- string) {
+	s.enqueue(func(e Engine) {
+		text := e.Selection()
+		if text == "" {
+			return
+		}
+		select {
+		case out <- text:
+		case <-s.done:
+		}
+	})
 }
 
 // sendFindClear queues one search clear on the same queue as keys, so it never

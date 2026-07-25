@@ -344,6 +344,47 @@ DevTools-injected Ctrl+wheel does not drive browser-level zoom, so the CSS
 layout the renderer is sized to cannot shift underneath it; a live test watches
 that assumption.
 
+### Clipboard
+
+Selection and copying are separate acts. Chromium owns the selection, which the
+user makes by drag, double-click, or triple-click through the ordinary mouse
+dispatch, and it paints its own selection; Nyala renders no highlight of its own.
+Copying is explicit, on Alt+W or the menu's Copy item, and nothing reaches the
+clipboard until then. Alt+W is the Emacs kill-ring-save chord and was unbound.
+The alternatives were all taken or ambiguous: Ctrl+C quits, Ctrl+Shift+C is
+indistinguishable from Ctrl+C on a legacy terminal and is the emulator's own copy
+key, Alt+C cycles colour, and Ctrl+W is the URL editor's delete-word. The menu
+item exists because the chord is the one page action the row cannot advertise,
+and opening the menu never touches the page, so the selection survives it.
+
+A copy reads the page through one bounded dispatch on the same worker as keys, so
+a wedged browser drops it rather than freezing quit or draw. The page script reads
+the document selection plus a focused text control's own selection, which is
+invisible to the document selection. The write is OSC 52 to `CLIPBOARD` only,
+base64, BEL-terminated, and never a read: no `p` target, no `?` query. The
+payload being base64 means copied text cannot carry an escape of its own.
+
+The bound is 74,994 bytes of text, and an oversized selection is refused rather
+than truncated. The de-facto OSC 52 sequence limit is 100,000 bytes; framing takes
+8 and base64 costs 4 bytes per 3, so that is the largest text that fits. A
+truncated clipboard is a paste the user discovers is wrong later, where a refusal
+leaves the previous clipboard intact. The bound protects the render as much as the
+clipboard: a terminal that abandons an over-long OSC string prints the remainder
+over the frame just drawn. The engine enforces the same number page-side, so an
+oversized selection never crosses the CDP wire.
+
+The sequence goes out through the one writer goroutine, on the cap-1 ready
+channel, exactly like a bar repaint or a resize clear. The input worker never
+writes the terminal; it posts the text to the consumer loop, which emits it after
+flushing any assembled frame. So under continuous screen updates the copy lands
+whole between two frames, which is the failure other terminal browsers have
+shipped. Multiplexers see plain OSC 52 with no DCS wrapping: tmux handles it
+itself under `set-clipboard on` and ignores it under the default `external`, and
+zellij and screen handle or drop it on their own terms. BEL terminates the string
+rather than ST, matching tmux's built-in `Ms` and the ecosystem copy tools.
+
+Shift-drag remains the terminal-native selection path and is untouched.
+
 ### Find
 
 Find splits the work: Chromium matches, and an injected page script paints. No

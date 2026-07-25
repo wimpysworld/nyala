@@ -47,9 +47,14 @@ const (
 )
 
 // barCommands returns the command registry backing the menu: the fps item
-// shows or hides the bar's live fps segment, About swaps the bar to the version
-// line, and Quit ends the session through the existing teardown path. fpsShown
-// is the current segment state, which picks the fps item's label.
+// shows or hides the bar's live fps segment, Copy writes the page's selection to
+// the terminal clipboard, About swaps the bar to the version line, and Quit ends
+// the session through the existing teardown path. fpsShown is the current
+// segment state, which picks the fps item's label.
+//
+// Copy is here as well as on Alt+W because the chord is the one page action a
+// reader cannot discover from the row. Opening the menu never touches the page,
+// so the selection the command copies is still there when it runs.
 func barCommands(fpsShown bool) []barCommand {
 	fps := barCommandShowFPS
 	if fpsShown {
@@ -57,6 +62,7 @@ func barCommands(fpsShown bool) []barCommand {
 	}
 	return []barCommand{
 		{name: fps, run: func(s *streamSession) bool { s.toggleFPS(); return false }},
+		{name: "Copy", run: func(s *streamSession) bool { s.copySelection(); s.leaveMode(); return false }},
 		{name: "About", run: func(s *streamSession) bool { s.enterAbout(); return false }},
 		{name: "Quit", run: func(*streamSession) bool { return true }},
 	}
