@@ -303,7 +303,7 @@ func TestMouseReportingEscapes(t *testing.T) {
 		t.Errorf("disableMouseReporting = %q, want ?1002l?1006l", disableMouseReporting)
 	}
 	for _, drawn := range []bool{true, false} {
-		if got := exitTerminal(24, drawn); !strings.Contains(got, disableMouseReporting) {
+		if got := exitTerminal(24, drawn, false); !strings.Contains(got, disableMouseReporting) {
 			t.Errorf("exitTerminal(24, %t) = %q, want it to contain %q", drawn, got, disableMouseReporting)
 		}
 	}

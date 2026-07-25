@@ -405,6 +405,203 @@ func TestNextEventBracketedPaste(t *testing.T) {
 	})
 }
 
+// TestDecodeKittyKey pins the kitty keyboard-protocol decode table: the reports
+// Nyala consumes map to the same actions the legacy parser produces for the same
+// physical keys, the modifier bits ride along in CDP currency, and anything
+// unbound or malformed is refused so it is dropped rather than leaked.
+func TestDecodeKittyKey(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want keyAction
+		mod  int
+		ok   bool
+	}{
+		{"escape", "27u", actionEscape, 0, true},
+		{"escape with a modifier still escapes", "27;5u", actionEscape, cdpModCtrl, true},
+		{"enter", "13u", actionActivate, 0, true},
+		{"shift enter", "13;2u", actionActivate, cdpModShift, true},
+		{"tab", "9u", actionFocusNext, 0, true},
+		{"shift tab", "9;2u", actionFocusPrev, cdpModShift, true},
+		{"backspace", "127u", actionBackspace, 0, true},
+		{"ctrl q quits", "113;5u", actionQuit, cdpModCtrl, true},
+		{"ctrl c quits", "99;5u", actionQuit, cdpModCtrl, true},
+		{"ctrl r reloads", "114;5u", actionReload, cdpModCtrl, true},
+		{"ctrl l edits the URL", "108;5u", actionEditURL, cdpModCtrl, true},
+		{"alt r cycles the backend", "114;3u", actionCycleBackend, cdpModAlt, true},
+		{"alt shift r reverses the cycle", "114;4u", actionCycleBackendReverse, cdpModAlt | cdpModShift, true},
+		{"alt b cycles blocks", "98;3u", actionCycleBlocks, cdpModAlt, true},
+		{"alt shift b reverses blocks", "98;4u", actionCycleBlocksReverse, cdpModAlt | cdpModShift, true},
+		{"alt c cycles colour", "99;3u", actionCycleColour, cdpModAlt, true},
+		{"alt shift c reverses colour", "99;4u", actionCycleColourReverse, cdpModAlt | cdpModShift, true},
+		{"alt f opens the menu", "102;3u", actionOpenMenu, cdpModAlt, true},
+		{"upper-case key code lower-cases", "82;3u", actionCycleBackend, cdpModAlt, true},
+		{"sub-parameters are cut", "13:65;2:1u", actionActivate, cdpModShift, true},
+		// Unbound and malformed reports are refused, so nextEvent drops them.
+		{"plain letter is not a chord", "113u", actionNone, 0, false},
+		{"shift letter is not a chord", "113;2u", actionNone, 0, false},
+		{"alt with no binding", "122;3u", actionNone, 0, false},
+		{"ctrl with no binding", "122;5u", actionNone, 0, false},
+		{"unknown functional key", "57358u", actionNone, 0, false},
+		{"flags reply is not a key", "?1u", actionNone, 0, false},
+		{"non-numeric code", "abcu", actionNone, 0, false},
+		{"non-numeric modifier", "13;xu", actionNone, 0, false},
+		{"zero modifier is malformed", "13;0u", actionNone, 0, false},
+		{"wrong final", "13;2A", actionNone, 0, false},
+		{"empty body", "u", actionNone, 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			act, mod, ok := decodeKittyKey([]byte(c.body))
+			if ok != c.ok || act != c.want || mod != c.mod {
+				t.Fatalf("decodeKittyKey(%q) = (%d, %d, %v), want (%d, %d, %v)",
+					c.body, act, mod, ok, c.want, c.mod, c.ok)
+			}
+		})
+	}
+}
+
+// TestNextEventKittyKeyReports asserts the reader resolves kitty key reports
+// through the same CSI path as every other sequence, and normalises each one to
+// the event a legacy terminal would have produced: Escape becomes the ESC byte,
+// Shift+Enter becomes the Enter byte carrying the Shift bit (the signal
+// find-in-page needs for previous-match), a chord with no legacy byte stays an
+// action, an unbound report is consumed silently, and a late flags reply from the
+// startup query never leaks bytes as keys.
+func TestNextEventKittyKeyReports(t *testing.T) {
+	events := collectEvents(t, "\x1b[27u"+"\x1b[13;2u"+"\x1b[114;3u"+"\x1b[57358u"+"\x1b[?1u"+"q")
+	if len(events) != 4 {
+		t.Fatalf("events = %d (%+v), want 4: escape, shift-enter, alt-r, and the key", len(events), events)
+	}
+	if events[0].b != keyEsc || events[0].act != actionNone || events[0].mod != 0 {
+		t.Errorf("event 0 = %+v, want the ESC byte event a legacy terminal sends", events[0])
+	}
+	if byteKeyAction(events[0].b) != actionEscape {
+		t.Errorf("normalised Escape does not dispatch as Escape: %+v", events[0])
+	}
+	if events[1].b != keyEnter || events[1].mod != cdpModShift {
+		t.Errorf("event 1 = %+v, want the Enter byte carrying the Shift bit", events[1])
+	}
+	if events[2].act != actionCycleBackend || events[2].mod != cdpModAlt {
+		t.Errorf("event 2 = %+v, want the Alt+R cycle", events[2])
+	}
+	if events[3].b != 'q' || events[3].act != actionNone {
+		t.Errorf("event 3 = %+v, want the plain key 'q'", events[3])
+	}
+
+	// Plain and shifted Enter both dispatch as activate, and only the shifted one
+	// carries Shift, so find mode can tell them apart on either path.
+	for _, in := range []string{"\r", "\x1b[13u"} {
+		plain := collectEvents(t, in)
+		if len(plain) != 1 || byteKeyAction(plain[0].b) != actionActivate || plain[0].mod != 0 {
+			t.Fatalf("Enter from %q = %+v, want an unmodified activate", in, plain)
+		}
+	}
+	shifted := collectEvents(t, "\x1b[13;2u")
+	if len(shifted) != 1 || byteKeyAction(shifted[0].b) != actionActivate || shifted[0].mod&cdpModShift == 0 {
+		t.Fatalf("Shift+Enter = %+v, want an activate carrying Shift", shifted)
+	}
+
+	// Ctrl+Q and Backspace reports normalise to the bytes every mode already
+	// binds, including the pre-navigation quit check.
+	quit := collectEvents(t, "\x1b[113;5u")
+	if len(quit) != 1 || !startupQuit(quit[0]) {
+		t.Fatalf("Ctrl+Q report = %+v, want it to satisfy the startup quit check", quit)
+	}
+	back := collectEvents(t, "\x1b[127u")
+	if len(back) != 1 || byteKeyAction(back[0].b) != actionBackspace {
+		t.Fatalf("Backspace report = %+v, want the backspace binding", back)
+	}
+}
+
+// TestKittyKeyReportsDriveBarModes asserts the protocol's Escape reaches the
+// bar-mode handlers, which bind Esc by byte: the URL editor cancels and the menu
+// and About rows close, exactly as they do on a legacy terminal. Without the
+// normalisation an Escape report would arrive as an action those handlers swallow,
+// leaving a modal no one could close.
+func TestKittyKeyReportsDriveBarModes(t *testing.T) {
+	escape := collectEvents(t, "\x1b[27u")
+	if len(escape) != 1 {
+		t.Fatalf("Escape report = %+v, want one event", escape)
+	}
+
+	t.Run("edit cancels", func(t *testing.T) {
+		s, _ := modeSession(t, streamTestEngine{currentURL: "https://example.org/"})
+		s.handleKey(keyEvent{b: keyCtrlL})
+		if s.barMode != barModeEdit {
+			t.Fatalf("Ctrl+L did not open the editor: mode %d", s.barMode)
+		}
+		s.handleKey(escape[0])
+		if s.barMode != barModeChrome || s.editor != nil {
+			t.Fatalf("an Escape report did not cancel the editor: mode %d", s.barMode)
+		}
+	})
+	t.Run("menu closes", func(t *testing.T) {
+		s, _ := modeSession(t, streamTestEngine{})
+		s.handleKey(keyEvent{act: actionOpenMenu})
+		s.handleKey(escape[0])
+		if s.barMode != barModeChrome {
+			t.Fatalf("an Escape report did not close the menu: mode %d", s.barMode)
+		}
+	})
+	t.Run("about closes", func(t *testing.T) {
+		s, _ := modeSession(t, streamTestEngine{})
+		s.barMode = barModeAbout
+		s.handleKey(escape[0])
+		if s.barMode != barModeChrome {
+			t.Fatalf("an Escape report did not close About: mode %d", s.barMode)
+		}
+	})
+	t.Run("chrome forwards to the page", func(t *testing.T) {
+		st := NewState(80, 24)
+		var sent []string
+		s := dispatchSession(streamTestEngine{
+			sendKey: func(code string) { sent = append(sent, code) },
+		}, &st)
+		s.handleKey(escape[0])
+		if len(sent) != 1 || sent[0] != "Escape" {
+			t.Fatalf("chrome Escape report forwarded %v, want [Escape]", sent)
+		}
+	})
+}
+
+// TestNextEventLegacyKeepsEscapeAndAltChords asserts the legacy path is
+// untouched by the protocol decode: a bare Esc still emits an ESC byte through
+// the buffered-byte check, an Alt chord still resolves from ESC then the letter
+// with Shift carried by its case, and the legacy Ctrl and page keys still
+// arrive as bytes. Terminals without the protocol depend on all of this.
+func TestNextEventLegacyKeepsEscapeAndAltChords(t *testing.T) {
+	bare := collectEvents(t, "\x1b")
+	if len(bare) != 1 || bare[0].b != keyEsc || bare[0].act != actionNone {
+		t.Fatalf("bare Esc = %+v, want one ESC byte event", bare)
+	}
+
+	chords := collectEvents(t, "\x1br"+"\x1bR"+"\x1bf")
+	if len(chords) != 3 {
+		t.Fatalf("Alt chords = %d events (%+v), want 3", len(chords), chords)
+	}
+	wantChords := []keyAction{actionCycleBackend, actionCycleBackendReverse, actionOpenMenu}
+	for i, want := range wantChords {
+		if chords[i].act != want || chords[i].mod != 0 {
+			t.Fatalf("legacy chord %d = %+v, want action %d with no modifier bits", i, chords[i], want)
+		}
+	}
+
+	bytes := collectEvents(t, "\x11"+"\x7f"+"a"+" ")
+	if len(bytes) != 4 {
+		t.Fatalf("legacy bytes = %d events (%+v), want 4", len(bytes), bytes)
+	}
+	if byteKeyAction(bytes[0].b) != actionQuit {
+		t.Errorf("legacy Ctrl+Q = %+v, want the quit action", bytes[0])
+	}
+	if byteKeyAction(bytes[1].b) != actionBackspace {
+		t.Errorf("legacy Backspace = %+v, want the backspace action", bytes[1])
+	}
+	if !printableByte(bytes[2].b) || !printableByte(bytes[3].b) {
+		t.Errorf("legacy printables = %+v, want page text", bytes[2:])
+	}
+}
+
 // TestNextEventPasteBound pins the 1 MiB paste bound now that a paste reaches
 // the page: a payload at the bound is delivered whole, and one byte past it is
 // rejected outright rather than truncated, so an oversized paste never reaches

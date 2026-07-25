@@ -3,6 +3,7 @@ package viewer
 import (
 	"bufio"
 	"io"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -163,6 +164,205 @@ func altKeyAction(b byte) (keyAction, bool) {
 	}
 }
 
+// Kitty keyboard-protocol control sequences. The query asks the terminal for its
+// current progressive-enhancement flags; only an implementing terminal answers,
+// which is how the handshake detects support. The enable pushes Nyala's flags
+// onto the terminal's mode stack and the disable pops that one entry, so a
+// terminal already running the protocol for an outer application (a multiplexer,
+// a shell) gets its own state back untouched.
+//
+// The pushed flag set is 1, disambiguate escape codes, and nothing else.
+// Disambiguation alone delivers what Nyala binds: Escape arrives as a report
+// rather than a byte whose meaning depends on what follows it, and the chords
+// with ambiguous or absent legacy encodings (Shift+Enter, the Alt letters)
+// arrive as reports carrying their modifiers. The other flags are deliberately
+// not requested. Event types (2) would add key-release reports that double every
+// keystroke, report-all-keys (8) would move plain typing onto the report path
+// for no gain, and alternate keys (4) and associated text (16) add parsing
+// surface and per-terminal variation Nyala has no use for.
+const (
+	queryKittyKeyboard   = "\x1b[?u"
+	enableKittyKeyboard  = "\x1b[>1u"
+	disableKittyKeyboard = "\x1b[<u"
+)
+
+// Kitty keyboard-protocol key codes for the functional keys Nyala binds. A text
+// key reports the codepoint of its unshifted character, so the letter chords
+// decode through the legacy tables by lower-casing that codepoint.
+const (
+	kittyKeyTab       = 9
+	kittyKeyEnter     = 13
+	kittyKeyEscape    = 27
+	kittyKeyBackspace = 127
+)
+
+// Kitty keyboard-protocol modifier bits, one less than the reported value: the
+// report carries 1 plus the bitmask, so a plain key reports 1 and Shift+Enter
+// reports 2.
+const (
+	kittyModShift = 1
+	kittyModAlt   = 2
+	kittyModCtrl  = 4
+)
+
+// decodeKittyKey maps a kitty keyboard-protocol key report (a CSI body ending in
+// 'u') to a viewer command and the CDP modifier bits the chord carried. The body
+// is "key[:alternates][;modifiers[:event]]"; sub-parameters are cut because the
+// pushed flag set never asks for alternates or event types, so only the leading
+// value of each parameter is meaningful.
+//
+// It reports the same actions the legacy parser produces for the same physical
+// keys, so a supporting terminal behaves like a legacy one: Escape reaches the
+// page, Enter activates, Tab traverses focus, Backspace edits, the Ctrl chords
+// keep their bindings, and the Alt letters keep their cycles with Shift read from
+// the modifier rather than the letter's case. Shift+Enter returns actionActivate
+// with the Shift bit set, which is the signal find-in-page uses for its
+// previous-match step; every other unmapped report returns ok false and is
+// dropped, so an unbound chord never leaks bytes as keys.
+func decodeKittyKey(body []byte) (act keyAction, mod int, ok bool) {
+	n := len(body)
+	if n < 2 || body[n-1] != 'u' {
+		return actionNone, 0, false
+	}
+	params := strings.Split(string(body[:n-1]), ";")
+	code, codeOK := kittyParam(params[0])
+	if !codeOK {
+		return actionNone, 0, false
+	}
+	report := 1
+	if len(params) > 1 {
+		v, modOK := kittyParam(params[1])
+		if !modOK {
+			return actionNone, 0, false
+		}
+		report = v
+	}
+	bits := report - 1
+	if bits < 0 {
+		return actionNone, 0, false
+	}
+	mod = cdpModifiersFromKitty(bits)
+	switch code {
+	case kittyKeyEscape:
+		return actionEscape, mod, true
+	case kittyKeyEnter:
+		return actionActivate, mod, true
+	case kittyKeyTab:
+		if bits&kittyModShift != 0 {
+			return actionFocusPrev, mod, true
+		}
+		return actionFocusNext, mod, true
+	case kittyKeyBackspace:
+		return actionBackspace, mod, true
+	}
+	// A letter chord: Ctrl maps through the C0 byte table and Alt through the
+	// Alt-chord table, with Shift carried by the letter's case there.
+	letter, isLetter := kittyLetter(code)
+	switch {
+	case !isLetter:
+		return actionNone, 0, false
+	case bits&kittyModCtrl != 0:
+		if a := byteKeyAction(letter & 0x1f); a != actionNone {
+			return a, mod, true
+		}
+	case bits&kittyModAlt != 0:
+		chord := letter
+		if bits&kittyModShift != 0 {
+			chord = letter - ('a' - 'A')
+		}
+		if a, chordOK := altKeyAction(chord); chordOK {
+			return a, mod, true
+		}
+	}
+	return actionNone, 0, false
+}
+
+// kittyKeyEvent turns a decoded key report into the event a legacy terminal
+// would have produced for the same physical key. The keys that have a legacy
+// control byte become that byte event, carrying the report's modifiers, and
+// every other chord stays an action event. Normalising here, at the one decode
+// point, keeps every consumer on a single code path: the chrome dispatch, the
+// three bar-mode handlers that bind Esc, Enter, Tab, and Backspace by byte, and
+// the pre-navigation quit check all behave the same whether the protocol is
+// pushed or not. Shift+Tab is deliberately not folded into Tab: it is a distinct
+// binding, and it already arrives as an action on the legacy path too.
+func kittyKeyEvent(act keyAction, mod int) keyEvent {
+	if b, ok := legacyKeyByte(act); ok {
+		return keyEvent{b: b, mod: mod}
+	}
+	return keyEvent{act: act, mod: mod}
+}
+
+// legacyKeyByte returns the control byte a legacy terminal sends for the key an
+// action names, and whether one exists. Quit maps to Ctrl+Q, the primary quit
+// byte, because the interrupt fallback carries the same action.
+func legacyKeyByte(act keyAction) (byte, bool) {
+	switch act {
+	case actionEscape:
+		return keyEsc, true
+	case actionActivate:
+		return keyEnter, true
+	case actionFocusNext:
+		return keyTab, true
+	case actionBackspace:
+		return keyDel, true
+	case actionQuit:
+		return keyQuitCtrlQ, true
+	default:
+		return 0, false
+	}
+}
+
+// kittyParam parses one CSI u parameter, keeping the leading value and dropping
+// any ':' sub-parameters. An empty parameter is the protocol's default of 1, and
+// a non-numeric one is malformed.
+func kittyParam(p string) (int, bool) {
+	if v, _, found := strings.Cut(p, ":"); found {
+		p = v
+	}
+	if p == "" {
+		return 1, true
+	}
+	n := 0
+	for i := range len(p) {
+		if p[i] < '0' || p[i] > '9' {
+			return 0, false
+		}
+		n = n*10 + int(p[i]-'0')
+	}
+	return n, true
+}
+
+// kittyLetter returns the ASCII letter a text-key report names, lower-cased, so
+// the legacy chord tables can key on it. ok is false for any other codepoint.
+func kittyLetter(code int) (letter byte, ok bool) {
+	switch {
+	case code >= 'a' && code <= 'z':
+		return byte(code), true
+	case code >= 'A' && code <= 'Z':
+		return byte(code) + ('a' - 'A'), true
+	default:
+		return 0, false
+	}
+}
+
+// cdpModifiersFromKitty translates kitty modifier bits into the CDP modifier
+// bitmask the rest of the viewer speaks, so a decoded chord carries its
+// modifiers in one currency.
+func cdpModifiersFromKitty(bits int) int {
+	mod := 0
+	if bits&kittyModShift != 0 {
+		mod |= cdpModShift
+	}
+	if bits&kittyModAlt != 0 {
+		mod |= cdpModAlt
+	}
+	if bits&kittyModCtrl != 0 {
+		mod |= cdpModCtrl
+	}
+	return mod
+}
+
 // decodeCSI maps a CSI sequence body (the bytes after ESC [) to a scroll key.
 // It recognises the arrow finals A/B/C/D, the PageUp/PageDown sequences 5~/6~,
 // and every encoding of Home (H, 1~, and the rxvt 7~) and End (F, 4~, and the
@@ -228,6 +428,7 @@ type keyEvent struct {
 	r      rune        // an assembled multi-byte UTF-8 rune; 0 for any other event
 	scroll ScrollKey   // the recognised scroll key, or ScrollNone for a byte
 	act    keyAction   // the decoded escape-sequence command, or actionNone
+	mod    int         // CDP modifier bits a kitty key report carried; 0 on the legacy path
 	apc    string      // Kitty graphics response body after ESC _ G, e.g. "i=1;OK"; "" otherwise
 	paste  string      // bracketed-paste payload delivered as one unit; "" otherwise
 	mouse  *MouseEvent // decoded SGR mouse report; nil otherwise
@@ -341,6 +542,13 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 	}
 	if act, ok := decodeCSIAction(body); ok {
 		return keyEvent{act: act}, true
+	}
+	// A kitty keyboard-protocol key report, present only while the protocol is
+	// pushed. It normalises to the legacy event for the same key, so no consumer
+	// needs to know which path it came from. An unbound report is dropped like
+	// any unrecognised CSI, and so is a late flags reply from the startup query.
+	if act, mod, ok := decodeKittyKey(body); ok {
+		return kittyKeyEvent(act, mod), true
 	}
 	return keyEvent{}, false
 }

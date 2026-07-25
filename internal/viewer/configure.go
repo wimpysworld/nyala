@@ -107,6 +107,11 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 	if !overrideOK && !winOK {
 		st.cellPx = res.cellPx
 	}
+	// The keyboard protocol rides the full handshake only. A multiplexer would
+	// have to translate the reports back for its own key handling, and the
+	// reduced handshake deliberately asks nothing it cannot trust, so tmux,
+	// zellij, screen, and herdr sessions keep the legacy parser.
+	st.kittyKeyboard = res.KittyKbd
 	st.kittyTransport = resolveKittyTransport(transportFlag, res.TermID, res.KittySHM, runtime.GOOS)
 	st.setTerminalCompatibility(res.TermID, environ)
 	st.Colour = resolveCompatibleColour(colourFlag, environ, detected, st.compat)

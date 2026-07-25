@@ -150,6 +150,12 @@ type State struct {
 	// by configureBackends from the --kitty-transport override, the deny list,
 	// the startup shm probe, and the allow list. It is always direct or shm.
 	kittyTransport KittyTransport
+
+	// kittyKeyboard records that the startup handshake found the kitty keyboard
+	// protocol, so Stream pushes its flags and the teardown pops them. It stays
+	// false under a multiplexer, which runs no keyboard query, so those sessions
+	// keep the legacy parser.
+	kittyKeyboard bool
 }
 
 // KittyTransport returns the effective Kitty transmission medium resolved by
@@ -681,21 +687,42 @@ const (
 // physical line per grid row.
 const enterFullScreen = "\x1b[?7l\x1b[?25l"
 
+// enterTerminalModes returns the mode-enable sequence Stream writes once after
+// the startup handshake: the full-screen escapes, mouse reporting, bracketed
+// paste, and the kitty keyboard protocol when this terminal answered the
+// capability query. Every mode it turns on is undone by exitTerminal, which runs
+// on normal exit, on SIGTERM, and on an error return, so the pairing is one
+// function either side.
+func enterTerminalModes(kittyKeyboard bool) string {
+	modes := enterFullScreen + enableMouseReporting + enableBracketedPaste
+	if kittyKeyboard {
+		modes += enableKittyKeyboard
+	}
+	return modes
+}
+
 // exitTerminal returns the teardown sequence for the interactive viewer. It
 // resets SGR attributes, disables mouse reporting and bracketed paste
 // unconditionally (pairing the enableMouseReporting write and a quit taken
 // mid URL edit, so a leaked mode cannot spray reports or paste markers into
-// the shell), resets Sixel display mode, restores auto-wrap, and shows
-// the cursor. Resetting DECSDM here also covers an interrupted Sixel write that
+// the shell), pops the kitty keyboard protocol when kittyKeyboard records that
+// this session pushed it (the pop is conditional where the other resets are
+// not, because the protocol is a stack: an unmatched pop would discard the
+// entry an outer application pushed), resets Sixel display mode, restores
+// auto-wrap, and shows the cursor. Resetting DECSDM here also covers an interrupted Sixel write that
 // did not reach its per-frame reset. After a frame has drawn, it first moves to
 // column one of the final rendered row and emits one CRLF. The necessary
 // single-line scroll leaves the complete browser area above a clean row for an
 // FPS summary or the shell prompt, independent of the cursor position left by
 // Block, Sixel, or Kitty. Before the first frame it preserves the cursor
 // position, so a startup failure does not displace terminal content.
-func exitTerminal(rows int, drawn bool) string {
+func exitTerminal(rows int, drawn, kittyKeyboard bool) string {
 	const reset = "\x1b[0m"
-	const restore = disableMouseReporting + disableBracketedPaste + endSixelDisplayMode + "\x1b[?7h\x1b[?25h"
+	restore := disableMouseReporting + disableBracketedPaste
+	if kittyKeyboard {
+		restore += disableKittyKeyboard
+	}
+	restore += endSixelDisplayMode + "\x1b[?7h\x1b[?25h"
 	if !drawn || rows <= 0 {
 		return reset + restore
 	}
