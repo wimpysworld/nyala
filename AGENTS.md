@@ -8,14 +8,16 @@ renders through Block, Kitty, or Sixel backends. The Go module is
 
 - `cmd/nyala` contains the entrypoint and kong CLI wiring.
 - `internal/engine` launches Chromium, streams screencasts, extracts the DOM
-  text layer, and emits synced `render.Frame` values.
+  text layer, dispatches input, owns the page search and selection reads, and
+  emits synced `render.Frame` values.
 - `internal/render` owns the frame seam and the Block, Kitty, and Sixel backends.
 - `internal/cellraster` rasterises Block grids for browser-free quality tests.
 - `internal/renderdecode` decodes Kitty and Sixel output for correctness tests.
 - `internal/metrics` owns image, placement, paint, scroll, and fixture-gate metrics.
 - `internal/harness` owns the browser-free diagnostics harness and golden data.
-- `internal/viewer` owns terminal capability detection, backend cycling, stream
-  rendering, and the shared production Block compose seam.
+- `internal/viewer` owns terminal capability detection, backend cycling, key
+  and mouse routing, stream rendering, and the shared production Block compose
+  seam.
 - `testdata/corpus` contains the self-contained CDP correctness fixtures.
 
 Read `docs/ARCHITECTURE.md` for the design record and decision rationale.
@@ -66,6 +68,8 @@ Never set `FENCE_SANDBOX` by hand.
   result consumed by production terminal writing. Do not add a second compositor.
 - The crisp text overlay is first-writer-wins. A wide grapheme's trailing cell
   carries background only; terminal writers emit nothing for that cell.
+- Find highlights paint transparent glyph ink on Block, where the overlay is the
+  only text layer, and black ink elsewhere. Keep that split when changing either.
 - Keep `internal/ocr` pure Go and cgo-free.
 - Use epsilon comparisons for floating-point image metrics. amd64 and arm64 can
   differ below 1e-12 because arm64 contracts operations to FMA.
