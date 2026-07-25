@@ -88,6 +88,19 @@ func (a engineAdapter) SendKey(code string) {
 	a.ChromiumEngine.SendKey(k)
 }
 
+// FindState maps the engine's page-search snapshot to the viewer's. The counts
+// come from the engine's own state, so the read never waits on Chromium.
+func (a engineAdapter) FindState() viewer.FindState {
+	s := a.ChromiumEngine.FindState()
+	return viewer.FindState{
+		Query:   s.Query,
+		Total:   s.Total,
+		Current: s.Current,
+		Pending: s.Pending,
+		Failed:  s.Failed,
+	}
+}
+
 // SendNav maps a viewer navigation request to the engine's NavAction. The
 // engine owns the launch URL and the navigation path.
 func (a engineAdapter) SendNav(action viewer.NavAction) {

@@ -451,8 +451,10 @@ func (e *ChromiumEngine) afterMainFrameFCP() bool {
 // watchLifecycle records top-frame commits, latches the matching main-frame FCP,
 // and retains the existing late-reflow and layout-shift triggers. It also
 // records the committed main-frame URL for CurrentURL, kept fresh across SPA
-// and fragment moves by Page.navigatedWithinDocument. It attaches before raw
-// navigation and before screencast start.
+// and fragment moves by Page.navigatedWithinDocument, and drops the page-search
+// state on a main-frame commit, because the new document carries neither the
+// highlights nor the page-side match list. It attaches before raw navigation and
+// before screencast start.
 func (e *ChromiumEngine) watchLifecycle(ctx context.Context, lifecycle *sessionLifecycle) {
 	chromedp.ListenTarget(ctx, func(ev any) {
 		switch t := ev.(type) {
@@ -460,6 +462,9 @@ func (e *ChromiumEngine) watchLifecycle(ctx context.Context, lifecycle *sessionL
 			lifecycle.recordCommit(t.Frame)
 			if t.Frame != nil && t.Frame.ParentID == "" {
 				e.recordCurrentURL(t.Frame.URL)
+				// The new document carries neither the search highlights nor
+				// the page-side search state, so the held counts go with it.
+				e.resetFind()
 			}
 		case *page.EventNavigatedWithinDocument:
 			if lifecycle.isMainFrame(t.FrameID) {

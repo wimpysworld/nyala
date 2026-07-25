@@ -63,6 +63,11 @@ func (e *switchOpEngine) SendNav(NavAction)           {}
 func (e *switchOpEngine) CurrentURL() string          { return "" }
 func (e *switchOpEngine) OpenURL(string)              {}
 func (e *switchOpEngine) BrowserVersion() string      { return "" }
+func (e *switchOpEngine) Find(string)                 {}
+func (e *switchOpEngine) FindNext()                   {}
+func (e *switchOpEngine) FindPrev()                   {}
+func (e *switchOpEngine) FindClear()                  {}
+func (e *switchOpEngine) FindState() FindState        { return FindState{} }
 func (e *switchOpEngine) SendMouse(MouseEvent)        {}
 func (e *switchOpEngine) Close() error                { return nil }
 

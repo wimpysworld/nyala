@@ -18,5 +18,10 @@ func (e *fakeEngine) SendNav(NavAction)           {}
 func (e *fakeEngine) CurrentURL() string          { return "" }
 func (e *fakeEngine) OpenURL(string)              {}
 func (e *fakeEngine) BrowserVersion() string      { return "" }
+func (e *fakeEngine) Find(string)                 {}
+func (e *fakeEngine) FindNext()                   {}
+func (e *fakeEngine) FindPrev()                   {}
+func (e *fakeEngine) FindClear()                  {}
+func (e *fakeEngine) FindState() FindState        { return FindState{} }
 func (e *fakeEngine) SendMouse(MouseEvent)        {}
 func (e *fakeEngine) Close() error                { return nil }

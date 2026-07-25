@@ -61,6 +61,12 @@ type ChromiumEngine struct {
 	// the block backend it tracks scrollY exactly.
 	scrollYTarget int
 
+	// find is the page-search state FindState reports: the active query, the
+	// match counts, and whether the last dispatch is in flight or failed. It
+	// sits beside the scroll state under mu, and resetFind drops it on every
+	// main-frame commit because the new document carries no highlights.
+	find FindState
+
 	// click is the press-chain state SendMouse's clickCount synthesis carries
 	// between presses (double within clickChainWindow on the same cell). It
 	// sits beside the scroll state under mu; a stale chain after a rebuild is

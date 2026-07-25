@@ -637,6 +637,16 @@ func (e streamTestEngine) OpenURL(url string) {
 
 func (e streamTestEngine) BrowserVersion() string { return e.browserVersion }
 
+func (e streamTestEngine) Find(string) {}
+
+func (e streamTestEngine) FindNext() {}
+
+func (e streamTestEngine) FindPrev() {}
+
+func (e streamTestEngine) FindClear() {}
+
+func (e streamTestEngine) FindState() FindState { return FindState{} }
+
 func (e streamTestEngine) SendMouse(ev MouseEvent) {
 	if e.sendMouse != nil {
 		e.sendMouse(ev)
