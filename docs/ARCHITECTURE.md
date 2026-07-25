@@ -970,7 +970,17 @@ only http, https, and file schemes pass, so a committed `javascript:` URL can
 never execute in the page origin. Esc cancels; a lone Esc is told apart from
 an escape sequence by the buffered-byte check on the reader. A focus flag
 routes every key to the editor and none to CDP while editing, and a paste in
-edit mode lands in the editor line rather than the page. Menu mode opens via ☰ or Alt+F (F10 is
+edit mode lands in the editor line rather than the page. A bar-row press places
+the caret at the clicked cell, walking the visible runes by `go-runewidth`
+width from the viewport offset, so a wide or ambiguous-width glyph counts the
+cells it really occupies. The cursor is a rune index throughout, so no mapping
+can split UTF-8. Every cell of a wide grapheme places the caret before it,
+since the trailing cell carries background only and is not a position of its
+own. A click on the prompt clamps to the leftmost visible rune and a click past
+the last visible rune clamps after it. `renderBarEdit` reports the prompt width
+it drew and the session keeps it, so a click maps against the row as drawn: a
+row too narrow for the prompt gives every cell to the text, which a recomputed
+layout could get wrong by two cells. Menu mode opens via ☰ or Alt+F (F10 is
 avoided; terminals grab it) and offers About and Quit from a command registry.
 
 Chrome-mode key bindings live in `internal/viewer/keys.go`. Rendering: Alt+R

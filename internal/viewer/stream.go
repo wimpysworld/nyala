@@ -463,6 +463,10 @@ type streamSession struct {
 	modeSpans []barSpan
 	// editor is the URL editor; non-nil exactly while barMode is edit.
 	editor *urlEditor
+	// editPromptW is the cells the ❯ prompt took on the last editor repaint, so
+	// a click maps to a text cell against the row as drawn. A row too narrow for
+	// the prompt records 0.
+	editPromptW int
 	// menuSel is the highlighted menu command index.
 	menuSel int
 	// pressed and pressedSet carry the chrome press feedback: the pressed
@@ -1193,8 +1197,9 @@ func switchBackendOp(backend Backend) func(Engine) {
 
 // handleMouse routes one decoded mouse event by bar mode and row and reports
 // whether it quits the session (a menu Quit click). The side buttons
-// dispatch history navigation from any row. In edit mode a page-region press
-// cancels the editor without navigating and nothing forwards to CDP; in menu
+// dispatch history navigation from any row. In edit mode a bar-row press places
+// the editor's caret at the clicked cell and a page-region press cancels the
+// editor without navigating, and nothing forwards to CDP either way; in menu
 // and About modes a bar-row press hits the mode's spans and any other press
 // closes the mode. In chrome, bar-row events go to bar hit-testing and every
 // other event forwards to the engine off the input loop through the
@@ -1229,9 +1234,18 @@ func (s *streamSession) handleMouse(ev MouseEvent) (quit bool) {
 	}
 	switch s.barMode {
 	case barModeEdit:
-		if !onBar && ev.Action == MouseActionPress {
-			s.leaveEdit()
+		if ev.Action != MouseActionPress {
+			return false
 		}
+		if !onBar {
+			s.leaveEdit()
+			return false
+		}
+		// A press inside the editor places the caret at the clicked cell. The
+		// prompt width comes from the last repaint, so the mapping matches the
+		// row as drawn, and the rest of the row is the text window.
+		s.editor.placeCursor(ev.Col-s.editPromptW, s.st.Cols-s.editPromptW)
+		s.repaintBar()
 		return false
 	case barModeMenu, barModeAbout:
 		if ev.Action != MouseActionPress {

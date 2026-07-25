@@ -143,12 +143,14 @@ func renderBarAbout(cols int, version, browser string) (string, []barSpan) {
 
 // renderBarEdit lays out the URL editor row: the ❯ prompt, then the editor's
 // viewport-windowed text padded to the row end. It returns the plain row
-// content, exactly cols cells wide, and the terminal cursor's 1-based column
-// at the edit position. A row too narrow for the prompt gives the whole row
-// to the text.
-func renderBarEdit(cols int, e *urlEditor) (string, int) {
+// content, exactly cols cells wide, the terminal cursor's 1-based column at the
+// edit position, and the cells the prompt took. A row too narrow for the prompt
+// gives the whole row to the text, reporting a zero prompt width. The caller
+// keeps that width so a click maps against the row as drawn rather than a
+// recomputed layout that could disagree about the narrow-row case.
+func renderBarEdit(cols int, e *urlEditor) (content string, cursorCol, promptW int) {
 	if cols <= 0 {
-		return "", 1
+		return "", 1, 0
 	}
 	prompt := barGlyphPrompt + " "
 	pw := runewidth.StringWidth(prompt)
@@ -156,7 +158,7 @@ func renderBarEdit(cols int, e *urlEditor) (string, int) {
 		prompt, pw = "", 0
 	}
 	visible, cursorCell := e.view(cols - pw)
-	return prompt + runewidth.FillRight(visible, cols-pw), pw + cursorCell + 1
+	return prompt + runewidth.FillRight(visible, cols-pw), pw + cursorCell + 1, pw
 }
 
 // Terminal controls for paste and the cursor. Bracketed paste (mode 2004) is
@@ -477,7 +479,8 @@ func (s *streamSession) appendBarMode(buf *bytes.Buffer) {
 	row := s.st.Rows
 	switch s.barMode {
 	case barModeEdit:
-		content, cursorCol := renderBarEdit(s.st.Cols, s.editor)
+		content, cursorCol, promptW := renderBarEdit(s.st.Cols, s.editor)
+		s.editPromptW = promptW
 		fmt.Fprintf(buf, "\x1b[%d;1H\x1b[0;7m%s\x1b[0m\x1b[%d;%dH", row, content, row, cursorCol)
 	case barModeMenu:
 		content, spans := renderBarMenu(s.st.Cols, barCommandNames())

@@ -158,6 +158,45 @@ func (e *urlEditor) view(width int) (visible string, cursorCell int) {
 	return b.String(), cellSpan(e.text[e.offset:e.cursor])
 }
 
+// placeCursor moves the cursor to the rune boundary under a click at the
+// 0-based display cell inside the width-cell text window, walking the visible
+// runes by their display width so an East-Asian wide or ambiguous-width glyph
+// counts the cells it really occupies. The walk starts at the viewport offset,
+// so a scrolled editor maps the cells the user can see, and it stops at the same
+// right-edge clip view applies, so a glyph too wide for the last cell is not
+// clickable there.
+//
+// Three edges are pinned. A cell left of the text, which is a click on the ❯
+// prompt, clamps to the leftmost visible rune: the prompt is decoration, so the
+// nearest text position is the predictable answer. A cell past the last visible
+// rune clamps to the boundary after it, which is the end of the text whenever
+// the text end is on screen, so clicking the empty run after a URL parks the
+// cursor at the end. Every cell of a wide grapheme, its trailing cell included,
+// places the cursor before that grapheme: the trailing cell carries background
+// only and is not a position of its own, so treating it as one would put the
+// cursor somewhere the user cannot see a boundary. Landing on the leading
+// boundary keeps one rule for narrow and wide glyphs alike and can never split
+// a rune, because the cursor is a rune index throughout.
+func (e *urlEditor) placeCursor(cell, width int) {
+	if cell < 0 {
+		cell = 0
+	}
+	used := 0
+	i := e.offset
+	for ; i < len(e.text); i++ {
+		w := runewidth.RuneWidth(e.text[i])
+		if used+w > width {
+			break
+		}
+		if cell < used+w {
+			e.cursor = i
+			return
+		}
+		used += w
+	}
+	e.cursor = i
+}
+
 // cellSpan measures a rune slice in terminal cells.
 func cellSpan(rs []rune) int {
 	w := 0
