@@ -104,6 +104,29 @@ func TestDecodeSGRMouse(t *testing.T) {
 			ok:   true,
 		},
 		{
+			name: "wheel left with shift keeps the modifier",
+			body: "<70;10;10M",
+			want: MouseEvent{Action: MouseActionWheel, WheelDX: -1, Mod: cdpModShift, Col: 9, Row: 9},
+			ok:   true,
+		},
+		{
+			name: "wheel right with shift keeps the modifier",
+			body: "<71;10;10M",
+			want: MouseEvent{Action: MouseActionWheel, WheelDX: 1, Mod: cdpModShift, Col: 9, Row: 9},
+			ok:   true,
+		},
+		{
+			name: "wheel right with all modifiers",
+			body: "<95;2;3M",
+			want: MouseEvent{
+				Action: MouseActionWheel, WheelDX: 1,
+				Mod: cdpModAlt | cdpModCtrl | cdpModShift, Col: 1, Row: 2,
+			},
+			ok: true,
+		},
+		{name: "wheel left release dropped", body: "<66;10;10m"},
+		{name: "wheel right release dropped", body: "<67;10;10m"},
+		{
 			name: "left drag motion",
 			body: "<32;5;5M",
 			want: MouseEvent{Action: MouseActionMove, Button: MouseButtonLeft, Col: 4, Row: 4},

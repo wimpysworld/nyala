@@ -4,6 +4,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,103 @@ const liveDragPage = "data:text/html," +
 	"['dragstart','dragend','mousedown','mousemove','mouseup'].forEach(function(n){" +
 	"document.getElementById('d').addEventListener(n,function(){window.events.push(n)})});" +
 	"</script></body></html>"
+
+// liveScrollPage is a self-contained data: URL that scrolls on both axes, so a
+// horizontal wheel test can prove the page moved sideways and not down. It
+// records the modifier flags of each wheel event, which is how the test sees a
+// modifier survive the dispatch.
+const liveScrollPage = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<div style='width:4000px;height:4000px;background:linear-gradient(to right,white,black)'></div>" +
+	"<script>window.wheels=[];" +
+	"window.addEventListener('wheel',function(e){" +
+	"window.wheels.push([e.deltaX,e.deltaY,e.shiftKey,e.ctrlKey].join(':'))});" +
+	"</script></body></html>"
+
+// TestLiveHorizontalWheelScrollsSideways proves a horizontal report scrolls the
+// real page on the X axis in the desktop-browser direction and leaves the Y axis
+// alone: a wheel-right report increases scrollX, a wheel-left report brings it
+// back, and scrollY never moves. It also pins the sign at the DOM boundary, so
+// the deltaX convention is asserted against Chromium rather than assumed.
+func TestLiveHorizontalWheelScrollsSideways(t *testing.T) {
+	e, ctx := liveEngineOn(t, liveScrollPage)
+
+	e.SendMouse(MouseEvent{Action: MouseActionWheel, WheelDX: 1, Col: 20, Row: 10})
+	right, ok := waitForScrollX(t, ctx, func(x float64) bool { return x > 0 })
+	if !ok {
+		t.Fatalf("window.scrollX = %g after a wheel-right report, want a scroll towards the right edge", right)
+	}
+	if y := evalFloat(t, ctx, "window.scrollY"); y != 0 {
+		t.Fatalf("window.scrollY = %g after a horizontal report, want 0 (vertical untouched)", y)
+	}
+	if got := evalString(t, ctx, "window.wheels[0]"); got != "120:0:false:false" {
+		t.Fatalf("page wheel event = %q, want deltaX 120 and deltaY 0", got)
+	}
+
+	e.SendMouse(MouseEvent{Action: MouseActionWheel, WheelDX: -1, Col: 20, Row: 10})
+	left, ok := waitForScrollX(t, ctx, func(x float64) bool { return x < right })
+	if !ok {
+		t.Fatalf("window.scrollX = %g after a wheel-left report, want less than %g", left, right)
+	}
+	if y := evalFloat(t, ctx, "window.scrollY"); y != 0 {
+		t.Fatalf("window.scrollY = %g after two horizontal reports, want 0", y)
+	}
+}
+
+// TestLiveWheelKeepsModifiers proves the wheel dispatch carries the report's
+// modifier bits to the page: a Shift wheel arrives with shiftKey set, which a
+// page reading the flag depends on. It also checks the CSS layout width across a
+// Ctrl wheel, because ctrlKey is the browser zoom gesture and a zoom would move
+// the layout out from under the cell geometry the whole renderer is sized to.
+func TestLiveWheelKeepsModifiers(t *testing.T) {
+	e, ctx := liveEngineOn(t, liveScrollPage)
+	before := evalFloat(t, ctx, "window.innerWidth")
+
+	// Assert the flags, not the vertical magnitude: on the Block backend the
+	// dispatched deltaY is the whole-cell snapped delta (120 px snaps to 128 at a
+	// 16 px cell, and the next report closes the remainder), which is the
+	// documented vertical behaviour this issue leaves alone.
+	flags := func(i int) string {
+		return fmt.Sprintf("(window.wheels[%d]||'').split(':').slice(2).join(':')", i)
+	}
+	axis := func(i int) string {
+		return fmt.Sprintf("(window.wheels[%d]||'').split(':')[0]", i)
+	}
+
+	e.SendMouse(MouseEvent{Action: MouseActionWheel, WheelDY: 1, Mod: cdpModShiftBits, Col: 20, Row: 10})
+	if got, ok := waitForString(t, ctx, flags(0), "true:false"); !ok {
+		t.Fatalf("page wheel flags = %q, want shiftKey set and ctrlKey clear", got)
+	}
+	if got := evalString(t, ctx, axis(0)); got != "0" {
+		t.Fatalf("vertical wheel deltaX = %q, want 0", got)
+	}
+
+	e.SendMouse(MouseEvent{Action: MouseActionWheel, WheelDY: 1, Mod: cdpModCtrlBits, Col: 20, Row: 10})
+	if got, ok := waitForString(t, ctx, flags(1), "false:true"); !ok {
+		t.Fatalf("page wheel flags = %q, want ctrlKey set and shiftKey clear", got)
+	}
+	if after := evalFloat(t, ctx, "window.innerWidth"); after != before {
+		t.Fatalf("CSS layout width moved from %g to %g across a Ctrl wheel: the page zoomed", before, after)
+	}
+}
+
+// waitForScrollX polls the page's horizontal scroll offset until want reports
+// it settled, so the assertion tolerates the renderer applying the scroll just
+// after the dispatch returns. It returns the last offset read.
+func waitForScrollX(t *testing.T, ctx context.Context, want func(float64) bool) (got float64, ok bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		got = evalFloat(t, ctx, "window.scrollX")
+		if want(got) {
+			return got, true
+		}
+		if time.Now().After(deadline) {
+			return got, false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
 
 // dragCells sends one whole drag gesture through the normal SendMouse seam: a
 // press on the first cell, a move to each cell after it, then a release on the

@@ -156,6 +156,19 @@ func mouseParams(action MouseAction, button MouseButton, mod, clickCount int, x,
 		WithModifiers(input.Modifier(mod))
 }
 
+// wheelParams builds one CDP mouseWheel dispatch at the CSS position x, y with
+// the signed scroll deltas and the CDP modifier bits. The delta signs follow
+// the DOM wheel convention CDP speaks: positive deltaY scrolls the content
+// towards the document end and positive deltaX towards its right edge, so a
+// wheel-right report carries a positive deltaX and increases scrollLeft, the
+// same way the gesture behaves in a desktop browser.
+func wheelParams(x, y float64, dx, dy, mod int) *input.DispatchMouseEventParams {
+	return input.DispatchMouseEvent(input.MouseWheel, x, y).
+		WithDeltaX(float64(dx)).
+		WithDeltaY(float64(dy)).
+		WithModifiers(input.Modifier(mod))
+}
+
 // SendMouse forwards one mouse event to the page. A wheel step scrolls
 // through the one wheel transport at the pointer cell, so Block's whole-cell
 // vertical quantisation and the crash-recovery scroll offset keep working. A
@@ -166,7 +179,9 @@ func mouseParams(action MouseAction, button MouseButton, mod, clickCount int, x,
 // so dragging between two presses cannot break a double click.
 func (e *ChromiumEngine) SendMouse(ev MouseEvent) {
 	if ev.Action == MouseActionWheel {
-		e.dispatchWheelAt(ev.WheelDX*wheelTickPx, ev.WheelDY*wheelTickPx, ev.Col, ev.Row)
+		// Both axes take the same fixed step: an SGR report carries a direction,
+		// not a magnitude, so there is nothing finer to scale.
+		e.dispatchWheelAt(ev.WheelDX*wheelTickPx, ev.WheelDY*wheelTickPx, ev.Mod, ev.Col, ev.Row)
 		return
 	}
 	e.mu.Lock()
