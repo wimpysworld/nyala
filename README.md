@@ -184,7 +184,7 @@ Block shows the glyph mode Nyala auto-selects; `--blocks` overrides it. Yes unde
 | Rio | Sextant | No | Yes | See the Rio 0.4.x note below. |
 | WezTerm | Sextant | Yes | Yes | Sixel is documented as preliminary. |
 
-That Sixel spread is not new, and it widens across more terminals. In an earlier run, at a surface that was not recorded, Nyala's own cost held constant (decode 13.0 to 13.7 ms, encode 28.3 to 30.3 ms) while delivered frames ranged 13x: mlterm 22.9 fps, Alacritty 17.5, foot 8.1, Contour 4.0, WezTerm 1.8.
+That Sixel spread is not new, and it widens across more terminals. In an earlier run at 2560x1600, Nyala's own cost held constant (decode 13.0 to 13.7 ms, encode 28.3 to 30.3 ms) while delivered frames ranged 13x: mlterm 22.9 fps, Alacritty 17.5, foot 8.1, Contour 4.0, WezTerm 1.8.
 
 > [!NOTE]
 > **Rio 0.4.x.** Rio advertises Sixel but does not render it, so Nyala excludes Sixel from auto backend selection. Rio's style table caps truecolour, so auto colour uses the xterm-256 palette. `--color=256` and `--color=none` remain available, and `--color=truecolor` is rejected. Kitty graphics work, with the live fps badge omitted.

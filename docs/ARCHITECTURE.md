@@ -1290,8 +1290,8 @@ The terminal sets the delivered rate once Nyala's side clears the budget.
 Block at 2560x2880 full motion holds 60 fps on kitty, Alacritty, and foot.
 WezTerm is byte-bound: truecolour SGR pushes `out_write` to about 20 ms
 (about 40 fps), and `--color=256` locks it to 60 at 0.4 ms. Sixel output is
-set by the emulator's decode, with Nyala's side constant (decode 13.0 to
-13.7 ms, encode 28.3 to 30.3 ms): mlterm 22.9 fps, Alacritty 17.5, foot
+set by the emulator's decode. At 2560x1600, with Nyala's side constant
+(decode 13.0 to 13.7 ms, encode 28.3 to 30.3 ms): mlterm 22.9 fps, Alacritty 17.5, foot
 8.1, Contour 4.0, WezTerm 1.8; Sixel has no out-of-band escape. WezTerm is
 the one exception to the constant Nyala side: its parsing contends for CPU,
 inflating Nyala's decode to 29.2 ms and dropping ingest to 38.3 fps. Kitty

@@ -254,9 +254,9 @@ live: a 66.7 ms PNG decode capped ingest at about 25 fps, while JPEG q90
 decodes in 13.5 ms and ingest hits the 60 fps CDP cap. The cost: JPEG noise
 fires the exact-colour fast path less often.
 
-**The wall moved to the terminal.** Five live runs used identical payloads.
-On four emulators Nyala's side was constant (decode 13.0 to 13.7 ms, encode
-28.3 to 30.3 ms) and the emulator set the output: mlterm 22.9, Alacritty
+**The wall moved to the terminal.** Five live runs at 2560x1600 used
+identical payloads. On four emulators Nyala's side was constant (decode
+13.0 to 13.7 ms, encode 28.3 to 30.3 ms) and the emulator set the output: mlterm 22.9, Alacritty
 17.5, foot 8.1, Contour 4.0, WezTerm 1.8 fps, a 13x spread. WezTerm's
 parsing also contends with Nyala for CPU, inflating decode to 29.2 ms and
 dropping ingest to 38.3 fps. Sixel has no shared-memory escape, so the
