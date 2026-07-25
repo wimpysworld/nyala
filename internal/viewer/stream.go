@@ -436,11 +436,21 @@ type streamSession struct {
 	// Both are producer-goroutine only.
 	kittyShmAwait    bool
 	kittyShmDeadline time.Time
-	// fps is the live fps counter, non-nil only when NYALA_FPS_TIMING is set.
-	// When set, assemble stamps each frame and the bar carries a rolling
-	// usable-fps segment (its text rebuilt at most once per second); when nil
-	// the draw path pays only a nil check, so production is unchanged.
+	// fps is the live fps counter, armed by NYALA_FPS_TIMING at startup or by
+	// the menu's fps command mid-session. When set, assemble stamps each frame
+	// and the meter accumulates; when nil the draw path pays only a nil check,
+	// so a session that never shows the badge is unchanged.
 	fps *fpsMeter
+	// fpsHidden is the menu's fps command state. The zero value draws the badge
+	// whenever a meter is armed, so NYALA_FPS_TIMING keeps its exact effect and
+	// hiding is the explicit act. It is separate from fps because hiding must not
+	// discard a meter the switch armed: the quit summary reads that one.
+	fpsHidden bool
+	// fpsTicker and fpsBeat are the once-per-second bar refresh that decays the
+	// badge on an idle page. They are armed with the meter, lazily, so a session
+	// that never shows the badge starts no ticker.
+	fpsTicker *time.Ticker
+	fpsBeat   <-chan time.Time
 	// launchURL is the URL Stream navigated to. The bar's URL segment shows
 	// it until the engine records a committed URL. Set once before the loops
 	// start and read-only after.
@@ -504,7 +514,7 @@ func (s *streamSession) appendBar(buf *bytes.Buffer) {
 		indicator = spinnerGlyph(s.spinner)
 	}
 	fps := ""
-	if s.fps != nil {
+	if s.fpsBadgeShown() {
 		fps = s.fps.barText(time.Now())
 	}
 	content, layout := renderBar(s.st.Cols, barContent{indicator: indicator, url: s.currentURL(), fps: fps})
@@ -516,6 +526,54 @@ func (s *streamSession) appendBar(buf *bytes.Buffer) {
 		}
 	}
 	fmt.Fprintf(buf, "\x1b[%d;1H\x1b[0;7m%s\x1b[0m", s.st.Rows, content)
+}
+
+// armFPSHeartbeat starts the once-per-second badge refresh, if it is not
+// already running. It runs on the draw goroutine, which is also the goroutine
+// selecting on fpsBeat, so a mid-session arm never races the loop.
+func (s *streamSession) armFPSHeartbeat() {
+	if s.fpsTicker != nil {
+		return
+	}
+	s.fpsTicker = time.NewTicker(fpsBadgeInterval)
+	s.fpsBeat = s.fpsTicker.C
+}
+
+// stopFPSHeartbeat stops the badge refresh ticker when the loop ends. A session
+// that never armed one does nothing.
+func (s *streamSession) stopFPSHeartbeat() {
+	if s.fpsTicker != nil {
+		s.fpsTicker.Stop()
+	}
+}
+
+// fpsBadgeShown reports whether the bar draws the fps segment: a meter must be
+// armed and the menu must not have hidden it.
+func (s *streamSession) fpsBadgeShown() bool {
+	return s.fps != nil && !s.fpsHidden
+}
+
+// toggleFPS shows or hides the bar's fps segment for the rest of the session,
+// the menu's fps command. Showing it on a session NYALA_FPS_TIMING left off arms
+// a meter and its heartbeat, so the badge has live rates to report; hiding it
+// keeps the meter, because the switch's quit summary reads the same one. It
+// closes the menu, which repaints chrome, so the row and its hit spans are
+// rebuilt together for the new state.
+func (s *streamSession) toggleFPS() {
+	if s.fpsBadgeShown() {
+		s.fpsHidden = true
+		s.leaveMode()
+		return
+	}
+	s.fpsHidden = false
+	if s.fps == nil {
+		s.fps = armFPSMeter()
+		if r, ok := s.eng.(ingestReporter); ok {
+			s.fps.ingest = r
+		}
+	}
+	s.armFPSHeartbeat()
+	s.leaveMode()
 }
 
 // barBytes returns one standalone bar repaint (the spinner tick, the fps
@@ -541,14 +599,13 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 	// Heartbeat the bar's fps segment so an idle page decays it to a live 0
 	// rather than freezing it at the last frame's rate. The block backend
 	// pushes no frames while static, so without this a scroll that settles
-	// leaves the segment wedged. A nil channel blocks forever in the select,
-	// so an off run (no meter) starts no ticker and the case never fires.
-	var heartbeat <-chan time.Time
+	// leaves the segment wedged. A nil channel blocks forever in the select, so
+	// an off run starts no ticker and the case never fires; the menu's fps
+	// command arms it mid-session on the same goroutine as this loop.
 	if s.fps != nil {
-		t := time.NewTicker(fpsBadgeInterval)
-		defer t.Stop()
-		heartbeat = t.C
+		s.armFPSHeartbeat()
 	}
+	defer s.stopFPSHeartbeat()
 
 	// Start the producer/writer pipeline. The producer (this goroutine) assembles
 	// each frame into an owned buffer; the writer goroutine does the single tty
@@ -660,9 +717,13 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			if err := s.resize(); err != nil {
 				return err
 			}
-		case now := <-heartbeat:
+		case now := <-s.fpsBeat:
 			// Refresh the fps text and repaint the bar. The repaint routes
-			// through the writer so it never races an in-flight frame write.
+			// through the writer so it never races an in-flight frame write. A
+			// hidden badge needs neither, so the beat costs a flag check.
+			if !s.fpsBadgeShown() {
+				continue
+			}
 			s.fps.refresh(now)
 			if b := s.barBytes(); b != nil {
 				_ = s.emitControl(b)
@@ -1760,10 +1821,20 @@ type ingestReporter interface {
 func newFPSMeter(env []string) *fpsMeter {
 	for _, kv := range env {
 		if v, ok := strings.CutPrefix(kv, fpsTimingEnv); ok && v != "" {
-			return &fpsMeter{window: fpsWindow, start: time.Now()}
+			return armFPSMeter()
 		}
 	}
 	return nil
+}
+
+// armFPSMeter returns a meter measuring from now. Stream calls it through
+// newFPSMeter for the NYALA_FPS_TIMING switch, and the menu's fps command calls
+// it directly when a user asks for the badge on a session the switch left off.
+// Only the switch's meter reaches printSummary: Stream registers that defer
+// against the startup meter, so a meter armed later prints no summary and the
+// measurement controls keep their exact output.
+func armFPSMeter() *fpsMeter {
+	return &fpsMeter{window: fpsWindow, start: time.Now()}
 }
 
 // tick records a draw at now. afterFCP reports that the frame arrived after the

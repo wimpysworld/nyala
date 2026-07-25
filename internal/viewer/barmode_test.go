@@ -1,6 +1,7 @@
 package viewer
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
@@ -322,6 +323,170 @@ func TestEditModePageClickStillCancels(t *testing.T) {
 	}
 }
 
+// TestFPSCommandTogglesSegment pins the menu's fps command: activating it shows
+// the bar's fps segment on a session the switch left off, arming a meter so the
+// badge has rates, and activating it again hides the segment while keeping the
+// meter. Each activation closes the menu, so the user sees the effect.
+func TestFPSCommandTogglesSegment(t *testing.T) {
+	s, _ := modeSession(t, streamTestEngine{currentURL: "https://example.org/"})
+	if s.fpsBadgeShown() || s.fps != nil {
+		t.Fatal("the badge starts shown on a session with no timing switch")
+	}
+	showAt := menuIndex(t, false, barCommandShowFPS)
+
+	s.handleKey(keyEvent{act: actionOpenMenu})
+	s.menuSel = showAt
+	if quit := s.handleKey(keyEvent{b: keyEnter}); quit {
+		t.Fatal("the fps command quit")
+	}
+	if !s.fpsBadgeShown() {
+		t.Fatal("the fps command did not show the segment")
+	}
+	if s.fps == nil {
+		t.Fatal("showing the badge did not arm a meter, so it has no rates to report")
+	}
+	if s.barMode != barModeChrome {
+		t.Fatalf("the fps command left the menu open: mode %d", s.barMode)
+	}
+	if _, ok := s.barLay.segment(barSegmentFPS); !ok {
+		t.Fatal("the repaint after showing has no fps span")
+	}
+
+	meter := s.fps
+	s.handleKey(keyEvent{act: actionOpenMenu})
+	s.menuSel = menuIndex(t, true, barCommandHideFPS)
+	s.handleKey(keyEvent{b: keyEnter})
+	if s.fpsBadgeShown() {
+		t.Fatal("the fps command did not hide the segment")
+	}
+	if s.fps != meter {
+		t.Fatal("hiding the badge discarded the meter the quit summary reads")
+	}
+	if _, ok := s.barLay.segment(barSegmentFPS); ok {
+		t.Fatal("the repaint after hiding still has an fps span")
+	}
+}
+
+// TestFPSCommandLabelReflectsState pins the label: it names the action, so a
+// hidden segment offers to show it and a shown segment offers to hide it, and
+// both labels are the same width so the menu row keeps its columns.
+func TestFPSCommandLabelReflectsState(t *testing.T) {
+	if got := barCommandNames(false)[0]; got != barCommandShowFPS {
+		t.Fatalf("hidden-state label = %q, want %q", got, barCommandShowFPS)
+	}
+	if got := barCommandNames(true)[0]; got != barCommandHideFPS {
+		t.Fatalf("shown-state label = %q, want %q", got, barCommandHideFPS)
+	}
+	if a, b := runewidth.StringWidth(barCommandShowFPS), runewidth.StringWidth(barCommandHideFPS); a != b {
+		t.Fatalf("label widths differ (%d and %d), so the menu row shifts on a toggle", a, b)
+	}
+
+	// The menu row and its spans are identical apart from the one word, so a
+	// click lands on the same item in either state.
+	shown, shownSpans := renderBarMenu(60, barCommandNames(true))
+	hidden, hiddenSpans := renderBarMenu(60, barCommandNames(false))
+	if len(shownSpans) != len(hiddenSpans) {
+		t.Fatalf("menu spans = %d shown and %d hidden, want the same", len(shownSpans), len(hiddenSpans))
+	}
+	for i := range shownSpans {
+		if shownSpans[i] != hiddenSpans[i] {
+			t.Fatalf("menu span %d moved: %+v shown, %+v hidden", i, shownSpans[i], hiddenSpans[i])
+		}
+	}
+	if runewidth.StringWidth(shown) != runewidth.StringWidth(hidden) {
+		t.Fatalf("menu row widths differ: %q and %q", shown, hidden)
+	}
+}
+
+// TestFPSSegmentKeepsMenuAnchored pins the chrome layout across the toggle: the
+// ☰ button holds the same column and width with and without the fps segment,
+// because it is the last atom of a row that always totals cols and the flexible
+// URL region absorbs the difference. It also checks the hit-test in both states,
+// so a click still resolves to the segment drawn under it.
+func TestFPSSegmentKeepsMenuAnchored(t *testing.T) {
+	const cols = 80
+	withFPS, withLay := renderBar(cols, barContent{indicator: "⬔", url: "https://example.org/", fps: "↓ 60.0 │ ↑ 60.0 │ ≌ 120"})
+	without, withoutLay := renderBar(cols, barContent{indicator: "⬔", url: "https://example.org/"})
+
+	if runewidth.StringWidth(withFPS) != cols || runewidth.StringWidth(without) != cols {
+		t.Fatalf("bar rows are %d and %d cells, want %d", runewidth.StringWidth(withFPS), runewidth.StringWidth(without), cols)
+	}
+	menuWith, ok := withLay.segment(barSegmentMenu)
+	if !ok {
+		t.Fatal("menu segment missing with the fps segment")
+	}
+	menuWithout, ok := withoutLay.segment(barSegmentMenu)
+	if !ok {
+		t.Fatal("menu segment missing without the fps segment")
+	}
+	if menuWith != menuWithout {
+		t.Fatalf("the menu button moved on the toggle: %+v with fps, %+v without", menuWith, menuWithout)
+	}
+
+	// Every button left of the URL region also holds its column: only the URL
+	// region resizes, and it sits left of the fps segment.
+	for _, kind := range []barSegmentKind{
+		barSegmentBack, barSegmentForward, barSegmentReload, barSegmentHome, barSegmentIndicator,
+	} {
+		a, okA := withLay.segment(kind)
+		b, okB := withoutLay.segment(kind)
+		if !okA || !okB || a != b {
+			t.Fatalf("segment %d moved on the toggle: %+v with fps, %+v without", kind, a, b)
+		}
+	}
+
+	// The URL region absorbs exactly the cells the fps block occupied.
+	urlWith, _ := withLay.segment(barSegmentURL)
+	urlWithout, _ := withoutLay.segment(barSegmentURL)
+	fpsSeg, ok := withLay.segment(barSegmentFPS)
+	if !ok {
+		t.Fatal("fps segment missing from the fps layout")
+	}
+	if urlWithout.width <= urlWith.width {
+		t.Fatalf("hiding the fps segment did not widen the URL region: %d to %d", urlWith.width, urlWithout.width)
+	}
+	if _, ok := withoutLay.segment(barSegmentFPS); ok {
+		t.Fatal("the fps-free layout still holds an fps span")
+	}
+
+	// Hit-testing lands correctly in both states: the fps cells resolve to the
+	// fps segment while it is drawn, and to the URL region once it is not.
+	if kind, ok := withLay.hit(fpsSeg.col); !ok || kind != barSegmentFPS {
+		t.Fatalf("hit on the fps cell = (%d, %v), want the fps segment", kind, ok)
+	}
+	if kind, ok := withoutLay.hit(menuWithout.col); !ok || kind != barSegmentMenu {
+		t.Fatalf("hit on the menu cell without fps = (%d, %v), want the menu", kind, ok)
+	}
+	if kind, ok := withLay.hit(menuWith.col); !ok || kind != barSegmentMenu {
+		t.Fatalf("hit on the menu cell with fps = (%d, %v), want the menu", kind, ok)
+	}
+}
+
+// TestFPSCommandLeavesMeasurementControls pins that the toggle is a display
+// control only: the timing switch still decides whether Stream arms a meter at
+// startup, and the switch's own meter is what the quit summary reads, so a
+// menu-armed meter cannot add a summary line to a run that did not ask for one.
+func TestFPSCommandLeavesMeasurementControls(t *testing.T) {
+	if m := newFPSMeter([]string{"PATH=/usr/bin"}); m != nil {
+		t.Fatal("the meter armed without the timing switch")
+	}
+	if m := newFPSMeter([]string{fpsTimingEnv + "1"}); m == nil {
+		t.Fatal("the timing switch no longer arms the meter")
+	}
+	if m := newFPSMeter([]string{fpsTimingEnv}); m != nil {
+		t.Fatal("an empty timing switch armed the meter")
+	}
+
+	// Stream registers printSummary against the startup meter, so a nil one
+	// prints nothing however the session later toggles the badge.
+	var out bytes.Buffer
+	var absent *fpsMeter
+	absent.printSummary(&out)
+	if out.Len() != 0 {
+		t.Fatalf("a session with no startup meter printed a summary: %q", out.String())
+	}
+}
+
 // TestBracketedPasteIsSessionWide pins the paste mode as session state, not
 // mode state: the enable and disable are the DEC 2004 pair, and every teardown
 // emits the disable whether or not a frame drew, so a normal quit, a signal,
@@ -355,12 +520,27 @@ func TestEditModePasteAndRunes(t *testing.T) {
 	}
 }
 
+// menuIndex returns the menu index of the command labelled name for the given
+// fps state, so a test addresses items by label and does not break when the
+// registry gains an entry.
+func menuIndex(t *testing.T, fpsShown bool, name string) int {
+	t.Helper()
+	for i, n := range barCommandNames(fpsShown) {
+		if n == name {
+			return i
+		}
+	}
+	t.Fatalf("menu has no %q command: %v", name, barCommandNames(fpsShown))
+	return 0
+}
+
 // TestMenuModeKeyboard pins the keyboard menu: Alt+F opens it, Tab and the
 // arrows move the highlight with wrap, Enter activates About (the version
 // line with the browser product), Esc closes each mode, and Enter on Quit
 // quits through the command registry.
 func TestMenuModeKeyboard(t *testing.T) {
 	s, _ := modeSession(t, streamTestEngine{browserVersion: "Chromium 138.0.7204.49"})
+	n := len(barCommandNames(false))
 
 	s.handleKey(keyEvent{act: actionOpenMenu})
 	if s.barMode != barModeMenu || s.menuSel != 0 {
@@ -371,17 +551,20 @@ func TestMenuModeKeyboard(t *testing.T) {
 	if s.menuSel != 1 {
 		t.Fatalf("Tab moved the highlight to %d, want 1", s.menuSel)
 	}
+	// Right from the last item wraps to the first, and Left from the first wraps
+	// back to the last, whatever the registry length is.
+	s.menuSel = n - 1
 	s.handleKey(keyEvent{scroll: ScrollRight})
 	if s.menuSel != 0 {
 		t.Fatalf("Right did not wrap the highlight: sel %d", s.menuSel)
 	}
 	s.handleKey(keyEvent{scroll: ScrollLeft})
-	if s.menuSel != 1 {
-		t.Fatalf("Left did not wrap backwards: sel %d", s.menuSel)
+	if s.menuSel != n-1 {
+		t.Fatalf("Left did not wrap backwards: sel %d, want %d", s.menuSel, n-1)
 	}
 
 	// Enter on About swaps to the version line.
-	s.menuSel = 0
+	s.menuSel = menuIndex(t, s.fpsBadgeShown(), "About")
 	if quit := s.handleKey(keyEvent{b: keyEnter}); quit {
 		t.Fatal("About quit")
 	}
@@ -399,7 +582,7 @@ func TestMenuModeKeyboard(t *testing.T) {
 
 	// Enter on Quit ends the session.
 	s.handleKey(keyEvent{act: actionOpenMenu})
-	s.handleKey(keyEvent{b: keyTab})
+	s.menuSel = menuIndex(t, s.fpsBadgeShown(), "Quit")
 	if quit := s.handleKey(keyEvent{b: keyEnter}); !quit {
 		t.Fatal("Quit did not quit")
 	}
@@ -612,7 +795,10 @@ func TestHandleMouseMenuSpans(t *testing.T) {
 	}
 
 	s.handleKey(keyEvent{act: actionOpenMenu})
-	quitSpan, _ := menuSpan(s.modeSpans, 1)
+	quitSpan, ok := menuSpan(s.modeSpans, menuIndex(t, s.fpsBadgeShown(), "Quit"))
+	if !ok {
+		t.Fatal("Quit span missing")
+	}
 	pad := MouseEvent{Action: MouseActionPress, Button: MouseButtonLeft, Col: quitSpan.col + quitSpan.width + 2, Row: barRow}
 	if s.handleMouse(pad); s.barMode != barModeMenu {
 		t.Fatalf("padding click changed the mode: %d", s.barMode)

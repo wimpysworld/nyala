@@ -35,19 +35,34 @@ type barCommand struct {
 	run  func(s *streamSession) (quit bool)
 }
 
-// barCommands returns the command registry backing the menu: About swaps the
-// bar to the version line and Quit ends the session through the existing
-// teardown path.
-func barCommands() []barCommand {
+// FPS command labels. The label names the action activating the item performs,
+// not the current state, so the user reads what will happen rather than
+// inferring it. Both are the same width, so the menu row and its click spans
+// keep their columns across a toggle.
+const (
+	barCommandShowFPS = "Show FPS"
+	barCommandHideFPS = "Hide FPS"
+)
+
+// barCommands returns the command registry backing the menu: the fps item
+// shows or hides the bar's live fps segment, About swaps the bar to the version
+// line, and Quit ends the session through the existing teardown path. fpsShown
+// is the current segment state, which picks the fps item's label.
+func barCommands(fpsShown bool) []barCommand {
+	fps := barCommandShowFPS
+	if fpsShown {
+		fps = barCommandHideFPS
+	}
 	return []barCommand{
+		{name: fps, run: func(s *streamSession) bool { s.toggleFPS(); return false }},
 		{name: "About", run: func(s *streamSession) bool { s.enterAbout(); return false }},
 		{name: "Quit", run: func(*streamSession) bool { return true }},
 	}
 }
 
 // barCommandNames returns the registry names in menu order.
-func barCommandNames() []string {
-	cmds := barCommands()
+func barCommandNames(fpsShown bool) []string {
+	cmds := barCommands(fpsShown)
 	names := make([]string, len(cmds))
 	for i, c := range cmds {
 		names[i] = c.name
@@ -107,8 +122,8 @@ func closeAnchoredRow(cols int, left string, spans []barSpan) (string, []barSpan
 	return content, spans
 }
 
-// renderBarMenu lays out the in-bar menu row `About │ Quit │ ✕` for a
-// cols-wide terminal: each command name is a padded click target, and the
+// renderBarMenu lays out the in-bar menu row `Show FPS │ About │ Quit │ ✕` for
+// a cols-wide terminal: each command name is a padded click target, and the
 // close button anchors to the right corner. It returns the plain row content
 // and the click spans; the caller bolds the highlighted item with boldSpan.
 func renderBarMenu(cols int, names []string) (string, []barSpan) {
@@ -308,7 +323,7 @@ func (s *streamSession) exitBarModeIfHidden() {
 // activateMenu runs the registry command at index i and reports whether it
 // quits the session.
 func (s *streamSession) activateMenu(i int) bool {
-	cmds := barCommands()
+	cmds := barCommands(s.fpsBadgeShown())
 	if i < 0 || i >= len(cmds) {
 		return false
 	}
@@ -379,7 +394,7 @@ func (s *streamSession) handleEditKey(ev keyEvent) (quit bool) {
 // highlight with wrap, Enter activates the highlighted command, and Esc
 // closes back to chrome. Everything else except the quit keys is swallowed.
 func (s *streamSession) handleMenuKey(ev keyEvent) (quit bool) {
-	n := len(barCommands())
+	n := len(barCommands(s.fpsBadgeShown()))
 	switch {
 	case ev.scroll == ScrollLeft:
 		s.menuSel = (s.menuSel + n - 1) % n
@@ -491,7 +506,7 @@ func (s *streamSession) appendBarMode(buf *bytes.Buffer) {
 		s.editPromptW = promptW
 		fmt.Fprintf(buf, "\x1b[%d;1H\x1b[0;7m%s\x1b[0m\x1b[%d;%dH", row, content, row, cursorCol)
 	case barModeMenu:
-		content, spans := renderBarMenu(s.st.Cols, barCommandNames())
+		content, spans := renderBarMenu(s.st.Cols, barCommandNames(s.fpsBadgeShown()))
 		s.modeSpans = spans
 		if sp, ok := menuSpan(spans, s.menuSel); ok {
 			content = boldSpan(content, sp.col, sp.width)
