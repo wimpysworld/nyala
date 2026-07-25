@@ -60,7 +60,7 @@ Host mode means the Block glyph mode follows the outer terminal. Nyala never off
 | GNU screen | Host mode | No | No | No graphics passthrough. |
 | herdr | Host mode | No | No | Consumes graphics sequences; Block only. |
 
-Deeper design rationale lives in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); performance measurements in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
+Design rationale and performance measurements live in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the development story in [`docs/EVOLUTION.md`](docs/EVOLUTION.md).
 
 ## Development
 

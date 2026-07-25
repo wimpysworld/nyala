@@ -1,9 +1,9 @@
 # Nyala Architecture
 
 This is the durable design record: what Nyala is, how it works, and why the
-load-bearing decisions went the way they did. Measurements and their history
-live in [PERFORMANCE.md](./PERFORMANCE.md). Usage and terminal compatibility
-live in the [README](../README.md).
+load-bearing decisions went the way they did. It is also the performance
+record: each decision carries the measurement that justified it. Usage and
+terminal compatibility live in the [README](../README.md).
 
 ## What Nyala is
 
@@ -83,6 +83,13 @@ The format policy follows the consumer:
   shared-memory fast path; both transports are described under Graphics
   backends.
 
+Measurements set this policy. Direct Kitty pass-through cut Nyala framing
+from 51.95 ms to 0.014 ms per frame. Composing Block cells from native
+YCbCr cut matched q90 processing 42.95% (18.012 to 10.276 ms at 2560x2880),
+leaving 6.39 ms median headroom inside the 16.67 ms 60 fps budget. q90 beat
+q80 on fidelity (PSNR 45.234 to 49.021 dB, SSIM 0.995468 to 0.997696) and
+beat q95 and q100 on headroom: q100 leaves 0.53 ms and doubles the payload.
+
 ### Engines
 
 `ChromiumEngine` is the only engine built. It streams frames via
@@ -104,6 +111,13 @@ expectations, so the in-process paint hop buys nothing Nyala needs.
    bitmap elsewhere.
 4. Diff Block cells against the previous frame. Sixel and Kitty emit a full
    image per drawn frame.
+
+Frame assembly and the terminal write are pipelined
+(`internal/viewer/stream_writer.go`): the draw loop fills one of two
+ping-pong buffers with the whole DEC 2026 frame while a single writer
+goroutine writes the previous one, so the paint wall is max(encode, write),
+not the sum (+47% output fps on a full-motion fixture). Under it,
+`out_write` times the terminal's true ingest rate.
 
 ## The engine
 
@@ -132,6 +146,15 @@ before Nyala has input. Audio plays straight to the host sound server through
 the inherited environment; owner testing found A/V sync acceptable with no
 Nyala-side delay, so audio sits off the frame-rate critical path.
 
+Headless Chromium forces SwiftShader software rendering by default. The
+live launch passes `--enable-gpu` (`launch.go`), which only reverts to
+normal driver selection; the ANGLE, Vulkan, and blocklist flags were
+rejected as redundant or stale. Capture launches stay on software rendering
+so goldens stay deterministic. The flake puts `/run/opengl-driver/lib` on
+the library path because the nixpkgs Chromium wrapper does not. The WebGL
+aquarium measured browser fps 26 to 60 and ingest 60.3, proving the browser
+render, not the pipeline, had been the ceiling.
+
 ### Sizing and layout scale
 
 Two sizes drive every session. `surfaceSize` is `cols*cellW` by `rows*cellH`
@@ -148,8 +171,18 @@ Each backend derives a continuous device scale Z (`frame.go`). The page lays
 out at `surf/Z` CSS pixels while Chromium paints the full device surface.
 Block anchors 8 CSS pixels per column (`blockCellCSSW`) and graphics anchors
 16 (`graphicsCellCSSW`), each held to a 1024 px layout floor so a narrow grid
-keeps a desktop layout. Anchoring density per cell makes the laid-out page
-identical whether a terminal reports logical-point or device-pixel cells. The
+keeps a desktop layout. Block's 8 is half the graphics anchor because its
+raster is 2 sub-cells per cell; Browsh's measured 9 CSS px per column is the
+prior art. The anchor exists because terminals disagree on the unit of the
+cell size they report: at the same physical window Kitty reports a 16x33
+cell (logical points) while Ghostty and WezTerm report 26x53 (device
+pixels). Without the anchor the device-pixel group laid out 1.6x more CSS
+pixels and drew text 1.6x smaller; with it, cell 26 gives Z = 1.625 and the
+identical 2496 CSS px layout. Below the floor Block keeps cssW = surfW
+rather than clamping, because shrinking its sub-cell raster costs
+legibility, a deliberate asymmetry with graphics. A 2560 CSS ceiling was
+dropped: on a scaled super-ultrawide it would push Z past the display scale
+and break the unit normalisation. The
 launch flag `force-device-scale-factor` carries Z. Running headless at DSF Z
 with a CSS viewport of `surf/Z` is the clean CDP equivalent of Carbonyl's
 compiled-in LoDPI hack, which is unreachable over CDP.
@@ -164,16 +197,37 @@ cdproto. Lifecycle events need `page.Enable` plus
 `SetLifecycleEventsEnabled(true)` per session, or CDP emits no
 `Page.lifecycleEvent` for the navigate waiter to match.
 
+Mid-session zoom re-derives the cell pair. Every SIGWINCH re-reads
+TIOCGWINSZ and derives the pair afresh (`internal/viewer/cellpx.go`),
+rounding each axis rather than flooring: a fractional device-pixel cell
+lost up to one pixel per column, the Ghostty and WezTerm zoom-out shrink. A
+failed derivation keeps the last known-good pair. The new pair travels
+inside the same control closure as the grid restart, because the one-slot
+drop-on-full control channel could drop a separate message. Headless
+Chromium paints at the launch device scale for the whole process, and the
+live metrics override changes layout only, so after a zoom-in the frame
+arrives undersized and the viewer fits it to the grid: Kitty through the
+`c=`/`r=` placement keys, Sixel through the shared scaler. The accepted
+cost is zoom-in softness until the next navigation. A
+contents-size-at-launch-scale variant was tried and reverted: it cannot
+change paint density and it broke Block's frame-spans-viewport contract.
+
 ### Screencast loop
 
 The frame model is push. Chromium emits `Page.screencastFrame` on compositor
 damage and withholds further frames until each one is acked, so an unacked
-stream stalls after a frame or two. chromedp ships no screencast helper
+stream stalls after a frame or two. Source-verified constraints shape the
+loop: capture is damage-driven with a 100 fps rate cap (a 10 ms minimum
+capture period), and the ack budget allows 3 frames in flight. While the
+budget is exhausted Chromium drops frames rather than queueing them, so a
+late ack is a gap, not latency. chromedp ships no screencast helper
 (upstream declined one in chromedp issue #275), so the engine runs its own
 listen, decode, ack loop.
 
 The listener acks every frame on receipt, before decode, so a slow decoder
-never starves Chromium's in-flight credit. The ack never runs inline on the
+never starves Chromium's in-flight credit. The measurement behind that:
+inline decode on the receiver goroutine capped ingest near 7 fps;
+ack-on-receive with off-goroutine decode lifted it to 40 to 59 fps. The ack never runs inline on the
 `ListenTarget` event goroutine: a `chromedp.Run` there is the chromedp #920
 self-deadlock, because the ack command waits for a response only the parked
 event goroutine can read. Instead `ackFrame` pushes the SessionID onto an
@@ -188,6 +242,27 @@ the newest completed sequence. Block and Sixel stream JPEG quality 90 in
 production; Kitty follows its transport (see Graphics backends); diagnostics
 capture stays lossless PNG.
 
+The decode pool (`decodepool.go`) exists because one JPEG decode worker (28
+to 31 ms per frame) capped Block output at 33 fps while ingest ran at 60.
+The pool, with its bounded drop-oldest queue and monotonic sequence gate,
+locked output at 60 fps drawing 99.5% of ingested frames. The default is
+min(4, max(2, GOMAXPROCS/2)) workers, so decode takes at most half the
+cores; `NYALA_DECODE_WORKERS` overrides it, clamped 1 to 16. Parallelism is
+one frame per worker: JPEG Huffman entropy decode is serial, so a single
+image cannot be split.
+
+Three decode libraries are pinned on the hot path, all pure Go. JPEG:
+`gen2brain/jpegn` (SIMD, native YCbCr output, stdlib fallback on
+ErrUnsupported), 1.85x to 2.45x over stdlib (about 56 down to 23 to 30 ms
+at 7 MP); cgo libjpeg-turbo at 4.8x was rejected because `CGO_ENABLED=1`
+breaks the clean cross-build. Base64: `emmansun/base64`, because CDP wraps
+every frame in base64 JSON with no binary path, 7.6x over stdlib plus a
+further 4.06x from the pooled zero-copy decode; the Kitty payload encoder
+shares it (about 53x on encode). PNG: `woozymasta/png` (SIMD unfilter,
+byte-identical on 1011 of 1011 real PNGs, about 54% faster), dispatched by
+the 8-byte PNG magic rather than registration, because a second "png"
+registration would make `image.Decode` init-order-dependent.
+
 ### The text walk
 
 One in-page walk (`walk.js`, driven by `walk.go`) runs as a single
@@ -196,7 +271,10 @@ read at, and a layout generation in one round trip, so the three stay
 internally consistent. It runs on its own goroutine (`runTextSync`), so
 snapshot latency never withholds acks or stalls frame emission. The first
 snapshot fires off the `firstContentfulPaint` latch, not off a screencast
-frame.
+frame; without the latch, text waited on `networkAlmostIdle` plus the
+250 ms debounce and published 2.7 s after the first frame (2931 ms against
+272 ms). The walk measures per word, not per code unit, which cut
+`dom_snapshot_ms` 40 to 85% on dense pages (BBC 228 to 31 ms).
 
 Four triggers re-snapshot after that: navigation (single-shot), a resize or
 backend switch (immediate), a scroll-offset change, and a debounced
@@ -243,6 +321,9 @@ Scroll is one transport. `scrollKeyDelta` (`input.go`) maps arrows to 40 CSS
 px steps and Page keys to one viewport height; wheel events arrive with their
 own deltas. Both reach `dispatchWheel`, which advances the engine's owned
 scroll offset and dispatches one `Input.dispatchMouseEvent` `mouseWheel`.
+Scroll key events accumulate and forward in order rather than coalescing
+latest-wins: latest-wins is right for frames but wrong for cumulative
+deltas, where a burst would collapse to one step.
 `synthesizeScrollGesture` is deliberately unused: it synthesises touch and
 inherits focus-dependent defaults. Mouse events arrive as terminal cells and
 convert to CSS pixels at the cell centre, divided by Z so the click lands
@@ -344,7 +425,9 @@ source columns, otherwise the whole cell. Contrast holds by construction.
 
 The overlay is first-writer-wins. The first run's grapheme keeps the cell;
 later runs never overwrite a claimed cell. A wide grapheme's trailing cell
-carries background only, and terminal writers emit nothing for it.
+carries background only, and terminal writers emit nothing for it. The
+claim mask is a uint bitmask per run, not a per-grapheme bool slice, which
+removed all per-fold allocations (1,360 to 2,924 down to zero).
 
 The producer owns cell positions; the compositor does no binning. The in-page
 walk snaps each run's origin with round, not floor: `col = round(px/cellW)`,
@@ -441,6 +524,23 @@ Octants are deferred: terminal support is thin, colour fidelity is lower, and
 the sextant table generalises to them later. Braille was rejected because it is
 monochrome and cannot sit on a coloured page background.
 
+Compose performance follows a measured model. Compose and downscale
+parallelise over whole-row bands from a persistent pool sized GOMAXPROCS-1
+(`internal/rowband`) with disjoint row writes; speed-up is near-linear to
+about 8 bands, then memory-bandwidth-bound (13.9 to 2.22 ms at 240x86).
+notcurses' one threading attempt lost to a shared-state mutex, the
+cautionary prior art. Luma uses
+inline integer weights (77, 150, 29) because the multiply beat a lookup
+table (-17.6% vs -15.3% geomean; three L1 loads cost more than the
+multiply); the swap flipped 16 of 24,000 cells at
+near-tie boundaries and the goldens were re-blessed. Colour conversion is
+not the cost: `color.YCbCrToRGB` is 0.99% of CPU while composition (51.6%)
+and JPEG decode (44.0%) dominate, so a SIMD converter was rejected. A 4:2:0
+scalar fast path is retained (isolated sampler -26.9%, saturated throughput
+448 to 531 MB/s) with a generic fallback for other ratios. Colour picking
+uses mask-membership count tables (quadrant -33%, sextant -30% isolated); a
+packed-RGBA exact sampler (-64%) serves PNG-derived frames only.
+
 ### Colour
 
 Truecolour SGR passthrough is the default. The 256-colour fallback converts
@@ -448,8 +548,11 @@ each cell colour through `block.XTerm256`, a generated 32 KiB lookup table: a
 15-bit RGB key indexes the CIEDE2000-nearest canonical xterm colour in 16..255,
 so configurable system colours 0..15 never appear. One indexed load per colour,
 no search and no start-up work. The internal rendering harness measured the LUT
-against a closed-form formula and a nearest-of-two comparison; the LUT
-won on mean CIEDE2000, worst-cell error, and full-path p90.
+against a closed-form formula and a nearest-of-two comparison: against
+nearest-two the LUT improves mean CIEDE2000 4.81%, worst-cell p95 20.09%,
+and full-path p90 9.86%. PSNR and SSIM favoured nearest-two, but CIEDE2000
+is the stated selection metric. The generated asset is deterministic,
+exactly 32,768 bytes.
 
 `ColourMono` is a third colour mode, not a backend. It keeps the luma-selected
 glyph and suppresses all colour SGR, a 1-bit silhouette on the terminal's
@@ -484,6 +587,20 @@ contiguous run) and SGR (one pair per same-colour run). Queued frames coalesce
 latest-wins, so a burst paints once. Each frame goes out in one buffered write,
 bracketed by DEC 2026 synchronised updates; a terminal without the mode ignores
 the bracket, and the cursor stays hidden for the whole session.
+
+The one-buffered-write rule is sized by measurement: a full-motion frame is
+about 183 KB against the 4 KB default bufio, and mid-frame auto-flushes put
+torn frames on screen; buffered whole, the write holds about 0.4 ms under
+motion. `EmitTrueColour` tracks RGB state directly instead of comparing
+encoded SGR bytes (isolated diff -22 to -25%), and a combined
+foreground-plus-background SGR halves the SGR count (9,240 to 4,800 on a
+120x40 full-motion frame), proven equal through the vt terminal emulator.
+Appends are allocation-free (down from 14,440 allocations per full-motion
+diff) with a precomputed [256]string decimal table (BenchmarkBlockDiff
+-44.9%; hardware out_encode 2.1 to 1.7 ms). REP was tried in a
+benchmark-only spike and rejected: 92 to 98% byte cuts on flat fixtures,
+but a 15.7 to 24.6% p90 regression and 0% saving on photo and motion, so
+the writer stays literal.
 
 ## Capability detection
 
@@ -574,18 +691,47 @@ base64 PNG payload, and Nyala rechunks that payload directly as Kitty
 `f=100,t=d,a=T` data. There is no decode and no re-encode; the bytes Chromium
 encoded are the bytes the terminal receives.
 
+Direct transport has a hard in-band ceiling. Kitty's post-SIMD escape
+parser measures about 270 MB/s (kitty issue #7005); raw RGBA at 2560x1500
+is 20.5 MB of base64 per frame, about 13 fps, and no in-band pixel format
+escapes that arithmetic. Live direct PNG sat on that ceiling, with 78.9 ms
+terminal-side write stalls.
+
 A runtime-detected POSIX shared-memory fast path sits above the direct PNG
 fallback. It captures JPEG q90 instead, decodes it in Nyala, and sends raw
 `f=32` RGBA over POSIX shared memory (`f=32,t=s`). Terminal-side PNG decode
 dominates at full-grid sizes, so moving the decode into Nyala and handing the
 terminal raw pixels is the faster trade where shm works.
 
+A transport benchmark picked raw over shm (same frame, 30 repetitions):
+direct PNG 16.07 ms, shm PNG 16.14 ms (no gain, the terminal's PNG decode
+dominates, not transport), shm raw `f=32` 10.74 ms, in-band raw 54.88 ms.
+The pre-agreed sub-2x gate fired, so raw-over-shm shipped.
+
+The transport resolves once per run (`internal/viewer/transport.go`):
+override, then deny list, then probe, then allow list, then direct. The
+probe is icat-style, a real 1x1 payload in `/dev/shm` inside the DA1-fenced
+handshake. Seeds: allow WezTerm on Linux (supports `t=s` but never acks the
+probe), deny WezTerm on macOS (renders it wrongly). Each shm object carries
+one complete transmission, because chunked shm does not display on Ghostty.
+Pacing keeps one frame in flight, opened by the terminal's OK reply or a
+40 ms deadline (the gate lives in `internal/viewer/stream.go`; the frame
+assembler arms it). Any shm failure demotes the current stint to direct PNG.
+
+JPEG q90 is the shm capture format because PNG plane decode is
+content-scaled (96.9 ms on live pages) while JPEG q90 is content-stable
+(17.2 ms) at 44% of the payload. The aquarium progression reads 12.7 fps
+direct, 24.4 shm PNG, 59.8 shm JPEG, locked to the 60 Hz cap; an uncapped
+run (82.6 in, 72.9 out) proves 60 is Chromium's cap, not the pipeline's.
+
 Frame discipline avoids blanking:
 
 - Frames alternate two image IDs. Nyala transmits and puts the next image,
   then deletes the previous one (`a=d,d=I,i=<id>`, the capital `I` frees the
   stored data). The old image leaves the screen only after the new one is
-  placed, so no blank shows between frames.
+  placed, so no blank shows between frames. The `a=f,r=1,o=z`
+  animation-frame edit was tried and rejected: it rendered partial or black
+  on kitty and WezTerm, so the double-buffered id swap stays.
 - `q=2` suppresses terminal replies in the loop; queries run only at startup.
 
 Placement is classic cursor-anchored (`a=T`) with `C=1` so the cursor does
@@ -597,17 +743,50 @@ does not use them.
 
 ### Sixel
 
-Nyala owns its opaque Sixel encoder, derived from mattn/go-sixel v0.0.12. Its
+Sixel is the compatibility backend, not a motion path: the limiter is the
+terminal's serial, input-blocking decode of each payload (notcurses calls
+its own Sixel unusable at double-digit fps).
+
+Nyala owns its opaque Sixel encoder, derived from mattn/go-sixel v0.0.12. It
+replaced the charmbracelet encoder, which cost about 1 s and 14.9 million
+allocations per 2560x2880 frame, rebuilding its median-cut palette every
+frame; the replacement measured 9.45x faster (960.4 to 101.7 ms) with
+99.993% fewer allocations. 256 colours beat 192 on SSIM on every quality
+image; dithering was slower, larger, and lower quality. The owner accepted
+PSNR 45.4 down to 39.3 dB for the speed, and dropping alpha handling
+(frames are opaque) cut a further 8.4% byte-identically. The encoder's
 shape:
 
-- An adaptive 256-colour palette with dithering off, rebuilt only when a
-  sampled drift test says the retained palette no longer fits the frame.
+- An adaptive 256-colour palette with dithering off. The palette and its
+  RGB555 lookup table persist across frames
+  (`internal/render/sixel/palette_reuse.go`): a frame reuses them while the
+  mapping mean squared error stays within max(1.15 x baseline, 12.0); on
+  re-quantisation, registers within CIEDE2000 2.3 of an old entry freeze;
+  geometry changes invalidate. Per-frame re-quantisation changed 202.7 of
+  255 registers per frame pair with unchanged-pixel dE up to 15.99; reuse
+  changed none with dE 0.000, and warm reuse measured 45.8% faster. Fixed
+  palettes were rejected for losing 7.6 to 12.2 dB PSNR.
 - A 64K per-frame pixel sample cap feeding the quantiser, so palette cost
-  does not scale with grid size.
+  does not scale with grid size: -30.39% on combined decode plus encode for
+  +1.75% payload, with all 800 swept features staying above 3:1 contrast.
 - RGB555 indexed colour mapping through a lookup table.
-- Bounded parallel band emission for large images, right-edge plane bounds
-  per colour, and an 8192 repeat ceiling per run.
+- One shared min(4, GOMAXPROCS) worker budget (`encoder.go`): adaptive
+  mapping splits at 500,000 pixels, band emission activates at 120 bands,
+  and LUT build, mapping, and emission never overlap, with payloads
+  byte-identical to serial. The accepting sweep cut full-encode p90 28 to
+  50%, to 14.55, 19.01, and 21.65 ms at the three benchmark surfaces.
+- Rightmost-nonblank plane bounds per colour skip about 38% of columns
+  (median -8.85% and -12.19%), because full-width plane scans were about
+  76% of encoder CPU.
+- An 8192 repeat ceiling per run cuts payload 17 to 21% byte-identically,
+  stays under tmux's native 10000 cap, and sits inside the 32767 that DEC
+  STD 070 permits; the known trade is mlterm 3.9.2 and older overrunning
+  above 512.
 - One ordered write per frame; the whole payload lands in one buffer first.
+
+Sixel captures JPEG q90 by a live reversal: PNG-fed Sixel won the synthetic
+byte sweep but lost live, where the 66.7 ms PNG decode capped ingest near
+25 fps, so capture returned to JPEG q90 (13.5 ms decode, 60 fps ingest).
 
 Frame discipline: home the cursor, enter DECSDM with `CSI ?80h`, write the
 DCS, reset with `CSI ?80l`. DECSDM gives fixed-page, non-scrolling placement
@@ -814,6 +993,44 @@ only with a reason recorded in its `fixture.json`, and
 letting them pass silently. Live Chromium integration tests sit behind the
 `live` build tag (`just live`) and stay off CI.
 
+## Performance envelope
+
+`NYALA_FPS_TIMING` is the live instrument. It separates In, stamped at
+receive before any drop, from Out, stamped at draw. Under the pipelined
+writer, `out_write` measures the terminal's ingest rate, not Nyala work. A
+gap between the In and Out counts is the latest-wins coalescer working, not
+loss. Controlled benchmarks report the median of five `-benchmem` samples
+on a pinned host. The internal rendering test drives the production
+`RenderStreamFrame` path into a counting writer, so it measures Nyala's
+byte generation and excludes the terminal.
+
+Twice, a 5-10x stage optimisation moved the frame rate by zero because the
+wall sat elsewhere. So the rule is the end-to-end budget, 16.67 ms per
+frame at 60 fps, measured on hardware before optimising a stage; every
+threshold traces to a measurement. The walls fell in order: the browser
+render (26 fps WebGL until `--enable-gpu`), the JPEG decode (33 fps until
+the parallel pool), then the terminal itself.
+
+The internal ceilings per frame, from the internal rendering test: Kitty
+pass-through about 0.01 ms; Block 0.7 to 1.1 ms p90 with zero allocations;
+Sixel 14.55 to 21.65 ms p90 after the encoder work.
+
+The terminal sets the delivered rate once Nyala's side clears the budget.
+Block at 2560x2880 full motion holds 60 fps on kitty, Alacritty, and foot.
+WezTerm is byte-bound: truecolour SGR pushes `out_write` to about 20 ms
+(about 40 fps), and `--color=256` locks it to 60 at 0.4 ms. Sixel output is
+set by the emulator's decode, with Nyala's side constant (decode 13.0 to
+13.7 ms, encode 28.3 to 30.3 ms): mlterm 22.9 fps, Alacritty 17.5, foot
+8.1, Contour 4.0, WezTerm 1.8; Sixel has no out-of-band escape. WezTerm is
+the one exception to the constant Nyala side: its parsing contends for CPU,
+inflating Nyala's decode to 29.2 ms and dropping ingest to 38.3 fps. Kitty
+direct is parser-bound near 13 fps; shm with JPEG q90 reaches the 60 fps
+Chromium cap (59.8 measured at 2560x1600, 45.3 at 2560x2880).
+
+The format economics: at 2560x2880 PNG decodes in about 19 ms against JPEG
+q90 at about 9.2 ms, with 2.2x the payload. That ratio is why every
+decode-every-frame consumer streams JPEG q90.
+
 ## Decision log
 
 - CEF rejected: CDP already exceeds expectations (full reasons under
@@ -825,8 +1042,17 @@ letting them pass silently. Live Chromium integration tests sit behind the
 - Burning glyphs into the bitmap rejected permanently: it recreates Browsh's
   fuzzy text.
 - Damage tracking, dirty tiles, and partial graphics emission are out of
-  scope by owner decision; reopening needs owner sign-off and
-  terminal-presented measurements.
+  scope by owner decision; reopening needs owner sign-off,
+  terminal-presented measurements, and a sustained full-frame path over
+  16.67 ms.
+- Sub-cell-resolution Block capture rejected by owner: a trivially cheap
+  input would mask optimisation headroom and hide terminal ceilings, so
+  full-resolution capture stays as the discriminating benchmark.
+- Grid memoising rejected: pointer identity is not a content proxy and the
+  hit rate is near zero.
+- Upstream policy: send only accepted wins upstream; if integration needs a
+  fork, publish a versioned fork with a module replacement; never vendor or
+  patch in Nix only.
 - Block screencast quality is fixed at JPEG q90; no runtime quality knob.
 - Tabs are out of scope for v1; the engine seam admits child targets later.
 - No home-page or theming configuration; the binary stays stateless.
@@ -850,3 +1076,9 @@ letting them pass silently. Live Chromium integration tests sit behind the
   the Block backend's densest scheme draws with.
 - zellij issue #5125: the Sixel image-id collision that blanks every third
   frame; why Sixel is never offered under zellij.
+- kitty issue #7005: the ~270 MB/s escape-parser measurement that caps
+  in-band graphics and motivates the shm fast path.
+- Chromium `devtools_video_consumer.cc`: the 10 ms minimum capture period
+  behind the 100 fps screencast rate cap.
+- DEC STD 070: the Sixel repeat-count grammar (32767 permitted) behind the
+  owned encoder's 8192 ceiling.

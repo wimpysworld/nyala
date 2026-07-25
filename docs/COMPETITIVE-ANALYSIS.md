@@ -28,8 +28,8 @@ Nyala's current measurements are project-owned results, not a cross-project
 benchmark. On the stated aquarium run, Block output reached the browser's 60 FPS
 arrival rate after parallel JPEG decode. At 2560x2880, kitty, Alacritty, and foot
 held 60 FPS while WezTerm and Ghostty saturated sooner
-([Nyala live measurements](./PERFORMANCE.md#hardware-outcome-2026-07-06-the-decode-was-the-wall),
-[terminal result](./PERFORMANCE.md#terminal-ceiling-found-2026-07-07)). The terminal,
+([Nyala live measurements](./ARCHITECTURE.md#screencast-loop),
+[terminal result](./ARCHITECTURE.md#performance-envelope)). The terminal,
 colour mode, workload, and frame entropy therefore remain part of every result.
 
 The latest controlled p90 measurements on a Ryzen AI MAX+ 395 used Go 1.26.5,
@@ -39,13 +39,13 @@ PNG decode plus encode took 27.7895 ms. These imply internal compute ceilings of
 68.7 and 36.0 FPS. They exclude terminal write, decode, and draw. Kitty's 0.0080 ms
 State result measures framing after direct CDP PNG pass-through, not browser capture
 or terminal PNG decode and draw
-([Nyala controlled sweep](./PERFORMANCE.md#capture-removal-and-combined-sixel-sweep-2026-07-18)).
+([Nyala controlled sweep](./ARCHITECTURE.md#performance-envelope)).
 
 ## Engine and backend matrix
 
 | Project | Browser and frame source | Terminal backends | Update model | Evidence status |
 |---|---|---|---|---|
-| Nyala | Headless Chromium over CDP. Block receives JPEG. Kitty and Sixel receive PNG. | Block, Kitty, Sixel | Full accepted frames. Block adds a first-writer-wins text overlay. Kitty passes the CDP PNG through. | Current project code and controlled measurements ([architecture](./ARCHITECTURE.md), [measurements](./PERFORMANCE.md#capture-removal-and-combined-sixel-sweep-2026-07-18)). |
+| Nyala | Headless Chromium over CDP. Block receives JPEG. Kitty and Sixel receive PNG. | Block, Kitty, Sixel | Full accepted frames. Block adds a first-writer-wins text overlay. Kitty passes the CDP PNG through. | Current project code and controlled measurements ([architecture](./ARCHITECTURE.md), [measurements](./ARCHITECTURE.md#performance-envelope)). |
 | Carbonyl, original | Patched Chromium sends shared-memory BGRA pixels and Chromium damage rectangles to the renderer. | Unicode quadrant cells and a release-era bitmap mode | Damage rectangles constrain pixel-to-cell work. A cell double buffer emits changed cells, with cursor and SGR state reuse. | Archived upstream at Chromium 111.0.5511.1. The implementation is visible in its [renderer](https://github.com/fathyb/carbonyl/blob/ab80a27/src/output/renderer.rs), [painter](https://github.com/fathyb/carbonyl/blob/ab80a27/src/output/painter.rs), and [render thread](https://github.com/fathyb/carbonyl/blob/ab80a27/src/output/render_thread.rs). |
 | Carbonyl, jmagly fork | Maintained patched Chromium fork. Its bridge supplies BGRA frames to terminal image encoders. | Unicode quadrant cells, Sixel, Kitty, iTerm2 | The cell path retains damage-aware incremental output. The added image paths encode full live frames. | Image backends were added after the latest tagged alpha in commit [`026485b`](https://github.com/jmagly/carbonyl/commit/026485b); inspect the pinned [terminal image](https://github.com/jmagly/carbonyl/blob/74e028ee3800b33eb93bd80d996bef7c9852e375/src/output/terminal_image.rs), [Sixel](https://github.com/jmagly/carbonyl/blob/74e028ee3800b33eb93bd80d996bef7c9852e375/src/output/sixel.rs), and [bridge](https://github.com/jmagly/carbonyl/blob/74e028ee3800b33eb93bd80d996bef7c9852e375/src/browser/bridge.rs) sources. |
 | Carboxyl, Servo branch | Servo 0.4 software rendering. Each paint reads the full viewport as RGBA. | Unicode quadrant cells through Ratatui. Sixel and Kitty remain TODO items. | A full terminal grid is rebuilt from each paint. Servo, input, and UI use separate threads. | Early Servo release candidate. See the [release](https://github.com/carboxyl-rs/carboxyl/releases/tag/v0.1.0-servo-rc.1), [Servo thread](https://github.com/carboxyl-rs/carboxyl/blob/4cf88581b3e50f109ec504069fdb92e6516f4f31/src/browser/servo/servo_thread.rs), [widget](https://github.com/carboxyl-rs/carboxyl/blob/4cf88581b3e50f109ec504069fdb92e6516f4f31/src/output/browser_widget.rs), and [session](https://github.com/carboxyl-rs/carboxyl/blob/4cf88581b3e50f109ec504069fdb92e6516f4f31/src/browser/servo/session.rs). An alternative display-list text path is an [unmerged pull request](https://github.com/carboxyl-rs/carboxyl/pull/21). |
@@ -75,9 +75,9 @@ It published no timings, so it remains subjective evidence
 
 | Project and path | Work avoided | Work retained | Expected workload bias |
 |---|---|---|---|
-| Nyala Block | Parallel decode prevents one JPEG decoder from setting the arrival ceiling. Fused YCbCr averaging avoids a full RGBA conversion and allocation before cell composition. | Accepted frames still cover the viewport. Terminal cell output can become byte-bound. | Strong when decode and composition fit the frame budget. Terminal throughput matters under high-entropy motion ([Nyala Block results](./PERFORMANCE.md#large-surface-decode-cut-no-downscaling-2026-07-06)). |
-| Nyala Kitty | Direct CDP PNG pass-through removes base64 decode, PNG decode, pixel packing, zlib, and base64 re-encode inside Nyala. | Full PNG frames still cross the terminal protocol and must be decoded and drawn by the terminal. | Strong full-frame path. The terminal PNG implementation can set the end-to-end ceiling ([closed Kitty work](./PERFORMANCE.md#top-recommendations-ranked-by-impact-vs-effort)). |
-| Nyala Sixel | Bounded parallel mapping and band emission, a capped colour sample, long RLE counts, and plane bounds reduce CPU and bytes without changing the accepted output of the measured optimisation pair. | Full accepted frames are decoded, quantised, encoded, written, decoded, and drawn. | Strong full-frame Sixel path. Sparse changes still pay full-frame costs ([controlled sweep](./PERFORMANCE.md#capture-removal-and-combined-sixel-sweep-2026-07-18)). |
+| Nyala Block | Parallel decode prevents one JPEG decoder from setting the arrival ceiling. Fused YCbCr averaging avoids a full RGBA conversion and allocation before cell composition. | Accepted frames still cover the viewport. Terminal cell output can become byte-bound. | Strong when decode and composition fit the frame budget. Terminal throughput matters under high-entropy motion ([Nyala Block results](./ARCHITECTURE.md#screencast-loop)). |
+| Nyala Kitty | Direct CDP PNG pass-through removes base64 decode, PNG decode, pixel packing, zlib, and base64 re-encode inside Nyala. | Full PNG frames still cross the terminal protocol and must be decoded and drawn by the terminal. | Strong full-frame path. The terminal PNG implementation can set the end-to-end ceiling ([closed Kitty work](./ARCHITECTURE.md#performance-envelope)). |
+| Nyala Sixel | Bounded parallel mapping and band emission, a capped colour sample, long RLE counts, and plane bounds reduce CPU and bytes without changing the accepted output of the measured optimisation pair. | Full accepted frames are decoded, quantised, encoded, written, decoded, and drawn. | Strong full-frame Sixel path. Sparse changes still pay full-frame costs ([controlled sweep](./ARCHITECTURE.md#sixel)). |
 | Carbonyl cell path | Chromium damage rectangles bound conversion work. Cell double buffering avoids rewriting unchanged cells. Cursor and SGR reuse cut control bytes. | Changed character cells still require colour mapping and terminal output. | Strong for sparse page damage and character-cell output ([renderer](https://github.com/fathyb/carbonyl/blob/ab80a27/src/output/renderer.rs), [painter](https://github.com/fathyb/carbonyl/blob/ab80a27/src/output/painter.rs)). |
 | jmagly image paths | Sixel skips inactive planes and uses RLE. Its palette is exact at 256 colours or fewer, then uses RGB332. | Live Kitty, iTerm2, and Sixel image paths encode full frames. The pinned implementation is scalar and does not show parallel encoding. | Useful full-frame image support, with no current achieved-rate comparison ([Sixel source](https://github.com/jmagly/carbonyl/blob/74e028ee3800b33eb93bd80d996bef7c9852e375/src/output/sixel.rs), [terminal image source](https://github.com/jmagly/carbonyl/blob/74e028ee3800b33eb93bd80d996bef7c9852e375/src/output/terminal_image.rs)). |
 | Brow6el Sixel | CEF dirty rectangles restrict candidate tiles. A prior-frame comparison can reject unchanged tile data. | Each changed tile creates a libsixel palette and is encoded serially to stdout. | Strong for sparse, local changes. Large or full-screen motion can erase the dirty-tile advantage ([Sixel renderer](https://codeberg.org/janantos/brow6el/src/commit/771c650e49136de9dd2c4a686d521191bc2e7edd/src/sixel_renderer.cpp)). |
@@ -118,7 +118,7 @@ allocation, protocol transport, terminal composition, decode, and draw costs. It
 would also have hidden the stacked micro-optimisations that accumulated over the
 last two weeks: direct Kitty pass-through, fused Block processing, parallel decode,
 bounded Sixel mapping and band output, colour sampling, plane bounds, and longer RLE
-runs ([Nyala performance record](./PERFORMANCE.md)).
+runs ([Nyala renderer evolution](./EVOLUTION.md)).
 
 Downscaling is the last option. It requires specific, explicit owner approval and
 must remain outside the active roadmap until that approval exists. It must never enter a
@@ -230,7 +230,7 @@ Risks:
 
 ## Primary source set
 
-- Nyala: [performance record](./PERFORMANCE.md) and
+- Nyala: [performance envelope](./ARCHITECTURE.md#performance-envelope) and
   [architecture](./ARCHITECTURE.md).
 - Carbonyl original: [v0.0.3 release](https://github.com/fathyb/carbonyl/releases/tag/v0.0.3),
   [architecture article](https://fathy.fr/carbonyl),
