@@ -7,13 +7,6 @@
 <p align="center"><b>The fastest, bestest, most versatile web browser you never knew you needed 🦌</b><br /><i>...for your terminal.</i></p>
 <p align="center">Made with 💝 for 🐧🍏</p>
 
-<p align="center">
-  <a href="https://github.com/wimpysworld/nyala/releases"><img src="https://img.shields.io/github/v/release/wimpysworld/nyala?sort=semver" alt="Latest release"></a>
-  <a href="https://github.com/wimpysworld/nyala/actions/workflows/builder.yml"><img src="https://github.com/wimpysworld/nyala/actions/workflows/builder.yml/badge.svg" alt="Builder"></a>
-  <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/wimpysworld/nyala" alt="Go version"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-Blue%20Oak%201.0.0-blue" alt="Blue Oak Model License 1.0.0"></a>
-</p>
-
 Nyala renders real web pages, HTML5, CSS and JavaScript, in your terminal. It drives headless Chromium over the Chrome DevTools Protocol and composites a crisp Unicode text layer over a block bitmap, so text stays sharp instead of fuzzy. It runs wherever a TTY runs, down to a bare Linux console under [KMSCON](https://github.com/kmscon/kmscon), with no display server.
 
 > [!IMPORTANT]
@@ -22,6 +15,14 @@ Nyala renders real web pages, HTML5, CSS and JavaScript, in your terminal. It dr
 <p align="center">
   <img src="assets/nyala.gif" alt="Nyala browsing bbc.co.uk in a terminal, cycling colour modes">
 </p>
+
+## Why Nyala?
+
+Agentic development is moving to a terminal-first workflow. I started using [herdr](https://herdr.dev/) to organise my projects into "spaces", each with tabs for a coding agent, [lazygit](https://github.com/jesseduffield/lazygit) and [hunk](https://www.hunk.dev/), [gh dash](https://gh-dash.dev), the [fresh editor](https://getfresh.dev/), and [frogmouth](https://github.com/Textualize/frogmouth). Each space puts all my project tooling and reference at my fingertips, with one exception: a browser for project research and reference. So I made Nyala to fill that gap, taking inspiration from [browsh](https://www.brow.sh) and [carbonyl](https://github.com/fathyb/carbonyl). herdr is my preferred multiplexer for its agent integration, but [tmux](https://github.com/tmux/tmux) and [zellij](https://zellij.dev) are wildly popular, and agent-aware plugins will surely follow for both, so Nyala supports them too.
+
+A nyala is a browsing antelope. Yes, that kind of browsing. It makes a fine mascot.
+
+How the project got here, decision by decision, is written up in [`docs/EVOLUTION.md`](docs/EVOLUTION.md).
 
 ## Install
 
@@ -120,14 +121,26 @@ Nyala detects the terminal and picks the highest-fidelity backend it supports: K
 
 The same page on each backend, in ascending fidelity.
 
-**Block**
+<details>
+<summary><b>Block</b>, Unicode glyphs on any TTY</summary>
+
 ![Nyala rendering with the Block backend](assets/01-nyala-block.png)
 
-**Sixel**
+</details>
+
+<details>
+<summary><b>Sixel</b>, a bitmap where the terminal speaks it</summary>
+
 ![Nyala rendering with the Sixel backend](assets/02-nyala-sixel.png)
 
-**Kitty**
+</details>
+
+<details>
+<summary><b>Kitty</b>, full pixels over shared memory</summary>
+
 ![Nyala rendering with the Kitty backend](assets/03-nyala-kitty.png)
+
+</details>
 
 ### Performance: the fastest and highest fidelity terminal browser
 
@@ -178,14 +191,6 @@ Host mode means the Block glyph mode follows the outer terminal. Nyala never off
 
 > [!WARNING]
 > zellij and herdr consume graphics sequences, so you get Block only. Run Nyala outside the multiplexer for Kitty or Sixel output.
-
-## Why Nyala?
-
-Agentic development is moving to a terminal-first workflow. I started using [herdr](https://herdr.dev/) to organise my projects into "spaces", each with tabs for a coding agent, [lazygit](https://github.com/jesseduffield/lazygit) and [hunk](https://www.hunk.dev/), [gh dash](https://gh-dash.dev), the [fresh editor](https://getfresh.dev/), and [frogmouth](https://github.com/Textualize/frogmouth). Each space puts all my project tooling and reference at my fingertips, with one exception: a browser for project research and reference. So I made Nyala to fill that gap, taking inspiration from [browsh](https://www.brow.sh) and [carbonyl](https://github.com/fathyb/carbonyl). herdr is my preferred multiplexer for its agent integration, but [tmux](https://github.com/tmux/tmux) and [zellij](https://zellij.dev) are wildly popular, and agent-aware plugins will surely follow for both, so Nyala supports them too.
-
-A nyala is a browsing antelope. Yes, that kind of browsing. It makes a fine mascot.
-
-How the project got here, decision by decision, is written up in [`docs/EVOLUTION.md`](docs/EVOLUTION.md).
 
 ## Development
 
