@@ -344,11 +344,31 @@ DevTools-injected Ctrl+wheel does not drive browser-level zoom, so the CSS
 layout the renderer is sized to cannot shift underneath it; a live test watches
 that assumption.
 
+Keys and typed text are one transport too, and the engine owns the choice of
+CDP event. `strokeKeys` (`input.go`) maps the named keys the viewer forwards,
+Tab, Enter, Backspace, and Escape, to a full `rawKeyDown`, optional char,
+`keyUp` stroke, so the page gets the browser-native default action: Tab
+traverses focus with the focus ring, Enter activates the focused element. A
+typed printable ASCII character takes the opposite route. `printableStroke`
+dispatches a `keyDown` carrying the character as its text plus a `keyUp`, so
+Chromium generates the keypress from the text and applies its own default
+action. That is what keeps Space arbitration in the browser with no focus
+tracking in the viewer, a space typing into a focused field and scrolling the
+page otherwise, and it means a page listening on `keydown` sees the key the
+user pressed. Multi-byte and longer text, a composed character or a whole
+paste, inserts atomically through `Input.insertText` instead, so text never
+depends on per-byte key synthesis and a one-character paste runs no key default
+action. Every dispatch is bounded by `inputDispatchTimeout`, so a wedged
+browser drops the keystroke rather than parking the caller. Which keys reach
+the page at all is the viewer's decision, under Key bindings and text input
+below.
+
 ### Clipboard
 
 Selection and copying are separate acts. Chromium owns the selection, which the
 user makes by drag, double-click, or triple-click through the ordinary mouse
-dispatch, and it paints its own selection; Nyala renders no highlight of its own.
+dispatch, held together by the pointer-capture rule under Rendering and input
+below, and it paints its own selection; Nyala renders no highlight of its own.
 Copying is explicit, on Alt+W or the menu's Copy item, and nothing reaches the
 clipboard until then. Alt+W is the Emacs kill-ring-save chord and was unbound.
 The alternatives were all taken or ambiguous: Ctrl+C quits, Ctrl+Shift+C is
@@ -394,10 +414,11 @@ over CDP. So one `Runtime.evaluate` through the bounded dispatch runs a page
 script where the legacy `window.find()` enumerates matches and the CSS Custom
 Highlight API paints them. `window.find`'s own selection highlight does reach
 the screencast, but only the current match and only in the inactive grey
-selection colour, because a headless document never holds window focus; the
-custom-highlight registrations paint every match in a chosen colour. Keeping
-`window.find` as the matcher keeps matching, wrapping, and cross-element and
-hidden-text semantics in Chromium rather than a hand-rolled `TreeWalker`.
+selection colour, because a headless document never holds window focus; the two
+custom-highlight registrations paint every match amber and the current one
+orange, the desktop-browser convention. Keeping `window.find` as the matcher
+keeps matching, wrapping, and cross-element and hidden-text semantics in
+Chromium rather than a hand-rolled `TreeWalker`.
 
 The costs of that choice, all deliberate:
 
@@ -417,9 +438,10 @@ The costs of that choice, all deliberate:
   the text.
 
 The engine owns the search state, as it owns the scroll offset and the committed
-URL. The five operations run on the viewer's serialised worker and each dispatch
-is bounded, so `FindState` takes only the mutex and a repaint never waits on
-Chromium. In flight the viewer reads `Pending` with the previous counts still
+URL. The four dispatching operations, search, next, previous, and clear, run on
+the viewer's serialised worker and each dispatch is bounded; `FindState` is a
+separate read that takes only the mutex, so a repaint never waits on Chromium.
+In flight the viewer reads `Pending` with the previous counts still
 valid; on a stall it reads `Failed` after the dispatch deadline, keeping the last
 counts, because the highlights that search painted are still on the page. A
 main-frame commit drops the state, so a navigated page never shows a count for
@@ -432,6 +454,9 @@ last match was, the way closing a desktop find bar behaves, and the engine has
 already adopted the page's settled offset, so the wheel transport, Home, and
 crash recovery stay aligned. A revealing scroll is snapped to the cell pitch on
 Block, so the crisp overlay stays on the grid.
+
+The bar row that drives all of this, and what it draws while a dispatch is in
+flight, is under Rendering and input below.
 
 ### Crash recovery and concurrency
 
@@ -712,13 +737,15 @@ the writer stays literal.
 
 One write batches the whole probe (`queryBytes`): the Kitty graphics query
 (`a=q`), an optional Kitty shared-memory transport query, the three cell-size
-queries, the XTVERSION identity query, then DA1:
+queries, the XTVERSION identity query, the Kitty keyboard-protocol flags query,
+then DA1:
 
 ```
 CSI 16t   cell size in pixels
 CSI 14t   text area in pixels
 CSI 18t   text area in cells
 CSI > 0 q XTVERSION
+CSI ? u   Kitty keyboard-protocol flags
 CSI c     DA1
 ```
 
@@ -731,6 +758,15 @@ Kitty support is the APC reply carrying `;OK` for the probe's image id. Sixel
 support is a DA1 attribute element exactly equal to "4", split-matched so "64"
 and "14" never false-match. Footgun: the `CSI t` replies order height then
 width, the opposite of GetSize.
+
+Kitty keyboard support is the presence of a `CSI ? <flags> u` reply, since only
+an implementing terminal answers. The flag value itself is ignored, because
+Nyala pushes its own. The query rides inside the fence, so a silent terminal
+costs nothing and a late reply is rejected by the CSI u decode rather than
+leaking through as keys. The DA1 reply shares the `CSI ?` prefix, so the parse
+requires the `u` final over a digit run alone and keeps scanning past a
+non-match. What Nyala does with the capability is under Key bindings and text
+input below.
 
 Backend nomination is ceiling-first: the enabled cycle orders Kitty, Sixel,
 Block, so the default backend is the best one the terminal confirmed. Block is
@@ -758,7 +794,9 @@ does not (`detectMultiplexer`): tmux is `TMUX` set; zellij is `ZELLIJ` present
 with any value, including "0", so the check tests presence; herdr is
 `HERDR_ENV=1` plus `HERDR_PANE_ID`; screen is `STY` set. Under tmux and zellij
 a reduced handshake runs with no Kitty APC probe, because both consume APC
-without passthrough and the probe would vanish unanswered. Screen and herdr get
+without passthrough and the probe would vanish unanswered. It also omits the
+keyboard-protocol query, for the reason under Key bindings and text input, so
+every multiplexer session keeps the legacy key parser. Screen and herdr get
 no handshake and stay Block. Kitty is never offered under a multiplexer; tmux
 3.6 and later may offer Sixel, gated in Multiplexer graphics below.
 
@@ -1067,30 +1105,31 @@ viewport. Enter commits; schemeless input with a dot gains `https://`, and
 only http, https, and file schemes pass, so a committed `javascript:` URL can
 never execute in the page origin. Esc cancels; a lone Esc is told apart from
 an escape sequence by the buffered-byte check on the reader. A focus flag
-routes every key to the editor and none to CDP while editing, and a paste in
-edit mode lands in the editor line rather than the page. A bar-row press places
-the caret at the clicked cell, walking the visible runes by `go-runewidth`
-width from the viewport offset, so a wide or ambiguous-width glyph counts the
-cells it really occupies. The cursor is a rune index throughout, so no mapping
-can split UTF-8. Every cell of a wide grapheme places the caret before it,
-since the trailing cell carries background only and is not a position of its
-own. A click on the prompt clamps to the leftmost visible rune and a click past
-the last visible rune clamps after it. `renderBarEdit` reports the prompt width
-it drew and the session keeps it, so a click maps against the row as drawn: a
-row too narrow for the prompt gives every cell to the text, which a recomputed
-layout could get wrong by two cells. Menu mode opens via ☰ or Alt+F (F10 is
-avoided; terminals grab it) and offers Show FPS or Hide FPS, About, and Quit
-from a command registry. The fps item names the action rather than the state, so
-the label says what activating it does; both labels are four letters wide, so
-the menu row and its click spans hold their columns across a toggle. There is no
-key binding for it, and no config file, so the choice lives for the session.
+routes every key, and any paste, to the editor and none to CDP while editing. A
+bar-row press places the caret at the clicked cell, walking the visible runes by
+`go-runewidth` width from the viewport offset, so a wide or ambiguous-width
+glyph counts the cells it really occupies. The cursor is a rune index
+throughout, so no mapping can split UTF-8. Every cell of a wide grapheme places
+the caret before it, since the trailing cell carries background only and is not
+a position of its own. A click on the prompt clamps to the leftmost visible rune
+and a click past the last visible rune clamps after it. `renderBarEdit` reports
+the prompt width it drew and the session keeps it, so a click maps against the
+row as drawn: a row too narrow for the prompt gives every cell to the text,
+which a recomputed layout could get wrong by two cells. Menu mode opens via ☰
+or Alt+F (F10 is avoided; terminals grab it) and offers Show FPS or Hide FPS,
+About, and Quit from a command registry. The fps item names the action rather
+than the state, so the label says what activating it does; both labels are four
+letters wide, so the menu row and its click spans hold their columns across a
+toggle. There is no key binding for it, and no config file, so the choice lives
+for the session.
 
 Find mode opens on Ctrl+F, which was unbound and is not printable, so no page
-text route loses a character to it. The row is `⌕ <query> │ <count> │ ✕`, with
-the query field absorbing the width the count and the right-anchored close
-button leave, and it shares one field measurement and one text-editing path with
-the URL editor. A row too narrow to hold the count beside a usable field degrades
-to the prompt and the field alone.
+text route loses a character to it. It is the front end for the search seam
+under Find above. The row is `⌕ <query> │ <count> │ ✕`, with the query field
+absorbing the width the count and the right-anchored close button leave, and it
+shares one field measurement and one text-editing path with the URL editor. A
+row too narrow to hold the count beside a usable field degrades to the prompt
+and the field alone.
 
 Search runs on submission, not per keystroke. Each dispatch re-collects and
 repaints every match in the page, and the worker queue is cumulative rather than
@@ -1098,9 +1137,9 @@ latest-wins, so search-as-you-type would run one whole search per character and
 only the last would matter. Enter searches a changed query and steps to the next
 match otherwise, so Enter after typing finds and Enter again walks the matches.
 Shift+Enter steps back, read from the CDP modifier bits a Kitty key report
-carried. A legacy terminal has no signal for that chord, so Down and Up step next
-and previous on every terminal: vertical keys walk matches, horizontal keys stay
-on the caret. Those two are the only find binding a user cannot discover from the
+carried, which no legacy terminal can send, so Down and Up step next and
+previous on every terminal: vertical keys walk matches, horizontal keys stay on
+the caret. Those two are the only find binding a user cannot discover from the
 row, which holds no hint text.
 
 `renderFindCount` is a pure function of the state snapshot, so any number of
@@ -1119,24 +1158,28 @@ steps nothing until the query changes. Escape and retype recovers. The viewer
 does not detect it by comparing the state's query, because the dispatch is
 asynchronous, so a second quick Enter would re-search instead of stepping.
 
+Home is the launch URL, permanently; there is no home-page configuration
+because a shell alias does that job and the binary stays stateless. The bar
+pulls `CurrentURL` from the engine's committed navigation state on each
+repaint and strips control characters at the display boundary.
+
+### Key bindings and text input
+
 Chrome-mode key bindings live in `internal/viewer/keys.go`. Rendering: Alt+R
 and Alt+Shift+R cycle the backend, Alt+B and Alt+Shift+B cycle the Block
 scheme, Alt+C and Alt+Shift+C cycle colour. Navigation: Alt+Left and
 Alt+Right step history, Alt+Home opens the launch URL, Ctrl+R and F5 reload.
-Chrome: Ctrl+L edits the URL, Alt+F opens the menu, Ctrl+Q or Ctrl+C quits.
-Tab, Shift+Tab, and Enter forward to the page for focus traversal and
-activation.
+Chrome: Ctrl+L edits the URL, Ctrl+F opens find, Alt+F opens the menu, Alt+W
+copies the page selection, Ctrl+Q or Ctrl+C quits. Page keys: Tab, Shift+Tab,
+and Enter forward for focus traversal and activation, and every unbound
+printable key, Backspace, and Escape forward as page text input.
 
 The Kitty keyboard protocol is an enabler for find-in-page, which needs
 Shift+Enter for its previous-match step; legacy terminal encoding has no signal
-for that chord. The startup handshake asks `CSI ? u` just before its DA1 fence,
-so only an implementing terminal answers and the reply's presence is the
-capability. The reply's own flag value is ignored, since Nyala replaces it. The
-probe inherits the fence and its 200 ms deadline, so a silent terminal costs
-nothing, and a late reply is rejected by the CSI u decode rather than leaking as
-keys. The reduced multiplexer handshake omits the query, so tmux, zellij,
-screen, and herdr sessions keep the legacy parser: a multiplexer would have to
-translate the reports back for its own key handling.
+for that chord. The capability comes from the startup handshake, under The
+handshake above. The reduced multiplexer handshake omits the query, so tmux,
+zellij, screen, and herdr sessions keep the legacy parser: a multiplexer would
+have to translate the reports back for its own key handling.
 
 Nyala pushes flag 1, disambiguate escape codes, and nothing else. That alone
 delivers what Nyala binds, and it leaves plain typing on the normal UTF-8 path.
@@ -1156,35 +1199,25 @@ a Ctrl+Q report the Ctrl+Q byte. Without that, the three bar-mode handlers,
 which bind Esc as a byte, would have left the URL editor, the menu, and the
 About row uncloseable on a supporting terminal. Shift+Tab stays separate, since
 it is its own binding on the legacy path. Shift+Enter carries its modifier
-through as CDP bits, so it activates exactly like a legacy carriage return today
-and find can branch on the Shift bit later.
+through as CDP bits, which is the signal find mode reads for its previous-match
+step; in chrome mode it activates exactly like a legacy carriage return.
 
 Page text input is the default for unbound keys, which is why plain q does not
 quit. A printable byte or an assembled rune forwards through `SendText`, and
 Backspace and Escape forward as full key strokes; Escape reaches the page only
-when no bar mode claimed it. The engine picks the CDP transport: a single ASCII
-character dispatches a keyDown carrying its text plus a keyUp, so Chromium
-generates the keypress and applies its own default action, which is how Space
-types in a focused field and scrolls the page otherwise with no focus tracking
-in the viewer. Multi-byte and longer text insert atomically through
-`Input.insertText`, so a composed character never depends on per-byte key
-synthesis. Text shares the serialised key worker, so typing and page keys
-reach the engine in arrival order and a wedged browser drops input instead of
-freezing quit or draw.
+when no bar mode claimed it. Text shares the serialised key worker, so typing
+and page keys reach the engine in arrival order and a wedged browser drops
+input instead of freezing quit or draw. Which CDP event each one becomes is the
+engine's choice, under Input above.
 
 Bracketed paste (mode 2004) is a session mode, enabled beside mouse reporting
 after the startup handshake and disabled by `exitTerminal` on every teardown.
-It is not scoped to the URL editor: with the mode off, a paste would arrive as
-loose bytes and type character by character, so a pasted newline would press
-Enter and submit a form. A paste outside a bar mode forwards through
-`SendPaste`, which always uses `Input.insertText`, so the whole payload lands
-atomically and a one-character paste reports no key press and runs no key
-default action. The parser's 1 MiB paste bound is unchanged.
-
-Home is the launch URL, permanently; there is no home-page configuration
-because a shell alias does that job and the binary stays stateless. The bar
-pulls `CurrentURL` from the engine's committed navigation state on each
-repaint and strips control characters at the display boundary.
+It is deliberately not scoped to a bar mode: with the mode off, a paste would
+arrive as loose bytes and type character by character, so a pasted newline
+would press Enter and submit a form. A paste outside a bar mode forwards
+through `SendPaste`, so the whole payload lands atomically; inside the URL
+editor or the find field it lands in that field instead. The parser's 1 MiB
+paste bound is unchanged.
 
 ## Correctness architecture
 
