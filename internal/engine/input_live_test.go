@@ -237,6 +237,71 @@ func TestLiveBackspaceEditsFocusedField(t *testing.T) {
 	}
 }
 
+// TestLivePasteInsertsIntoFocusedField proves an ASCII paste lands in a focused
+// field as one unit. The page's keydown log must stay empty: a paste inserts
+// atomically and is never synthesised as key presses, so a pasted newline
+// cannot submit a form the way a typed Enter would.
+func TestLivePasteInsertsIntoFocusedField(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+	focusField(t, ctx)
+
+	const want = "pasted text"
+	e.SendPaste(want)
+
+	if got, ok := waitForString(t, ctx, "document.getElementById('f').value", want); !ok {
+		t.Fatalf("field value = %q, want %q", got, want)
+	}
+	if pressed := evalString(t, ctx, "window.pressed.join(',')"); pressed != "" {
+		t.Fatalf("paste raised keydown events %q, want none", pressed)
+	}
+}
+
+// TestLiveMultiBytePasteInsertsIntact proves a multi-byte paste reaches a
+// focused field unbroken: two-byte, three-byte, and four-byte UTF-8 characters
+// survive the insert as one unit.
+func TestLiveMultiBytePasteInsertsIntact(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+	focusField(t, ctx)
+
+	const want = "héllo 日本 🙂 ok"
+	e.SendPaste(want)
+
+	if got, ok := waitForString(t, ctx, "document.getElementById('f').value", want); !ok {
+		t.Fatalf("field value = %q, want %q", got, want)
+	}
+}
+
+// TestLiveSingleCharacterPasteIsNotAKeyPress proves the paste seam stays off the
+// typed-character stroke even for a one-character payload. A pasted character
+// inserts with no keydown, and a pasted space with nothing focused must not
+// scroll: a typed space would, so a scroll here would prove the paste took the
+// key path.
+func TestLiveSingleCharacterPasteIsNotAKeyPress(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+	focusField(t, ctx)
+
+	e.SendPaste("x")
+
+	if got, ok := waitForString(t, ctx, "document.getElementById('f').value", "x"); !ok {
+		t.Fatalf("field value = %q, want %q", got, "x")
+	}
+	if pressed := evalString(t, ctx, "window.pressed.join(',')"); pressed != "" {
+		t.Fatalf("single-character paste raised keydown events %q, want none", pressed)
+	}
+
+	blurField(t, ctx)
+	e.SendPaste(" ")
+	// Settle: a space key press scrolls within a frame, so a still-zero offset
+	// after the field read below is evidence of no default action, not of a
+	// race. The field read is a round trip to the renderer after the paste.
+	if got := evalFloat(t, ctx, "window.scrollY"); got != 0 {
+		t.Fatalf("window.scrollY = %g after a pasted space, want 0 (a paste runs no key default action)", got)
+	}
+	if pressed := evalString(t, ctx, "window.pressed.join(',')"); pressed != "" {
+		t.Fatalf("pasted space raised keydown events %q, want none", pressed)
+	}
+}
+
 // TestLiveEscapeReachesPage proves Escape reaches the page as a key stroke: the
 // document's keydown listener records it. Escape has no visible default action
 // on a plain page, so page-observable key state is the assertion.

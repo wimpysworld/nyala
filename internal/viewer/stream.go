@@ -55,6 +55,11 @@ type Engine interface {
 	// action for it (a space types in a focused field and scrolls the page
 	// otherwise), and multi-byte text inserts atomically.
 	SendText(text string)
+	// SendPaste inserts one pasted unit at the caret in the focused page
+	// element. It is separate from SendText because a paste is not a key
+	// press: the engine always inserts it atomically, so a one-character
+	// paste reports no key press and runs no key default action.
+	SendPaste(text string)
 	// SendNav forwards one navigation request: reload, a history step, or the
 	// launch page. The engine owns the launch URL and the navigation path.
 	SendNav(action NavAction)
@@ -201,11 +206,14 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	syncEngineKittyDecode(eng, st)
 	defer st.closeKittySHM()
 
-	// Mouse reporting enables here, beside the full-screen escapes and after
-	// the setupViewer handshake, so mouse traffic cannot race the startup
-	// probe replies. restoreTerminal's exitTerminal write disables it
-	// unconditionally on every teardown.
-	if _, err := io.WriteString(tty, enterFullScreen+enableMouseReporting); err != nil {
+	// Mouse reporting and bracketed paste enable here, beside the full-screen
+	// escapes and after the setupViewer handshake, so neither races the startup
+	// probe replies. Bracketed paste is on for the whole session, not just the
+	// URL editor: with it off, a paste into the page would arrive as loose
+	// bytes and type character by character, so a pasted newline would submit
+	// a form. restoreTerminal's exitTerminal write disables both
+	// unconditionally on every teardown, including the SIGTERM path.
+	if _, err := io.WriteString(tty, enterFullScreen+enableMouseReporting+enableBracketedPaste); err != nil {
 		return err
 	}
 
@@ -1253,8 +1261,8 @@ func (s *streamSession) handleMouse(ev MouseEvent) (quit bool) {
 // feedback, and the user would later land on Block in an unexpected mode.
 // Printable bytes and assembled runes are page text and forward to the focused
 // element; Backspace and Escape forward as full key strokes, so Escape reaches
-// the page only when no bar mode claimed it. A chrome-mode paste is dropped:
-// the page paste route is not wired.
+// the page only when no bar mode claimed it. A paste forwards as one unit to
+// the focused element, the parser having already bounded and assembled it.
 func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 	switch s.barMode {
 	case barModeEdit:
@@ -1265,6 +1273,7 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		return s.handleAboutKey(ev)
 	}
 	if ev.paste != "" {
+		s.forwardPaste(ev.paste)
 		return false
 	}
 	if ev.r != 0 {
@@ -1347,6 +1356,17 @@ func (s *streamSession) forwardText(text string) {
 		return
 	}
 	s.eng.SendText(text)
+}
+
+// forwardPaste forwards one pasted unit to the engine off the input loop
+// through the same worker as keys and typed text, so a paste lands in typing
+// order and a wedged browser never freezes quit or draw.
+func (s *streamSession) forwardPaste(text string) {
+	if s.keySender != nil {
+		s.keySender.sendPaste(text)
+		return
+	}
+	s.eng.SendPaste(text)
 }
 
 // forwardNav forwards one navigation request to the engine through the same
@@ -1491,6 +1511,16 @@ func (s *keySender) sendText(text string) {
 		return
 	}
 	s.enqueue(func(e Engine) { e.SendText(text) })
+}
+
+// sendPaste queues one pasted unit for the worker on the same queue as keys
+// and typed text, so a paste never overtakes an earlier keystroke. The empty
+// string is ignored.
+func (s *keySender) sendPaste(text string) {
+	if text == "" {
+		return
+	}
+	s.enqueue(func(e Engine) { e.SendPaste(text) })
 }
 
 // sendMouse queues one decoded mouse event for the worker on the same queue

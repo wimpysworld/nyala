@@ -138,8 +138,7 @@ func TestHandleKeyForwardsEditKeys(t *testing.T) {
 }
 
 // TestHandleKeyDropsNonText pins what chrome mode still drops: an unbound Ctrl
-// chord is not text, and a bracketed paste is not routed to the page, so
-// neither reaches the engine.
+// chord is not text, so it reaches no engine seam.
 func TestHandleKeyDropsNonText(t *testing.T) {
 	st := NewState(80, 24)
 	var text []string
@@ -149,7 +148,7 @@ func TestHandleKeyDropsNonText(t *testing.T) {
 		sendKey:  func(code string) { sent = append(sent, code) },
 	}, &st)
 
-	for _, ev := range []keyEvent{{b: keyCtrlA}, {b: keyCtrlW}, {b: 0x00}, {paste: "typed"}} {
+	for _, ev := range []keyEvent{{b: keyCtrlA}, {b: keyCtrlW}, {b: 0x00}} {
 		if quit := s.handleKey(ev); quit {
 			t.Fatalf("%+v requested quit", ev)
 		}
@@ -157,6 +156,80 @@ func TestHandleKeyDropsNonText(t *testing.T) {
 	if len(text) != 0 || len(sent) != 0 {
 		t.Fatalf("dropped input reached the engine: text %q, keys %v", text, sent)
 	}
+}
+
+// TestHandleKeyForwardsPaste pins the page paste route: a chrome-mode paste
+// reaches the engine's paste seam as one unit, whatever its length, and never
+// the typed-text or key seams. A one-character paste stays on the paste seam
+// too, because a paste is not a key press.
+func TestHandleKeyForwardsPaste(t *testing.T) {
+	cases := []struct {
+		name  string
+		paste string
+	}{
+		{"ascii", "hello world"},
+		{"multi-line", "one\ntwo\rthree"},
+		{"multi-byte", "héllo 日本 🙂"},
+		{"single character", "x"},
+		{"single space", " "},
+		{"at the bound", strings.Repeat("a", maxPasteBody)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			st := NewState(80, 24)
+			var pastes, text, sent []string
+			s := dispatchSession(streamTestEngine{
+				sendPaste: func(p string) { pastes = append(pastes, p) },
+				sendText:  func(t string) { text = append(text, t) },
+				sendKey:   func(code string) { sent = append(sent, code) },
+			}, &st)
+
+			if quit := s.handleKey(keyEvent{paste: c.paste}); quit {
+				t.Fatalf("%s paste requested quit", c.name)
+			}
+			if len(pastes) != 1 || pastes[0] != c.paste {
+				t.Fatalf("SendPaste calls = %d, want one carrying the payload whole", len(pastes))
+			}
+			if len(text) != 0 || len(sent) != 0 {
+				t.Fatalf("%s paste leaked to the key seams: text %q, keys %v", c.name, text, sent)
+			}
+		})
+	}
+}
+
+// TestBarModeKeepsPaste pins bar-mode paste ownership: a paste in URL edit mode
+// goes into the editor line and a paste in menu mode is swallowed, so neither
+// reaches the page.
+func TestBarModeKeepsPaste(t *testing.T) {
+	t.Run("edit inserts", func(t *testing.T) {
+		var pastes []string
+		s, _ := modeSession(t, streamTestEngine{
+			sendPaste: func(p string) { pastes = append(pastes, p) },
+		})
+		s.handleKey(keyEvent{b: keyCtrlL})
+		s.handleKey(keyEvent{b: keyCtrlU})
+		s.handleKey(keyEvent{paste: "example.org"})
+		if got := s.editor.String(); got != "example.org" {
+			t.Fatalf("editor text = %q, want the paste inserted", got)
+		}
+		if len(pastes) != 0 {
+			t.Fatalf("edit-mode paste reached the page: %q", pastes)
+		}
+	})
+	t.Run("menu swallows", func(t *testing.T) {
+		var pastes []string
+		s, _ := modeSession(t, streamTestEngine{
+			sendPaste: func(p string) { pastes = append(pastes, p) },
+		})
+		s.handleKey(keyEvent{act: actionOpenMenu})
+		s.handleKey(keyEvent{paste: "example.org"})
+		if s.barMode != barModeMenu {
+			t.Fatalf("paste closed the menu: mode %d", s.barMode)
+		}
+		if len(pastes) != 0 {
+			t.Fatalf("menu-mode paste reached the page: %q", pastes)
+		}
+	})
 }
 
 // TestBarModeOwnsTextAndEscape pins the bar-mode first claim: while the URL
