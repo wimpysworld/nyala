@@ -124,7 +124,7 @@ Three backends sit behind one `Renderer` seam. Swapping backend changes the rend
 | **Sixel** | Sixel graphics | Higher | Bitmap output with a temporally stable adaptive palette. |
 | **Kitty** | Kitty graphics | Highest | Two transports. Shared memory, probed at startup: decoded raw RGBA handed over POSIX shared memory. Direct fallback: Chromium's PNG passed straight to Kitty framing, no decode, no re-encode. |
 
-Nyala detects the terminal and picks the highest-fidelity backend it supports: Kitty, then Sixel, then Block. Block is the floor because it needs no graphics protocol at all. Press Alt+R to cycle the backends your terminal supports. Live frames stream as JPEG q90, except direct Kitty, which passes Chromium's PNG through untouched.
+Nyala detects the terminal and picks the highest-fidelity backend it supports: Kitty, then Sixel, then Block. Block is the floor because it needs no graphics protocol at all. Press Alt+R to cycle the backends your terminal supports, or click the backend indicator in the bottom bar; a right-click cycles backwards. Live frames stream as JPEG q90, except direct Kitty, which passes Chromium's PNG through untouched.
 
 The same page on each backend, in ascending fidelity.
 

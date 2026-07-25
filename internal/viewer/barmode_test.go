@@ -493,6 +493,102 @@ func TestHandleMouseIndicatorCycles(t *testing.T) {
 	}
 }
 
+// indicatorSession builds a synchronous-dispatch session over the enabled
+// backends with the bar drawn once, and returns the session, the state, the
+// indicator's 0-based column, and the forwarded mouse events, so an indicator
+// test can click the segment and assert nothing reached the page.
+func indicatorSession(t *testing.T, enabled []Backend) (*streamSession, *State, int, *[]MouseEvent) {
+	t.Helper()
+	st := NewState(80, 24)
+	st.SetEnabled(enabled)
+	var forwarded []MouseEvent
+	eng := streamTestEngine{sendMouse: func(ev MouseEvent) { forwarded = append(forwarded, ev) }}
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	s := dispatchSession(eng, &st)
+	s.ctl = newControl(eng, done)
+	s.repaintBar()
+
+	seg, ok := s.barLay.segment(barSegmentIndicator)
+	if !ok {
+		t.Fatal("indicator segment missing")
+	}
+	return s, &st, seg.col - 1, &forwarded
+}
+
+// TestHandleMouseIndicatorRightClickCyclesReverse pins the right-click on the
+// backend indicator: it steps the same enabled cycle backwards like
+// Alt+Shift+R, reaching every enabled backend in reverse order and wrapping at
+// the boundary, and it never forwards to the page, so no context-menu event
+// reaches Chromium (a right press on the page row still does).
+func TestHandleMouseIndicatorRightClickCyclesReverse(t *testing.T) {
+	enabled := []Backend{BackendKitty, BackendSixel, BackendBlock}
+	s, st, col, forwarded := indicatorSession(t, enabled)
+	barRow := st.Rows - 1
+
+	// Starting on the first enabled backend, reverse steps wrap to the last and
+	// walk the list backwards, visiting every enabled backend.
+	want := []Backend{BackendBlock, BackendSixel, BackendKitty}
+	for i, w := range want {
+		s.handleMouse(MouseEvent{Action: MouseActionPress, Button: MouseButtonRight, Col: col, Row: barRow})
+		if st.Backend != w {
+			t.Fatalf("reverse step %d = %v, want %v", i, st.Backend, w)
+		}
+		// The matching release must not cycle again.
+		s.handleMouse(MouseEvent{Action: MouseActionRelease, Button: MouseButtonRight, Col: col, Row: barRow})
+		if st.Backend != w {
+			t.Fatalf("the release after reverse step %d cycled again to %v", i, st.Backend)
+		}
+	}
+	if len(*forwarded) != 0 {
+		t.Fatalf("an indicator right-click reached the page: %+v", *forwarded)
+	}
+
+	// The contrast: a right press on the page region does forward, where
+	// Chromium turns it into the page's context-menu event.
+	s.handleMouse(MouseEvent{Action: MouseActionPress, Button: MouseButtonRight, Col: 10, Row: 5})
+	if len(*forwarded) != 1 || (*forwarded)[0].Button != MouseButtonRight {
+		t.Fatalf("page right press = %+v, want one forwarded right press", *forwarded)
+	}
+}
+
+// TestHandleMouseIndicatorSkipsUnavailable pins the reverse cycle against the
+// enabled list: a backend the terminal cannot run is not in the list, so the
+// reverse cycle steps straight past it rather than landing on it.
+func TestHandleMouseIndicatorSkipsUnavailable(t *testing.T) {
+	// Sixel is unavailable here, so the enabled cycle is Kitty and Block only.
+	s, st, col, _ := indicatorSession(t, []Backend{BackendKitty, BackendBlock})
+	barRow := st.Rows - 1
+
+	for i, w := range []Backend{BackendBlock, BackendKitty, BackendBlock} {
+		s.handleMouse(MouseEvent{Action: MouseActionPress, Button: MouseButtonRight, Col: col, Row: barRow})
+		if st.Backend != w {
+			t.Fatalf("reverse step %d = %v, want %v (Sixel is not enabled)", i, st.Backend, w)
+		}
+		if st.Backend == BackendSixel {
+			t.Fatal("the reverse cycle landed on an unavailable backend")
+		}
+	}
+}
+
+// TestHandleMouseIndicatorLeftAndMiddleCycleForward pins that only the right
+// button reverses: a left press steps forwards as before, and a middle press
+// takes the same forward step, because no bar control has a secondary action and
+// a click on a button is an activation whichever button it is.
+func TestHandleMouseIndicatorLeftAndMiddleCycleForward(t *testing.T) {
+	for _, button := range []MouseButton{MouseButtonLeft, MouseButtonMiddle} {
+		s, st, col, _ := indicatorSession(t, []Backend{BackendKitty, BackendSixel, BackendBlock})
+		barRow := st.Rows - 1
+
+		for i, w := range []Backend{BackendSixel, BackendBlock, BackendKitty} {
+			s.handleMouse(MouseEvent{Action: MouseActionPress, Button: button, Col: col, Row: barRow})
+			if st.Backend != w {
+				t.Fatalf("button %d forward step %d = %v, want %v", button, i, st.Backend, w)
+			}
+		}
+	}
+}
+
 // TestHandleMouseMenuSpans pins menu-mode mouse dispatch: a click on Quit
 // activates it, ✕ closes back to chrome, a padding cell on the bar row does
 // nothing, and a page-region click closes the menu without forwarding.
