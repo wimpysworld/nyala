@@ -243,6 +243,7 @@ func TestBarModeOwnsTextAndEscape(t *testing.T) {
 	}{
 		{"edit", keyEvent{b: keyCtrlL}},
 		{"menu", keyEvent{act: actionOpenMenu}},
+		{"find", keyEvent{b: keyCtrlF}},
 	}
 	for _, m := range modes {
 		t.Run(m.name, func(t *testing.T) {

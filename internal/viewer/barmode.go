@@ -10,9 +10,9 @@ import (
 
 // barMode selects what the bottom bar row shows and how it dispatches input.
 // The zero value is chrome, the normal button-and-URL row; edit swaps the row
-// for the URL editor, menu for the command list, and about for the version
-// line. Every mode is exactly one row and repaints through the same bar fold
-// in assemble.
+// for the URL editor, menu for the command list, about for the version line,
+// and find for the page-search field. Every mode is exactly one row and
+// repaints through the same bar fold in assemble.
 type barMode int
 
 const (
@@ -24,6 +24,8 @@ const (
 	barModeMenu
 	// barModeAbout is the in-bar version line (About in the menu).
 	barModeAbout
+	// barModeFind is the in-bar page-search field (Ctrl+F).
+	barModeFind
 )
 
 // barCommand is one entry in the bar's command registry: the menu renders the
@@ -157,23 +159,29 @@ func renderBarAbout(cols int, version, browser string) (string, []barSpan) {
 }
 
 // renderBarEdit lays out the URL editor row: the ❯ prompt, then the editor's
-// viewport-windowed text padded to the row end. It returns the plain row
-// content, exactly cols cells wide, the terminal cursor's 1-based column at the
-// edit position, and the cells the prompt took. A row too narrow for the prompt
-// gives the whole row to the text, reporting a zero prompt width. The caller
-// keeps that width so a click maps against the row as drawn rather than a
-// recomputed layout that could disagree about the narrow-row case.
+// viewport-windowed text padded to the row end.
 func renderBarEdit(cols int, e *urlEditor) (content string, cursorCol, promptW int) {
-	if cols <= 0 {
+	return fieldRow(cols, barGlyphPrompt+" ", e)
+}
+
+// fieldRow lays out one bar text field: the prompt, then the editor's
+// viewport-windowed text padded to the width. It returns the plain row content,
+// exactly width cells wide, the terminal cursor's 1-based column at the edit
+// position, and the cells the prompt took. A width too narrow for the prompt
+// gives every cell to the text, reporting a zero prompt width. The caller keeps
+// that width so a click maps against the row as drawn rather than a recomputed
+// layout that could disagree about the narrow case. The URL editor and the find
+// field share it, so both rows measure and place their caret the same way.
+func fieldRow(width int, prompt string, e *urlEditor) (content string, cursorCol, promptW int) {
+	if width <= 0 {
 		return "", 1, 0
 	}
-	prompt := barGlyphPrompt + " "
 	pw := runewidth.StringWidth(prompt)
-	if cols-pw < 1 {
+	if width-pw < 1 {
 		prompt, pw = "", 0
 	}
-	visible, cursorCell := e.view(cols - pw)
-	return prompt + runewidth.FillRight(visible, cols-pw), pw + cursorCell + 1, pw
+	visible, cursorCell := e.view(width - pw)
+	return prompt + runewidth.FillRight(visible, width-pw), pw + cursorCell + 1, pw
 }
 
 // Terminal controls for paste and the cursor. Bracketed paste (mode 2004) is
@@ -308,16 +316,20 @@ func (s *streamSession) leaveMode() {
 
 // exitBarModeIfHidden restores chrome mode when a resize left the terminal
 // with no bar row: a mode that cannot draw must not keep swallowing keys as
-// an invisible modal. Leaving edit mode also hides the cursor again.
+// an invisible modal. Leaving edit or find mode also hides the cursor again,
+// and leaving find clears the search like any other close.
 func (s *streamSession) exitBarModeIfHidden() {
 	if s.st.Rows >= 2 || s.barMode == barModeChrome {
 		return
 	}
-	if s.barMode == barModeEdit {
+	switch s.barMode {
+	case barModeEdit:
 		s.leaveEdit()
-		return
+	case barModeFind:
+		s.leaveFind()
+	default:
+		s.leaveMode()
 	}
-	s.leaveMode()
 }
 
 // activateMenu runs the registry command at index i and reports whether it
@@ -330,14 +342,15 @@ func (s *streamSession) activateMenu(i int) bool {
 	return cmds[i].run(s)
 }
 
-// handleEditKey routes one key to the URL editor. While editing, every key
-// belongs to the editor: printable bytes and assembled runes insert, pastes
-// insert as one unit, the readline subset edits, Enter commits through the
-// schemeless rule, and Esc cancels. Alt chords and page keys are swallowed so
-// nothing reaches CDP; only the quit keys keep their meaning, so a wedged
-// session can never trap the user.
-func (s *streamSession) handleEditKey(ev keyEvent) (quit bool) {
-	e := s.editor
+// editorKey applies one key to a bar text field and reports whether the field
+// consumed it: printable bytes and assembled runes insert, a paste inserts as
+// one unit, Left, Right, Home, and End move the caret, and the readline subset
+// (Ctrl+A, Ctrl+E, Ctrl+K, Ctrl+U, Ctrl+W, Delete, Backspace) edits. It
+// consumes nothing else, so the keys a mode binds for itself, Enter, Esc, the
+// quit keys, the Alt chords, and the remaining page keys, come back to the
+// caller. The URL editor and the find field share it, so one text-editing path
+// serves both and they differ only in those bindings.
+func editorKey(e *urlEditor, ev keyEvent) bool {
 	switch {
 	case ev.paste != "":
 		e.insertText(ev.paste)
@@ -353,21 +366,16 @@ func (s *streamSession) handleEditKey(ev keyEvent) (quit bool) {
 			e.moveHome()
 		case ScrollEnd:
 			e.moveEnd()
+		default:
+			return false
 		}
 	case ev.act != actionNone:
-		if ev.act == actionDelete {
-			e.deleteForward()
+		if ev.act != actionDelete {
+			return false
 		}
+		e.deleteForward()
 	default:
 		switch ev.b {
-		case keyQuitCtrlQ, keyQuitCtrlC:
-			return true
-		case keyEnter:
-			s.commitEdit()
-			return false
-		case keyEsc:
-			s.leaveEdit()
-			return false
 		case keyCtrlA:
 			e.moveHome()
 		case keyCtrlE:
@@ -381,9 +389,31 @@ func (s *streamSession) handleEditKey(ev keyEvent) (quit bool) {
 		case keyDel, keyBackspace:
 			e.backspace()
 		default:
-			if printableByte(ev.b) {
-				e.insertRune(rune(ev.b))
+			if !printableByte(ev.b) {
+				return false
 			}
+			e.insertRune(rune(ev.b))
+		}
+	}
+	return true
+}
+
+// handleEditKey routes one key to the URL editor. While editing, every key
+// belongs to the editor: the shared field path takes the text and edit keys,
+// Enter commits through the schemeless rule, and Esc cancels. Alt chords and
+// page keys are swallowed so nothing reaches CDP; only the quit keys keep their
+// meaning, so a wedged session can never trap the user.
+func (s *streamSession) handleEditKey(ev keyEvent) (quit bool) {
+	if !editorKey(s.editor, ev) {
+		switch ev.b {
+		case keyQuitCtrlQ, keyQuitCtrlC:
+			return true
+		case keyEnter:
+			s.commitEdit()
+			return false
+		case keyEsc:
+			s.leaveEdit()
+			return false
 		}
 	}
 	s.repaintBar()
@@ -493,17 +523,21 @@ func (s *streamSession) pressSegment(kind barSegmentKind) {
 	s.repaintBar()
 }
 
-// appendBarMode renders the active non-chrome bar row into buf: the URL
-// editor with the terminal cursor parked at the edit position, or the menu
-// or About line with the highlight bolded. The row shares the chrome bar's
-// bottom-row reverse-video framing, and the edit-mode cursor park is the last
+// appendBarMode renders the active non-chrome bar row into buf: the URL editor
+// or the find field with the terminal cursor parked at the edit position, or the
+// menu or About line with the highlight bolded. The row shares the chrome bar's
+// bottom-row reverse-video framing, and the text-mode cursor park is the last
 // write so it lands inside the DEC 2026 bracket after every assembled frame.
 func (s *streamSession) appendBarMode(buf *bytes.Buffer) {
 	row := s.st.Rows
 	switch s.barMode {
 	case barModeEdit:
 		content, cursorCol, promptW := renderBarEdit(s.st.Cols, s.editor)
-		s.editPromptW = promptW
+		s.editPromptW, s.editFieldW = promptW, s.st.Cols-promptW
+		fmt.Fprintf(buf, "\x1b[%d;1H\x1b[0;7m%s\x1b[0m\x1b[%d;%dH", row, content, row, cursorCol)
+	case barModeFind:
+		content, cursorCol, field, spans := renderBarFind(s.st.Cols, s.editor, renderFindCount(s.findState()))
+		s.editPromptW, s.editFieldW, s.modeSpans = field.col-1, field.width, spans
 		fmt.Fprintf(buf, "\x1b[%d;1H\x1b[0;7m%s\x1b[0m\x1b[%d;%dH", row, content, row, cursorCol)
 	case barModeMenu:
 		content, spans := renderBarMenu(s.st.Cols, barCommandNames(s.fpsBadgeShown()))

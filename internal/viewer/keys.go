@@ -42,6 +42,7 @@ const (
 	keyCtrlA     = 0x01
 	keyQuitCtrlC = 0x03
 	keyCtrlE     = 0x05
+	keyCtrlF     = 0x06
 	keyBackspace = 0x08
 	keyTab       = 0x09
 	keyCtrlK     = 0x0b
@@ -94,6 +95,9 @@ const (
 	actionCycleColourReverse
 	// actionEditURL enters the bar's URL edit mode (Ctrl+L).
 	actionEditURL
+	// actionOpenFind enters the bar's find mode (Ctrl+F, the desktop-browser
+	// binding; the byte is otherwise unbound and reaches the page as nothing).
+	actionOpenFind
 	// actionOpenMenu opens the bar's menu mode (Alt+F, Chromium's menu key;
 	// F10 is often grabbed by terminal emulators).
 	actionOpenMenu
@@ -119,6 +123,8 @@ func byteKeyAction(b byte) keyAction {
 		return actionReload
 	case keyCtrlL:
 		return actionEditURL
+	case keyCtrlF:
+		return actionOpenFind
 	case keyTab:
 		return actionFocusNext
 	case keyEnter:

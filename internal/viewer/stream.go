@@ -495,21 +495,28 @@ type streamSession struct {
 	// once by Stream and read-only after.
 	version string
 	// barMode selects the bar row's content and input dispatch: chrome,
-	// edit, menu, or about. All bar-mode state below is producer-goroutine
+	// edit, menu, about, or find. All bar-mode state below is producer-goroutine
 	// only: the consumer loop dispatches keys, mouse, and repaints on the
 	// one goroutine.
 	barMode barMode
 	// barLay is the segment layout of the last chrome bar repaint, the spans
 	// bar-row mouse hits test against.
 	barLay barLayout
-	// modeSpans is the click-span list of the last menu or About repaint.
+	// modeSpans is the click-span list of the last menu, About, or find repaint.
 	modeSpans []barSpan
-	// editor is the URL editor; non-nil exactly while barMode is edit.
+	// editor is the bar's text field; non-nil exactly while barMode is edit
+	// (the URL line) or find (the search query).
 	editor *urlEditor
-	// editPromptW is the cells the ❯ prompt took on the last editor repaint, so
-	// a click maps to a text cell against the row as drawn. A row too narrow for
-	// the prompt records 0.
+	// editPromptW and editFieldW are the cells the field prompt and the field
+	// itself took on the last text-mode repaint, so a click maps to a text cell
+	// against the row as drawn. A row too narrow for the prompt records a zero
+	// prompt width.
 	editPromptW int
+	editFieldW  int
+	// findQuery is the query the engine was last asked to search for, so Enter
+	// tells a new search from a step through the matches of the current one.
+	// Empty while no search has been submitted.
+	findQuery string
 	// menuSel is the highlighted menu command index.
 	menuSel int
 	// pressed and pressedSet carry the chrome press feedback: the pressed
@@ -529,7 +536,7 @@ type streamSession struct {
 // follows the user's theme. The bar exists only when the terminal is at
 // least two rows tall (one bar row plus one page row); a one-row terminal
 // appends nothing, matching the engineRows reservation. A non-chrome bar
-// mode (edit, menu, about) swaps the row content through appendBarMode. In
+// mode (edit, menu, about, find) swaps the row content through appendBarMode. In
 // chrome, the URL comes from Engine.CurrentURL at each repaint, falling back
 // to the launch URL, the indicator shows the startup spinner until the first
 // frame draws, a pressed button renders bold until its release, and the
@@ -1293,7 +1300,8 @@ func switchBackendOp(backend Backend) func(Engine) {
 // whether it quits the session (a menu Quit click). The side buttons
 // dispatch history navigation from any row. In edit mode a bar-row press places
 // the editor's caret at the clicked cell and a page-region press cancels the
-// editor without navigating, and nothing forwards to CDP either way; in menu
+// editor without navigating, and nothing forwards to CDP either way; find mode
+// places its caret the same way and closes on its ✕ or a page press; in menu
 // and About modes a bar-row press hits the mode's spans and any other press
 // closes the mode. In chrome, bar-row events go to bar hit-testing and every
 // other event forwards to the engine off the input loop through the
@@ -1336,10 +1344,13 @@ func (s *streamSession) handleMouse(ev MouseEvent) (quit bool) {
 			return false
 		}
 		// A press inside the editor places the caret at the clicked cell. The
-		// prompt width comes from the last repaint, so the mapping matches the
-		// row as drawn, and the rest of the row is the text window.
-		s.editor.placeCursor(ev.Col-s.editPromptW, s.st.Cols-s.editPromptW)
+		// prompt and field widths come from the last repaint, so the mapping
+		// matches the row as drawn.
+		s.editor.placeCursor(ev.Col-s.editPromptW, s.editFieldW)
 		s.repaintBar()
+		return false
+	case barModeFind:
+		s.handleFindMouse(ev, onBar)
 		return false
 	case barModeMenu, barModeAbout:
 		if ev.Action != MouseActionPress {
@@ -1411,13 +1422,14 @@ func (s *streamSession) forwardMouse(ev MouseEvent) {
 
 // handleKey forwards one key to the engine or handles the viewer hotkeys and
 // reports whether the user asked to quit. A non-chrome bar mode owns the
-// whole keyboard first: the URL editor takes every key including the Alt
-// chords, and the menu and About rows take their navigation keys, so nothing
-// leaks to CDP while a mode is open. In chrome, a scroll key forwards its
-// code (the engine owns the offset); Tab, Shift+Tab, and Enter forward to
-// the page as full key strokes for native focus traversal and activation;
-// Ctrl+L opens the URL editor and Alt+F the menu; Alt+R cycles the backend
-// and restarts the stream at the new capture size; Alt+B and Alt+C cycle the
+// whole keyboard first: the URL editor and the find field take every key
+// including the Alt chords, and the menu and About rows take their navigation
+// keys, so nothing leaks to CDP while a mode is open. In chrome, a scroll key
+// forwards its code (the engine owns the offset); Tab, Shift+Tab, and Enter
+// forward to the page as full key strokes for native focus traversal and
+// activation; Ctrl+L opens the URL editor, Ctrl+F the find field, and Alt+F the
+// menu; Alt+R cycles the backend and restarts the stream at the new capture
+// size; Alt+B and Alt+C cycle the
 // Block glyph scheme and colour mode. Both cycles only affect Block
 // rendering, so they are no-ops unless Block is the active backend: cycling
 // under a graphics backend would change hidden state with no visible
@@ -1434,6 +1446,8 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		return s.handleMenuKey(ev)
 	case barModeAbout:
 		return s.handleAboutKey(ev)
+	case barModeFind:
+		return s.handleFindKey(ev)
 	}
 	if ev.paste != "" {
 		s.forwardPaste(ev.paste)
@@ -1460,6 +1474,8 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		return true
 	case actionEditURL:
 		s.enterEdit()
+	case actionOpenFind:
+		s.enterFind()
 	case actionOpenMenu:
 		s.enterMenu()
 	case actionFocusNext:
