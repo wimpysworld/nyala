@@ -1004,6 +1004,38 @@ Chrome: Ctrl+L edits the URL, Alt+F opens the menu, Ctrl+Q or Ctrl+C quits.
 Tab, Shift+Tab, and Enter forward to the page for focus traversal and
 activation.
 
+The Kitty keyboard protocol is an enabler for find-in-page, which needs
+Shift+Enter for its previous-match step; legacy terminal encoding has no signal
+for that chord. The startup handshake asks `CSI ? u` just before its DA1 fence,
+so only an implementing terminal answers and the reply's presence is the
+capability. The reply's own flag value is ignored, since Nyala replaces it. The
+probe inherits the fence and its 200 ms deadline, so a silent terminal costs
+nothing, and a late reply is rejected by the CSI u decode rather than leaking as
+keys. The reduced multiplexer handshake omits the query, so tmux, zellij,
+screen, and herdr sessions keep the legacy parser: a multiplexer would have to
+translate the reports back for its own key handling.
+
+Nyala pushes flag 1, disambiguate escape codes, and nothing else. That alone
+delivers what Nyala binds, and it leaves plain typing on the normal UTF-8 path.
+Event types (2) would double every keystroke with release reports,
+report-all-keys (8) would drag typing onto the report path for no gain, and
+alternate keys (4) and associated text (16) add parsing surface and per-terminal
+variation with no use here. The protocol is a mode stack, so the enable pushes
+one entry and `exitTerminal` pops exactly one, conditionally where its other
+resets are unconditional: an unmatched pop would discard the entry an outer
+application pushed. `enterTerminalModes` and `exitTerminal` are one function
+either side of that pairing.
+
+Reports normalise at the single decode point rather than at each consumer. A
+report for a key with a legacy control byte becomes that byte event carrying the
+report's modifiers, so Escape becomes ESC, Enter CR, Tab TAB, Backspace DEL, and
+a Ctrl+Q report the Ctrl+Q byte. Without that, the three bar-mode handlers,
+which bind Esc as a byte, would have left the URL editor, the menu, and the
+About row uncloseable on a supporting terminal. Shift+Tab stays separate, since
+it is its own binding on the legacy path. Shift+Enter carries its modifier
+through as CDP bits, so it activates exactly like a legacy carriage return today
+and find can branch on the Shift bit later.
+
 Page text input is the default for unbound keys, which is why plain q does not
 quit. A printable byte or an assembled rune forwards through `SendText`, and
 Backspace and Escape forward as full key strokes; Escape reaches the page only

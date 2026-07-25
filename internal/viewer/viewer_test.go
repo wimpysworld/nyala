@@ -72,18 +72,62 @@ func TestExitTerminal(t *testing.T) {
 	const want = "\x1b[0m\x1b[24;1H\r\n\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?80l\x1b[?7h\x1b[?25h"
 	for _, backend := range []Backend{BackendBlock, BackendKitty, BackendSixel} {
 		t.Run(backend.String(), func(t *testing.T) {
-			if got := exitTerminal(24, true); got != want {
-				t.Fatalf("exitTerminal(24, true) = %q, want %q", got, want)
+			if got := exitTerminal(24, true, false); got != want {
+				t.Fatalf("exitTerminal(24, true, false) = %q, want %q", got, want)
 			}
 		})
 	}
 
 	const restoreInPlace = "\x1b[0m\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?80l\x1b[?7h\x1b[?25h"
-	if got := exitTerminal(24, false); got != restoreInPlace {
+	if got := exitTerminal(24, false, false); got != restoreInPlace {
 		t.Fatalf("startup exit = %q, want %q", got, restoreInPlace)
 	}
-	if got := exitTerminal(0, true); got != restoreInPlace {
+	if got := exitTerminal(0, true, false); got != restoreInPlace {
 		t.Fatalf("invalid-row exit = %q, want %q", got, restoreInPlace)
+	}
+
+	// A session that pushed the kitty keyboard protocol pops exactly one entry,
+	// between the paste reset and the Sixel reset, and a session that did not
+	// push emits no pop, so an outer application's entry survives.
+	const pushed = "\x1b[0m\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[<u\x1b[?80l\x1b[?7h\x1b[?25h"
+	if got := exitTerminal(0, false, true); got != pushed {
+		t.Fatalf("kitty-keyboard exit = %q, want %q", got, pushed)
+	}
+	if strings.Count(pushed, disableKittyKeyboard) != 1 {
+		t.Fatalf("teardown pops the protocol %d times, want once", strings.Count(pushed, disableKittyKeyboard))
+	}
+	if strings.Contains(restoreInPlace, disableKittyKeyboard) {
+		t.Fatalf("a session that never pushed still popped: %q", restoreInPlace)
+	}
+}
+
+// TestTerminalModesPairEnableWithTeardown asserts every mode Stream turns on is
+// turned off by the teardown that runs on normal exit, on SIGTERM, and on an
+// error return, and that the kitty keyboard protocol is pushed and popped
+// together: on where the handshake found it, off again on the way out, and
+// neither touched on a terminal that never advertised it.
+func TestTerminalModesPairEnableWithTeardown(t *testing.T) {
+	pairs := []struct{ enable, disable string }{
+		{enableMouseReporting, disableMouseReporting},
+		{enableBracketedPaste, disableBracketedPaste},
+	}
+	for _, kitty := range []bool{false, true} {
+		modes := enterTerminalModes(kitty)
+		teardown := exitTerminal(24, true, kitty)
+		for _, p := range pairs {
+			if !strings.Contains(modes, p.enable) {
+				t.Fatalf("enterTerminalModes(%t) = %q, missing %q", kitty, modes, p.enable)
+			}
+			if !strings.Contains(teardown, p.disable) {
+				t.Fatalf("exitTerminal with kitty=%t = %q, missing %q", kitty, teardown, p.disable)
+			}
+		}
+		if got := strings.Contains(modes, enableKittyKeyboard); got != kitty {
+			t.Fatalf("enterTerminalModes(%t) pushes the protocol = %v, want %v", kitty, got, kitty)
+		}
+		if got := strings.Contains(teardown, disableKittyKeyboard); got != kitty {
+			t.Fatalf("exitTerminal with kitty=%t pops the protocol = %v, want %v", kitty, got, kitty)
+		}
 	}
 }
 

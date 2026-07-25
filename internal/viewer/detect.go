@@ -19,6 +19,7 @@ type probeResult struct {
 	Sixel    bool   // the terminal answered DA1 with the sixel attribute (element "4")
 	Kitty    bool   // the terminal answered the kitty direct graphics query with OK
 	KittySHM bool   // the terminal answered the kitty shm transport query with OK for its image id
+	KittyKbd bool   // the terminal answered the kitty keyboard-protocol flags query
 	TermID   string // XTVERSION reply text, e.g. "kitty 0.40.1"; empty when the terminal ignores the query
 	cellPx          // resolved cell pixel size
 
@@ -54,9 +55,10 @@ const probePollTimeout = 120 * time.Millisecond
 // queryBytes builds the single handshake write: the kitty direct graphics
 // query, the kitty shm transport query when shmName names a prepared POSIX
 // shared-memory object holding a 1x1 f=24 pixel, the three cell-size queries,
-// the XTVERSION identity query, then the DA1 fence. The kitty queries store
-// nothing (a=q); DA1 is last so its reply marks the end of the batch. Terminals
-// that ignore a query stay silent, and the DA1 fence still bounds the read.
+// the XTVERSION identity query, the kitty keyboard-protocol flags query, then
+// the DA1 fence. The kitty queries store nothing (a=q); DA1 is last so its
+// reply marks the end of the batch. Terminals that ignore a query stay silent,
+// and the DA1 fence still bounds the read.
 func queryBytes(shmName string) []byte {
 	var b bytes.Buffer
 	b.WriteString(ansi.KittyGraphics([]byte("AAAA"), "i="+kittyDirectID, "s=1", "v=1", "a=q", "t=d", "f=24"))
@@ -68,6 +70,7 @@ func queryBytes(shmName string) []byte {
 	b.WriteString("\x1b[14t")
 	b.WriteString("\x1b[18t")
 	b.WriteString("\x1b[>0q")
+	b.WriteString(queryKittyKeyboard)
 	b.WriteString(ansi.RequestPrimaryDeviceAttributes)
 	return b.Bytes()
 }
@@ -136,6 +139,7 @@ func probeTerminal(tty *os.File, cols, rows int) probeResult {
 
 	res.Kitty = parseKittySupport(buf, kittyDirectID)
 	res.KittySHM = shmName != "" && parseKittySupport(buf, kittySHMID)
+	res.KittyKbd = parseKittyKeyboard(buf)
 	res.Sixel = parseDA1Sixel(buf)
 	res.TermID = parseXTVersion(buf)
 	if px, ok := parseCellPixels(buf, cols, rows); ok {
@@ -239,6 +243,36 @@ func kittyControlHasID(control []byte, id string) bool {
 		}
 	}
 	return false
+}
+
+// parseKittyKeyboard reports whether the buffer holds a kitty keyboard-protocol
+// flags reply, "CSI ? <flags> u". Only a terminal implementing the protocol
+// answers the query, so the reply's presence is the capability: the flag value
+// itself is the terminal's current state, which Nyala replaces with its own push
+// and therefore ignores. The DA1 reply shares the "CSI ?" prefix and ends in 'c',
+// so every candidate is checked for the 'u' final over digits alone, and the scan
+// continues past a non-match rather than stopping at the first "CSI ?".
+func parseKittyKeyboard(buf []byte) bool {
+	search := buf
+	for {
+		i := bytes.Index(search, []byte(da1Prefix))
+		if i < 0 {
+			return false
+		}
+		rest := search[i+len(da1Prefix):]
+		for n := range rest {
+			if rest[n] >= '0' && rest[n] <= '9' {
+				continue
+			}
+			// A digit run followed by 'u' is the flags reply; anything else
+			// (the DA1 'c', a ';' parameter list) is another report.
+			if rest[n] == 'u' && n > 0 {
+				return true
+			}
+			break
+		}
+		search = rest
+	}
 }
 
 // parseXTVersion extracts the terminal identity from an XTVERSION reply, a DCS

@@ -101,6 +101,59 @@ func TestReducedQueryBytes(t *testing.T) {
 	}
 }
 
+// TestParseKittyKeyboard asserts the keyboard-protocol capability parse: only a
+// "CSI ? flags u" reply counts, whatever flag value it carries, and the DA1 reply
+// that shares the "CSI ?" prefix never false-matches. A silent terminal (every
+// one without the protocol) reports no support, so those sessions keep the legacy
+// parser.
+func TestParseKittyKeyboard(t *testing.T) {
+	cases := []struct {
+		name string
+		buf  string
+		want bool
+	}{
+		{"flags zero", "\x1b[?0u\x1b[?62;4c", true},
+		{"flags one", "\x1b[?1u\x1b[?62;4c", true},
+		{"flags many", "\x1b[?27u\x1b[?62;4c", true},
+		{"reply after da1", "\x1b[?62;4c\x1b[?1u", true},
+		{"reply among other reports", "\x1b[6;16;8t\x1b[?1u\x1b[?62;4c", true},
+		{"silent terminal", "\x1b[?62;4c", false},
+		{"da1 alone is not the protocol", "\x1b[?62;4;9c", false},
+		{"empty buffer", "", false},
+		{"no digits before the final", "\x1b[?u", false},
+		{"parameter list is another report", "\x1b[?62;1u", false},
+		{"kitty graphics reply is not the protocol", "\x1b_Gi=31;OK\x1b\\", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := parseKittyKeyboard([]byte(c.buf)); got != c.want {
+				t.Fatalf("parseKittyKeyboard(%q) = %v, want %v", c.buf, got, c.want)
+			}
+		})
+	}
+}
+
+// TestKittyKeyboardQueryRidesTheHandshake asserts the capability query travels in
+// the one startup batch, ahead of the DA1 fence that bounds the read, so a
+// terminal that never answers cannot hang the probe or leave the reply behind for
+// the key reader. The reduced multiplexer handshake deliberately omits it.
+func TestKittyKeyboardQueryRidesTheHandshake(t *testing.T) {
+	full := string(queryBytes(""))
+	if !strings.Contains(full, queryKittyKeyboard) {
+		t.Fatalf("full handshake %q omits the keyboard query %q", full, queryKittyKeyboard)
+	}
+	da1 := strings.Index(full, "\x1b[c")
+	if da1 < 0 {
+		t.Fatalf("full handshake %q has no DA1 fence", full)
+	}
+	if strings.Index(full, queryKittyKeyboard) > da1 {
+		t.Fatal("the keyboard query trails the DA1 fence, so its reply could arrive after the read ends")
+	}
+	if reduced := string(reducedQueryBytes()); strings.Contains(reduced, queryKittyKeyboard) {
+		t.Fatalf("reduced handshake %q carries the keyboard query", reduced)
+	}
+}
+
 // TestProbeSHMLifecycle asserts the probe object is created under /dev/shm
 // with the 1x1 pixel payload and never leaks: the ignored case (the terminal
 // sent no reply and left the object) is removed by unlinkProbeSHM, and the

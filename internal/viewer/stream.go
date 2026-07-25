@@ -180,7 +180,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	restoreTerminal := func() {
 		restoreOnce.Do(func() {
 			drawn := session != nil && session.firstDrawn.Load()
-			_, _ = io.WriteString(tty, exitTerminal(st.Rows, drawn))
+			_, _ = io.WriteString(tty, exitTerminal(st.Rows, drawn, st.kittyKeyboard))
 			restore()
 		})
 	}
@@ -206,14 +206,17 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	syncEngineKittyDecode(eng, st)
 	defer st.closeKittySHM()
 
-	// Mouse reporting and bracketed paste enable here, beside the full-screen
-	// escapes and after the setupViewer handshake, so neither races the startup
-	// probe replies. Bracketed paste is on for the whole session, not just the
-	// URL editor: with it off, a paste into the page would arrive as loose
-	// bytes and type character by character, so a pasted newline would submit
-	// a form. restoreTerminal's exitTerminal write disables both
-	// unconditionally on every teardown, including the SIGTERM path.
-	if _, err := io.WriteString(tty, enterFullScreen+enableMouseReporting+enableBracketedPaste); err != nil {
+	// Mouse reporting, bracketed paste, and the kitty keyboard protocol enable
+	// here, beside the full-screen escapes and after the setupViewer handshake,
+	// so none of them races the startup probe replies. Bracketed paste is on for
+	// the whole session, not just the URL editor: with it off, a paste into the
+	// page would arrive as loose bytes and type character by character, so a
+	// pasted newline would submit a form. The keyboard protocol is pushed only
+	// where the handshake found it, so every other terminal keeps the legacy
+	// parser. restoreTerminal's exitTerminal write undoes all three on every
+	// teardown, including the SIGTERM path; the defer is already registered
+	// above, so an enable that fails half-way is still cleaned up.
+	if _, err := io.WriteString(tty, enterTerminalModes(st.kittyKeyboard)); err != nil {
 		return err
 	}
 

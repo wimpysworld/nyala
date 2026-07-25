@@ -200,7 +200,7 @@ func TestStreamWriterDrainsFrameBeforeTerminalExit(t *testing.T) {
 	w.send(writeItem{buf: frame})
 	w.stop()
 
-	cleanup := exitTerminal(24, true)
+	cleanup := exitTerminal(24, true, false)
 	if _, err := tty.Write([]byte(cleanup)); err != nil {
 		t.Fatalf("write terminal cleanup: %v", err)
 	}
