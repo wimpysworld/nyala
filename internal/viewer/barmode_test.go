@@ -66,19 +66,35 @@ func TestRenderBarAbout(t *testing.T) {
 
 // TestRenderBarEdit pins the editor row: the ❯ prompt leads, the text
 // follows inside the viewport window, the row is exactly cols cells wide,
-// and the returned cursor column tracks the edit position after the prompt.
+// the returned cursor column tracks the edit position after the prompt, and the
+// reported prompt width is the cells the prompt actually took, which a click
+// maps against.
 func TestRenderBarEdit(t *testing.T) {
 	const cols = 20
 	e := newURLEditor("a.io")
-	content, cursor := renderBarEdit(cols, e)
+	content, cursor, promptW := renderBarEdit(cols, e)
 	if w := runewidth.StringWidth(content); w != cols {
 		t.Fatalf("edit row width = %d, want %d", w, cols)
 	}
 	if !strings.HasPrefix(content, barGlyphPrompt+" a.io") {
 		t.Fatalf("edit row = %q, want the prompt then the text", content)
 	}
-	if want := runewidth.StringWidth(barGlyphPrompt+" ") + 4 + 1; cursor != want {
+	wantPrompt := runewidth.StringWidth(barGlyphPrompt + " ")
+	if promptW != wantPrompt {
+		t.Fatalf("prompt width = %d, want %d", promptW, wantPrompt)
+	}
+	if want := wantPrompt + 4 + 1; cursor != want {
 		t.Fatalf("cursor column = %d, want %d", cursor, want)
+	}
+
+	// A row too narrow for the prompt gives every cell to the text and reports a
+	// zero prompt width, so a click is not offset past a prompt that never drew.
+	narrow, _, narrowPrompt := renderBarEdit(1, newURLEditor("a"))
+	if narrowPrompt != 0 {
+		t.Fatalf("narrow-row prompt width = %d, want 0", narrowPrompt)
+	}
+	if runewidth.StringWidth(narrow) != 1 {
+		t.Fatalf("narrow edit row = %q, want one cell", narrow)
 	}
 }
 
@@ -220,6 +236,89 @@ func TestEditModeRefusesDotlessCommit(t *testing.T) {
 	}
 	if strings.Contains(out, disableBracketedPaste) {
 		t.Fatalf("edit exit turned the session paste mode off: %q", out)
+	}
+}
+
+// TestEditModeClickPlacesCursor pins the click routing in edit mode: a bar-row
+// press places the caret at the clicked cell against the prompt width the last
+// repaint measured, the editor stays open, and no mouse event reaches the page.
+// The prompt cells and the cell after the text are pinned too, so the whole row
+// is predictable.
+func TestEditModeClickPlacesCursor(t *testing.T) {
+	barRow := 23
+	promptW := runewidth.StringWidth(barGlyphPrompt + " ")
+	cases := []struct {
+		name string
+		col  int
+		want int
+	}{
+		{"prompt cell", 0, 0},
+		{"first text cell", promptW, 0},
+		{"third text cell", promptW + 2, 2},
+		{"cell after the text", promptW + 4, 4},
+		{"far past the text", promptW + 40, 4},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var mouse []MouseEvent
+			s, _ := modeSession(t, streamTestEngine{
+				currentURL: "a.io",
+				sendMouse:  func(ev MouseEvent) { mouse = append(mouse, ev) },
+			})
+			s.handleKey(keyEvent{b: keyCtrlL})
+			if s.barMode != barModeEdit {
+				t.Fatalf("Ctrl+L did not open the editor: mode %d", s.barMode)
+			}
+			if s.editPromptW != promptW {
+				t.Fatalf("recorded prompt width = %d, want %d", s.editPromptW, promptW)
+			}
+
+			s.handleMouse(MouseEvent{Action: MouseActionPress, Button: MouseButtonLeft, Col: c.col, Row: barRow})
+
+			if s.barMode != barModeEdit {
+				t.Fatalf("the click closed the editor: mode %d", s.barMode)
+			}
+			if s.editor.cursor != c.want {
+				t.Fatalf("click at column %d = cursor %d, want %d", c.col, s.editor.cursor, c.want)
+			}
+			if len(mouse) != 0 {
+				t.Fatalf("an editor click reached the page: %+v", mouse)
+			}
+			if s.dragOnPage {
+				t.Fatal("an editor press armed the page pointer capture")
+			}
+		})
+	}
+}
+
+// TestEditModePageClickStillCancels pins what a click outside the bar row does
+// while the editor is open: it cancels the editor without navigating, and page
+// input keeps working once the editor has closed.
+func TestEditModePageClickStillCancels(t *testing.T) {
+	var mouse []MouseEvent
+	var opened []string
+	s, _ := modeSession(t, streamTestEngine{
+		currentURL: "a.io",
+		openURL:    func(u string) { opened = append(opened, u) },
+		sendMouse:  func(ev MouseEvent) { mouse = append(mouse, ev) },
+	})
+	s.handleKey(keyEvent{b: keyCtrlL})
+
+	s.handleMouse(MouseEvent{Action: MouseActionPress, Button: MouseButtonLeft, Col: 10, Row: 5})
+	if s.barMode != barModeChrome || s.editor != nil {
+		t.Fatalf("a page click did not cancel the editor: mode %d", s.barMode)
+	}
+	if len(opened) != 0 {
+		t.Fatalf("cancelling navigated: %v", opened)
+	}
+	if len(mouse) != 0 {
+		t.Fatalf("the cancelling click also reached the page: %+v", mouse)
+	}
+
+	// The next page press is ordinary page input again.
+	s.handleMouse(MouseEvent{Action: MouseActionPress, Button: MouseButtonLeft, Col: 10, Row: 5})
+	if len(mouse) != 1 || mouse[0].Action != MouseActionPress {
+		t.Fatalf("page press after the cancel = %+v, want one forwarded press", mouse)
 	}
 }
 

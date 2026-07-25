@@ -129,6 +129,126 @@ func TestURLEditorViewWideRunes(t *testing.T) {
 	}
 }
 
+// TestURLEditorPlaceCursor pins the click-to-caret mapping on a narrow-glyph
+// URL: the first cell lands at the start, an interior cell lands on that rune,
+// the cell after the last rune and every cell past it land at the end, and a
+// negative cell (a click on the ❯ prompt) clamps to the start rather than
+// moving nothing.
+func TestURLEditorPlaceCursor(t *testing.T) {
+	cases := []struct {
+		name string
+		cell int
+		want int
+	}{
+		{"prompt clamps to start", -2, 0},
+		{"first cell", 0, 0},
+		{"middle cell", 3, 3},
+		{"last rune", 6, 6},
+		{"cell after the text", 7, 7},
+		{"beyond the text", 40, 7},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newURLEditor("a.io/pq") // seven narrow runes
+			e.placeCursor(c.cell, 40)
+			if e.cursor != c.want {
+				t.Fatalf("placeCursor(%d) cursor = %d, want %d", c.cell, e.cursor, c.want)
+			}
+			if e.cursor > len(e.text) {
+				t.Fatalf("cursor %d ran past the text length %d", e.cursor, len(e.text))
+			}
+		})
+	}
+}
+
+// TestURLEditorPlaceCursorWideGraphemes pins the wide-glyph rule: both cells of
+// a double-width rune place the cursor before that rune, because the trailing
+// cell carries background only and is not a caret position of its own. The
+// cursor stays a rune index throughout, so no mapping can land inside a
+// character.
+func TestURLEditorPlaceCursorWideGraphemes(t *testing.T) {
+	const text = "日本語" // three runes, two cells each, six cells total
+	cases := []struct {
+		name string
+		cell int
+		want int
+	}{
+		{"leading cell of the first rune", 0, 0},
+		{"trailing cell of the first rune", 1, 0},
+		{"leading cell of the second rune", 2, 1},
+		{"trailing cell of the second rune", 3, 1},
+		{"leading cell of the third rune", 4, 2},
+		{"trailing cell of the third rune", 5, 2},
+		{"cell after the last rune", 6, 3},
+		{"beyond the text", 20, 3},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newURLEditor(text)
+			e.placeCursor(c.cell, 20)
+			if e.cursor != c.want {
+				t.Fatalf("placeCursor(%d) cursor = %d, want %d", c.cell, e.cursor, c.want)
+			}
+			// The cursor is a rune index, so slicing at it always yields whole
+			// characters: the text either side must still be valid UTF-8 and
+			// recombine to the original.
+			left, right := string(e.text[:e.cursor]), string(e.text[e.cursor:])
+			if left+right != text {
+				t.Fatalf("cursor split the text into %q + %q, want %q", left, right, text)
+			}
+		})
+	}
+}
+
+// TestURLEditorPlaceCursorScrolledViewport pins the mapping against a scrolled
+// editor: cells map from the leftmost visible rune, not from the start of the
+// text, and the viewport does not move under the click because the placed cursor
+// is already inside the window.
+func TestURLEditorPlaceCursorScrolledViewport(t *testing.T) {
+	e := newURLEditor("0123456789")
+	// The window shows the tail "6789" with the cursor at the end.
+	if visible, _ := e.view(5); visible != "6789" {
+		t.Fatalf("view(5) = %q, want the scrolled tail", visible)
+	}
+	offset := e.offset
+
+	e.placeCursor(0, 5)
+	if e.cursor != offset {
+		t.Fatalf("first visible cell = cursor %d, want the viewport offset %d", e.cursor, offset)
+	}
+	e.placeCursor(2, 5)
+	if want := offset + 2; e.cursor != want {
+		t.Fatalf("third visible cell = cursor %d, want %d", e.cursor, want)
+	}
+	if e.offset != offset {
+		t.Fatalf("the viewport moved to %d on a click inside it, want %d", e.offset, offset)
+	}
+	// The view still shows the same window and reports the clicked cell, so the
+	// caret the user sees is where they clicked.
+	visible, cell := e.view(5)
+	if visible != "6789" || cell != 2 {
+		t.Fatalf("view after the click = (%q, %d), want (%q, 2)", visible, cell, "6789")
+	}
+}
+
+// TestURLEditorPlaceCursorClipsAtWindowEdge pins the right-edge clip: a wide
+// rune that view drops because it cannot fit the last cell is not clickable
+// there, so a click on that blank cell lands on the boundary before it and never
+// inside the dropped rune.
+func TestURLEditorPlaceCursorClipsAtWindowEdge(t *testing.T) {
+	e := newURLEditor("a字")
+	e.moveHome()
+	// A three-cell window fits "a" and then has one cell left, too narrow for
+	// the double-width rune, so view drops it.
+	if visible, _ := e.view(2); visible != "a" {
+		t.Fatalf("view(2) = %q, want the wide rune clipped", visible)
+	}
+	e.placeCursor(1, 2)
+	if e.cursor != 1 {
+		t.Fatalf("click on the clipped cell = cursor %d, want 1 (before the dropped rune)", e.cursor)
+	}
+}
+
 // TestCommitURL pins the commit rule: an allowlisted scheme (http, https,
 // file) passes through, any other scheme is refused (javascript: would
 // execute in the committed page's origin, a self-XSS), a dotted schemeless
