@@ -439,36 +439,28 @@ func (e *ChromiumEngine) SetBackend(backend render.Backend) {
 	}
 }
 
-// SendKey forwards a key event to the page. Scroll keys (arrows, PageUp,
-// PageDown) route to the wheel transport so scrolling does not depend on which
-// page element holds focus, and Home and End scroll to the document edges
-// through the same transport. Stroke keys (Tab, Enter, Backspace, Escape)
-// dispatch a full rawKeyDown/char/keyUp sequence so the page gets the
-// browser-native default action: focus traversal with the focus ring,
-// activation of the focused element, editing of the focused field, and
-// dismissal of page state. Any other key routes to DispatchKeyEvent for a
-// focused element to receive; typed text takes SendText instead.
+// SendKey forwards a key event to the page. Stroke keys (Tab, Enter,
+// Backspace, Escape, the arrows, Home, End, and the Page keys) dispatch a full
+// rawKeyDown/char/keyUp sequence so the page gets the browser-native default
+// action: focus traversal with the focus ring, activation of the focused
+// element, editing of the focused field, dismissal of page state, and, for the
+// caret keys, Chromium's own choice between moving the caret in a focused field
+// and scrolling the page. A caret key's dispatch then adopts the page's settled
+// scroll offset, because that default action moves the page under the offset
+// the engine holds. Any other key routes to DispatchKeyEvent for a focused
+// element to receive; typed text takes SendText instead.
 func (e *ChromiumEngine) SendKey(k Key) {
-	e.mu.Lock()
-	// The wheel transport speaks CSS pixels, but rows*cellH is device pixels. Divide
-	// by the layout scale Z so a Page key steps one CSS-pixel viewport height rather
-	// than over-scrolling by Z on a wide block grid.
-	pageStepPx := int(math.Round(float64(e.rows*e.cellH) / e.layoutScale()))
-	ctx := e.ctx
-	e.mu.Unlock()
-	if k.Code == "Home" || k.Code == "End" {
-		e.scrollToEdge(k.Code == "End")
-		return
-	}
-	if dx, dy, ok := scrollKeyDelta(k.Code, pageStepPx); ok {
-		e.dispatchWheel(dx, dy)
-		return
-	}
+	ctx := e.inputCtx()
 	if ctx == nil {
 		return
 	}
 	if params := keyStrokeParams(k.Code, k.Mod); params != nil {
-		e.dispatchInput(ctx, keyStrokeTasks(params))
+		tasks := keyStrokeTasks(params)
+		if strokeScrolls(k.Code) {
+			e.dispatchScrollingStroke(ctx, tasks)
+			return
+		}
+		e.dispatchInput(ctx, tasks)
 		return
 	}
 	ev := input.DispatchKeyEvent(input.KeyChar).
@@ -479,7 +471,7 @@ func (e *ChromiumEngine) SendKey(k Key) {
 }
 
 // SendScroll scrolls the page down by dy CSS pixels through the same wheel
-// transport a user wheel or scroll key takes. Diagnostic tests use it to
+// transport a user's pointer wheel takes. Diagnostic tests use it to
 // exercise the full input chain; a non-positive dy is a no-op.
 func (e *ChromiumEngine) SendScroll(dy int) {
 	if dy <= 0 {
@@ -555,6 +547,31 @@ func (e *ChromiumEngine) dispatchWheelFrom(dx, dy, mod int, atCell bool, col, ro
 		return
 	}
 	e.dispatchInput(ctx, wheelParams(cx, cy, dx, dyDispatch, mod))
+}
+
+// adoptScrollLocked adopts the page's own settled scroll offset as the engine's
+// held offset, called with e.mu held. A find reveal and a caret key both move
+// the page without a wheel delta the engine sent, so the held offset has to
+// follow the page; otherwise the wheel transport, the whole-cell snap, and the
+// crash-recovery replay all work from an offset the page never had.
+func (e *ChromiumEngine) adoptScrollLocked(sx, sy float64) {
+	e.scrollX = int(math.Round(sx))
+	e.scrollY = int(math.Round(sy))
+	e.scrollYTarget = e.scrollY
+}
+
+// snapCellHeightLocked returns the CSS-pixel cell height a page-side scroll
+// snaps to so the crisp text overlay stays on the grid, read under the caller's
+// e.mu hold. It is 0 when the backend does not quantise scroll or no cell
+// height is resolved yet, which leaves a page-side scroll unsnapped.
+func (e *ChromiumEngine) snapCellHeightLocked() float64 {
+	if !e.backend.QuantisesScroll() {
+		return 0
+	}
+	if _, cellH := e.snapshotCellPx(); cellH > 0 {
+		return cellH
+	}
+	return 0
 }
 
 // wheelPositionLocked returns the CSS-pixel wheel dispatch position, read

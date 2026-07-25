@@ -7,9 +7,11 @@ import (
 	"unicode/utf8"
 )
 
-// ScrollKey is a recognised scroll key. The viewer does not track scroll state
-// (the engine owns the offset); the push consumer forwards the pressed key to
-// engine.SendKey. ScrollNone is the zero value: no scroll key.
+// ScrollKey is a recognised caret key. The viewer does not track scroll or
+// focus state (the engine owns the offset and Chromium owns focus); the push
+// consumer forwards the pressed key to engine.SendKey, and the page decides
+// whether it moves the caret or scrolls. ScrollNone is the zero value: no
+// caret key.
 type ScrollKey int
 
 const (
@@ -27,9 +29,11 @@ const (
 	ScrollPageUp
 	// ScrollPageDown is the PageDown key (ESC [ 6 ~).
 	ScrollPageDown
-	// ScrollHome is the Home key (ESC [ H or ESC [ 1 ~); it scrolls to the top.
+	// ScrollHome is the Home key (ESC [ H or ESC [ 1 ~): the line start in a
+	// focused field, the document top otherwise.
 	ScrollHome
-	// ScrollEnd is the End key (ESC [ F or ESC [ 4 ~); it scrolls to the bottom.
+	// ScrollEnd is the End key (ESC [ F or ESC [ 4 ~): the line end in a
+	// focused field, the document bottom otherwise.
 	ScrollEnd
 )
 

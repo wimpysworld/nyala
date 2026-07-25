@@ -75,9 +75,9 @@ func Run(cli CLI, version string, tty *os.File) error {
 // the engine's Key. The other methods pass straight through.
 type engineAdapter struct{ *engine.ChromiumEngine }
 
-// SendKey maps a viewer key code to an engine Key. The engine routes scroll-key
-// codes (ArrowUp, PageDown, and so on) to its wheel transport and dispatches
-// stroke codes (Tab, Enter) as full key strokes. The viewer's ShiftTab
+// SendKey maps a viewer key code to an engine Key. The engine dispatches every
+// stroke code (Tab, Enter, and the caret keys such as ArrowUp and PageDown) as
+// a full key stroke, so Chromium runs the key's own default action. The viewer's ShiftTab
 // pseudo-code (the CSI Z backtab) maps here to a Tab stroke carrying the CDP
 // Shift modifier bit, because the viewer seam carries only a code string.
 func (a engineAdapter) SendKey(code string) {

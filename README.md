@@ -86,10 +86,10 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 | Paste | Insert the clipboard into the focused page field |
 | <kbd>Ctrl</kbd>+<kbd>F</kbd> | Find on the page; <kbd>Enter</kbd> searches, <kbd>Down</kbd> / <kbd>Up</kbd> step the matches, <kbd>Esc</kbd> closes |
 | <kbd>Alt</kbd>+<kbd>W</kbd> | Copy the page selection to the terminal clipboard |
-| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Scroll by one line step |
-| <kbd>PgUp</kbd> / <kbd>PgDn</kbd> | Scroll by one viewport height |
-| <kbd>Home</kbd> | Scroll to top |
-| <kbd>End</kbd> | Scroll to bottom |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Move the caret in a focused field, otherwise scroll by one line step |
+| <kbd>PgUp</kbd> / <kbd>PgDn</kbd> | Move the caret by one page in a focused field, otherwise scroll by one viewport height |
+| <kbd>Home</kbd> | Move the caret to the line start in a focused field, otherwise scroll to top |
+| <kbd>End</kbd> | Move the caret to the line end in a focused field, otherwise scroll to bottom |
 | <kbd>Tab</kbd> | Focus next page element |
 | <kbd>Shift</kbd>+<kbd>Tab</kbd> | Focus previous page element |
 | <kbd>Enter</kbd> | Activate focused element |
@@ -109,7 +109,7 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 
 Notes:
 
-- Typing goes to the page, so plain `q` does not quit. Use `Ctrl+Q`. Chromium decides what each key does, which is why `Space` types in a focused field and scrolls the page otherwise.
+- Typing goes to the page, so plain `q` does not quit. Use `Ctrl+Q`. Chromium decides what each key does, which is why `Space` types in a focused field and scrolls the page otherwise, and why the arrows, `Home`, `End`, `PgUp`, and `PgDn` move the caret in a focused field and scroll the page when nothing is focused.
 - A paste arrives as one unit, up to 1 MiB, so a pasted newline never submits a form by accident. Inside the URL editor and the find field the paste lands there instead.
 - Select page text by dragging, double-clicking a word, or triple-clicking a line. Selecting copies nothing; `Alt+W` or the ☰ menu's Copy sends it to the clipboard over OSC 52. Selections over 74,994 bytes are refused rather than truncated, so a silent half-copy cannot happen. `Shift`-drag is still your terminal's own selection.
 - Find searches when you press `Enter`, not as you type, because each search repaints every match in the page. Matches highlight amber and the current one orange. `Shift+Enter` steps back as well, on a terminal that speaks the Kitty keyboard protocol; `Down` and `Up` work everywhere.

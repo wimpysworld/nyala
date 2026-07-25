@@ -4,6 +4,7 @@ package engine
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -11,12 +12,14 @@ import (
 )
 
 // liveInputPage is a self-contained data: URL for the input tests: one text
-// field, a body tall enough to scroll, and a keydown recorder so a key with no
-// visible effect is still observable. A data: URL needs no network and no local
-// file, so the test stays hermetic once a Chromium resolves.
+// field, one multi-line text area for the vertical caret keys, a body tall
+// enough to scroll, and a keydown recorder so a key with no visible effect is
+// still observable. A data: URL needs no network and no local file, so the test
+// stays hermetic once a Chromium resolves.
 const liveInputPage = "data:text/html," +
 	"<html><body style='margin:0'>" +
 	"<input id='f' style='width:400px'>" +
+	"<textarea id='t' rows='4' cols='40'></textarea>" +
 	"<div style='height:400vh;background:linear-gradient(white,black)'></div>" +
 	"<script>window.pressed=[];" +
 	"document.addEventListener('keydown',function(e){window.pressed.push(e.key)});" +
@@ -321,5 +324,173 @@ func TestLiveEscapeReachesPage(t *testing.T) {
 
 	if got, ok := waitForString(t, ctx, "window.pressed.join(',')", "Escape"); !ok {
 		t.Fatalf("page keydown log = %q, want Escape", got)
+	}
+}
+
+// caretIndex reads the caret offset of a focused text control, the observable a
+// caret-key test asserts on.
+func caretIndex(t *testing.T, ctx context.Context, id string) float64 {
+	t.Helper()
+	return evalFloat(t, ctx, "document.getElementById('"+id+"').selectionStart")
+}
+
+// heldScroll reads the engine's own scroll offset, so a test can assert it
+// matches the offset the page settled at after a key-driven scroll.
+func heldScroll(e *ChromiumEngine) (x, y int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.scrollX, e.scrollY
+}
+
+// TestLiveArrowKeysMoveCaretInFocusedField proves Left and Right reach a
+// focused field and move its caret rather than scrolling the page. The page
+// must stay at the top: a caret key that scrolled a focused field's page would
+// be the shipped bug this replaces.
+func TestLiveArrowKeysMoveCaretInFocusedField(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+	focusField(t, ctx)
+	e.SendText("nyala")
+	if got, ok := waitForString(t, ctx, "document.getElementById('f').value", "nyala"); !ok {
+		t.Fatalf("field value = %q, want %q", got, "nyala")
+	}
+
+	e.SendKey(Key{Code: "ArrowLeft"})
+	e.SendKey(Key{Code: "ArrowLeft"})
+	if got := caretIndex(t, ctx, "f"); got != 3 {
+		t.Fatalf("caret after two ArrowLeft = %g, want 3", got)
+	}
+
+	e.SendKey(Key{Code: "ArrowRight"})
+	if got := caretIndex(t, ctx, "f"); got != 4 {
+		t.Fatalf("caret after ArrowRight = %g, want 4", got)
+	}
+
+	if got := evalFloat(t, ctx, "window.scrollY"); got != 0 {
+		t.Fatalf("window.scrollY = %g, want 0 (a caret key in a focused field must not scroll)", got)
+	}
+	if _, y := heldScroll(e); y != 0 {
+		t.Fatalf("held scroll offset = %d, want 0", y)
+	}
+}
+
+// TestLiveHomeEndMoveCaretInFocusedField proves Home and End move the caret to
+// the line ends of a focused field instead of scrolling to the document edges.
+func TestLiveHomeEndMoveCaretInFocusedField(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+	focusField(t, ctx)
+	e.SendText("nyala")
+	if got, ok := waitForString(t, ctx, "document.getElementById('f').value", "nyala"); !ok {
+		t.Fatalf("field value = %q, want %q", got, "nyala")
+	}
+
+	e.SendKey(Key{Code: "Home"})
+	if got := caretIndex(t, ctx, "f"); got != 0 {
+		t.Fatalf("caret after Home = %g, want 0 (line start)", got)
+	}
+	if got := evalFloat(t, ctx, "window.scrollY"); got != 0 {
+		t.Fatalf("window.scrollY = %g after Home in a focused field, want 0", got)
+	}
+
+	e.SendKey(Key{Code: "End"})
+	if got := caretIndex(t, ctx, "f"); got != 5 {
+		t.Fatalf("caret after End = %g, want 5 (line end)", got)
+	}
+	if got := evalFloat(t, ctx, "window.scrollY"); got != 0 {
+		t.Fatalf("window.scrollY = %g after End in a focused field, want 0 (the line end, not the document end)", got)
+	}
+}
+
+// TestLiveVerticalArrowsMoveCaretInTextArea proves Up and Down move the caret
+// between the lines of a focused multi-line control rather than scrolling the
+// page, the half of the bug where the page moved under the reader instead.
+func TestLiveVerticalArrowsMoveCaretInTextArea(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+	evalVoid(t, ctx, "var a=document.getElementById('t');a.value='alpha\\nbravo';a.focus();a.setSelectionRange(11,11)")
+
+	e.SendKey(Key{Code: "ArrowUp"})
+	if got := caretIndex(t, ctx, "t"); got != 5 {
+		t.Fatalf("caret after ArrowUp = %g, want 5 (same column, previous line)", got)
+	}
+
+	e.SendKey(Key{Code: "ArrowDown"})
+	if got := caretIndex(t, ctx, "t"); got != 11 {
+		t.Fatalf("caret after ArrowDown = %g, want 11 (same column, next line)", got)
+	}
+
+	if got := evalFloat(t, ctx, "window.scrollY"); got != 0 {
+		t.Fatalf("window.scrollY = %g, want 0 (a caret key in a focused control must not scroll)", got)
+	}
+}
+
+// TestLiveCaretKeysScrollWithoutFocus proves the other half of the browser's
+// arbitration: with nothing focused, the caret keys still scroll the page, and
+// the engine's held offset matches the offset the page settled at, so the wheel
+// transport and crash recovery keep working from where the page sits.
+func TestLiveCaretKeysScrollWithoutFocus(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+	blurField(t, ctx)
+	if before := evalFloat(t, ctx, "window.scrollY"); before != 0 {
+		t.Fatalf("page starts scrolled at %g, want 0", before)
+	}
+
+	e.SendKey(Key{Code: "ArrowDown"})
+	afterArrow := evalFloat(t, ctx, "window.scrollY")
+	if afterArrow <= 0 {
+		t.Fatalf("window.scrollY = %g after ArrowDown, want a scroll off the top", afterArrow)
+	}
+	if _, held := heldScroll(e); float64(held) != afterArrow {
+		t.Fatalf("held scroll offset = %d, want %g (the page's own offset)", held, afterArrow)
+	}
+
+	e.SendKey(Key{Code: "PageDown"})
+	afterPage := evalFloat(t, ctx, "window.scrollY")
+	if afterPage <= afterArrow {
+		t.Fatalf("window.scrollY = %g after PageDown, want more than the line step %g", afterPage, afterArrow)
+	}
+	if _, held := heldScroll(e); float64(held) != afterPage {
+		t.Fatalf("held scroll offset = %d, want %g (the page's own offset)", held, afterPage)
+	}
+
+	e.SendKey(Key{Code: "End"})
+	afterEnd := evalFloat(t, ctx, "window.scrollY")
+	bottom := evalFloat(t, ctx, "document.documentElement.scrollHeight-window.innerHeight")
+	if afterEnd < bottom-1 {
+		t.Fatalf("window.scrollY = %g after End, want the document bottom %g", afterEnd, bottom)
+	}
+	if _, held := heldScroll(e); float64(held) != afterEnd {
+		t.Fatalf("held scroll offset = %d, want %g (the page's own offset at the bottom)", held, afterEnd)
+	}
+
+	e.SendKey(Key{Code: "Home"})
+	if got := evalFloat(t, ctx, "window.scrollY"); got != 0 {
+		t.Fatalf("window.scrollY = %g after Home, want 0 (the document top)", got)
+	}
+	if _, held := heldScroll(e); held != 0 {
+		t.Fatalf("held scroll offset = %d after Home, want 0", held)
+	}
+}
+
+// TestLiveKeyScrollSnapsToCellPitch proves a key-driven scroll on the block
+// backend leaves the page on the cell grid, the invariant the crisp text
+// overlay depends on, and that the engine holds the same snapped offset.
+func TestLiveKeyScrollSnapsToCellPitch(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+	blurField(t, ctx)
+
+	e.mu.Lock()
+	_, cellH := e.snapshotCellPx()
+	e.mu.Unlock()
+	if cellH <= 0 {
+		t.Fatalf("snap cell height = %g, want the block cell pitch", cellH)
+	}
+
+	e.SendKey(Key{Code: "ArrowDown"})
+
+	got := evalFloat(t, ctx, "window.scrollY")
+	if cells := got / cellH; cells != math.Trunc(cells) {
+		t.Fatalf("window.scrollY = %g, want a whole multiple of the %g px cell pitch", got, cellH)
+	}
+	if _, held := heldScroll(e); float64(held) != got {
+		t.Fatalf("held scroll offset = %d, want %g (the snapped page offset)", held, got)
 	}
 }

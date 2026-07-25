@@ -320,18 +320,37 @@ it no longer matches.
 
 ### Input
 
-Scroll is one transport. `scrollKeyDelta` (`input.go`) maps arrows to 40 CSS
-px steps and Page keys to one viewport height; wheel events arrive with their
-own deltas. Both reach `dispatchWheel`, which advances the engine's owned
-scroll offset and dispatches one `Input.dispatchMouseEvent` `mouseWheel`.
-Scroll key events accumulate and forward in order rather than coalescing
-latest-wins: latest-wins is right for frames but wrong for cumulative
-deltas, where a burst would collapse to one step.
-`synthesizeScrollGesture` is deliberately unused: it synthesises touch and
+Pointer scroll is one transport. Wheel events arrive with their own deltas and
+reach `dispatchWheel`, which advances the engine's owned scroll offset and
+dispatches one `Input.dispatchMouseEvent` `mouseWheel`. Key events accumulate
+and forward in order rather than coalescing latest-wins: latest-wins is right
+for frames but wrong for cumulative input, where a burst would collapse to one
+step. `synthesizeScrollGesture` is deliberately unused: it synthesises touch and
 inherits focus-dependent defaults. Mouse events arrive as terminal cells and
 convert to CSS pixels at the cell centre, divided by Z so the click lands
 where the frame drew the cell. The engine owns the scroll offset as the single
 source of truth and re-applies it after crash recovery.
+
+The caret keys, the four arrows plus Home, End, PageUp, and PageDown, do not
+take that transport. They stroke like Space, under Keys below, because a
+focused page field needs them for the caret and the viewer keeps no focus
+state to tell the two cases apart with. Routing them to the wheel was right
+while nothing could type: it made scrolling position-independent. It became
+wrong once page text input landed, where Left and Right sent a horizontal wheel
+that did nothing and Home and End jumped to the document edges instead of the
+line ends. Chromium now arbitrates, exactly as it does for Space.
+
+That hands the page the scroll offset the engine owns, so the same dispatch
+reads it back. `dispatchScrollingStroke` (`input.go`) appends `scroll.js` to
+the stroke's tasks, so one bounded dispatch presses the key and reports where
+the page settled, and `adoptScrollLocked` takes that as the held offset. It is
+the mechanism the find reveal already uses, including the cell-pitch snap that
+keeps the crisp text overlay on the grid, and the shared helper is the one
+place a page-side scroll enters the engine's state. `--disable-smooth-scrolling`
+is load-bearing here: Chromium animates a keyboard scroll over about 150 ms by
+default, so the read in the same dispatch would catch the animation part way
+and the snap would freeze it there. The flag also spares the terminal a burst
+of frames per key press.
 
 A pointer wheel report carries a direction, not a magnitude, so both axes take
 the same fixed 120 CSS px step per report and the deltas follow the DOM
@@ -346,9 +365,10 @@ that assumption.
 
 Keys and typed text are one transport too, and the engine owns the choice of
 CDP event. `strokeKeys` (`input.go`) maps the named keys the viewer forwards,
-Tab, Enter, Backspace, and Escape, to a full `rawKeyDown`, optional char,
-`keyUp` stroke, so the page gets the browser-native default action: Tab
-traverses focus with the focus ring, Enter activates the focused element. A
+Tab, Enter, Backspace, Escape, and the caret keys, to a full `rawKeyDown`,
+optional char, `keyUp` stroke, so the page gets the browser-native default
+action: Tab traverses focus with the focus ring, Enter activates the focused
+element, an arrow moves the caret or scrolls. A
 typed printable ASCII character takes the opposite route. `printableStroke`
 dispatches a `keyDown` carrying the character as its text plus a `keyUp`, so
 Chromium generates the keypress from the text and applies its own default
@@ -451,8 +471,8 @@ Clear removes both highlight registrations, the injected style, and the
 page-side range list. DOM focus and the caret are untouched, so page input after
 a clear reaches the element and offset the reader left. Scroll stays where the
 last match was, the way closing a desktop find bar behaves, and the engine has
-already adopted the page's settled offset, so the wheel transport, Home, and
-crash recovery stay aligned. A revealing scroll is snapped to the cell pitch on
+already adopted the page's settled offset, so the wheel transport and crash
+recovery stay aligned. A revealing scroll is snapped to the cell pitch on
 Block, so the crisp overlay stays on the grid.
 
 The bar row that drives all of this, and what it draws while a dispatch is in
@@ -1171,8 +1191,9 @@ scheme, Alt+C and Alt+Shift+C cycle colour. Navigation: Alt+Left and
 Alt+Right step history, Alt+Home opens the launch URL, Ctrl+R and F5 reload.
 Chrome: Ctrl+L edits the URL, Ctrl+F opens find, Alt+F opens the menu, Alt+W
 copies the page selection, Ctrl+Q or Ctrl+C quits. Page keys: Tab, Shift+Tab,
-and Enter forward for focus traversal and activation, and every unbound
-printable key, Backspace, and Escape forward as page text input.
+and Enter forward for focus traversal and activation, the arrows, Home, End,
+PageUp, and PageDown forward for the caret and page scrolling, and every
+unbound printable key, Backspace, and Escape forward as page text input.
 
 The Kitty keyboard protocol is an enabler for find-in-page, which needs
 Shift+Enter for its previous-match step; legacy terminal encoding has no signal

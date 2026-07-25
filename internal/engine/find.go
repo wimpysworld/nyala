@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 
 	"github.com/chromedp/chromedp"
@@ -228,12 +227,7 @@ func (e *ChromiumEngine) findConfigLocked(op findOp, query string, step int) (fi
 	default:
 		e.find = FindState{Query: query, Pending: true}
 	}
-	cellHeight := 0.0
-	if e.backend.QuantisesScroll() {
-		if _, cellH := e.snapshotCellPx(); cellH > 0 {
-			cellHeight = cellH
-		}
-	}
+	cellHeight := e.snapCellHeightLocked()
 	ink := "black"
 	if e.backend.UsesTextOverlay() {
 		ink = "transparent"
@@ -271,7 +265,5 @@ func (e *ChromiumEngine) applyFindResult(res findResult, err error) {
 	e.find.Failed = false
 	e.find.Total = res.Total
 	e.find.Current = res.Current
-	e.scrollX = int(math.Round(res.ScrollX))
-	e.scrollY = int(math.Round(res.ScrollY))
-	e.scrollYTarget = e.scrollY
+	e.adoptScrollLocked(res.ScrollX, res.ScrollY)
 }

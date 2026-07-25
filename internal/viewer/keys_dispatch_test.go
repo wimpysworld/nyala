@@ -21,7 +21,7 @@ func dispatchSession(eng streamTestEngine, st *State) *streamSession {
 // TestHandleKeyForwardsPageKeys pins the page-key forwarding: Tab, Shift+Tab
 // (backtab), and Enter reach the engine as key codes for native focus
 // traversal and activation, and none of them cycles the backend. Home and End
-// forward as scroll codes to the engine's wheel transport.
+// forward as caret-key codes for the engine to stroke into the page.
 func TestHandleKeyForwardsPageKeys(t *testing.T) {
 	cases := []struct {
 		name string

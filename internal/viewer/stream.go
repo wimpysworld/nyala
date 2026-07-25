@@ -44,10 +44,11 @@ type Engine interface {
 	// Frames returns the channel of pixel or direct-PNG frames, each with Text synced on.
 	Frames() <-chan render.Frame
 	// SendKey forwards a key by its code (for example ArrowDown) to the page.
-	// Scroll keys route to the engine's wheel transport; the engine owns the
-	// offset. The codes Tab, ShiftTab, Enter, Backspace, and Escape dispatch
-	// full key strokes for native focus traversal, activation, field editing,
-	// and dismissal.
+	// The codes Tab, ShiftTab, Enter, Backspace, Escape, and the caret keys
+	// dispatch full key strokes for native focus traversal, activation, field
+	// editing, dismissal, and caret movement. Chromium decides whether a caret
+	// key moves the caret or scrolls the page; the engine then adopts the
+	// offset the page settled at.
 	SendKey(code string)
 	// SendText forwards typed text to the focused page element. The engine
 	// picks the CDP transport: a single ASCII character goes as a full key
@@ -1670,14 +1671,13 @@ func (s *streamSession) recomposeBlock(changed bool) {
 	s.ctl.submit(switchBackendOp(s.st.Backend))
 }
 
-// keySender serialises forwarded input (scroll keys and mouse events) away
+// keySender serialises forwarded input (page keys and mouse events) away
 // from the input loop, so a browser call that stalls never freezes quit or
 // draw. Unlike the frame path (latest-wins-drop), input is cumulative: a rapid
-// burst of scroll keys or wheel events must all reach the engine, or the page
-// barely moves. So it accumulates every submitted event and the worker forwards
-// them all in order, letting the engine's wheel transport sum the burst
-// (dispatchWheel adds each delta into its held offset) rather than dropping to
-// the last event. send and sendMouse never block the input loop. It owns its
+// burst of caret keys or wheel events must all reach the engine, or the page
+// barely moves and a held-down arrow loses caret steps. So it accumulates every
+// submitted event and the worker forwards them all in order rather than
+// dropping to the last event. send and sendMouse never block the input loop. It owns its
 // done channel and closes it once on close, stopping the worker.
 type keySender struct {
 	eng     Engine
@@ -2251,9 +2251,10 @@ func renderScheme(s block.Scheme) render.BlockScheme {
 	}
 }
 
-// scrollKeyCode maps a recognised scroll key to the CDP key code the engine
-// routes to its wheel transport. The viewer forwards the code; the engine owns
-// the scroll offset.
+// scrollKeyCode maps a recognised caret key to the CDP key code the engine
+// strokes into the page. The viewer forwards the code; Chromium decides
+// whether it moves the caret or scrolls, and the engine adopts the offset the
+// page settled at.
 func scrollKeyCode(k ScrollKey) string {
 	switch k {
 	case ScrollUp:

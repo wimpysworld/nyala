@@ -2,15 +2,17 @@ package engine
 
 import (
 	"context"
+	_ "embed"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/chromedp"
 )
 
-// Scroll step sizes in CSS pixels for the wheel transport. A line step matches a
-// typical wheel notch; a page step is the viewport height, filled in at dispatch
-// from the resolved cell geometry.
+// wheelLineStepPx is one line step in CSS pixels for the wheel transport, the
+// step a typical wheel notch scrolls by.
 const wheelLineStepPx = 40
 
 // wheelTickPx is the CSS-pixel delta one SGR wheel event dispatches: three
@@ -72,17 +74,41 @@ type strokeKey struct {
 	key  string // the DispatchKeyEvent key value, for example "Tab"
 	vkey int64  // the Windows and native virtual key code
 	text string // the char-event text, empty when the key produces none
+	// scrolls marks a key whose default action scrolls the page when no field
+	// holds focus, so its dispatch also adopts the page's settled offset.
+	scrolls bool
 }
 
 // strokeKeys maps the named key codes the viewer forwards for native handling.
 // Any other code stays on the KeyChar path for a focused element to receive.
 // Backspace and Escape carry no char event: Chromium runs both from the key
 // down, editing the focused field and dismissing page state respectively.
+//
+// The caret keys, the arrows plus Home, End, and the Page keys, stroke for the
+// same reason Space does: Chromium arbitrates between moving the caret in a
+// focused field and scrolling the page, so the viewer needs no focus state of
+// its own. Their default action moves the page under the engine's held scroll
+// offset, so each dispatch adopts what the page settled at.
 var strokeKeys = map[string]strokeKey{
-	"Tab":       {key: "Tab", vkey: 9},
-	"Enter":     {key: "Enter", vkey: 13, text: "\r"},
-	"Backspace": {key: "Backspace", vkey: 8},
-	"Escape":    {key: "Escape", vkey: 27},
+	"Tab":        {key: "Tab", vkey: 9},
+	"Enter":      {key: "Enter", vkey: 13, text: "\r"},
+	"Backspace":  {key: "Backspace", vkey: 8},
+	"Escape":     {key: "Escape", vkey: 27},
+	"ArrowLeft":  {key: "ArrowLeft", vkey: 37, scrolls: true},
+	"ArrowUp":    {key: "ArrowUp", vkey: 38, scrolls: true},
+	"ArrowRight": {key: "ArrowRight", vkey: 39, scrolls: true},
+	"ArrowDown":  {key: "ArrowDown", vkey: 40, scrolls: true},
+	"Home":       {key: "Home", vkey: 36, scrolls: true},
+	"End":        {key: "End", vkey: 35, scrolls: true},
+	"PageUp":     {key: "PageUp", vkey: 33, scrolls: true},
+	"PageDown":   {key: "PageDown", vkey: 34, scrolls: true},
+}
+
+// strokeScrolls reports whether a key's browser-native default action can move
+// the page's scroll offset, which the engine otherwise owns. It is false for a
+// code with no stroke mapping.
+func strokeScrolls(code string) bool {
+	return strokeKeys[code].scrolls
 }
 
 // keyStrokeParams builds the CDP key events one full key stroke dispatches,
@@ -217,51 +243,46 @@ func (e *ChromiumEngine) SendPaste(text string) {
 	e.dispatchInput(ctx, input.InsertText(text))
 }
 
-// edgeScrollPx is the vertical wheel delta one End press dispatches: far past
-// any practical document height, so the page clamps at its bottom. The held
-// scroll offset inflates past the real clamped offset, which crash recovery
-// tolerates (a replay clamps at the bottom again) and a later Home corrects
-// exactly, because Home dispatches the negated held target.
-const edgeScrollPx = 1 << 24
+// scrollCellHeightPlaceholder is the token buildScrollScript substitutes the
+// snap cell height into.
+const scrollCellHeightPlaceholder = "__NYALA_CELL_HEIGHT__"
 
-// scrollToEdge scrolls the page to its top or bottom through the one wheel
-// transport, so the engine keeps owning the scroll offset. Home negates the
-// held target, landing the target at exactly 0 alongside the page's own top
-// clamp; End dispatches edgeScrollPx and lets the page clamp at the bottom.
-func (e *ChromiumEngine) scrollToEdge(toEnd bool) {
-	if toEnd {
-		e.dispatchWheel(0, edgeScrollPx)
+//go:embed scroll.js
+var scrollSource string
+
+// scrollResult is the page's settled scroll offset after a key stroke ran its
+// own scroll, which the engine adopts as its held offset so the wheel
+// transport and crash recovery keep working from where the page actually sits.
+type scrollResult struct {
+	ScrollX float64 `json:"sx"`
+	ScrollY float64 `json:"sy"`
+}
+
+// buildScrollScript returns the page script that snaps and reports the settled
+// scroll offset, with cellHeight substituted as the CSS-pixel cell pitch a
+// quantising backend snaps to. A zero cell height reports the offset unsnapped.
+func buildScrollScript(cellHeight float64) string {
+	return strings.Replace(scrollSource, scrollCellHeightPlaceholder,
+		strconv.FormatFloat(cellHeight, 'g', -1, 64), 1)
+}
+
+// dispatchScrollingStroke runs one caret-key stroke and the scroll adopt read
+// in a single bounded dispatch, so the page's settled offset is read in the
+// same round trip that pressed the key and a wedged browser still drops the
+// keystroke rather than parking the caller. Chromium decides what the key did:
+// it moves the caret in a focused field or scrolls the page, and either way the
+// read reports where the page ended up. A failed dispatch adopts nothing, so a
+// dropped keystroke leaves the held offset as it was.
+func (e *ChromiumEngine) dispatchScrollingStroke(ctx context.Context, tasks chromedp.Tasks) {
+	e.mu.Lock()
+	cellHeight := e.snapCellHeightLocked()
+	e.mu.Unlock()
+	var res scrollResult
+	tasks = append(tasks, chromedp.Evaluate(buildScrollScript(cellHeight), &res))
+	if err := e.runInput(ctx, tasks); err != nil {
 		return
 	}
 	e.mu.Lock()
-	dy := -e.scrollYTarget
+	e.adoptScrollLocked(res.ScrollX, res.ScrollY)
 	e.mu.Unlock()
-	if dy != 0 {
-		e.dispatchWheel(0, dy)
-	}
-}
-
-// scrollKeyDelta maps a scroll key to a wheel delta in CSS pixels. It returns
-// ok=false for any key that is not a scroll key, so the caller routes it to the
-// focused-element key path instead. pageStepPx is the viewport height in CSS
-// pixels, used for the Page keys; the line keys ignore it. The delta sign follows
-// the wheel convention: positive deltaY scrolls the page content up (toward the
-// end), so a down key produces a positive deltaY.
-func scrollKeyDelta(code string, pageStepPx int) (dx, dy int, ok bool) {
-	switch code {
-	case "ArrowDown":
-		return 0, wheelLineStepPx, true
-	case "ArrowUp":
-		return 0, -wheelLineStepPx, true
-	case "ArrowRight":
-		return wheelLineStepPx, 0, true
-	case "ArrowLeft":
-		return -wheelLineStepPx, 0, true
-	case "PageDown":
-		return 0, pageStepPx, true
-	case "PageUp":
-		return 0, -pageStepPx, true
-	default:
-		return 0, 0, false
-	}
 }

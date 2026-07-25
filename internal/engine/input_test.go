@@ -2,6 +2,7 @@ package engine
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -18,7 +19,7 @@ func snapshotCellHeight(e *ChromiumEngine) float64 {
 // TestWheelSnapsVerticalToWholeCellBlock asserts a fractional-cell line scroll on
 // the block backend lands the held vertical offset on a whole multiple of the CSS
 // cell height. At 158x86 with cell 16x33 the block density scale is Z = 2, so the
-// CSS cell height is fractional (16.5 px) and a raw 40 px line step must snap to
+// CSS cell height is fractional (16.5 px) and a raw 40 px wheel step must snap to
 // the nearest whole cell, not to the raw 40. The DOM scroll reported by the
 // snapshot and screencast metadata must always be a whole number of cells.
 func TestWheelSnapsVerticalToWholeCellBlock(t *testing.T) {
@@ -28,13 +29,13 @@ func TestWheelSnapsVerticalToWholeCellBlock(t *testing.T) {
 
 	cellH := snapshotCellHeight(e)
 	want := int(math.Round(math.Round(float64(wheelLineStepPx)/cellH) * cellH))
-	e.SendKey(Key{Code: "ArrowDown"})
+	e.dispatchWheel(0, wheelLineStepPx)
 
 	e.mu.Lock()
 	got := e.scrollY
 	e.mu.Unlock()
 	if got != want {
-		t.Errorf("ArrowDown scrollY = %d, want %d (nearest whole CSS cell)", got, want)
+		t.Errorf("wheel down scrollY = %d, want %d (nearest whole CSS cell)", got, want)
 	}
 	if want == wheelLineStepPx {
 		t.Fatalf("test geometry is not fractional: snapped step equals raw %d", wheelLineStepPx)
@@ -53,7 +54,7 @@ func TestWheelSnapAccumulatesWithoutDrift(t *testing.T) {
 	cellH := snapshotCellHeight(e)
 	const steps = 5
 	for range steps {
-		e.SendKey(Key{Code: "ArrowDown"})
+		e.dispatchWheel(0, wheelLineStepPx)
 	}
 
 	target := steps * wheelLineStepPx
@@ -79,16 +80,16 @@ func TestWheelHorizontalUnquantised(t *testing.T) {
 	e.SetCellPx(16, 33)
 	e.Resize(158, 86)
 
-	e.SendKey(Key{Code: "ArrowRight"})
+	e.dispatchWheel(wheelLineStepPx, 0)
 
 	e.mu.Lock()
 	gotX, gotY := e.scrollX, e.scrollY
 	e.mu.Unlock()
 	if gotX != wheelLineStepPx {
-		t.Errorf("ArrowRight scrollX = %d, want %d (horizontal unquantised)", gotX, wheelLineStepPx)
+		t.Errorf("wheel right scrollX = %d, want %d (horizontal unquantised)", gotX, wheelLineStepPx)
 	}
 	if gotY != 0 {
-		t.Errorf("ArrowRight scrollY = %d, want 0 (horizontal must not move vertical)", gotY)
+		t.Errorf("wheel right scrollY = %d, want 0 (horizontal must not move vertical)", gotY)
 	}
 }
 
@@ -101,13 +102,13 @@ func TestWheelNonBlockAlignsTarget(t *testing.T) {
 	e.Resize(158, 86)
 	e.SetBackend(backendSixel)
 
-	e.SendKey(Key{Code: "ArrowDown"})
+	e.dispatchWheel(0, wheelLineStepPx)
 
 	e.mu.Lock()
 	gotY, gotTarget := e.scrollY, e.scrollYTarget
 	e.mu.Unlock()
 	if gotY != wheelLineStepPx {
-		t.Errorf("non-block ArrowDown scrollY = %d, want %d (unquantised)", gotY, wheelLineStepPx)
+		t.Errorf("non-block wheel down scrollY = %d, want %d (unquantised)", gotY, wheelLineStepPx)
 	}
 	if gotTarget != gotY {
 		t.Errorf("non-block scrollYTarget = %d, want %d (aligned with scrollY)", gotTarget, gotY)
@@ -128,11 +129,11 @@ func TestWheelBackendSwitchNoCorrectiveJump(t *testing.T) {
 	step := int(math.Round(math.Round(float64(wheelLineStepPx)/cellH) * cellH))
 
 	// Scroll on block, snapping to a whole cell that differs from the raw step.
-	e.SendKey(Key{Code: "ArrowDown"})
+	e.dispatchWheel(0, wheelLineStepPx)
 
 	// Switch to a graphics backend and scroll unquantised.
 	e.SetBackend(backendSixel)
-	e.SendKey(Key{Code: "ArrowDown"})
+	e.dispatchWheel(0, wheelLineStepPx)
 
 	e.mu.Lock()
 	beforeY := e.scrollY
@@ -140,7 +141,7 @@ func TestWheelBackendSwitchNoCorrectiveJump(t *testing.T) {
 
 	// Return to block and scroll once more.
 	e.SetBackend(backendBlock)
-	e.SendKey(Key{Code: "ArrowDown"})
+	e.dispatchWheel(0, wheelLineStepPx)
 
 	e.mu.Lock()
 	afterY := e.scrollY
@@ -172,29 +173,6 @@ func TestWheelCentreCSSPixels(t *testing.T) {
 	cx, cy = wheelCentre(80, 24, 8, 16, 1)
 	if cx != 320 || cy != 192 {
 		t.Errorf("wheelCentre at Z 1 = (%g, %g), want (320, 192) unchanged", cx, cy)
-	}
-}
-
-// TestSendKeyPageStepCSSPixels asserts a Page key steps one CSS-pixel viewport
-// height, not one device-pixel height. The wheel transport speaks CSS pixels, so
-// on a wide block grid where the layout scale Z exceeds 1 the raw rows*cellH device
-// height must be divided by Z. With ctx nil dispatchWheel advances the engine's held
-// scroll offset without a browser, so reading e.scrollY after SendKey observes the
-// step the transport applied.
-func TestSendKeyPageStepCSSPixels(t *testing.T) {
-	e := New("")
-	e.SetCellPx(16, 32)
-	e.Resize(240, 48) // cell 16 over the 8 px density anchor, so Z = 2
-
-	// rows*cellH = 48*32 = 1536 device px; CSS step = round(1536 / 2) = 768.
-	const wantStep = 768
-	e.SendKey(Key{Code: "PageDown"})
-
-	e.mu.Lock()
-	got := e.scrollY
-	e.mu.Unlock()
-	if got != wantStep {
-		t.Errorf("PageDown scrollY = %d, want %d (rows*cellH / Z in CSS px)", got, wantStep)
 	}
 }
 
@@ -372,49 +350,149 @@ func TestSendTextWithoutSessionIsInert(t *testing.T) {
 	}
 }
 
-// TestSendKeyEndThenHomeEdges asserts the Home and End edge scroll rides the
-// held wheel-transport offset: End advances the target by edgeScrollPx (the
-// page clamps at its real bottom), and a following Home negates the whole
-// held target, landing it at exactly 0 beside the page's own top clamp. With
-// ctx nil the dispatch is skipped and the held state alone moves, so the test
-// runs without a browser.
-func TestSendKeyEndThenHomeEdges(t *testing.T) {
-	e := New("")
-	e.SetCellPx(8, 16)
-	e.Resize(120, 40) // Z = 1, whole-cell CSS height 16 divides edgeScrollPx
-
-	e.SendKey(Key{Code: "End"})
-	e.mu.Lock()
-	afterEnd := e.scrollYTarget
-	e.mu.Unlock()
-	if afterEnd != edgeScrollPx {
-		t.Fatalf("End scrollYTarget = %d, want %d", afterEnd, edgeScrollPx)
+// TestCaretKeysStrokeRatherThanScroll asserts the routing decision for the
+// caret keys: each arrow, Home, End, and the Page keys builds a full
+// rawKeyDown/keyUp stroke carrying its own key identity and no char event, so
+// Chromium arbitrates between moving the caret in a focused field and scrolling
+// the page. Each is marked as a scrolling stroke, so its dispatch adopts the
+// page's settled offset afterwards.
+func TestCaretKeysStrokeRatherThanScroll(t *testing.T) {
+	cases := []struct {
+		code string
+		vkey int64
+	}{
+		{"ArrowLeft", 37},
+		{"ArrowUp", 38},
+		{"ArrowRight", 39},
+		{"ArrowDown", 40},
+		{"Home", 36},
+		{"End", 35},
+		{"PageUp", 33},
+		{"PageDown", 34},
 	}
-
-	e.SendKey(Key{Code: "Home"})
-	e.mu.Lock()
-	y, target := e.scrollY, e.scrollYTarget
-	e.mu.Unlock()
-	if y != 0 || target != 0 {
-		t.Fatalf("Home left scroll at (%d, %d), want (0, 0)", y, target)
+	for _, c := range cases {
+		t.Run(c.code, func(t *testing.T) {
+			got := keyStrokeParams(c.code, 0)
+			if len(got) != 2 {
+				t.Fatalf("%s stroke = %d events, want 2 (rawKeyDown, keyUp)", c.code, len(got))
+			}
+			if got[0].Type != "rawKeyDown" || got[1].Type != "keyUp" {
+				t.Fatalf("%s stroke types = %q, %q, want rawKeyDown, keyUp", c.code, got[0].Type, got[1].Type)
+			}
+			for i, p := range got {
+				if p.Key != c.code || p.Code != c.code {
+					t.Fatalf("%s event %d = key %q code %q, want %s/%s", c.code, i, p.Key, p.Code, c.code, c.code)
+				}
+				if p.WindowsVirtualKeyCode != c.vkey || p.NativeVirtualKeyCode != c.vkey {
+					t.Fatalf("%s event %d vk = %d/%d, want %d", c.code, i, p.WindowsVirtualKeyCode, p.NativeVirtualKeyCode, c.vkey)
+				}
+				if p.Text != "" {
+					t.Fatalf("%s event %d carries text %q, want none", c.code, i, p.Text)
+				}
+			}
+			if !strokeScrolls(c.code) {
+				t.Fatalf("%s is not marked as a scrolling stroke, so its dispatch would not adopt the page offset", c.code)
+			}
+		})
 	}
 }
 
-// TestSendKeyPageStepUnscaled asserts the page step equals the raw device height
-// when Z is 1 (an 8 px cell matches the density anchor), so the CSS-pixel divide
-// is a no-op there.
-func TestSendKeyPageStepUnscaled(t *testing.T) {
+// TestStrokeScrollsOnlyCaretKeys asserts the keys whose default action cannot
+// move the page's scroll offset are not marked as scrolling strokes, so they
+// keep the plain one-way dispatch and pay no scroll adopt round trip, and that
+// an unmapped code reports false rather than indexing a missing stroke.
+func TestStrokeScrollsOnlyCaretKeys(t *testing.T) {
+	for _, code := range []string{"Tab", "Enter", "Backspace", "Escape", "KeyA", ""} {
+		if strokeScrolls(code) {
+			t.Errorf("strokeScrolls(%q) = true, want false", code)
+		}
+	}
+}
+
+// TestSendKeyCaretKeysDispatchNoWheel asserts a caret key never advances the
+// engine's held scroll offset by a delta of its own: the page owns the offset
+// now, and the engine adopts it from the settled read. With no session the
+// dispatch is dropped, so the held offset must stay at zero rather than moving
+// the way the old wheel routing moved it.
+func TestSendKeyCaretKeysDispatchNoWheel(t *testing.T) {
 	e := New("")
 	e.SetCellPx(8, 16)
-	e.Resize(120, 40) // cell 8 matches the 8 px density anchor, so Z = 1
+	e.Resize(120, 40)
 
-	const wantStep = 40 * 16 // rows*cellH, no divide
-	e.SendKey(Key{Code: "PageDown"})
+	for _, code := range []string{"ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "PageDown", "PageUp", "End", "Home"} {
+		e.SendKey(Key{Code: code})
+	}
 
 	e.mu.Lock()
-	got := e.scrollY
+	x, y, target, failures := e.scrollX, e.scrollY, e.scrollYTarget, e.inputFailures
 	e.mu.Unlock()
-	if got != wantStep {
-		t.Errorf("PageDown scrollY = %d, want %d (rows*cellH at Z=1)", got, wantStep)
+	if x != 0 || y != 0 || target != 0 {
+		t.Fatalf("held scroll offset = (%d, %d, target %d), want all 0 (no wheel delta from a caret key)", x, y, target)
+	}
+	if failures != 0 {
+		t.Fatalf("inputFailures = %d, want 0 (no dispatch without a session)", failures)
+	}
+}
+
+// TestBuildScrollScript asserts the scroll adopt script carries the snap cell
+// height the backend resolved: a quantising backend substitutes the fractional
+// CSS cell pitch, and a zero height leaves the page offset unsnapped. The
+// placeholder must never survive into the dispatched script.
+func TestBuildScrollScript(t *testing.T) {
+	got := buildScrollScript(16.5)
+	if strings.Contains(got, scrollCellHeightPlaceholder) {
+		t.Fatal("built script still carries the cell-height placeholder")
+	}
+	if !strings.Contains(got, "})(16.5);") {
+		t.Fatalf("built script does not carry the cell height 16.5:\n%s", got)
+	}
+	if unsnapped := buildScrollScript(0); !strings.Contains(unsnapped, "})(0);") {
+		t.Fatalf("unsnapped script does not carry a zero cell height:\n%s", unsnapped)
+	}
+}
+
+// TestSnapCellHeightByBackend asserts the snap pitch the page-side scroll takes
+// follows the backend: the block backend quantises, so it reports the CSS cell
+// height, and a graphics backend reports 0, which leaves the page offset
+// unsnapped.
+func TestSnapCellHeightByBackend(t *testing.T) {
+	e := New("")
+	e.SetCellPx(16, 33)
+	e.Resize(158, 86)
+
+	e.mu.Lock()
+	_, cellH := e.snapshotCellPx()
+	block := e.snapCellHeightLocked()
+	e.mu.Unlock()
+	if block != cellH || block == 0 {
+		t.Fatalf("block snap height = %g, want the CSS cell height %g", block, cellH)
+	}
+
+	e.SetBackend(backendSixel)
+	e.mu.Lock()
+	graphics := e.snapCellHeightLocked()
+	e.mu.Unlock()
+	if graphics != 0 {
+		t.Fatalf("graphics snap height = %g, want 0 (no quantisation)", graphics)
+	}
+}
+
+// TestAdoptScrollLocked asserts the engine takes the page's settled offset as
+// its held offset, rounding the page's fractional pixels and realigning the
+// wheel target with it, so a later wheel accumulates from where the page sits
+// rather than from a stale target.
+func TestAdoptScrollLocked(t *testing.T) {
+	e := New("")
+	e.mu.Lock()
+	e.scrollX, e.scrollY, e.scrollYTarget = 12, 340, 512
+	e.adoptScrollLocked(8.4, 863.6)
+	x, y, target := e.scrollX, e.scrollY, e.scrollYTarget
+	e.mu.Unlock()
+
+	if x != 8 || y != 864 {
+		t.Fatalf("adopted offset = (%d, %d), want (8, 864)", x, y)
+	}
+	if target != y {
+		t.Fatalf("adopted scrollYTarget = %d, want %d (aligned with the page offset)", target, y)
 	}
 }
