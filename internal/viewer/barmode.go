@@ -361,7 +361,7 @@ func (s *streamSession) handleEditKey(ev keyEvent) (quit bool) {
 		case keyDel, keyBackspace:
 			e.backspace()
 		default:
-			if ev.b >= 0x20 && ev.b < 0x7f {
+			if printableByte(ev.b) {
 				e.insertRune(rune(ev.b))
 			}
 		}

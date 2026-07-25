@@ -72,8 +72,9 @@ func TestDecodeCSIAction(t *testing.T) {
 
 // TestByteKeyAction asserts the single-byte command map: Ctrl+Q quits (with
 // Ctrl+C as the interrupt fallback), Ctrl+R reloads, Tab and Enter forward to
-// the page, and plain printable bytes, including q, map to no command, so
-// printable keys stay free for future page form input.
+// the page, both Backspace encodings edit the focused field, Esc forwards to
+// the page, and plain printable bytes, including q and Space, map to no
+// command because they are page text, not a binding.
 func TestByteKeyAction(t *testing.T) {
 	cases := []struct {
 		name string
@@ -86,8 +87,12 @@ func TestByteKeyAction(t *testing.T) {
 		{"ctrl-l", keyCtrlL, actionEditURL},
 		{"tab", keyTab, actionFocusNext},
 		{"enter", keyEnter, actionActivate},
+		{"backspace", keyBackspace, actionBackspace},
+		{"del", keyDel, actionBackspace},
+		{"esc", keyEsc, actionEscape},
 		{"plain q", 'q', actionNone},
 		{"plain Q", 'Q', actionNone},
+		{"space", ' ', actionNone},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -95,6 +100,22 @@ func TestByteKeyAction(t *testing.T) {
 				t.Fatalf("byteKeyAction(%#x) = %d, want %d", c.b, got, c.want)
 			}
 		})
+	}
+}
+
+// TestPrintableByte asserts the page-text byte range: Space through tilde are
+// text, while the control bytes below Space, DEL, and the UTF-8 lead and
+// continuation bytes are not, so they never reach the page as typed text.
+func TestPrintableByte(t *testing.T) {
+	for _, b := range []byte{' ', '!', '0', 'a', 'Z', '~'} {
+		if !printableByte(b) {
+			t.Fatalf("printableByte(%#x) = false, want true", b)
+		}
+	}
+	for _, b := range []byte{0x00, keyBackspace, keyTab, keyEnter, keyEsc, keyDel, 0xc3, 0xa9} {
+		if printableByte(b) {
+			t.Fatalf("printableByte(%#x) = true, want false", b)
+		}
 	}
 }
 

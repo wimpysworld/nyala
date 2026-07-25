@@ -12,6 +12,7 @@ func (e *fakeEngine) Resize(int, int)             {}
 func (e *fakeEngine) Navigate(string) error       { return nil }
 func (e *fakeEngine) Frames() <-chan render.Frame { return e.frames }
 func (e *fakeEngine) SendKey(string)              {}
+func (e *fakeEngine) SendText(string)             {}
 func (e *fakeEngine) SendNav(NavAction)           {}
 func (e *fakeEngine) CurrentURL() string          { return "" }
 func (e *fakeEngine) OpenURL(string)              {}
