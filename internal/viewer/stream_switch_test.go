@@ -68,6 +68,7 @@ func (e *switchOpEngine) FindNext()                   {}
 func (e *switchOpEngine) FindPrev()                   {}
 func (e *switchOpEngine) FindClear()                  {}
 func (e *switchOpEngine) FindState() FindState        { return FindState{} }
+func (e *switchOpEngine) Selection() string           { return "" }
 func (e *switchOpEngine) SendMouse(MouseEvent)        {}
 func (e *switchOpEngine) Close() error                { return nil }
 

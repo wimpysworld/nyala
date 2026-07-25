@@ -592,6 +592,7 @@ type streamTestEngine struct {
 	findPrev       func()
 	findClear      func()
 	findState      *FindState
+	selection      func() string
 }
 
 func (e streamTestEngine) SetBackend(backend Backend) {
@@ -671,6 +672,13 @@ func (e streamTestEngine) FindState() FindState {
 		return *e.findState
 	}
 	return FindState{}
+}
+
+func (e streamTestEngine) Selection() string {
+	if e.selection != nil {
+		return e.selection()
+	}
+	return ""
 }
 
 func (e streamTestEngine) SendMouse(ev MouseEvent) {

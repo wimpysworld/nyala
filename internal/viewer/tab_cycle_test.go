@@ -61,6 +61,7 @@ func (e *tabCycleEngine) FindNext()                   {}
 func (e *tabCycleEngine) FindPrev()                   {}
 func (e *tabCycleEngine) FindClear()                  {}
 func (e *tabCycleEngine) FindState() FindState        { return FindState{} }
+func (e *tabCycleEngine) Selection() string           { return "" }
 func (e *tabCycleEngine) SendMouse(MouseEvent)        {}
 func (e *tabCycleEngine) Close() error                { return nil }
 

@@ -101,6 +101,11 @@ const (
 	// actionOpenMenu opens the bar's menu mode (Alt+F, Chromium's menu key;
 	// F10 is often grabbed by terminal emulators).
 	actionOpenMenu
+	// actionCopySelection copies the page's selection to the terminal clipboard
+	// (Alt+W, the Emacs kill-ring-save chord). Ctrl+C quits and Ctrl+Shift+C is
+	// the terminal's own copy, which a legacy terminal cannot even report apart
+	// from Ctrl+C, so the copy chord lives with the other Alt commands.
+	actionCopySelection
 	// actionDelete is the Delete key (CSI 3~). The chrome dispatch ignores
 	// it; the URL editor deletes the rune under the cursor.
 	actionDelete
@@ -165,6 +170,8 @@ func altKeyAction(b byte) (keyAction, bool) {
 		return actionCycleColourReverse, true
 	case 'f':
 		return actionOpenMenu, true
+	case 'w':
+		return actionCopySelection, true
 	default:
 		return actionNone, false
 	}

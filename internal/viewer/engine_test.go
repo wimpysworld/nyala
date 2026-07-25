@@ -23,5 +23,6 @@ func (e *fakeEngine) FindNext()                   {}
 func (e *fakeEngine) FindPrev()                   {}
 func (e *fakeEngine) FindClear()                  {}
 func (e *fakeEngine) FindState() FindState        { return FindState{} }
+func (e *fakeEngine) Selection() string           { return "" }
 func (e *fakeEngine) SendMouse(MouseEvent)        {}
 func (e *fakeEngine) Close() error                { return nil }
