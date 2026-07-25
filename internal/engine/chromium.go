@@ -436,11 +436,12 @@ func (e *ChromiumEngine) SetBackend(backend render.Backend) {
 // SendKey forwards a key event to the page. Scroll keys (arrows, PageUp,
 // PageDown) route to the wheel transport so scrolling does not depend on which
 // page element holds focus, and Home and End scroll to the document edges
-// through the same transport. Stroke keys (Tab, Enter) dispatch a full
-// rawKeyDown/char/keyUp sequence so the page gets the browser-native default
-// action: focus traversal with the focus ring, and activation of the focused
-// element. Any other key routes to DispatchKeyEvent for a focused element to
-// receive, such as text typed into a form field.
+// through the same transport. Stroke keys (Tab, Enter, Backspace, Escape)
+// dispatch a full rawKeyDown/char/keyUp sequence so the page gets the
+// browser-native default action: focus traversal with the focus ring,
+// activation of the focused element, editing of the focused field, and
+// dismissal of page state. Any other key routes to DispatchKeyEvent for a
+// focused element to receive; typed text takes SendText instead.
 func (e *ChromiumEngine) SendKey(k Key) {
 	e.mu.Lock()
 	// The wheel transport speaks CSS pixels, but rows*cellH is device pixels. Divide

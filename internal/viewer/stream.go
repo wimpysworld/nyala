@@ -45,9 +45,16 @@ type Engine interface {
 	Frames() <-chan render.Frame
 	// SendKey forwards a key by its code (for example ArrowDown) to the page.
 	// Scroll keys route to the engine's wheel transport; the engine owns the
-	// offset. The codes Tab, ShiftTab, and Enter dispatch full key strokes for
-	// native focus traversal and activation.
+	// offset. The codes Tab, ShiftTab, Enter, Backspace, and Escape dispatch
+	// full key strokes for native focus traversal, activation, field editing,
+	// and dismissal.
 	SendKey(code string)
+	// SendText forwards typed text to the focused page element. The engine
+	// picks the CDP transport: a single ASCII character goes as a full key
+	// stroke, so the page sees the key press and Chromium keeps its default
+	// action for it (a space types in a focused field and scrolls the page
+	// otherwise), and multi-byte text inserts atomically.
+	SendText(text string)
 	// SendNav forwards one navigation request: reload, a history step, or the
 	// launch page. The engine owns the launch URL and the navigation path.
 	SendNav(action NavAction)
@@ -1244,8 +1251,10 @@ func (s *streamSession) handleMouse(ev MouseEvent) (quit bool) {
 // rendering, so they are no-ops unless Block is the active backend: cycling
 // under a graphics backend would change hidden state with no visible
 // feedback, and the user would later land on Block in an unexpected mode.
-// Assembled runes and pastes are dropped in chrome: printables stay reserved
-// for future page form input.
+// Printable bytes and assembled runes are page text and forward to the focused
+// element; Backspace and Escape forward as full key strokes, so Escape reaches
+// the page only when no bar mode claimed it. A chrome-mode paste is dropped:
+// the page paste route is not wired.
 func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 	switch s.barMode {
 	case barModeEdit:
@@ -1255,7 +1264,11 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 	case barModeAbout:
 		return s.handleAboutKey(ev)
 	}
-	if ev.r != 0 || ev.paste != "" {
+	if ev.paste != "" {
+		return false
+	}
+	if ev.r != 0 {
+		s.forwardText(string(ev.r))
 		return false
 	}
 	if ev.scroll != ScrollNone {
@@ -1267,6 +1280,10 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		act = byteKeyAction(ev.b)
 	}
 	switch act {
+	case actionNone:
+		if printableByte(ev.b) {
+			s.forwardText(string(rune(ev.b)))
+		}
 	case actionQuit:
 		return true
 	case actionEditURL:
@@ -1279,6 +1296,10 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		s.forwardKey("ShiftTab")
 	case actionActivate:
 		s.forwardKey("Enter")
+	case actionBackspace:
+		s.forwardKey("Backspace")
+	case actionEscape:
+		s.forwardKey("Escape")
 	case actionReload:
 		s.forwardNav(NavReload)
 	case actionBack:
@@ -1315,6 +1336,17 @@ func (s *streamSession) forwardKey(code string) {
 		return
 	}
 	s.eng.SendKey(code)
+}
+
+// forwardText forwards typed page text to the engine off the input loop
+// through the same worker as keys, so text and page keys arrive in typing
+// order and a wedged browser never freezes quit or draw.
+func (s *streamSession) forwardText(text string) {
+	if s.keySender != nil {
+		s.keySender.sendText(text)
+		return
+	}
+	s.eng.SendText(text)
 }
 
 // forwardNav forwards one navigation request to the engine through the same
@@ -1449,6 +1481,16 @@ func (s *keySender) send(code string) {
 		return
 	}
 	s.enqueue(func(e Engine) { e.SendKey(code) })
+}
+
+// sendText queues one typed-text payload for the worker on the same queue as
+// keys, so typing and page keys reach the engine in arrival order. The empty
+// string is ignored.
+func (s *keySender) sendText(text string) {
+	if text == "" {
+		return
+	}
+	s.enqueue(func(e Engine) { e.SendText(text) })
 }
 
 // sendMouse queues one decoded mouse event for the worker on the same queue

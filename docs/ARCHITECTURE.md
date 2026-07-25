@@ -952,6 +952,19 @@ Chrome: Ctrl+L edits the URL, Alt+F opens the menu, Ctrl+Q or Ctrl+C quits.
 Tab, Shift+Tab, and Enter forward to the page for focus traversal and
 activation.
 
+Page text input is the default for unbound keys, which is why plain q does not
+quit. A printable byte or an assembled rune forwards through `SendText`, and
+Backspace and Escape forward as full key strokes; Escape reaches the page only
+when no bar mode claimed it. The engine picks the CDP transport: a single ASCII
+character dispatches a keyDown carrying its text plus a keyUp, so Chromium
+generates the keypress and applies its own default action, which is how Space
+types in a focused field and scrolls the page otherwise with no focus tracking
+in the viewer. Multi-byte and longer text insert atomically through
+`Input.insertText`, so a composed character never depends on per-byte key
+synthesis. Text shares the serialised key worker, so typing and page keys
+reach the engine in arrival order and a wedged browser drops input instead of
+freezing quit or draw.
+
 Home is the launch URL, permanently; there is no home-page configuration
 because a shell alias does that job and the binary stays stateless. The bar
 pulls `CurrentURL` from the engine's committed navigation state on each

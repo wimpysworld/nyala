@@ -535,6 +535,7 @@ func TestFitSixelToGridHonoursBottomRowReservation(t *testing.T) {
 type streamTestEngine struct {
 	frames         chan render.Frame
 	sendKey        func(string)
+	sendText       func(string)
 	setBackend     func(string)
 	sendNav        func(NavAction)
 	sendMouse      func(MouseEvent)
@@ -560,6 +561,12 @@ func (e streamTestEngine) Frames() <-chan render.Frame { return e.frames }
 func (e streamTestEngine) SendKey(code string) {
 	if e.sendKey != nil {
 		e.sendKey(code)
+	}
+}
+
+func (e streamTestEngine) SendText(text string) {
+	if e.sendText != nil {
+		e.sendText(text)
 	}
 }
 

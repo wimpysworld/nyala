@@ -83,6 +83,7 @@ func (e *pipeEngine) Resize(int, int)             {}
 func (e *pipeEngine) Navigate(string) error       { return nil }
 func (e *pipeEngine) Frames() <-chan render.Frame { return e.frames }
 func (e *pipeEngine) SendKey(string)              {}
+func (e *pipeEngine) SendText(string)             {}
 func (e *pipeEngine) SendNav(NavAction)           {}
 func (e *pipeEngine) CurrentURL() string          { return "" }
 func (e *pipeEngine) OpenURL(string)              {}

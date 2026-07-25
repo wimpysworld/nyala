@@ -52,22 +52,28 @@ func wheelCentre(cols, rows, cellW, cellH int, z float64) (cx, cy float64) {
 	return float64(cols*cellW) / 2 / z, float64(rows*cellH) / 2 / z
 }
 
-// strokeKey describes one key the engine forwards as a full CDP key stroke
-// (rawKeyDown, an optional char, then keyUp) rather than the single KeyChar
-// event typed text uses. The full stroke gives the page the browser-native
-// default action: Tab traverses focus with the focus ring, Enter activates
-// the focused element.
+// strokeKey describes one named key the engine forwards as a full CDP key
+// stroke: rawKeyDown, an optional char, then keyUp. The stroke gives the page
+// the browser-native default action: Tab traverses focus with the focus ring,
+// Enter activates the focused element. rawKeyDown suppresses Chromium's own
+// char synthesis, so a key that produces text spells that text out here;
+// printableStroke takes the opposite route for typed characters, letting the
+// keyDown generate the keypress from its text.
 type strokeKey struct {
 	key  string // the DispatchKeyEvent key value, for example "Tab"
 	vkey int64  // the Windows and native virtual key code
 	text string // the char-event text, empty when the key produces none
 }
 
-// strokeKeys maps the key codes the viewer forwards for native handling. Any
-// other code stays on the KeyChar path for a focused element to receive.
+// strokeKeys maps the named key codes the viewer forwards for native handling.
+// Any other code stays on the KeyChar path for a focused element to receive.
+// Backspace and Escape carry no char event: Chromium runs both from the key
+// down, editing the focused field and dismissing page state respectively.
 var strokeKeys = map[string]strokeKey{
-	"Tab":   {key: "Tab", vkey: 9},
-	"Enter": {key: "Enter", vkey: 13, text: "\r"},
+	"Tab":       {key: "Tab", vkey: 9},
+	"Enter":     {key: "Enter", vkey: 13, text: "\r"},
+	"Backspace": {key: "Backspace", vkey: 8},
+	"Escape":    {key: "Escape", vkey: 27},
 }
 
 // keyStrokeParams builds the CDP key events one full key stroke dispatches,
@@ -102,6 +108,79 @@ func keyStrokeTasks(params []*input.DispatchKeyEventParams) chromedp.Tasks {
 		tasks[i] = p
 	}
 	return tasks
+}
+
+// printableStroke builds the CDP key events one typed printable ASCII
+// character dispatches: keyDown carrying the character as its text, then keyUp.
+// The keyDown type (not the rawKeyDown the named strokes use) makes Chromium
+// generate the keypress from the text itself, so one stroke both types into the
+// focused element and gives the key its browser-native default action. That is
+// what keeps Space arbitration in the browser with no focus tracking in the
+// viewer: a space types into a focused field and scrolls the page otherwise. It
+// also means a page that listens on keydown, such as a shortcut handler or an
+// in-page editor, sees the key the user pressed. It returns nil for anything
+// but a single ASCII character, so the caller inserts multi-byte or longer text
+// atomically instead of synthesising a key event per byte.
+func printableStroke(text string) []*input.DispatchKeyEventParams {
+	if len(text) != 1 || text[0] < 0x20 || text[0] >= 0x7f {
+		return nil
+	}
+	code, vkey := printableKeyIdentity(text[0])
+	stamp := func(p *input.DispatchKeyEventParams) *input.DispatchKeyEventParams {
+		return p.WithKey(text).
+			WithCode(code).
+			WithWindowsVirtualKeyCode(vkey).
+			WithNativeVirtualKeyCode(vkey)
+	}
+	down := stamp(input.DispatchKeyEvent(input.KeyDown)).WithText(text).WithUnmodifiedText(text)
+	return []*input.DispatchKeyEventParams{down, stamp(input.DispatchKeyEvent(input.KeyUp))}
+}
+
+// printableKeyIdentity returns the physical key code and virtual key code for a
+// printable ASCII byte, for the characters a keyboard layout cannot disagree
+// about: Space, the digits, and the letters, whose virtual key code is the
+// upper-case ASCII value. Punctuation sits on layout-specific keys, so it
+// carries no code and a zero virtual key code and travels on its text alone,
+// which is all typing needs; inventing a US-layout code for it would report a
+// key the user may not have pressed.
+func printableKeyIdentity(c byte) (code string, vkey int64) {
+	switch {
+	case c == ' ':
+		return "Space", ' '
+	case c >= '0' && c <= '9':
+		return "Digit" + string(c), int64(c)
+	case c >= 'a' && c <= 'z':
+		upper := c - ('a' - 'A')
+		return "Key" + string(upper), int64(upper)
+	case c >= 'A' && c <= 'Z':
+		return "Key" + string(c), int64(c)
+	default:
+		return "", 0
+	}
+}
+
+// SendText forwards typed text to the focused element. A single ASCII
+// character dispatches a full keyDown/keyUp stroke, so the page sees the key
+// press and Chromium keeps its default action for it; longer or multi-byte text
+// inserts atomically through Input.insertText, so a composed character never
+// depends on per-byte key synthesis. Empty text is a no-op, and the dispatch is
+// bounded like every other input, so a wedged browser drops the text rather
+// than parking the caller.
+func (e *ChromiumEngine) SendText(text string) {
+	if text == "" {
+		return
+	}
+	e.mu.Lock()
+	ctx := e.ctx
+	e.mu.Unlock()
+	if ctx == nil {
+		return
+	}
+	if params := printableStroke(text); params != nil {
+		e.dispatchInput(ctx, keyStrokeTasks(params))
+		return
+	}
+	e.dispatchInput(ctx, input.InsertText(text))
 }
 
 // edgeScrollPx is the vertical wheel delta one End press dispatches: far past

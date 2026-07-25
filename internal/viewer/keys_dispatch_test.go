@@ -59,6 +59,149 @@ func TestHandleKeyForwardsPageKeys(t *testing.T) {
 	}
 }
 
+// TestHandleKeyForwardsPageText pins the page-text forwarding: a printable
+// byte, a Space, and an assembled multi-byte rune reach the engine's text seam
+// with the typed character, and none of them takes the key-code seam. Space
+// rides the text path so Chromium arbitrates it: it types in a focused field
+// and scrolls otherwise.
+func TestHandleKeyForwardsPageText(t *testing.T) {
+	cases := []struct {
+		name string
+		ev   keyEvent
+		want string
+	}{
+		{"letter", keyEvent{b: 'a'}, "a"},
+		{"digit", keyEvent{b: '7'}, "7"},
+		{"space", keyEvent{b: ' '}, " "},
+		{"tilde", keyEvent{b: '~'}, "~"},
+		{"two-byte rune", keyEvent{r: 'é'}, "é"},
+		{"three-byte rune", keyEvent{r: '日'}, "日"},
+		{"four-byte rune", keyEvent{r: '🙂'}, "🙂"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			st := NewState(80, 24)
+			var text []string
+			var sent []string
+			s := dispatchSession(streamTestEngine{
+				sendText: func(t string) { text = append(text, t) },
+				sendKey:  func(code string) { sent = append(sent, code) },
+			}, &st)
+
+			if quit := s.handleKey(c.ev); quit {
+				t.Fatalf("%s requested quit", c.name)
+			}
+			if len(text) != 1 || text[0] != c.want {
+				t.Fatalf("SendText calls = %q, want [%q]", text, c.want)
+			}
+			if len(sent) != 0 {
+				t.Fatalf("%s also forwarded key codes %v, want none", c.name, sent)
+			}
+		})
+	}
+}
+
+// TestHandleKeyForwardsEditKeys pins the field-editing keys: both Backspace
+// encodings (0x08 and DEL) and Esc forward as key codes for the engine to
+// dispatch as full strokes, and neither reaches the text seam.
+func TestHandleKeyForwardsEditKeys(t *testing.T) {
+	cases := []struct {
+		name string
+		ev   keyEvent
+		want string
+	}{
+		{"backspace", keyEvent{b: keyBackspace}, "Backspace"},
+		{"del", keyEvent{b: keyDel}, "Backspace"},
+		{"esc", keyEvent{b: keyEsc}, "Escape"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			st := NewState(80, 24)
+			var sent []string
+			var text []string
+			s := dispatchSession(streamTestEngine{
+				sendKey:  func(code string) { sent = append(sent, code) },
+				sendText: func(t string) { text = append(text, t) },
+			}, &st)
+
+			if quit := s.handleKey(c.ev); quit {
+				t.Fatalf("%s requested quit", c.name)
+			}
+			if len(sent) != 1 || sent[0] != c.want {
+				t.Fatalf("SendKey calls = %v, want [%s]", sent, c.want)
+			}
+			if len(text) != 0 {
+				t.Fatalf("%s reached the text seam: %q", c.name, text)
+			}
+		})
+	}
+}
+
+// TestHandleKeyDropsNonText pins what chrome mode still drops: an unbound Ctrl
+// chord is not text, and a bracketed paste is not routed to the page, so
+// neither reaches the engine.
+func TestHandleKeyDropsNonText(t *testing.T) {
+	st := NewState(80, 24)
+	var text []string
+	var sent []string
+	s := dispatchSession(streamTestEngine{
+		sendText: func(t string) { text = append(text, t) },
+		sendKey:  func(code string) { sent = append(sent, code) },
+	}, &st)
+
+	for _, ev := range []keyEvent{{b: keyCtrlA}, {b: keyCtrlW}, {b: 0x00}, {paste: "typed"}} {
+		if quit := s.handleKey(ev); quit {
+			t.Fatalf("%+v requested quit", ev)
+		}
+	}
+	if len(text) != 0 || len(sent) != 0 {
+		t.Fatalf("dropped input reached the engine: text %q, keys %v", text, sent)
+	}
+}
+
+// TestBarModeOwnsTextAndEscape pins the bar-mode first claim: while the URL
+// editor or the menu is open, printable input and Esc belong to the mode, so
+// Esc closes it and nothing reaches the page. Only after the mode closes does
+// Esc forward to the page.
+func TestBarModeOwnsTextAndEscape(t *testing.T) {
+	modes := []struct {
+		name  string
+		enter keyEvent
+	}{
+		{"edit", keyEvent{b: keyCtrlL}},
+		{"menu", keyEvent{act: actionOpenMenu}},
+	}
+	for _, m := range modes {
+		t.Run(m.name, func(t *testing.T) {
+			var text []string
+			var sent []string
+			s, _ := modeSession(t, streamTestEngine{
+				sendText: func(t string) { text = append(text, t) },
+				sendKey:  func(code string) { sent = append(sent, code) },
+			})
+
+			s.handleKey(m.enter)
+			if s.barMode == barModeChrome {
+				t.Fatalf("%s mode did not open", m.name)
+			}
+			s.handleKey(keyEvent{b: 'a'})
+			s.handleKey(keyEvent{r: 'é'})
+			s.handleKey(keyEvent{b: keyEsc})
+			if s.barMode != barModeChrome {
+				t.Fatalf("Esc did not close %s mode: mode %d", m.name, s.barMode)
+			}
+			if len(text) != 0 || len(sent) != 0 {
+				t.Fatalf("%s mode leaked input: text %q, keys %v", m.name, text, sent)
+			}
+
+			s.handleKey(keyEvent{b: keyEsc})
+			if len(sent) != 1 || sent[0] != "Escape" {
+				t.Fatalf("chrome Esc = %v, want [Escape] once the mode closed", sent)
+			}
+		})
+	}
+}
+
 // TestHandleKeyForwardsNav pins the navigation forwarding: Ctrl+R and F5
 // reload, Alt+Left goes back, Alt+Right goes forward, and Alt+Home opens the
 // launch page through the engine seam that holds the launch URL.

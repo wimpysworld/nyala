@@ -99,11 +99,17 @@ const (
 	// actionDelete is the Delete key (CSI 3~). The chrome dispatch ignores
 	// it; the URL editor deletes the rune under the cursor.
 	actionDelete
+	// actionBackspace forwards Backspace to the page so the focused field
+	// edits. Terminals send it as either 0x08 or DEL.
+	actionBackspace
+	// actionEscape forwards Escape to the page. It is reached only in chrome:
+	// a bar mode claims Escape first and closes itself.
+	actionEscape
 )
 
-// byteKeyAction maps a single key byte to its viewer command. Plain printable
-// bytes map to none: they stay free for future page form input, which is why
-// plain q no longer quits (Ctrl+Q does).
+// byteKeyAction maps a single key byte to its viewer command. A printable byte
+// maps to none: it is page text, forwarded by the chrome dispatch rather than
+// bound to a command, which is why plain q does not quit (Ctrl+Q does).
 func byteKeyAction(b byte) keyAction {
 	switch b {
 	case keyQuitCtrlQ, keyQuitCtrlC:
@@ -116,9 +122,20 @@ func byteKeyAction(b byte) keyAction {
 		return actionFocusNext
 	case keyEnter:
 		return actionActivate
+	case keyBackspace, keyDel:
+		return actionBackspace
+	case keyEsc:
+		return actionEscape
 	default:
 		return actionNone
 	}
+}
+
+// printableByte reports whether b is a printable ASCII byte (Space through
+// tilde). Those bytes are text: the chrome dispatch forwards them to the
+// focused page element and the URL editor inserts them.
+func printableByte(b byte) bool {
+	return b >= 0x20 && b < keyDel
 }
 
 // altKeyAction maps an ESC-prefixed letter (an Alt chord: most terminals send

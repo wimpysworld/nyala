@@ -250,6 +250,125 @@ func TestKeyStrokeParams(t *testing.T) {
 	}
 }
 
+// TestKeyStrokeParamsEditKeys asserts Backspace and Escape stroke as
+// rawKeyDown then keyUp with their virtual key codes and no char event, so
+// Chromium runs its own default action from the key down: Backspace edits the
+// focused field and Escape dismisses page state.
+func TestKeyStrokeParamsEditKeys(t *testing.T) {
+	cases := []struct {
+		code string
+		vkey int64
+	}{
+		{"Backspace", 8},
+		{"Escape", 27},
+	}
+	for _, c := range cases {
+		t.Run(c.code, func(t *testing.T) {
+			got := keyStrokeParams(c.code, 0)
+			if len(got) != 2 {
+				t.Fatalf("%s stroke = %d events, want 2 (rawKeyDown, keyUp)", c.code, len(got))
+			}
+			if got[0].Type != "rawKeyDown" || got[1].Type != "keyUp" {
+				t.Fatalf("%s stroke types = %q, %q, want rawKeyDown, keyUp", c.code, got[0].Type, got[1].Type)
+			}
+			for i, p := range got {
+				if p.Key != c.code || p.Code != c.code {
+					t.Fatalf("%s event %d = key %q code %q, want %s/%s", c.code, i, p.Key, p.Code, c.code, c.code)
+				}
+				if p.WindowsVirtualKeyCode != c.vkey || p.NativeVirtualKeyCode != c.vkey {
+					t.Fatalf("%s event %d vk = %d/%d, want %d", c.code, i, p.WindowsVirtualKeyCode, p.NativeVirtualKeyCode, c.vkey)
+				}
+				if p.Text != "" {
+					t.Fatalf("%s event %d carries text %q, want none", c.code, i, p.Text)
+				}
+			}
+		})
+	}
+}
+
+// TestPrintableStroke asserts the typed-text split: one printable ASCII
+// character builds a keyDown/keyUp pair whose down carries the character as
+// both text and unmodified text, so the page sees a real key press and
+// Chromium generates the keypress that types it, while a multi-byte rune, a
+// longer string, a control byte, and DEL build nothing, so those insert
+// atomically through Input.insertText instead. The keyDown type is
+// load-bearing: rawKeyDown would suppress Chromium's char synthesis and the
+// character would never type.
+func TestPrintableStroke(t *testing.T) {
+	for _, text := range []string{"a", "Z", " ", "~", "/", "7"} {
+		got := printableStroke(text)
+		if len(got) != 2 {
+			t.Fatalf("printableStroke(%q) = %d events, want 2 (keyDown, keyUp)", text, len(got))
+		}
+		if got[0].Type != "keyDown" || got[1].Type != "keyUp" {
+			t.Fatalf("printableStroke(%q) types = %q, %q, want keyDown, keyUp", text, got[0].Type, got[1].Type)
+		}
+		if got[0].Text != text || got[0].UnmodifiedText != text {
+			t.Fatalf("printableStroke(%q) down text = %q/%q, want %q", text, got[0].Text, got[0].UnmodifiedText, text)
+		}
+		for i, p := range got {
+			if p.Key != text {
+				t.Fatalf("printableStroke(%q) event %d key = %q, want %q", text, i, p.Key, text)
+			}
+		}
+		if got[1].Text != "" {
+			t.Fatalf("printableStroke(%q) keyUp carries text %q, want none", text, got[1].Text)
+		}
+	}
+	for _, text := range []string{"", "é", "日", "ab", "\x00", "\x7f", "\n"} {
+		if got := printableStroke(text); got != nil {
+			t.Fatalf("printableStroke(%q) built a stroke, want nil for the insertText path", text)
+		}
+	}
+}
+
+// TestPrintableKeyIdentity asserts the layout-independent key identities the
+// typed stroke reports: Space, the digits, and the letters carry their physical
+// code and virtual key code (the upper-case ASCII value for a letter, so a
+// lower-case a reports KeyA and 65), while layout-specific punctuation reports
+// none rather than inventing a US-layout key the user may not have pressed.
+func TestPrintableKeyIdentity(t *testing.T) {
+	cases := []struct {
+		c    byte
+		code string
+		vkey int64
+	}{
+		{' ', "Space", 32},
+		{'0', "Digit0", 48},
+		{'7', "Digit7", 55},
+		{'a', "KeyA", 65},
+		{'z', "KeyZ", 90},
+		{'A', "KeyA", 65},
+		{'Z', "KeyZ", 90},
+		{'/', "", 0},
+		{'~', "", 0},
+		{'!', "", 0},
+	}
+	for _, c := range cases {
+		code, vkey := printableKeyIdentity(c.c)
+		if code != c.code || vkey != c.vkey {
+			t.Fatalf("printableKeyIdentity(%q) = (%q, %d), want (%q, %d)", c.c, code, vkey, c.code, c.vkey)
+		}
+	}
+}
+
+// TestSendTextWithoutSessionIsInert asserts SendText drops the text when no
+// browser session is attached rather than dispatching or panicking, matching
+// the SendKey contract that a wedged or absent browser never parks the caller.
+func TestSendTextWithoutSessionIsInert(t *testing.T) {
+	e := New("")
+	e.SendText("a")
+	e.SendText("日本語")
+	e.SendText("")
+
+	e.mu.Lock()
+	failures := e.inputFailures
+	e.mu.Unlock()
+	if failures != 0 {
+		t.Fatalf("inputFailures = %d, want 0 (no dispatch without a session)", failures)
+	}
+}
+
 // TestSendKeyEndThenHomeEdges asserts the Home and End edge scroll rides the
 // held wheel-transport offset: End advances the target by edgeScrollPx (the
 // page clamps at its real bottom), and a following Home negates the whole
