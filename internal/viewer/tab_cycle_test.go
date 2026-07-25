@@ -56,6 +56,11 @@ func (e *tabCycleEngine) SendNav(NavAction)           {}
 func (e *tabCycleEngine) CurrentURL() string          { return "" }
 func (e *tabCycleEngine) OpenURL(string)              {}
 func (e *tabCycleEngine) BrowserVersion() string      { return "" }
+func (e *tabCycleEngine) Find(string)                 {}
+func (e *tabCycleEngine) FindNext()                   {}
+func (e *tabCycleEngine) FindPrev()                   {}
+func (e *tabCycleEngine) FindClear()                  {}
+func (e *tabCycleEngine) FindState() FindState        { return FindState{} }
 func (e *tabCycleEngine) SendMouse(MouseEvent)        {}
 func (e *tabCycleEngine) Close() error                { return nil }
 

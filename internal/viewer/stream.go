@@ -75,6 +75,22 @@ type Engine interface {
 	// display, for example "Chrome 138.0.7204.49", or an empty string when
 	// unavailable.
 	BrowserVersion() string
+	// Find searches the page for query, highlighting every match and selecting
+	// the first. Chromium owns the search and the highlights, which arrive as
+	// ordinary frames; the page's own focus survives it, so the bar can hold
+	// the text field while the page stays the search target. An empty query
+	// clears the search.
+	Find(query string)
+	// FindNext selects the next match, wrapping past the last.
+	FindNext()
+	// FindPrev selects the previous match, wrapping past the first.
+	FindPrev()
+	// FindClear removes the search highlights and state from the page.
+	FindClear()
+	// FindState returns the search-state snapshot to draw. It never waits on
+	// the browser, so a repaint always has a value: a search in flight reports
+	// Pending with the previous counts, and a dropped dispatch reports Failed.
+	FindState() FindState
 	// SendMouse forwards one decoded mouse event. A wheel step scrolls at the
 	// pointer cell through the engine's wheel transport; a press or release
 	// dispatches a mouse event at the cell centre. The engine owns the
@@ -82,6 +98,20 @@ type Engine interface {
 	SendMouse(ev MouseEvent)
 	// Close tears down the engine and the browser process.
 	Close() error
+}
+
+// FindState is the page-search state the viewer draws, mirroring the engine's
+// snapshot so the viewer never imports the engine package. Total is the match
+// count and Current the 1-based selected match, 0 when the page holds none.
+// Pending marks a dispatch in flight, with the previous counts still readable;
+// Failed marks the last dispatch as dropped by a wedged browser, with the last
+// known counts kept, because the highlights it painted are still on the page.
+type FindState struct {
+	Query   string
+	Total   int
+	Current int
+	Pending bool
+	Failed  bool
 }
 
 // NavAction identifies one page navigation request the viewer forwards over
@@ -1673,6 +1703,30 @@ func (s *keySender) sendNav(a NavAction) {
 // as keys, so a commit never overtakes an earlier queued key.
 func (s *keySender) sendOpen(url string) {
 	s.enqueue(func(e Engine) { e.OpenURL(url) })
+}
+
+// sendFind queues one page search for the worker on the same queue as keys, so
+// a search never overtakes an earlier keystroke and a slow browser search never
+// blocks the input loop. The counts land on the engine's state snapshot, which
+// the bar reads on its next repaint.
+func (s *keySender) sendFind(query string) {
+	s.enqueue(func(e Engine) { e.Find(query) })
+}
+
+// sendFindNext queues one step to the next match on the same queue as keys.
+func (s *keySender) sendFindNext() {
+	s.enqueue(func(e Engine) { e.FindNext() })
+}
+
+// sendFindPrev queues one step to the previous match on the same queue as keys.
+func (s *keySender) sendFindPrev() {
+	s.enqueue(func(e Engine) { e.FindPrev() })
+}
+
+// sendFindClear queues one search clear on the same queue as keys, so it never
+// overtakes a search still waiting to dispatch.
+func (s *keySender) sendFindClear() {
+	s.enqueue(func(e Engine) { e.FindClear() })
 }
 
 // enqueue appends one forward closure with a non-blocking wake, so the input

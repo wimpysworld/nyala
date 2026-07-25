@@ -344,6 +344,54 @@ DevTools-injected Ctrl+wheel does not drive browser-level zoom, so the CSS
 layout the renderer is sized to cannot shift underneath it; a live test watches
 that assumption.
 
+### Find
+
+Find splits the work: Chromium matches, and an injected page script paints. No
+CDP surface does both. `DOM.performSearch` returns node results and paints
+nothing, and the browser's own find highlights are browser-level, not reachable
+over CDP. So one `Runtime.evaluate` through the bounded dispatch runs a page
+script where the legacy `window.find()` enumerates matches and the CSS Custom
+Highlight API paints them. `window.find`'s own selection highlight does reach
+the screencast, but only the current match and only in the inactive grey
+selection colour, because a headless document never holds window focus; the
+custom-highlight registrations paint every match in a chosen colour. Keeping
+`window.find` as the matcher keeps matching, wrapping, and cross-element and
+hidden-text semantics in Chromium rather than a hand-rolled `TreeWalker`.
+
+The costs of that choice, all deliberate:
+
+- `window.find` is non-standard, unspecified, and Chromium and WebKit only. It
+  could be removed, which would need a new matcher behind the same seam.
+- It drives off the DOM selection, so the script borrows the selection and puts
+  it back, including a text control's caret, which a document `Range` cannot
+  round-trip.
+- It walks the top document only. `searchInFrames` would leave the match in a
+  subframe's selection where the top document cannot read the range, so iframe
+  text is not searchable.
+- The paint side needs Chromium 105 or later. Older builds still count and
+  navigate; only the highlights are missing.
+- One search collects at most 2000 matches.
+- The highlight paints no glyph ink on Block, because the crisp overlay is the
+  only text layer there, and black ink elsewhere, where the page's own ink is
+  the text.
+
+The engine owns the search state, as it owns the scroll offset and the committed
+URL. The five operations run on the viewer's serialised worker and each dispatch
+is bounded, so `FindState` takes only the mutex and a repaint never waits on
+Chromium. In flight the viewer reads `Pending` with the previous counts still
+valid; on a stall it reads `Failed` after the dispatch deadline, keeping the last
+counts, because the highlights that search painted are still on the page. A
+main-frame commit drops the state, so a navigated page never shows a count for
+highlights it no longer carries.
+
+Clear removes both highlight registrations, the injected style, and the
+page-side range list. DOM focus and the caret are untouched, so page input after
+a clear reaches the element and offset the reader left. Scroll stays where the
+last match was, the way closing a desktop find bar behaves, and the engine has
+already adopted the page's settled offset, so the wheel transport, Home, and
+crash recovery stay aligned. A revealing scroll is snapped to the cell pitch on
+Block, so the crisp overlay stays on the grid.
+
 ### Crash recovery and concurrency
 
 A supervisor goroutine (`supervise` in `recovery.go`) owns the session. It

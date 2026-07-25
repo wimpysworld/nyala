@@ -89,6 +89,11 @@ func (e *pipeEngine) SendNav(NavAction)           {}
 func (e *pipeEngine) CurrentURL() string          { return "" }
 func (e *pipeEngine) OpenURL(string)              {}
 func (e *pipeEngine) BrowserVersion() string      { return "" }
+func (e *pipeEngine) Find(string)                 {}
+func (e *pipeEngine) FindNext()                   {}
+func (e *pipeEngine) FindPrev()                   {}
+func (e *pipeEngine) FindClear()                  {}
+func (e *pipeEngine) FindState() FindState        { return FindState{} }
 func (e *pipeEngine) SendMouse(MouseEvent)        {}
 func (e *pipeEngine) Close() error                { return nil }
 

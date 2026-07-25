@@ -29,8 +29,16 @@ const inputDispatchTimeout = 2 * time.Second
 // consecutive failure count for debug inspection and never holds e.mu across
 // chromedp.Run.
 func (e *ChromiumEngine) dispatchInput(ctx context.Context, action chromedp.Action) {
+	_ = e.runInput(ctx, action)
+}
+
+// runInput is the one bounded input dispatch, returning the outcome for a caller
+// that reads a value back from the page (the search seam) rather than only
+// sending an event. dispatchInput drops the error, which is all a fire-and-forget
+// keystroke needs. A nil context is a dead session, so the action is dropped.
+func (e *ChromiumEngine) runInput(ctx context.Context, action chromedp.Action) error {
 	if ctx == nil {
-		return
+		return nil
 	}
 	runCtx, cancel := context.WithTimeout(ctx, inputDispatchTimeout)
 	defer cancel()
@@ -42,6 +50,7 @@ func (e *ChromiumEngine) dispatchInput(ctx context.Context, action chromedp.Acti
 		e.inputFailures = 0
 	}
 	e.mu.Unlock()
+	return err
 }
 
 // wheelCentre returns the CSS-pixel viewport centre the wheel transport
