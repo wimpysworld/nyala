@@ -97,9 +97,8 @@ type Artefacts struct {
 	Histogram string  `json:"histogram"`
 }
 
-// Report is one sweep record for a single (page, mode, run). It marshals to the
-// stable flat-key shape documented in docs/STAGE-0.md, uniform across all three
-// modes.
+// Report is one sweep record for a single (page, mode, run). It marshals to a
+// stable flat-key shape, uniform across all three modes.
 type Report struct {
 	SchemaVersion   int             `json:"schemaVersion"`
 	Page            string          `json:"page"`

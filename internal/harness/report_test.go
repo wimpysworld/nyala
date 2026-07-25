@@ -14,8 +14,7 @@ func pint(v int) *int { return &v }
 // pstr returns a pointer to a string literal.
 func pstr(v string) *string { return &v }
 
-// fullReport returns a populated block-mode report matching the worked example
-// in docs/STAGE-0.md.
+// fullReport returns a populated block-mode report exercising every field.
 func fullReport() Report {
 	return Report{
 		SchemaVersion: SchemaVersion,
@@ -75,8 +74,8 @@ func TestSchemaVersionPinned(t *testing.T) {
 	}
 }
 
-// TestMarshalShape checks a populated report marshals to the documented
-// flat-key shape from docs/STAGE-0.md.
+// TestMarshalShape checks a populated report marshals to the stable flat-key
+// shape.
 func TestMarshalShape(t *testing.T) {
 	got := marshalToMap(t, fullReport())
 

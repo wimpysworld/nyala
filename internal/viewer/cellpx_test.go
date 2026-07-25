@@ -13,7 +13,7 @@ import (
 // so the chain rests on them.
 func TestCellPxDefaultWhenGeometryAbsent(t *testing.T) {
 	if cellraster.CellPxW != 8 || cellraster.CellPxH != 16 {
-		t.Fatalf("raster default = %dx%d, want 8x16 (pinned Route A raster in docs/STAGE-0.md)", cellraster.CellPxW, cellraster.CellPxH)
+		t.Fatalf("raster default = %dx%d, want 8x16 (the pinned diagnostic raster default)", cellraster.CellPxW, cellraster.CellPxH)
 	}
 	st := NewState(80, 24)
 	if st.W != 8 || st.H != 16 {

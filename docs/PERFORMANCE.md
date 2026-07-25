@@ -63,7 +63,7 @@ The colour-conversion follow-up and the resulting Block and Sixel benchmark orde
 are in [the 2026-07-15 research record](#colour-conversion-research-2026-07-15).
 Real-terminal decode, draw, write, FPS, and tearing measurements completed; the
 Sixel matrix is recorded in
-[`TERMINAL-COMPATIBILITY.md`](./TERMINAL-COMPATIBILITY.md), "Sixel performance".
+[the Sixel palette reuse record below](#sixel-palette-reuse-2026-07-22).
 
 ---
 
@@ -581,8 +581,8 @@ a measured bottleneck.
 
 ### Audio (moved)
 
-Audio is a built feature, not an fps lever. It lives in `docs/OVERVIEW.md`
-(Architecture Decisions), as a live-path Chromium launch-flag behaviour.
+Audio is a built feature, not an fps lever. It lives in `docs/ARCHITECTURE.md`
+(Launch and Chromium discovery), as a live-path Chromium launch-flag behaviour.
 
 ### Companion: sustained-fps measure [DONE - 9002348 and the FPS instrument below]
 
@@ -3361,13 +3361,13 @@ holds 60.0 fps at the CDP cap, decode stays at 13.0-13.7 ms mean, and encode
 stays at 28.3-30.3 ms mean. For those four, the output spread is entirely the
 emulator's Sixel consumption:
 
-| Emulator | `out_write_mean_ms` | Output fps |
-|---|---:|---:|
-| mlterm | 42.2 | 22.9 |
-| Alacritty | 55.6 | 17.5 |
-| foot | 123.9 | 8.1 |
-| Contour | 250.3 | 4.0 |
-| WezTerm | 553.7 | 1.8 |
+| Emulator | Nyala decode mean ms | Nyala encode mean ms | `out_write_mean_ms` | Output fps |
+|---|---:|---:|---:|---:|
+| mlterm | 13.5 | 28.3 | 42.2 | 22.9 |
+| Alacritty | 13.7 | 29.4 | 55.6 | 17.5 |
+| foot | 13.6 | 30.0 | 123.9 | 8.1 |
+| Contour | 13.0 | 30.3 | 250.3 | 4.0 |
+| WezTerm | 29.2 | 70.3 | 553.7 | 1.8 |
 
 WezTerm is the outlier twice over. It is the slowest consumer at 553.7 ms per
 frame, thirteen times mlterm. Its Sixel parsing and rasterisation also contend
@@ -3624,7 +3624,7 @@ not motion-only. That is a separate, unbuilt item.
   the Block backend. Direct Kitty PNG is the standalone-terminal path. Graphics
   passthrough remains conditional work; do not prescribe `U=1` until placeholder
   support is re-tested on the exact target releases. See
-  [`TERMINAL-COMPATIBILITY.md`](./TERMINAL-COMPATIBILITY.md), "Multiplexers".
+  [`ARCHITECTURE.md`](./ARCHITECTURE.md#multiplexer-graphics), "Multiplexer graphics".
 - RESOLVED: the load-time split (Chromium spawn, navigation-to-first-paint, Nyala's
   setup round-trips) is answered by the recommendation 4 timing (`screencast_started`
   ~191 ms, dominated by Chromium's own launch). Recommendation 13 is now closed on that

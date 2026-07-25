@@ -18,8 +18,7 @@ renders through Block, Kitty, or Sixel backends. The Go module is
   rendering, and the shared production Block compose seam.
 - `testdata/corpus` contains the self-contained CDP correctness fixtures.
 
-Read `docs/OVERVIEW.md` for architecture and `docs/STAGE-0.md` through
-`docs/STAGE-3.md` for historical stage decisions.
+Read `docs/ARCHITECTURE.md` for the design record and decision rationale.
 
 ## Setup
 

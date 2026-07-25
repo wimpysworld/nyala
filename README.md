@@ -10,7 +10,7 @@
 Nyala is a browser for the terminal. The goal: render real web pages - HTML5, CSS, JavaScript - directly to a TTY. It will drive headless Chromium via the Chrome DevTools Protocol and composite a crisp Unicode text layer over a block bitmap, so text stays sharp rather than fuzzy. On a modern terminal it renders high-fidelity output through the Kitty graphics protocol or Sixel. And it runs anywhere, down to a bare Linux console under [KMSCON](https://github.com/kmscon/kmscon), with no display server required.
 
 > [!IMPORTANT]
-> **Early development.** The three rendering backends and the measurement harness are built (Stage 0), along with capability and colour detection (Stage 1) and the crisp text overlay on the block path (Stage 2). Stage 3 wires the browser: `nyala <url>` launches headless Chromium, streams a live screencast over the Chrome DevTools Protocol, and renders the page with the crisp text overlay. See [`docs/OVERVIEW.md`](docs/OVERVIEW.md) for the architecture and progress.
+> **Early development.** The browser is live: `nyala <url>` launches headless Chromium, streams a live screencast over the Chrome DevTools Protocol, and renders the page with the crisp text overlay on all three backends. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design.
 
 ## Why Nyala?
 
@@ -28,9 +28,39 @@ Three rendering backends sit behind one `Renderer` seam. Swapping backend change
 | **Sixel** | Sixel graphics | Higher | Higher-fidelity bitmap than blocks, for terminals that speak Sixel. Live frames use JPEG quality 90 with a temporally stable adaptive palette. |
 | **Kitty** | Kitty graphics | Highest | Two transports. Shared memory (probed at startup): JPEG quality 90 decoded to raw RGBA and handed over POSIX shared memory. Direct fallback: lossless CDP PNG passed straight to Kitty framing without an image decode or re-encode. |
 
-Kitty is the reason to run Nyala on a capable terminal: where the terminal supports it, Nyala streams raw pixels over POSIX shared memory; elsewhere it rechunks Chromium's base64 PNG for the terminal without decoding or re-encoding it. Sixel is the next step down, a high-fidelity bitmap for terminals that speak it. Block is the guarantee Nyala works on any TTY, down to a bare Linux console under KMSCON with no graphics protocol. Its sharpest mode is sextant (2x3), which Nyala uses where the terminal self-draws sextant glyphs; an unknown terminal falls back to quadrant. See [`docs/BLOCK-MODES.md`](docs/BLOCK-MODES.md). Nyala detects what the terminal supports and picks the highest-fidelity backend automatically: Kitty, then Sixel, then Block. Press Alt+R to cycle the supported backends. Block and Sixel use JPEG q90; direct Kitty uses PNG, and shared-memory Kitty uses JPEG.
+Kitty is the reason to run Nyala on a capable terminal: where the terminal supports it, Nyala streams raw pixels over POSIX shared memory; elsewhere it rechunks Chromium's base64 PNG for the terminal without decoding or re-encoding it. Sixel is the next step down, a high-fidelity bitmap for terminals that speak it. Block is the guarantee Nyala works on any TTY, down to a bare Linux console under KMSCON with no graphics protocol. Its sharpest mode is sextant (2x3), which Nyala uses where the terminal self-draws sextant glyphs; an unknown terminal falls back to quadrant. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Nyala detects what the terminal supports and picks the highest-fidelity backend automatically: Kitty, then Sixel, then Block. Press Alt+R to cycle the supported backends. Block and Sixel use JPEG q90; direct Kitty uses PNG, and shared-memory Kitty uses JPEG.
 
 A measurement harness scores each render for quality, cost, and legibility. Run it with `just diagnostics`.
+
+## Terminal compatibility
+
+Block shows the glyph mode Nyala auto-selects; `--blocks` overrides it. Yes under Sixel or Kitty means the protocol works in that terminal; No can also mean Nyala disables a protocol to dodge a terminal-side limit. Terminals disagree on the cell-pixel units they report, but Nyala normalises layout density, so every terminal lays out the same page at the same text size.
+
+| Terminal | Block | Sixel | Kitty | Notes |
+|---|---|---|---|---|
+| Alacritty | Sextant | Yes | No | Sixel works in the tested environment; stock upstream differs. Built-in sextants can show a one-pixel seam. |
+| Contour | Sextant | Yes | Yes | Kitty graphics need Contour 0.7 or newer. |
+| Foot | Sextant | Yes | No | |
+| Ghostty | Sextant | No | Yes | No Sixel support. |
+| Kitty | Sextant | No | Yes | Native protocol. Shared-memory fast path where available, direct PNG fallback. |
+| mlterm | Quadrant | Yes | No | High-cardinality Block colours can be sparse in the compact-truecolour build; use `--color=256`. |
+| Rio | Sextant | No | Yes | Rio 0.4.x limits below. |
+| WezTerm | Sextant | Yes | Yes | Sixel is documented as preliminary. |
+
+**Rio 0.4.x.** Rio advertises Sixel but does not render it, so Nyala excludes Sixel from auto backend selection. Rio's style table caps truecolour, so auto colour uses the xterm-256 palette; `--color=256` and `--color=none` remain available, and `--color=truecolor` is rejected. Kitty graphics work, with the live fps badge omitted.
+
+### Multiplexers
+
+Host mode means the Block glyph mode follows the outer terminal. Nyala never offers the Kitty backend under a multiplexer.
+
+| Multiplexer | Block | Sixel | Kitty | Notes |
+|---|---|---|---|---|
+| tmux | Host mode | Yes | No | Needs tmux 3.6+ built with `--enable-sixel` (3.6b+ recommended). Bottom row reserved; Sixel auto-selected. |
+| zellij | Host mode | No | No | Block only; Sixel blocked by upstream zellij defects. |
+| GNU screen | Host mode | No | No | No graphics passthrough. |
+| herdr | Host mode | No | No | Consumes graphics sequences; Block only. |
+
+Deeper design rationale lives in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); performance measurements in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
 
 ## Development
 
@@ -145,7 +175,7 @@ Notes:
 
 - Plain `q` does not quit. Printable keys are reserved for page input (form fields need them), so quitting is `Ctrl+Q`, with `Ctrl+C` kept as the interrupt fallback so a wedged page can never trap you.
 - `Alt+Home` returns to the URL Nyala was launched with, for the lifetime of the process. It is a normal navigation, so `Alt+Left` goes back to the page you were on.
-- The Block mode and colour cycles skip modes the terminal cannot render (for example, truecolour under Rio 0.4.x).
+- The Block mode and colour cycles skip modes the terminal cannot render (see [Terminal compatibility](#terminal-compatibility)).
 - The Block mode and colour cycles only work while the Block backend is on screen. Both cycles only affect Block rendering, so cycling them under Kitty or Sixel would change hidden state with no visible feedback, and the next switch to Block would land in an unexpected mode.
 - A multiplexer with custom Alt binds can shadow the Alt chords. The zellij defaults leave `Alt+R`, `Alt+B`, and `Alt+C` free.
 
