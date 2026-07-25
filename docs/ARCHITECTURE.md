@@ -913,7 +913,11 @@ targets pad to three cells.
 The backend indicator sits before the URL: ⬒ U+2B12 Block half, ⬔ U+2B14
 Block quadrant, ▦ U+25A6 Block sextant, ⬣ U+2B23 Sixel, ✪ U+272A Kitty. The
 Block glyphs echo their scheme's subcell shape and track the live scheme.
-Clicking the indicator cycles backends, mirroring Alt+R. A braille spinner
+Clicking the indicator cycles backends, mirroring Alt+R; a right-click steps
+the same enabled cycle backwards, mirroring Alt+Shift+R. The indicator is the
+only segment that reads the button, because it is the only one with a genuine
+secondary action: no nav button has a history dropdown to open here, so
+elsewhere a click is a click whichever button sent it. A braille spinner
 (U+2800 block) fills the slot until the first frame lands.
 
 Glyph rules: Basic Multilingual Plane only, never U+FE0F, and no
