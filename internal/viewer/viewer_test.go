@@ -587,6 +587,11 @@ type streamTestEngine struct {
 	openURL        func(string)
 	currentURL     string
 	browserVersion string
+	find           func(string)
+	findNext       func()
+	findPrev       func()
+	findClear      func()
+	findState      *FindState
 }
 
 func (e streamTestEngine) SetBackend(backend Backend) {
@@ -637,15 +642,36 @@ func (e streamTestEngine) OpenURL(url string) {
 
 func (e streamTestEngine) BrowserVersion() string { return e.browserVersion }
 
-func (e streamTestEngine) Find(string) {}
+func (e streamTestEngine) Find(query string) {
+	if e.find != nil {
+		e.find(query)
+	}
+}
 
-func (e streamTestEngine) FindNext() {}
+func (e streamTestEngine) FindNext() {
+	if e.findNext != nil {
+		e.findNext()
+	}
+}
 
-func (e streamTestEngine) FindPrev() {}
+func (e streamTestEngine) FindPrev() {
+	if e.findPrev != nil {
+		e.findPrev()
+	}
+}
 
-func (e streamTestEngine) FindClear() {}
+func (e streamTestEngine) FindClear() {
+	if e.findClear != nil {
+		e.findClear()
+	}
+}
 
-func (e streamTestEngine) FindState() FindState { return FindState{} }
+func (e streamTestEngine) FindState() FindState {
+	if e.findState != nil {
+		return *e.findState
+	}
+	return FindState{}
+}
 
 func (e streamTestEngine) SendMouse(ev MouseEvent) {
 	if e.sendMouse != nil {

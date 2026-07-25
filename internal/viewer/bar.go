@@ -39,8 +39,9 @@ const (
 	barGlyphBlockSextant  = "▦" // ▦ U+25A6 Block sextant scheme
 	barGlyphSixel         = "⬣" // ⬣ U+2B23 Sixel
 	barGlyphKitty         = "✪" // ✪ U+272A Kitty
-	barGlyphClose         = "✕" // ✕ close (menu and About modes)
+	barGlyphClose         = "✕" // ✕ close (menu, About, and find modes)
 	barGlyphPrompt        = "❯" // ❯ URL edit prompt
+	barGlyphFind          = "⌕" // ⌕ U+2315 find prompt
 	barSeparator          = "│" // │ segment separator
 	barEllipsis           = "…" // … URL truncation marker
 )

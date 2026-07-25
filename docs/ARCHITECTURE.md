@@ -1044,6 +1044,40 @@ the label says what activating it does; both labels are four letters wide, so
 the menu row and its click spans hold their columns across a toggle. There is no
 key binding for it, and no config file, so the choice lives for the session.
 
+Find mode opens on Ctrl+F, which was unbound and is not printable, so no page
+text route loses a character to it. The row is `⌕ <query> │ <count> │ ✕`, with
+the query field absorbing the width the count and the right-anchored close
+button leave, and it shares one field measurement and one text-editing path with
+the URL editor. A row too narrow to hold the count beside a usable field degrades
+to the prompt and the field alone.
+
+Search runs on submission, not per keystroke. Each dispatch re-collects and
+repaints every match in the page, and the worker queue is cumulative rather than
+latest-wins, so search-as-you-type would run one whole search per character and
+only the last would matter. Enter searches a changed query and steps to the next
+match otherwise, so Enter after typing finds and Enter again walks the matches.
+Shift+Enter steps back, read from the CDP modifier bits a Kitty key report
+carried. A legacy terminal has no signal for that chord, so Down and Up step next
+and previous on every terminal: vertical keys walk matches, horizontal keys stay
+on the caret. Those two are the only find binding a user cannot discover from the
+row, which holds no hint text.
+
+`renderFindCount` is a pure function of the state snapshot, so any number of
+repaints of one state draw one row. It shows `current/total`, `0/0` for a page
+with no match, an ellipsis for a fresh query still in flight (a new query zeroes
+the counts, and `0/0` would claim no matches before the page answered), the
+counts it steps through for a step in flight, and the last counts plus `!` when a
+dispatch was dropped, because those highlights are still painted so the mark says
+the keypress did not land rather than that the count is wrong.
+
+Escape clears the search and closes the mode, so it never reaches the page; a
+paste lands in the query field as one unit with newlines stripped, so it cannot
+smuggle a submission. One known rough edge: a page-initiated navigation while
+find is open drops the engine's search state, so the row reads `0/0` and Enter
+steps nothing until the query changes. Escape and retype recovers. The viewer
+does not detect it by comparing the state's query, because the dispatch is
+asynchronous, so a second quick Enter would re-search instead of stepping.
+
 Chrome-mode key bindings live in `internal/viewer/keys.go`. Rendering: Alt+R
 and Alt+Shift+R cycle the backend, Alt+B and Alt+Shift+B cycle the Block
 scheme, Alt+C and Alt+Shift+C cycle colour. Navigation: Alt+Left and
