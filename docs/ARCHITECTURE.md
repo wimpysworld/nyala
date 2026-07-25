@@ -931,8 +931,13 @@ without breaking hit-testing.
 The bar uses the terminal default foreground and background plus the base 16
 ANSI colours only, so it follows the user's theme. Reverse video is the base
 style; bold marks focus and press feedback. Fixed 240-palette entries were
-rejected because they ignore the theme. The fps segment, present exactly when
-`NYALA_FPS_TIMING` arms the meter, reads `↓ NN.n │ ↑ NN.n │ ≌ N`: ↓ is the
+rejected because they ignore the theme. The fps segment is present when a meter
+is armed and the menu has not hidden it: `NYALA_FPS_TIMING` arms one at startup,
+and the menu's Show FPS command arms one mid-session. Hiding keeps the meter,
+because the switch's quit summary reads that same one, so only the badge and its
+heartbeat stop. Its heartbeat ticker is armed with the meter rather than at loop
+start, so a session that never shows the badge starts no ticker and pays only a
+nil check. The segment reads `↓ NN.n │ ↑ NN.n │ ≌ N`: ↓ is the
 ingest rate from the engine, ↑ the rate written to the terminal, ≌ the
 cumulative received total. Rates carry one decimal and read `--` when idle.
 
@@ -985,7 +990,11 @@ the last visible rune clamps after it. `renderBarEdit` reports the prompt width
 it drew and the session keeps it, so a click maps against the row as drawn: a
 row too narrow for the prompt gives every cell to the text, which a recomputed
 layout could get wrong by two cells. Menu mode opens via ☰ or Alt+F (F10 is
-avoided; terminals grab it) and offers About and Quit from a command registry.
+avoided; terminals grab it) and offers Show FPS or Hide FPS, About, and Quit
+from a command registry. The fps item names the action rather than the state, so
+the label says what activating it does; both labels are four letters wide, so
+the menu row and its click spans hold their columns across a toggle. There is no
+key binding for it, and no config file, so the choice lives for the session.
 
 Chrome-mode key bindings live in `internal/viewer/keys.go`. Rendering: Alt+R
 and Alt+Shift+R cycle the backend, Alt+B and Alt+Shift+B cycle the Block
