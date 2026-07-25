@@ -933,6 +933,24 @@ Mouse routing is a row check: bar-row events hit-test the segment spans of
 the last repaint, every other row forwards to CDP. Side buttons 8 to 11
 dispatch history back and forward and never reach the page.
 
+A press captures the pointer for the surface under it until the release, the
+way a browser does, so a drag is one whole gesture rather than a row check per
+report. Held-button SGR motion (bit 32 under 1002) forwards as CDP
+`mouseMoved` carrying the held button in both the button name and the
+pressed-buttons mask, which is what makes Chromium treat it as a drag of that
+button instead of a hover. A drag that started on the page keeps reaching the
+page once the pointer crosses the bar row, because the engine clamps the cell
+to its grid; without that, sliding a slider off the bottom of the viewport
+would open the URL editor mid-gesture. A drag that started on the bar row
+never injects page motion, since the bar holds no draggable control. Motion
+with no capture is dropped, and a release with no capture reaches no page,
+because forwarding a bare release would click whatever now sits under the
+pointer. A bar mode taking over input drops the capture, since the mode
+swallows the release that would otherwise clear it. Moves leave the click
+chain untouched, so a drag inside a double-click gesture cannot break word
+selection. Mode 1003 any-event tracking stays off, so no hover motion is
+requested.
+
 URL edit mode opens on Ctrl+L or a URL click. The editor takes the whole bar:
 reverse video, a ❯ prompt, and a hand-rolled readline subset (Ctrl+A/E/U/K/W,
 arrows, Home, End, Delete, Backspace) over a rune slice with a horizontal

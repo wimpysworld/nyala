@@ -270,9 +270,9 @@ func readKeys(r io.Reader, done <-chan struct{}) <-chan keyEvent {
 // byte event; a UTF-8 leading byte is assembled into a whole rune event. An
 // ESC that opens a CSI sequence (next byte '[') is read to its final byte
 // (0x40..0x7e) and decoded; a recognised sequence is a scroll, action, paste,
-// or mouse event, an SGR motion report is consumed and dropped (motion
-// dispatch is deferred), and an unrecognised or malformed sequence is dropped
-// (emit false) without leaking its bytes as keys. An ESC that opens an APC
+// or mouse event (an SGR drag motion report among them), and an unrecognised or
+// malformed sequence is dropped (emit false) without leaking its bytes as
+// keys. An ESC that opens an APC
 // (next byte '_') is read to its String Terminator; a Kitty graphics response
 // (body leading with 'G') emits an apc event for the shm pacing gate, any
 // other APC is dropped. An ESC followed by an Alt-chord letter (altKeyAction)
@@ -333,10 +333,7 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 		}
 		return keyEvent{paste: paste}, true
 	}
-	if m, motion, ok := decodeSGRMouse(body); ok {
-		if motion {
-			return keyEvent{}, false
-		}
+	if m, ok := decodeSGRMouse(body); ok {
 		return keyEvent{mouse: &m}, true
 	}
 	if k, ok := decodeCSI(body); ok {

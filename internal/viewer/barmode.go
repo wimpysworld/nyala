@@ -423,20 +423,14 @@ func (s *streamSession) onBarRow(row int) bool {
 	return s.st.Rows >= 2 && row == s.st.Rows-1
 }
 
-// handleBarMouse dispatches one chrome-mode mouse event on the bar row
-// against the spans of the last repaint: the nav buttons reuse the SendNav
-// actions, the indicator cycles the backend like Alt+R, the URL region opens
-// the editor, and ☰ opens the menu. A press on a button holds it bold until
-// the release (press feedback only; motion stays dropped). Wheel events on
-// the bar are dropped: the bar row sits outside the engine grid.
+// handleBarMouse dispatches one chrome-mode bar-row press against the spans of
+// the last repaint: the nav buttons reuse the SendNav actions, the indicator
+// cycles the backend like Alt+R, the URL region opens the editor, and ☰ opens
+// the menu. A press on a button holds it bold until the release, which
+// handleMouse clears wherever it lands. Motion and wheel events on the bar are
+// dropped: the bar row sits outside the engine grid and holds no draggable
+// control.
 func (s *streamSession) handleBarMouse(ev MouseEvent) {
-	if ev.Action == MouseActionRelease {
-		if s.pressedSet {
-			s.pressedSet = false
-			s.repaintBar()
-		}
-		return
-	}
 	if ev.Action != MouseActionPress {
 		return
 	}

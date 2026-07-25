@@ -24,9 +24,18 @@ const liveInputPage = "data:text/html," +
 
 // liveInputEngine launches a real Chromium on liveInputPage and returns the
 // engine and its session context once the first frame proves the page laid out,
-// so an input dispatch lands on a live document. It skips when no Chromium
-// resolves and closes the engine on cleanup.
+// so an input dispatch lands on a live document.
 func liveInputEngine(t *testing.T) (*ChromiumEngine, context.Context) {
+	t.Helper()
+	return liveEngineOn(t, liveInputPage)
+}
+
+// liveEngineOn launches a real Chromium on page at cell 8x16 over an 80x24
+// grid, so the layout scale Z is 1 and a cell maps to CSS pixels as
+// ((col+0.5)*8, (row+0.5)*16): a test can aim a press at a known element. It
+// returns once the first frame proves the page laid out. It skips when no
+// Chromium resolves and closes the engine on cleanup.
+func liveEngineOn(t *testing.T, page string) (*ChromiumEngine, context.Context) {
 	t.Helper()
 	if _, err := resolveExecutable(""); err != nil {
 		t.Skipf("no Chromium for the live test: %v", err)
@@ -35,7 +44,7 @@ func liveInputEngine(t *testing.T) (*ChromiumEngine, context.Context) {
 	e := New("")
 	e.SetCellPx(8, 16)
 	e.Resize(80, 24)
-	if err := e.Navigate(liveInputPage); err != nil {
+	if err := e.Navigate(page); err != nil {
 		t.Fatalf("navigate: %v", err)
 	}
 	t.Cleanup(func() { _ = e.Close() })

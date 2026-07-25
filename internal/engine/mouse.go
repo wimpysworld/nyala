@@ -17,6 +17,10 @@ const (
 	MouseActionRelease
 	// MouseActionWheel is one wheel step at the pointer cell.
 	MouseActionWheel
+	// MouseActionMove is pointer motion with a button held: the reports a drag
+	// is made of. Button carries the held button, which the dispatch reports as
+	// the move's pressed button so the page sees a drag, not a hover.
+	MouseActionMove
 )
 
 // MouseButton identifies the pointer button of a press or release.
@@ -131,14 +135,19 @@ func cdpButtonMask(b MouseButton) int64 {
 	}
 }
 
-// mouseParams builds one CDP mouse press or release dispatch at the CSS
+// mouseParams builds one CDP mouse press, release, or move dispatch at the CSS
 // position x, y: the named button, the pressed-buttons mask (a release
 // reports no held button), the CDP modifier bits, and the synthesised
-// clickCount.
+// clickCount. A move keeps the held button in both the button name and the
+// mask, which is what makes Chromium treat it as a drag of that button rather
+// than a hover, and carries clickCount 0 because it starts no click.
 func mouseParams(action MouseAction, button MouseButton, mod, clickCount int, x, y float64) *input.DispatchMouseEventParams {
 	mt, buttons := input.MousePressed, cdpButtonMask(button)
-	if action == MouseActionRelease {
+	switch action {
+	case MouseActionRelease:
 		mt, buttons = input.MouseReleased, 0
+	case MouseActionMove:
+		mt = input.MouseMoved
 	}
 	return input.DispatchMouseEvent(mt, x, y).
 		WithButton(cdpButton(button)).
@@ -150,9 +159,11 @@ func mouseParams(action MouseAction, button MouseButton, mod, clickCount int, x,
 // SendMouse forwards one mouse event to the page. A wheel step scrolls
 // through the one wheel transport at the pointer cell, so Block's whole-cell
 // vertical quantisation and the crash-recovery scroll offset keep working. A
-// press or release dispatches a CDP mouse event at the cell centre with a
-// synthesised clickCount, through the same bounded dispatch seam as keys, so
-// a wedged browser drops the event instead of parking the caller.
+// press, release, or drag move dispatches a CDP mouse event at the cell centre,
+// a press and release with a synthesised clickCount and a move with none,
+// through the same bounded dispatch seam as keys, so a wedged browser drops the
+// event instead of parking the caller. A move leaves the click chain untouched,
+// so dragging between two presses cannot break a double click.
 func (e *ChromiumEngine) SendMouse(ev MouseEvent) {
 	if ev.Action == MouseActionWheel {
 		e.dispatchWheelAt(ev.WheelDX*wheelTickPx, ev.WheelDY*wheelTickPx, ev.Col, ev.Row)
@@ -163,9 +174,10 @@ func (e *ChromiumEngine) SendMouse(ev MouseEvent) {
 	cellW, cellH := e.snapshotCellPx()
 	x, y := cellCentreCSS(ev.Col, ev.Row, e.cols, e.rows, cellW, cellH)
 	var count int
-	if ev.Action == MouseActionPress {
+	switch ev.Action {
+	case MouseActionPress:
 		count, e.click = nextClickCount(e.click, ev.Button, ev.Col, ev.Row, time.Now())
-	} else {
+	case MouseActionRelease:
 		count = releaseClickCount(e.click, ev.Button)
 	}
 	e.mu.Unlock()
