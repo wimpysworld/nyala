@@ -569,6 +569,47 @@ func TestLiveCaretKeysScrollWithoutFocus(t *testing.T) {
 	}
 }
 
+// selectionCollapsed reports whether the page holds no selection: the document
+// selection is a caret rather than a range. It is the observable behind the
+// rule that a caret key moves a caret and selects nothing.
+func selectionCollapsed(t *testing.T, ctx context.Context) bool {
+	t.Helper()
+	return evalString(t, ctx, "String(window.getSelection().isCollapsed)") == "true"
+}
+
+// TestLiveCaretKeysLeaveTheSelectionCollapsed proves the caret keys move a
+// caret and select nothing, in a focused control and in a focused editable
+// element alike. A stroke that carried a Shift bit, or that arrived twice, would
+// leave a range behind and the reader would watch text highlight as the caret
+// moved. The control's own selection is asserted beside the document's, because
+// a control keeps its selection where the document cannot see it.
+func TestLiveCaretKeysLeaveTheSelectionCollapsed(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+	caretKeys := []string{"ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"}
+
+	evalVoid(t, ctx, "var a=document.getElementById('t');a.value='alpha bravo\\ncharlie delta';a.focus();a.setSelectionRange(8,8)")
+	for _, code := range caretKeys {
+		e.SendKey(Key{Code: code})
+		if got := evalString(t, ctx, "(function(a){return String(a.selectionEnd-a.selectionStart)})(document.getElementById('t'))"); got != "0" {
+			t.Fatalf("text area holds %s characters selected after %s, want a collapsed caret", got, code)
+		}
+		if !selectionCollapsed(t, ctx) {
+			t.Fatalf("document selection is a range after %s in a text area, want a collapsed caret", code)
+		}
+	}
+
+	evalVoid(t, ctx, "var d=document.createElement('div');d.id='e';d.contentEditable='true';"+
+		"d.textContent='alpha bravo charlie';document.body.appendChild(d);d.focus();"+
+		"window.getSelection().collapse(d.firstChild,8)")
+	for _, code := range caretKeys {
+		e.SendKey(Key{Code: code})
+		if !selectionCollapsed(t, ctx) {
+			t.Fatalf("editable element holds %q selected after %s, want a collapsed caret",
+				evalString(t, ctx, "String(window.getSelection().toString())"), code)
+		}
+	}
+}
+
 // TestLiveKeyScrollSnapsToCellPitch proves a key-driven scroll on the block
 // backend leaves the page on the cell grid, the invariant the crisp text
 // overlay depends on, and that the engine holds the same snapped offset.

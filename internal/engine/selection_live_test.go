@@ -121,6 +121,29 @@ func TestLiveSelectionEmptyWithNoSelection(t *testing.T) {
 	}
 }
 
+// TestLiveSingleClickLeavesSelectionCollapsed proves one click places a caret
+// and selects nothing: the click chain reports count 1, so Chromium runs no word
+// select. A press that reported a chained count would select the word under the
+// pointer on a single click, and the word would stay highlighted as the reader
+// worked. It clicks a second time well after the chain window to prove a lone
+// click never chains onto an earlier one.
+func TestLiveSingleClickLeavesSelectionCollapsed(t *testing.T) {
+	e, ctx := liveEngineOn(t, liveDragPage)
+
+	for _, cell := range [][2]int{{8, 6}, {20, 6}} {
+		clickCells(e, 1, cell[0], cell[1])
+		if !selectionCollapsed(t, ctx) {
+			t.Fatalf("single click at cell %v selected %q, want a collapsed caret",
+				cell, evalString(t, ctx, "String(window.getSelection().toString())"))
+		}
+		if got, over := e.Selection(); got != "" || over {
+			t.Fatalf("selection read = %q (over %v) after a single click, want nothing to copy", got, over)
+		}
+		// Past clickChainWindow, so the next click starts its own chain.
+		time.Sleep(clickChainWindow + 100*time.Millisecond)
+	}
+}
+
 // TestLiveSelectionReadsTextControl proves a selection inside a focused text
 // control is copyable. A control keeps its selection in an inner editor the
 // document selection cannot see, so without the control branch a user selecting
