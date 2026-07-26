@@ -152,7 +152,7 @@ Headless Chromium forces SwiftShader software rendering by default. The
 live launch passes `--enable-gpu` (`launch.go`), which only reverts to
 normal driver selection. That flag alone leaves no software path, because
 Chromium removed the automatic SwiftShader software WebGL fallback
-(deprecated from 130, off for everyone by about 141), so a host with no
+(deprecated from 130, off by default from 144), so a host with no
 usable GPU gets no WebGL context at all. A kmscon console is exactly that
 host: kmscon holds the DRM card node, and headless GL autodetection on
 Linux needs X11. The live launch therefore also passes
@@ -161,12 +161,13 @@ works, so the flag only adds a software floor. The blocklist flags were
 rejected as redundant or stale, `--use-gl=angle` with
 `--use-angle=swiftshader-webgl` forces software WebGL unconditionally and
 loses the hardware path, and `--use-angle=vulkan` on `/dev/dri/renderD*`
-render nodes is driver-dependent and untested. Capture launches stay on
-software rendering so goldens stay deterministic. The flake puts
-`/run/opengl-driver/lib` on the library path because the nixpkgs Chromium
-wrapper does not. The WebGL aquarium measured browser fps 26 to 60 and
-ingest 60.3, proving the browser render, not the pipeline, had been the
-ceiling.
+render nodes is driver-dependent and untested. No Chromium flag can move
+the committed goldens: `just update-golden` runs the `internal/harness`
+diagnostics tests, which import no chromedp and launch no browser. The
+flake puts `/run/opengl-driver/lib` on the library path because the
+nixpkgs Chromium wrapper does not. The WebGL aquarium measured browser
+fps 26 to 60 and ingest 60.3, proving the browser render, not the
+pipeline, had been the ceiling.
 
 ### Sizing and layout scale
 
