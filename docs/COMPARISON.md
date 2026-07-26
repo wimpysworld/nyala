@@ -223,7 +223,9 @@ At [`771c650`](https://codeberg.org/janantos/brow6el/src/commit/771c650e49136de9
   Canvas 2D and CSS transforms and animations still work on the CPU. Nyala made the
   opposite one-line choice in the same Chromium era, 150 against 148:
   [`ARCHITECTURE.md`](./ARCHITECTURE.md) records `--enable-gpu` taking the WebGL
-  aquarium from 26 to 60 fps. Two launch configurations, not an engine advantage.
+  aquarium from 26 to 60 fps. Nyala also passes `--enable-unsafe-swiftshader`, so a
+  host with no usable GPU still gets software WebGL rather than none. Two launch
+  configurations, not an engine advantage.
 - **Observed on the Aquarium**, the page's own fallback appears, not a Brow6el message
   and not a Chrome error page, consistent with Brow6el having no WebGL handling in
   source. `tdl.js` prints "It does not appear your computer supports WebGL", then the

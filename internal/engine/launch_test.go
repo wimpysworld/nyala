@@ -98,6 +98,19 @@ func TestSetDisableFrameRateLimit(t *testing.T) {
 	}
 }
 
+func TestGPUFlags(t *testing.T) {
+	if got := gpuFlags(false); got != nil {
+		t.Errorf("gpuFlags(false) = %v, want nil", got)
+	}
+	// Pin the whole ordered set, not mere presence: enable-unsafe-swiftshader is
+	// the only thing keeping software WebGL alive on a host with no usable GPU,
+	// and dropping it silently is the exact bug this guards.
+	want := []string{"enable-gpu", "enable-unsafe-swiftshader"}
+	if got := gpuFlags(true); !reflect.DeepEqual(got, want) {
+		t.Errorf("gpuFlags(true) = %v, want %v", got, want)
+	}
+}
+
 func TestProxyFlagsCredentialFreeServer(t *testing.T) {
 	// A credentialed URL must yield a proxy-server flag whose value is the
 	// credential-free Server, with no user:pass@ in any flag value. This is the
