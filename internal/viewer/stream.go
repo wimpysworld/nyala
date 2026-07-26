@@ -167,6 +167,28 @@ func syncEngineKittyDecode(eng Engine, st *State) {
 	d.SetKittyDecode(st.Backend == BackendKitty && st.kittySHMLive())
 }
 
+// fatalSignals are the terminating signals Stream's watcher catches so the
+// terminal is restored before the process dies. SIGHUP arrives when the
+// terminal window closes or an SSH connection drops, SIGINT and SIGQUIT from a
+// kill in another shell, SIGTERM from a supervisor or a plain kill. Catching
+// SIGINT cannot change interactive Ctrl+C: raw mode clears ISIG, so Ctrl+C
+// arrives as byte 0x03 and quits through byteKeyAction, and only an external
+// kill -INT ever reaches this list. SIGKILL is absent because no process can
+// catch it, and a dropped connection defeats in-process cleanup either way.
+var fatalSignals = []os.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM}
+
+// signalExitStatus returns the conventional shell exit status for a process a
+// signal ended: 128 plus the signal number. So SIGTERM keeps 143 and SIGHUP,
+// SIGINT, and SIGQUIT report 129, 130, and 131. A value carrying no signal
+// number reports the 128 base, which still reads as signalled rather than as a
+// clean exit.
+func signalExitStatus(sig os.Signal) int {
+	if s, ok := sig.(syscall.Signal); ok {
+		return 128 + int(s)
+	}
+	return 128
+}
+
 // Stream runs the interactive viewer on tty, drawing the live frames eng pushes,
 // until the user quits. It puts the terminal into raw mode, detects which
 // backends the terminal supports, hands the resolved backend and cell px to the
@@ -214,7 +236,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	// restoreTerminal is the one terminal-restore path: the exit escapes
 	// (mouse reporting off, auto-wrap and cursor back, and, once a frame
 	// drew, the cursor moved below the frame), then the termios restore. The
-	// deferred teardown and the SIGTERM watcher below share it through the
+	// deferred teardown and the fatal-signal watcher below share it through the
 	// Once, so the restore runs exactly once however the session ends. It
 	// reads firstDrawn through the session's atomic, so the watcher goroutine
 	// never races the producer's write.
@@ -257,7 +279,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	// pasted newline would submit a form. The keyboard protocol is pushed only
 	// where the handshake found it, so every other terminal keeps the legacy
 	// parser. restoreTerminal's exitTerminal write undoes all three on every
-	// teardown, including the SIGTERM path; the defer is already registered
+	// teardown, including the signal path; the defer is already registered
 	// above, so an enable that fails half-way is still cleaned up.
 	if _, err := io.WriteString(tty, enterTerminalModes(st.kittyKeyboard)); err != nil {
 		return err
@@ -308,21 +330,24 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	if werr := s.emitControl(startup.Bytes()); werr != nil {
 		return werr
 	}
-	// A SIGTERM must restore the terminal before the process dies: a hard
-	// kill would otherwise leave raw mode and mouse reporting enabled, and
-	// the shell would read a stream of SGR mouse reports. The watcher shares
-	// restoreTerminal's Once with the deferred teardown, so the restore runs
-	// exactly once, and it exits via done on a normal quit. It starts after
-	// session is set, so the drawn-state read never races this goroutine's
-	// start.
-	sigterm := make(chan os.Signal, 1)
-	signal.Notify(sigterm, syscall.SIGTERM)
-	defer signal.Stop(sigterm)
+	// A terminating signal must restore the terminal before the process dies:
+	// Go runs no deferred function for a signal left on its default
+	// disposition, so a hard kill would otherwise leave raw mode and mouse
+	// reporting enabled, and the shell would read a stream of SGR mouse
+	// reports. The watcher shares restoreTerminal's Once with the deferred
+	// teardown, so the restore runs exactly once, and it exits via done on a
+	// normal quit. It starts after session is set, so the drawn-state read
+	// never races this goroutine's start. The browser needs no wind-down
+	// here: chromedp spawns Chromium with a parent-death signal, so the
+	// kernel kills it when this process exits.
+	fatal := make(chan os.Signal, 1)
+	signal.Notify(fatal, fatalSignals...)
+	defer signal.Stop(fatal)
 	go func() {
 		select {
-		case <-sigterm:
+		case sig := <-fatal:
 			restoreTerminal()
-			os.Exit(143) // conventional SIGTERM exit status: 128 + 15
+			os.Exit(signalExitStatus(sig))
 		case <-done:
 		}
 	}()
@@ -452,7 +477,7 @@ type streamSession struct {
 	ctl      *control
 	diff     *block.GridDiff
 	// firstDrawn is atomic because the producer goroutine writes it per frame
-	// while Stream's SIGTERM watcher reads it for the teardown escapes.
+	// while Stream's fatal-signal watcher reads it for the teardown escapes.
 	firstDrawn   atomic.Bool
 	nilImageOnce sync.Once // guards the one-shot nil-image diagnostic
 	resizeOnce   sync.Once // guards the one-shot dropped-resize diagnostic

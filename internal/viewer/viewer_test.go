@@ -102,7 +102,7 @@ func TestExitTerminal(t *testing.T) {
 }
 
 // TestTerminalModesPairEnableWithTeardown asserts every mode Stream turns on is
-// turned off by the teardown that runs on normal exit, on SIGTERM, and on an
+// turned off by the teardown that runs on normal exit, on a terminating signal, and on an
 // error return, and that the kitty keyboard protocol is pushed and popped
 // together: on where the handshake found it, off again on the way out, and
 // neither touched on a terminal that never advertised it.
