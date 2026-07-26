@@ -77,15 +77,27 @@ type engineAdapter struct{ *engine.ChromiumEngine }
 
 // SendKey maps a viewer key code to an engine Key. The engine dispatches every
 // stroke code (Tab, Enter, and the caret keys such as ArrowUp and PageDown) as
-// a full key stroke, so Chromium runs the key's own default action. The viewer's ShiftTab
-// pseudo-code (the CSI Z backtab) maps here to a Tab stroke carrying the CDP
-// Shift modifier bit, because the viewer seam carries only a code string.
+// a full key stroke, so Chromium runs the key's own default action. The viewer's
+// two pseudo-codes map to a modified stroke here, because the viewer seam
+// carries only a code string: ShiftTab (the CSI Z backtab) is a Tab stroke
+// carrying the CDP Shift bit, and SelectAll (Ctrl+A) is an A stroke carrying the
+// Ctrl bit, which Chromium reads as its own select-all.
 func (a engineAdapter) SendKey(code string) {
-	k := engine.Key{Code: code}
-	if code == "ShiftTab" {
-		k = engine.Key{Code: "Tab", Mod: 8} // CDP modifier bits: Shift=8
+	a.ChromiumEngine.SendKey(engineKey(code))
+}
+
+// engineKey maps one viewer key code to the engine Key it dispatches. Every
+// code but the two pseudo-codes passes through unmodified.
+func engineKey(code string) engine.Key {
+	// CDP modifier bits: Ctrl=2, Shift=8.
+	switch code {
+	case "ShiftTab":
+		return engine.Key{Code: "Tab", Mod: 8}
+	case "SelectAll":
+		return engine.Key{Code: "KeyA", Mod: 2}
+	default:
+		return engine.Key{Code: code}
 	}
-	a.ChromiumEngine.SendKey(k)
 }
 
 // FindState maps the engine's page-search snapshot to the viewer's. The counts

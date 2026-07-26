@@ -5,6 +5,8 @@ package engine
 import (
 	"context"
 	"math"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -607,6 +609,79 @@ func TestLiveCaretKeysLeaveTheSelectionCollapsed(t *testing.T) {
 			t.Fatalf("editable element holds %q selected after %s, want a collapsed caret",
 				evalString(t, ctx, "String(window.getSelection().toString())"), code)
 		}
+	}
+}
+
+// TestLiveSelectAllSelectsTheDocument proves the select-all stroke reaches
+// Chromium and runs its own select-all: with nothing focused it selects the
+// whole document, and the copy read returns that text, so Alt+W has something to
+// write. Ctrl+A was unbound before, so the chord did nothing at all.
+func TestLiveSelectAllSelectsTheDocument(t *testing.T) {
+	e, ctx := liveEngineOn(t, liveDragPage)
+	if !selectionCollapsed(t, ctx) {
+		t.Fatal("the page starts with a selection, so the assertion below proves nothing")
+	}
+
+	e.SendKey(Key{Code: "KeyA", Mod: cdpModCtrlBits})
+
+	got, ok := waitForEngineSelection(t, e, func(s string) bool { return strings.Contains(s, "juliet") })
+	if !ok {
+		t.Fatalf("selection read = %q after select-all, want the document text", got)
+	}
+	for _, word := range []string{"alpha", "delta", "lima"} {
+		if !strings.Contains(got, word) {
+			t.Fatalf("selection read = %q after select-all, want it to carry %q", got, word)
+		}
+	}
+}
+
+// TestLiveSelectAllSelectsTheFocusedField proves Chromium keeps arbitrating:
+// with a field focused, select-all takes the field's text and not the document
+// around it, so the chord needs no focus state in the viewer.
+func TestLiveSelectAllSelectsTheFocusedField(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+	focusField(t, ctx)
+	e.SendText("nyala")
+	if got, ok := waitForString(t, ctx, "document.getElementById('f').value", "nyala"); !ok {
+		t.Fatalf("field value = %q, want %q", got, "nyala")
+	}
+
+	e.SendKey(Key{Code: "KeyA", Mod: cdpModCtrlBits})
+
+	got, ok := waitForEngineSelection(t, e, func(s string) bool { return s != "" })
+	if !ok {
+		t.Fatalf("selection read = %q after select-all in a focused field, want its text", got)
+	}
+	if got != "nyala" {
+		t.Fatalf("selection read = %q, want the field's text %q alone", got, "nyala")
+	}
+	if val := evalString(t, ctx, "document.getElementById('f').value"); val != "nyala" {
+		t.Fatalf("field value = %q after select-all, want it untouched (the stroke selects, it types nothing)", val)
+	}
+}
+
+// TestLiveSelectAllOverTheCopyBoundIsRefused proves the whole path a reader
+// takes on a large page: select-all takes a selection past the copy bound and
+// the read refuses it rather than shipping a truncated fragment, which is the
+// refusal the bar reports.
+func TestLiveSelectAllOverTheCopyBoundIsRefused(t *testing.T) {
+	e, ctx := liveEngineOn(t, liveDragPage)
+	evalVoid(t, ctx, "var big=document.createElement('p');"+
+		"big.textContent='x'.repeat("+strconv.Itoa(selectionMaxBytes+1)+");"+
+		"document.body.appendChild(big)")
+
+	e.SendKey(Key{Code: "KeyA", Mod: cdpModCtrlBits})
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		got, over := e.Selection()
+		if over {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("selection read = %d bytes with no refusal after select-all, want the over-bound refusal", len(got))
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

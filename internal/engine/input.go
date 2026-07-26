@@ -89,7 +89,14 @@ type strokeKey struct {
 // focused field and scrolling the page, so the viewer needs no focus state of
 // its own. Their default action moves the page under the engine's held scroll
 // offset, so each dispatch adopts what the page settled at.
+//
+// KeyA is the letter key select-all rides on. It carries no char text, so the
+// stroke is the key press alone and types nothing; the Ctrl bit the caller
+// stamps on it is what makes Chromium run its own select-all, in the focused
+// field or over the document. A typed letter never comes this way: SendText
+// takes the printableStroke route, which is what generates the character.
 var strokeKeys = map[string]strokeKey{
+	"KeyA":       {key: "a", vkey: 65},
 	"Tab":        {key: "Tab", vkey: 9},
 	"Enter":      {key: "Enter", vkey: 13, text: "\r"},
 	"Backspace":  {key: "Backspace", vkey: 8},

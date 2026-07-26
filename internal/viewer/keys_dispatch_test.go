@@ -137,6 +137,29 @@ func TestHandleKeyForwardsEditKeys(t *testing.T) {
 	}
 }
 
+// TestHandleKeySelectAllForwardsToPage pins the Ctrl+A binding: chrome mode
+// forwards the select-all pseudo-code to the page rather than swallowing the
+// byte, so a reader can select the document and copy it with Alt+W. It must not
+// reach the text seam: Ctrl+A is a chord, not the letter a.
+func TestHandleKeySelectAllForwardsToPage(t *testing.T) {
+	st := NewState(80, 24)
+	var sent, text []string
+	s := dispatchSession(streamTestEngine{
+		sendKey:  func(code string) { sent = append(sent, code) },
+		sendText: func(t string) { text = append(text, t) },
+	}, &st)
+
+	if quit := s.handleKey(keyEvent{b: keyCtrlA}); quit {
+		t.Fatal("Ctrl+A requested quit")
+	}
+	if len(sent) != 1 || sent[0] != "SelectAll" {
+		t.Fatalf("SendKey calls = %v, want [SelectAll]", sent)
+	}
+	if len(text) != 0 {
+		t.Fatalf("Ctrl+A reached the text seam: %q", text)
+	}
+}
+
 // TestHandleKeyDropsNonText pins what chrome mode still drops: an unbound Ctrl
 // chord is not text, so it reaches no engine seam.
 func TestHandleKeyDropsNonText(t *testing.T) {
@@ -148,7 +171,7 @@ func TestHandleKeyDropsNonText(t *testing.T) {
 		sendKey:  func(code string) { sent = append(sent, code) },
 	}, &st)
 
-	for _, ev := range []keyEvent{{b: keyCtrlA}, {b: keyCtrlW}, {b: 0x00}} {
+	for _, ev := range []keyEvent{{b: keyCtrlK}, {b: keyCtrlW}, {b: 0x00}} {
 		if quit := s.handleKey(ev); quit {
 			t.Fatalf("%+v requested quit", ev)
 		}
@@ -230,6 +253,34 @@ func TestBarModeKeepsPaste(t *testing.T) {
 			t.Fatalf("menu-mode paste reached the page: %q", pastes)
 		}
 	})
+}
+
+// TestBarModeKeepsSelectAllAsLineStart pins the readline binding the page
+// chord must not take: Ctrl+A in the URL editor and the find field still moves
+// the caret to the line start, on the legacy byte and on the kitty report the
+// decode normalises to it, and never selects the page.
+func TestBarModeKeepsSelectAllAsLineStart(t *testing.T) {
+	kitty := collectEvents(t, "\x1b[97;5u")
+	if len(kitty) != 1 || kitty[0].b != keyCtrlA || kitty[0].act != actionNone {
+		t.Fatalf("kitty Ctrl+A report = %+v, want the legacy Ctrl+A byte event", kitty)
+	}
+	for _, ev := range []keyEvent{{b: keyCtrlA}, kitty[0]} {
+		var sent []string
+		s, _ := modeSession(t, streamTestEngine{
+			sendKey: func(code string) { sent = append(sent, code) },
+		})
+		s.handleKey(keyEvent{b: keyCtrlL})
+		for _, b := range []byte("example.org") {
+			s.handleKey(keyEvent{b: b})
+		}
+		s.handleKey(ev)
+		if s.editor.cursor != 0 {
+			t.Fatalf("editor cursor after Ctrl+A = %d, want 0 (the line start)", s.editor.cursor)
+		}
+		if len(sent) != 0 {
+			t.Fatalf("edit-mode Ctrl+A reached the page: %v", sent)
+		}
+	}
 }
 
 // TestBarModeOwnsTextAndEscape pins the bar-mode first claim: while the URL

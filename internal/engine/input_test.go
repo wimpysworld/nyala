@@ -223,8 +223,37 @@ func TestKeyStrokeParams(t *testing.T) {
 		}
 	}
 
-	if got := keyStrokeParams("KeyA", 0); got != nil {
+	if got := keyStrokeParams("KeyZ", 0); got != nil {
 		t.Fatalf("unmapped code built a stroke: %v", got)
+	}
+}
+
+// TestKeyStrokeParamsSelectAll asserts the select-all stroke: the A key with
+// the CDP Ctrl bit, as rawKeyDown then keyUp with no char event. The char event
+// is what would type the letter, so a stroke carrying one would insert an "a"
+// into a focused field instead of selecting its text.
+func TestKeyStrokeParamsSelectAll(t *testing.T) {
+	got := keyStrokeParams("KeyA", 2)
+	if len(got) != 2 {
+		t.Fatalf("Ctrl+A stroke = %d events, want 2 (rawKeyDown, keyUp)", len(got))
+	}
+	if got[0].Type != "rawKeyDown" || got[1].Type != "keyUp" {
+		t.Fatalf("Ctrl+A stroke types = %q, %q, want rawKeyDown, keyUp", got[0].Type, got[1].Type)
+	}
+	for i, p := range got {
+		if p.Key != "a" || p.Code != "KeyA" || p.WindowsVirtualKeyCode != 65 || p.NativeVirtualKeyCode != 65 {
+			t.Fatalf("Ctrl+A event %d = key %q code %q vk %d/%d, want a/KeyA/65/65",
+				i, p.Key, p.Code, p.WindowsVirtualKeyCode, p.NativeVirtualKeyCode)
+		}
+		if p.Modifiers != 2 {
+			t.Fatalf("Ctrl+A event %d modifiers = %d, want 2 (CDP Ctrl)", i, p.Modifiers)
+		}
+		if p.Text != "" || p.UnmodifiedText != "" {
+			t.Fatalf("Ctrl+A event %d carries text %q, want none (it selects, it does not type)", i, p.Text)
+		}
+	}
+	if strokeScrolls("KeyA") {
+		t.Fatal("the select-all stroke reports itself as scrolling, so it would adopt a page offset it never moved")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/alecthomas/kong"
+	"github.com/wimpysworld/nyala/internal/engine"
 )
 
 // tryParse runs kong over args against a fresh CLI, the same wiring cmd/nyala
@@ -189,5 +190,27 @@ func TestRunInvalidURLReturnsSchemeError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported URL scheme") {
 		t.Errorf("Run(ftp): error = %q, want it to mention the unsupported scheme", err)
+	}
+}
+
+// TestEngineKeyMapsPseudoCodes pins the viewer-to-engine key mapping: the two
+// pseudo-codes become a modified stroke of a real key, and every other code
+// passes through untouched. The modifier is the whole meaning here, so a lost
+// bit would turn Shift+Tab into Tab and select-all into a keypress on the letter
+// a.
+func TestEngineKeyMapsPseudoCodes(t *testing.T) {
+	cases := []struct {
+		code string
+		want engine.Key
+	}{
+		{"ShiftTab", engine.Key{Code: "Tab", Mod: 8}},
+		{"SelectAll", engine.Key{Code: "KeyA", Mod: 2}},
+		{"Tab", engine.Key{Code: "Tab"}},
+		{"ArrowDown", engine.Key{Code: "ArrowDown"}},
+	}
+	for _, c := range cases {
+		if got := engineKey(c.code); got != c.want {
+			t.Errorf("engineKey(%q) = %+v, want %+v", c.code, got, c.want)
+		}
 	}
 }

@@ -365,10 +365,12 @@ that assumption.
 
 Keys and typed text are one transport too, and the engine owns the choice of
 CDP event. `strokeKeys` (`input.go`) maps the named keys the viewer forwards,
-Tab, Enter, Backspace, Escape, and the caret keys, to a full `rawKeyDown`,
-optional char, `keyUp` stroke, so the page gets the browser-native default
-action: Tab traverses focus with the focus ring, Enter activates the focused
-element, an arrow moves the caret or scrolls. A
+Tab, Enter, Backspace, Escape, the caret keys, and the A key select-all rides
+on, to a full `rawKeyDown`, optional char, `keyUp` stroke, so the page gets the
+browser-native default action: Tab traverses focus with the focus ring, Enter
+activates the focused element, an arrow moves the caret or scrolls, and Ctrl+A
+selects. A stroke carries no char text unless the key produces some, which is
+why the Ctrl+A stroke selects rather than typing an "a". A
 typed printable ASCII character takes the opposite route. `printableStroke`
 dispatches a `keyDown` carrying the character as its text plus a `keyUp`, so
 Chromium generates the keypress from the text and applies its own default
@@ -388,7 +390,18 @@ below.
 Selection and copying are separate acts. Chromium owns the selection, which the
 user makes by drag, double-click, or triple-click through the ordinary mouse
 dispatch, held together by the pointer-capture rule under Rendering and input
-below, and it paints its own selection; Nyala renders no highlight of its own.
+below, or by Ctrl+A, and it paints its own selection; Nyala renders no highlight
+of its own. A page may paint highlights of its own on top: a code editor that
+boxes the word under the caret is doing that, not selecting it.
+
+Ctrl+A was unbound, so the chord did nothing at all and a large page could not
+be selected without a drag across it. It forwards as a key stroke rather than a
+viewer command, so Chromium arbitrates it the way it does Space and the caret
+keys: the focused field's text, or the whole document when nothing holds focus.
+The byte keeps its readline meaning inside the URL editor and the find field,
+which claim every key before chrome mode sees one, and a Kitty key report for it
+normalises back to that byte at the single decode point, so both paths behave
+alike.
 Copying is explicit, on Alt+W or the menu's Copy item, and nothing reaches the
 clipboard until then. Alt+W is the Emacs kill-ring-save chord and was unbound.
 The alternatives were all taken or ambiguous: Ctrl+C quits, Ctrl+Shift+C is
@@ -1237,8 +1250,8 @@ Chrome-mode key bindings live in `internal/viewer/keys.go`. Rendering: Alt+R
 and Alt+Shift+R cycle the backend, Alt+B and Alt+Shift+B cycle the Block
 scheme, Alt+C and Alt+Shift+C cycle colour. Navigation: Alt+Left and
 Alt+Right step history, Alt+Home opens the launch URL, Ctrl+R and F5 reload.
-Chrome: Ctrl+L edits the URL, Ctrl+F opens find, Alt+F opens the menu, Alt+W
-copies the page selection, Ctrl+Q or Ctrl+C quits. Page keys: Tab, Shift+Tab,
+Chrome: Ctrl+L edits the URL, Ctrl+F opens find, Alt+F opens the menu, Ctrl+A
+selects the page, Alt+W copies the page selection, Ctrl+Q or Ctrl+C quits. Page keys: Tab, Shift+Tab,
 and Enter forward for focus traversal and activation, the arrows, Home, End,
 PageUp, and PageDown forward for the caret and page scrolling, and every
 unbound printable key, Backspace, and Escape forward as page text input.

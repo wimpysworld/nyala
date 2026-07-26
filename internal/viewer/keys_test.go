@@ -430,6 +430,7 @@ func TestDecodeKittyKey(t *testing.T) {
 		{"ctrl r reloads", "114;5u", actionReload, cdpModCtrl, true},
 		{"ctrl l edits the URL", "108;5u", actionEditURL, cdpModCtrl, true},
 		{"ctrl f opens find", "102;5u", actionOpenFind, cdpModCtrl, true},
+		{"ctrl a selects all", "97;5u", actionSelectAll, cdpModCtrl, true},
 		{"alt r cycles the backend", "114;3u", actionCycleBackend, cdpModAlt, true},
 		{"alt shift r reverses the cycle", "114;4u", actionCycleBackendReverse, cdpModAlt | cdpModShift, true},
 		{"alt b cycles blocks", "98;3u", actionCycleBlocks, cdpModAlt, true},

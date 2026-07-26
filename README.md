@@ -85,6 +85,7 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 | <kbd>Esc</kbd> | Send Escape to the page |
 | Paste | Insert the clipboard into the focused page field |
 | <kbd>Ctrl</kbd>+<kbd>F</kbd> | Find on the page; <kbd>Enter</kbd> searches, <kbd>Down</kbd> / <kbd>Up</kbd> step the matches, <kbd>Esc</kbd> closes |
+| <kbd>Ctrl</kbd>+<kbd>A</kbd> | Select all: the focused field's text, or the whole page when nothing is focused |
 | <kbd>Alt</kbd>+<kbd>W</kbd> | Copy the page selection to the terminal clipboard; the bar reports the result |
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Move the caret in a focused field, otherwise scroll by one line step |
 | <kbd>PgUp</kbd> / <kbd>PgDn</kbd> | Move the caret by one page in a focused field, otherwise scroll by one viewport height |
@@ -111,7 +112,7 @@ Notes:
 
 - Typing goes to the page, so plain `q` does not quit. Use `Ctrl+Q`. Chromium decides what each key does, which is why `Space` types in a focused field and scrolls the page otherwise, and why the arrows, `Home`, `End`, `PgUp`, and `PgDn` move the caret in a focused field and scroll the page when nothing is focused.
 - A paste arrives as one unit, up to 1 MiB, so a pasted newline never submits a form by accident. Inside the URL editor and the find field the paste lands there instead. Paste into the page with no field focused and the bar says the paste was discarded, because Chromium drops it.
-- Select page text by dragging, double-clicking a word, or triple-clicking a line. Selecting copies nothing; `Alt+W` or the ☰ menu's Copy sends it to the clipboard over OSC 52. Selections over 74,994 bytes are refused rather than truncated, so a silent half-copy cannot happen. `Shift`-drag is still your terminal's own selection.
+- Select page text by dragging, double-clicking a word, triple-clicking a line, or pressing `Ctrl+A`. Chromium decides what `Ctrl+A` takes: the focused field's text, or the whole page. Inside the URL editor and the find field it keeps its readline meaning and moves to the line start. Selecting copies nothing; `Alt+W` or the ☰ menu's Copy sends it to the clipboard over OSC 52. Selections over 74,994 bytes are refused rather than truncated, so a silent half-copy cannot happen. `Shift`-drag is still your terminal's own selection.
 - A copy reports itself in the bottom bar: the bytes it wrote, or why an over-long selection was refused. The line takes the URL region for two seconds and then the URL comes back; nothing is blocked while it shows.
 - Find searches when you press `Enter`, not as you type, because each search repaints every match in the page. Matches highlight amber and the current one orange. `Shift+Enter` steps back as well, on a terminal that speaks the Kitty keyboard protocol; `Down` and `Up` work everywhere.
 - `Alt+Home` returns to the URL Nyala was launched with, for the lifetime of the process. It is a normal navigation, so `Alt+Left` goes back to the page you were on.

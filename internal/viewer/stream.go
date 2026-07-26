@@ -44,11 +44,11 @@ type Engine interface {
 	// Frames returns the channel of pixel or direct-PNG frames, each with Text synced on.
 	Frames() <-chan render.Frame
 	// SendKey forwards a key by its code (for example ArrowDown) to the page.
-	// The codes Tab, ShiftTab, Enter, Backspace, Escape, and the caret keys
-	// dispatch full key strokes for native focus traversal, activation, field
-	// editing, dismissal, and caret movement. Chromium decides whether a caret
-	// key moves the caret or scrolls the page; the engine then adopts the
-	// offset the page settled at.
+	// The codes Tab, ShiftTab, Enter, Backspace, Escape, SelectAll, and the
+	// caret keys dispatch full key strokes for native focus traversal,
+	// activation, field editing, dismissal, selection, and caret movement.
+	// Chromium decides whether a caret key moves the caret or scrolls the page;
+	// the engine then adopts the offset the page settled at.
 	SendKey(code string)
 	// SendText forwards typed text to the focused page element. The engine
 	// picks the CDP transport: a single ASCII character goes as a full key
@@ -1482,7 +1482,8 @@ func (s *streamSession) forwardMouse(ev MouseEvent) {
 // forwards its code (the engine owns the offset); Tab, Shift+Tab, and Enter
 // forward to the page as full key strokes for native focus traversal and
 // activation; Ctrl+L opens the URL editor, Ctrl+F the find field, and Alt+F the
-// menu; Alt+W copies the page's selection to the terminal clipboard;
+// menu; Alt+W copies the page's selection to the terminal clipboard and Ctrl+A
+// selects it, Chromium choosing between the focused field and the document;
 // Alt+R cycles the backend and restarts the stream at the new capture
 // size; Alt+B and Alt+C cycle the
 // Block glyph scheme and colour mode. Both cycles only affect Block
@@ -1535,6 +1536,8 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		s.enterMenu()
 	case actionCopySelection:
 		s.copySelection()
+	case actionSelectAll:
+		s.forwardKey("SelectAll")
 	case actionFocusNext:
 		s.forwardKey("Tab")
 	case actionFocusPrev:

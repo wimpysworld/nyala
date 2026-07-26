@@ -105,6 +105,12 @@ const (
 	// actionOpenMenu opens the bar's menu mode (Alt+F, Chromium's menu key;
 	// F10 is often grabbed by terminal emulators).
 	actionOpenMenu
+	// actionSelectAll forwards Ctrl+A to the page, the desktop-browser
+	// select-all chord. Chromium decides what it selects: the focused field's
+	// text, or the whole document when nothing holds focus. The byte keeps its
+	// readline meaning inside the bar's text fields, which claim every key
+	// before chrome mode sees one.
+	actionSelectAll
 	// actionCopySelection copies the page's selection to the terminal clipboard
 	// (Alt+W, the Emacs kill-ring-save chord). Ctrl+C quits and Ctrl+Shift+C is
 	// the terminal's own copy, which a legacy terminal cannot even report apart
@@ -134,6 +140,8 @@ func byteKeyAction(b byte) keyAction {
 		return actionEditURL
 	case keyCtrlF:
 		return actionOpenFind
+	case keyCtrlA:
+		return actionSelectAll
 	case keyTab:
 		return actionFocusNext
 	case keyEnter:
@@ -312,11 +320,15 @@ func kittyKeyEvent(act keyAction, mod int) keyEvent {
 
 // legacyKeyByte returns the control byte a legacy terminal sends for the key an
 // action names, and whether one exists. Quit maps to Ctrl+Q, the primary quit
-// byte, because the interrupt fallback carries the same action.
+// byte, because the interrupt fallback carries the same action. Select-all maps
+// back to Ctrl+A so a supporting terminal's report reaches the bar's text fields
+// as the byte they bind for the line start, exactly as a legacy one does.
 func legacyKeyByte(act keyAction) (byte, bool) {
 	switch act {
 	case actionEscape:
 		return keyEsc, true
+	case actionSelectAll:
+		return keyCtrlA, true
 	case actionActivate:
 		return keyEnter, true
 	case actionFocusNext:
