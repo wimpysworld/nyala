@@ -1302,6 +1302,21 @@ editor or the find field it lands in that field instead. The parser's 1 MiB
 paste bound is unchanged. `SendPaste` reports a paste the page had no field to
 take, which the bar says out loud, under Copy and paste signals above.
 
+`exitTerminal` is the sole teardown composer, and a deferred restore behind a
+`sync.Once` is the only path that runs it. Go runs no deferred function for a
+signal left on its default disposition, so a signal that killed Nyala would
+strand raw mode, mouse reporting, and bracketed paste, and the shell would then
+read SGR mouse reports as typed input. `Stream` therefore watches SIGHUP,
+SIGINT, SIGQUIT, and SIGTERM on one channel, restores through the same `Once`,
+and exits 128 plus the signal number: 129, 130, 131, and 143. SIGHUP is the
+closed terminal window and the dropped SSH connection; SIGINT and SIGQUIT are a
+`kill` from another shell. Catching SIGINT does not touch interactive Ctrl+C,
+because raw mode clears ISIG and the byte `0x03` quits through the key path.
+SIGKILL is uncatchable and a dropped connection defeats in-process cleanup, so
+`reset` stays the answer to both. The browser needs no wind-down on this path:
+chromedp spawns Chromium with a parent-death signal, so the kernel kills it
+when Nyala exits.
+
 ## Correctness architecture
 
 `just diagnostics` is the single correctness workflow. It runs the
