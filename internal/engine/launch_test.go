@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -12,13 +13,16 @@ import (
 )
 
 // fakeExecutable writes an executable file named name into a fresh temp dir and
-// returns the dir and the full path. The file is mode 0o755 so exec.LookPath
-// accepts it on the test PATH, keeping the lookup hermetic with no real browser.
-func fakeExecutable(t *testing.T, name string) (dir, path string) {
+// returns the dir and the full path. body is the shell body appended after the
+// shebang: empty for a stub that only has to exist for a PATH lookup, or a
+// recorder for a test that drives a real launch. The file is mode 0o755 so
+// exec.LookPath accepts it on the test PATH, keeping the lookup hermetic with no
+// real browser.
+func fakeExecutable(t *testing.T, name, body string) (dir, path string) {
 	t.Helper()
 	dir = t.TempDir()
 	path = filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
 		t.Fatalf("write fake executable: %v", err)
 	}
 	return dir, path
@@ -30,7 +34,7 @@ func TestResolveExecutablePrecedence(t *testing.T) {
 	}
 	// A fake chromium on a temp dir prepended to PATH is the lowest-precedence
 	// source. Each higher source must beat it.
-	pathDir, pathExec := fakeExecutable(t, "chromium")
+	pathDir, pathExec := fakeExecutable(t, "chromium", "")
 
 	cases := []struct {
 		name         string
@@ -102,12 +106,58 @@ func TestGPUFlags(t *testing.T) {
 	if got := gpuFlags(false); got != nil {
 		t.Errorf("gpuFlags(false) = %v, want nil", got)
 	}
-	// Pin the whole ordered set, not mere presence: enable-unsafe-swiftshader is
-	// the only thing keeping software WebGL alive on a host with no usable GPU,
-	// and dropping it silently is the exact bug this guards.
+	// This pins the pure builder's result only. It cannot see whether newAllocator
+	// still appends that result to the launch options, so
+	// TestLaunchArgvCarriesGPUFlags is the test that guards the flags actually
+	// reaching Chromium.
 	want := []string{"enable-gpu", "enable-unsafe-swiftshader"}
 	if got := gpuFlags(true); !reflect.DeepEqual(got, want) {
 		t.Errorf("gpuFlags(true) = %v, want %v", got, want)
+	}
+}
+
+func TestLaunchArgvCarriesGPUFlags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the recorder is a POSIX shell script")
+	}
+	// gpuFlags is pure, so a test on it alone stays green even if newAllocator
+	// stops appending the result and the flags never reach the browser. This drives
+	// the real launch path and reads the argv Chromium is exec'd with, so that drop
+	// fails here. enable-unsafe-swiftshader is the only thing keeping software
+	// WebGL alive on a host with no usable GPU, and losing it silently is the bug.
+	//
+	// The fake browser records its arguments then exits non-zero, so chromedp gives
+	// up in milliseconds and no browser ever runs. The recorder writes the file
+	// before it exits, so the argv is on disk by the time launch returns the
+	// start failure.
+	argvFile := filepath.Join(t.TempDir(), "argv")
+	_, browserPath := fakeExecutable(t, "chromium",
+		"printf '%s\\n' \"$@\" > '"+argvFile+"'\nexit 1\n")
+
+	// NYALA_BROWSER beats the empty PATH, so the recorder is the resolved browser.
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("NYALA_BROWSER", browserPath)
+	t.Setenv("CHROME_PATH", "")
+	// A stray proxy variable in the ambient environment would fail launch at the
+	// proxy guard, before any exec.
+	clearProxyEnv(t, nil)
+
+	e := New("")
+	if err := e.launch(""); err == nil {
+		t.Fatal("launch() = nil, want the start failure from the recording browser")
+	}
+
+	raw, err := os.ReadFile(argvFile)
+	if err != nil {
+		t.Fatalf("read recorded argv: %v", err)
+	}
+	argv := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	// Assert presence, not position: chromedp holds flags in a map, so argv order
+	// is not stable between runs.
+	for _, want := range []string{"--enable-gpu", "--enable-unsafe-swiftshader"} {
+		if !slices.Contains(argv, want) {
+			t.Errorf("launch argv %v is missing %s", argv, want)
+		}
 	}
 }
 

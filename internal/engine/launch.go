@@ -188,7 +188,7 @@ func frameRateLimitFlags(disable bool) []string {
 // forced SwiftShader default of headless Chromium and reverts to normal driver
 // selection, so a GPU-backed Mesa driver can serve WebGL. That flag alone is not
 // enough: Chromium removed the automatic SwiftShader software WebGL fallback
-// (deprecated from 130, off for everyone by about 141), so a host with no usable
+// (deprecated from 130, off by default from 144), so a host with no usable
 // GPU gets no WebGL context at all. A kmscon console is exactly that host, since
 // kmscon holds the DRM card node and headless GL autodetection on Linux needs X11.
 // --enable-unsafe-swiftshader is the opt-in Chromium now requires for that software
