@@ -129,9 +129,10 @@ type allocatorConfig struct {
 // cfg.proxy.Server is set it adds --proxy-server; it adds --proxy-bypass-list only
 // when both cfg.proxy.Server and cfg.proxy.Bypass are set, so a stray NO_PROXY
 // without a proxy adds no flag.
-// When enableGPU is set it adds --enable-gpu: headless Chromium forces SwiftShader
-// (CPU) by default, and this flag turns that force off and reverts to normal driver
-// selection, so a GPU-backed Mesa driver can serve WebGL.
+// When enableGPU is set it adds the gpuFlags pair: --enable-gpu turns off the
+// forced SwiftShader (CPU) default of headless Chromium so a real driver can serve
+// WebGL, and --enable-unsafe-swiftshader keeps a software WebGL floor for a host
+// with no usable GPU.
 // When enableAudio is set it appends the bool false for mute-audio, overriding the
 // mute-audio=true that Headless sets: chromedp flags are last-write-wins by map key,
 // and this append lands after DefaultExecAllocatorOptions. The bool false emits no
@@ -152,8 +153,8 @@ func newAllocator(parent context.Context, cfg allocatorConfig) (context.Context,
 		chromedp.Flag("force-device-scale-factor", strconv.FormatFloat(cfg.scale, 'g', -1, 64)),
 		chromedp.Flag("disable-smooth-scrolling", true),
 	)
-	if cfg.enableGPU {
-		opts = append(opts, chromedp.Flag("enable-gpu", true))
+	for _, name := range gpuFlags(cfg.enableGPU) {
+		opts = append(opts, chromedp.Flag(name, true))
 	}
 	if cfg.enableAudio {
 		opts = append(opts, chromedp.Flag("mute-audio", false))
@@ -180,6 +181,26 @@ func frameRateLimitFlags(disable bool) []string {
 		return nil
 	}
 	return []string{"disable-frame-rate-limit"}
+}
+
+// gpuFlags returns the GPU-related Chromium launch switches newAllocator appends,
+// in order, and nothing when the GPU is not enabled. --enable-gpu turns off the
+// forced SwiftShader default of headless Chromium and reverts to normal driver
+// selection, so a GPU-backed Mesa driver can serve WebGL. That flag alone is not
+// enough: Chromium removed the automatic SwiftShader software WebGL fallback
+// (deprecated from 130, off for everyone by about 141), so a host with no usable
+// GPU gets no WebGL context at all. A kmscon console is exactly that host, since
+// kmscon holds the DRM card node and headless GL autodetection on Linux needs X11.
+// --enable-unsafe-swiftshader is the opt-in Chromium now requires for that software
+// fallback, and hardware GL still wins wherever a GPU works, so it only adds a
+// floor. The trade-off: SwiftShader JITs shader code in a weaker sandbox posture
+// and software WebGL is slow, which is why hardware stays preferred. The pure
+// result keeps the flag set unit-testable without launching Chromium.
+func gpuFlags(enable bool) []string {
+	if !enable {
+		return nil
+	}
+	return []string{"enable-gpu", "enable-unsafe-swiftshader"}
 }
 
 // proxyFlags returns the proxy-related Chromium flag name/value pairs newAllocator
