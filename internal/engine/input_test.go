@@ -330,17 +330,49 @@ func TestPrintableKeyIdentity(t *testing.T) {
 	}
 }
 
+// TestPasteTargetScriptAsksTheEditor pins the paste-target read as a question
+// for the editor and nothing else: it asks whether an insert is enabled, walks
+// frames to find the document that owns the focus, touches no clipboard API,
+// writes nothing back, and carries all three answers, so a page it cannot read
+// stays "unknown" rather than being reported as a paste that went nowhere.
+func TestPasteTargetScriptAsksTheEditor(t *testing.T) {
+	for _, banned := range []string{"navigator.clipboard", "clipboardData", "execCommand", "document.write"} {
+		if strings.Contains(pasteTargetSource, banned) {
+			t.Fatalf("the paste-target script references %q, which a target read must not touch", banned)
+		}
+	}
+	// The editing query is the oracle, not the focused element: blurring a
+	// field leaves the frame's editing selection inside it, so an insert still
+	// lands there while the body is the active element.
+	if !strings.Contains(pasteTargetSource, "queryCommandEnabled('insertText')") {
+		t.Fatal("the paste-target script does not ask the editor whether an insert is enabled")
+	}
+	if !strings.Contains(pasteTargetSource, "contentDocument") {
+		t.Fatal("the paste-target script does not walk into a focused frame")
+	}
+	for _, answer := range []string{"'field'", "'" + pasteTargetNone + "'", "'unknown'"} {
+		if !strings.Contains(pasteTargetSource, answer) {
+			t.Fatalf("the paste-target script never answers %s", answer)
+		}
+	}
+}
+
 // TestSendTextWithoutSessionIsInert asserts SendText and SendPaste drop their
 // payload when no browser session is attached rather than dispatching or
 // panicking, matching the SendKey contract that a wedged or absent browser
-// never parks the caller.
+// never parks the caller. A dropped paste reports nothing discarded: no
+// dispatch ran, so nothing was learnt about where the text would have gone.
 func TestSendTextWithoutSessionIsInert(t *testing.T) {
 	e := New("")
 	e.SendText("a")
 	e.SendText("日本語")
 	e.SendText("")
-	e.SendPaste("pasted text")
-	e.SendPaste("")
+	if discarded := e.SendPaste("pasted text"); discarded {
+		t.Fatal("a paste with no session reported itself discarded")
+	}
+	if discarded := e.SendPaste(""); discarded {
+		t.Fatal("an empty paste reported itself discarded")
+	}
 
 	e.mu.Lock()
 	failures := e.inputFailures

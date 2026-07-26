@@ -60,16 +60,22 @@ func osc52Clipboard(text string) []byte {
 // action reaches it.
 //
 // The page read runs on the serialised worker, so a wedged browser never freezes
-// quit or draw, and the worker hands the text back to the consumer loop rather
+// quit or draw, and the worker hands the outcome back to the consumer loop rather
 // than writing the terminal itself: OSC 52 is a control sequence, so it must go
 // out through the one ordered writer path like a bar repaint. The fallback with
 // no worker reads inline, which is the browser-free test path.
+//
+// Either path reports what happened on the bar: the bytes a completed copy
+// wrote, or the refusal an over-bound selection earned, because a silent copy
+// and a silent refusal look exactly alike.
 func (s *streamSession) copySelection() {
 	if s.keySender != nil {
-		s.keySender.sendCopy(s.clip)
+		s.keySender.sendCopy(s.outcomes)
 		return
 	}
-	s.writeClipboard(s.eng.Selection())
+	if o, ok := copyOutcome(s.eng.Selection()); ok {
+		s.applyOutcome(o)
+	}
 }
 
 // writeClipboard emits one clipboard write for text through the ordered control

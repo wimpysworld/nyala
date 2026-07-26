@@ -194,10 +194,13 @@ func boldSpans(content string, spans []barSegment) string {
 // barContent carries the variable bar fields for one repaint. indicator is
 // the backend glyph, or a spinner frame during the launch navigation. fps is
 // the fps meter text; empty means the meter is off and the segment absent.
+// signal is the transient copy or paste report; empty means the URL region
+// shows the URL, and non-empty replaces the URL text for as long as it holds.
 type barContent struct {
 	indicator string
 	url       string
 	fps       string
+	signal    string
 }
 
 // barAtom is one fixed-width piece of the bar row: a segment's content or a
@@ -228,10 +231,15 @@ func barFiller(text string) barAtom {
 // right corner behind its own separator, the fps text sits immediately left
 // of it only when present, and the URL region absorbs the remaining width,
 // truncating with an ellipsis. A terminal too narrow for the chrome degrades
-// to a URL-only row.
+// to a URL-only row. A live signal takes the URL region's text, so a copy or
+// paste report costs no column anywhere else and truncates the same way.
 func renderBar(cols int, c barContent) (string, barLayout) {
 	if cols <= 0 {
 		return "", barLayout{cols: cols}
+	}
+	region := c.url
+	if c.signal != "" {
+		region = c.signal
 	}
 	left := []barAtom{
 		barButton(barSegmentBack, barGlyphBack),
@@ -265,7 +273,7 @@ func renderBar(cols int, c barContent) (string, barLayout) {
 	urlWidth := cols - fixed
 	if urlWidth < 1 {
 		// Too narrow for the chrome: the whole row is the URL region.
-		content := runewidth.FillRight(runewidth.Truncate(c.url, cols, barEllipsis), cols)
+		content := runewidth.FillRight(runewidth.Truncate(region, cols, barEllipsis), cols)
 		return content, barLayout{cols: cols, segments: []barSegment{{kind: barSegmentURL, col: 1, width: cols}}}
 	}
 
@@ -273,7 +281,7 @@ func renderBar(cols int, c barContent) (string, barLayout) {
 	atoms = append(atoms, left...)
 	atoms = append(atoms, barAtom{
 		kind:    barSegmentURL,
-		text:    runewidth.FillRight(runewidth.Truncate(c.url, urlWidth, barEllipsis), urlWidth),
+		text:    runewidth.FillRight(runewidth.Truncate(region, urlWidth, barEllipsis), urlWidth),
 		width:   urlWidth,
 		segment: true,
 	})

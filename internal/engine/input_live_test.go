@@ -25,6 +25,13 @@ const liveInputPage = "data:text/html," +
 	"document.addEventListener('keydown',function(e){window.pressed.push(e.key)});" +
 	"</script></body></html>"
 
+// liveFramePage is a self-contained data: URL carrying one same-origin frame
+// with a text field inside it, the state a paste-target read has to walk into.
+const liveFramePage = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<iframe id='frame' srcdoc=\"<body><input id='inner'></body>\" style='width:300px;height:60px'></iframe>" +
+	"</body></html>"
+
 // liveInputEngine launches a real Chromium on liveInputPage and returns the
 // engine and its session context once the first frame proves the page laid out,
 // so an input dispatch lands on a live document.
@@ -311,6 +318,98 @@ func TestLiveSingleCharacterPasteIsNotAKeyPress(t *testing.T) {
 	}
 	if pressed := evalString(t, ctx, "window.pressed.join(',')"); pressed != "" {
 		t.Fatalf("pasted space raised keydown events %q, want none", pressed)
+	}
+}
+
+// TestLivePasteReportsWhereItLanded proves the paste seam tells a paste that
+// reached a field from one the page dropped. On a freshly loaded page nothing
+// can take the text, Chromium discards it, and the seam reports the discard so
+// the bar can say so; with the field focused the insert lands and there is
+// nothing to report. The field value is read in both states, so no report is
+// taken on trust.
+func TestLivePasteReportsWhereItLanded(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+
+	if discarded := e.SendPaste("lost"); !discarded {
+		t.Fatal("a paste on a page with nothing to edit reported itself delivered")
+	}
+	if got := evalString(t, ctx, "document.getElementById('f').value"); got != "" {
+		t.Fatalf("field value = %q after the discarded paste, want it untouched", got)
+	}
+
+	focusField(t, ctx)
+	if discarded := e.SendPaste("landed"); discarded {
+		t.Fatal("a paste into a focused field reported itself discarded")
+	}
+	if got, ok := waitForString(t, ctx, "document.getElementById('f').value", "landed"); !ok {
+		t.Fatalf("field value = %q, want %q", got, "landed")
+	}
+}
+
+// TestLivePasteReportNeverContradictsTheField pins the two states where one
+// oracle alone would claim a discard while the text was landing, which is the
+// failure that matters: the bar would contradict what the reader can see.
+// Blurring a text field leaves the frame's editing selection inside it, so the
+// insert still lands with the body as the active element; a page dropping the
+// document selection leaves the field focused and taking text while the editing
+// query says no. Both must report nothing to say.
+func TestLivePasteReportNeverContradictsTheField(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+	focusField(t, ctx)
+	e.SendPaste("one")
+	if got, ok := waitForString(t, ctx, "document.getElementById('f').value", "one"); !ok {
+		t.Fatalf("field value = %q, want %q", got, "one")
+	}
+
+	blurField(t, ctx)
+	if discarded := e.SendPaste("two"); discarded {
+		t.Fatal("a paste the blurred field still took reported itself discarded")
+	}
+	if got, ok := waitForString(t, ctx, "document.getElementById('f').value", "onetwo"); !ok {
+		t.Fatalf("field value = %q, want %q (the insert followed the editing selection)", got, "onetwo")
+	}
+
+	focusField(t, ctx)
+	evalVoid(t, ctx, "window.getSelection().removeAllRanges()")
+	if discarded := e.SendPaste("three"); discarded {
+		t.Fatal("a paste into a focused field with no document selection reported itself discarded")
+	}
+	if got, ok := waitForString(t, ctx, "document.getElementById('f').value", "onetwothree"); !ok {
+		t.Fatalf("field value = %q, want %q (the focused field still took the insert)", got, "onetwothree")
+	}
+}
+
+// TestLivePasteIntoContentEditableIsNotDiscarded proves the target read follows
+// Chromium rather than a tag list: a focused contenteditable element takes the
+// insert, so the seam must not report it as a paste that reached nothing.
+func TestLivePasteIntoContentEditableIsNotDiscarded(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+	evalVoid(t, ctx, "var d=document.createElement('div');d.id='e';d.contentEditable='true';"+
+		"document.body.appendChild(d);d.focus()")
+
+	if discarded := e.SendPaste("editable"); discarded {
+		t.Fatal("a paste into a focused contenteditable reported itself discarded")
+	}
+	if got, ok := waitForString(t, ctx, "document.getElementById('e').textContent", "editable"); !ok {
+		t.Fatalf("contenteditable text = %q, want %q", got, "editable")
+	}
+}
+
+// TestLivePasteIntoFrameFieldIsNotDiscarded proves the target read walks into
+// the frame that owns the focus. The insert lands in a same-origin frame's
+// field, which the top document's own editing state knows nothing about, so a
+// read that stopped at the top document would report a discard while the text
+// was landing.
+func TestLivePasteIntoFrameFieldIsNotDiscarded(t *testing.T) {
+	e, ctx := liveEngineOn(t, liveFramePage)
+	evalVoid(t, ctx, "document.getElementById('frame').contentDocument.getElementById('inner').focus()")
+
+	if discarded := e.SendPaste("framed"); discarded {
+		t.Fatal("a paste into a focused frame field reported itself discarded")
+	}
+	const inner = "document.getElementById('frame').contentDocument.getElementById('inner').value"
+	if got, ok := waitForString(t, ctx, inner, "framed"); !ok {
+		t.Fatalf("frame field value = %q, want %q", got, "framed")
 	}
 }
 

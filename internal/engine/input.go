@@ -225,6 +225,15 @@ func (e *ChromiumEngine) SendText(text string) {
 	e.dispatchInput(ctx, input.InsertText(text))
 }
 
+//go:embed paste.js
+var pasteTargetSource string
+
+// pasteTargetNone is the paste-target script's answer for a page state
+// Chromium will drop the insert from. Its other two answers, "field" for an
+// editable target and "unknown" for a page the script cannot read, both mean
+// the same thing here: say nothing.
+const pasteTargetNone = "none"
+
 // SendPaste inserts one pasted unit at the caret through Input.insertText, so
 // the whole payload lands atomically however long it is. Paste never takes the
 // typed-character stroke SendText uses, not even for a one-character payload: a
@@ -232,15 +241,29 @@ func (e *ChromiumEngine) SendText(text string) {
 // action, and a pasted space must not scroll the page. Empty text is a no-op,
 // and the dispatch is bounded like every other input, so a wedged browser drops
 // the paste rather than parking the caller.
-func (e *ChromiumEngine) SendPaste(text string) {
+//
+// It reports discarded only when the page proved the insert had no editable
+// target, so the viewer can say the paste reached nothing rather than leaving
+// the reader to guess. The target read rides the same bounded dispatch as the
+// insert, one round trip, and the insert runs either way, so the paste itself
+// behaves exactly as it did before. A dropped dispatch and a cross-origin frame
+// both report false: neither proves where the text went.
+func (e *ChromiumEngine) SendPaste(text string) (discarded bool) {
 	if text == "" {
-		return
+		return false
 	}
 	ctx := e.inputCtx()
 	if ctx == nil {
-		return
+		return false
 	}
-	e.dispatchInput(ctx, input.InsertText(text))
+	var target string
+	if err := e.runInput(ctx, chromedp.Tasks{
+		chromedp.Evaluate(pasteTargetSource, &target),
+		input.InsertText(text),
+	}); err != nil {
+		return false
+	}
+	return target == pasteTargetNone
 }
 
 // scrollCellHeightPlaceholder is the token buildScrollScript substitutes the

@@ -592,7 +592,10 @@ type streamTestEngine struct {
 	findPrev       func()
 	findClear      func()
 	findState      *FindState
-	selection      func() string
+	selection      func() (string, bool)
+	// pasteDiscarded is what SendPaste reports: true stands for a page that
+	// held no editable target, so the viewer signals the discarded paste.
+	pasteDiscarded bool
 }
 
 func (e streamTestEngine) SetBackend(backend Backend) {
@@ -621,10 +624,11 @@ func (e streamTestEngine) SendText(text string) {
 	}
 }
 
-func (e streamTestEngine) SendPaste(text string) {
+func (e streamTestEngine) SendPaste(text string) bool {
 	if e.sendPaste != nil {
 		e.sendPaste(text)
 	}
+	return e.pasteDiscarded
 }
 
 func (e streamTestEngine) SendNav(a NavAction) {
@@ -674,11 +678,11 @@ func (e streamTestEngine) FindState() FindState {
 	return FindState{}
 }
 
-func (e streamTestEngine) Selection() string {
+func (e streamTestEngine) Selection() (string, bool) {
 	if e.selection != nil {
 		return e.selection()
 	}
-	return ""
+	return "", false
 }
 
 func (e streamTestEngine) SendMouse(ev MouseEvent) {

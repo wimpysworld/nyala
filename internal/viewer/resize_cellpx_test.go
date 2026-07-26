@@ -59,7 +59,7 @@ func (e *resizeOpEngine) Navigate(string) error       { return nil }
 func (e *resizeOpEngine) Frames() <-chan render.Frame { return nil }
 func (e *resizeOpEngine) SendKey(string)              {}
 func (e *resizeOpEngine) SendText(string)             {}
-func (e *resizeOpEngine) SendPaste(string)            {}
+func (e *resizeOpEngine) SendPaste(string) bool       { return false }
 func (e *resizeOpEngine) SendNav(NavAction)           {}
 func (e *resizeOpEngine) CurrentURL() string          { return "" }
 func (e *resizeOpEngine) OpenURL(string)              {}
@@ -69,7 +69,7 @@ func (e *resizeOpEngine) FindNext()                   {}
 func (e *resizeOpEngine) FindPrev()                   {}
 func (e *resizeOpEngine) FindClear()                  {}
 func (e *resizeOpEngine) FindState() FindState        { return FindState{} }
-func (e *resizeOpEngine) Selection() string           { return "" }
+func (e *resizeOpEngine) Selection() (string, bool)   { return "", false }
 func (e *resizeOpEngine) SendMouse(MouseEvent)        {}
 func (e *resizeOpEngine) Close() error                { return nil }
 

@@ -411,12 +411,14 @@ truncated clipboard is a paste the user discovers is wrong later, where a refusa
 leaves the previous clipboard intact. The bound protects the render as much as the
 clipboard: a terminal that abandons an over-long OSC string prints the remainder
 over the frame just drawn. The engine enforces the same number page-side, so an
-oversized selection never crosses the CDP wire.
+oversized selection never crosses the CDP wire. The read reports the refusal
+beside the empty text, because a refusal that looked like a successful copy was
+the worst of both: see Copy and paste signals below.
 
 The sequence goes out through the one writer goroutine, on the cap-1 ready
 channel, exactly like a bar repaint or a resize clear. The input worker never
-writes the terminal; it posts the text to the consumer loop, which emits it after
-flushing any assembled frame. So under continuous screen updates the copy lands
+writes the terminal; it posts the outcome to the consumer loop, which emits it
+after flushing any assembled frame. So under continuous screen updates the copy lands
 whole between two frames, which is the failure other terminal browsers have
 shipped. Multiplexers see plain OSC 52 with no DCS wrapping: tmux handles it
 itself under `set-clipboard on` and ignores it under the default `external`, and
@@ -1088,6 +1090,52 @@ nil check. The segment reads `↓ NN.n │ ↑ NN.n │ ≌ N`: ↓ is the
 ingest rate from the engine, ↑ the rate written to the terminal, ≌ the
 cumulative received total. Rates carry one decimal and read `--` when idle.
 
+### Copy and paste signals
+
+Three input outcomes change nothing on the page, so the bar reports them: a
+completed copy with the bytes it wrote, a selection refused for breaking the
+74,994-byte bound, and a paste Chromium discarded because no page field held
+focus. Without them all three read exactly like success, and a reader who is
+unsure presses the chord again or checks another application. Space arbitration
+has the same shape and gets no signal, because the page visibly scrolls or
+types.
+
+A signal takes the URL region's text for two seconds. That is the one flexible
+segment, so every button keeps its column, the ☰ anchor never moves, and the row
+still measures exactly `cols` cells in every signal state, truncating with the
+same ellipsis a long URL takes. Each line leads with its outcome, so a
+phone-width row that truncates the tail still tells the three apart. A signal is
+not a mode: keys, clicks, and frames keep flowing while it shows, and the
+consumer loop wakes at the expiry, so an idle page that pushes no frames clears
+it with no key press. The repaint re-reads the deadline too, so no frame can
+draw a signal past its hold.
+
+The discarded paste needed a decision, because `Input.insertText` reports
+nothing back. The engine asks the page instead: one script rides the same
+bounded dispatch as the insert and answers `field`, `none`, or `unknown`. Only
+`none` is reported as a discard, the insert runs whatever the answer, so paste
+behaviour is unchanged and only the report is new, and a dropped dispatch
+reports nothing for the reason every other dropped keystroke is silent.
+
+Two oracles answer, because live Chromium proved each one wrong on its own, and
+the wrong direction is a bar line contradicting the text on screen. Chromium
+commits the text through the focused frame's input-method controller, which
+inserts at that frame's editing selection. `document.queryCommandEnabled`
+(`insertText`) is that same question, and it catches what the DOM hides:
+blurring a text field leaves the editing selection inside it, so an insert still
+lands with the body as the active element. It misses the opposite case, a page
+that drops the document selection while a field keeps focus, which still takes
+the insert. So the script also tests the focused element itself, `none` needs
+both to say no, and either one saying yes is `field`. Silence costs a reader
+nothing. Focus nests, so the walk descends into a focused frame, because a
+frame's field is invisible to the document above it; a cross-origin frame is
+opaque and answers `unknown`. The editing query is deprecated, so a browser that
+drops it throws, which also answers `unknown` rather than guessing.
+
+A copy with nothing selected stays silent as well. The selection read cannot
+tell an empty selection from a dispatch that did not land, so any line it drew
+would be a guess, and the clipboard was never going to change either way.
+
 ### Rendering and input
 
 The bar folds into the same DEC 2026 sync bracket as the page frame, so both
@@ -1238,7 +1286,8 @@ arrive as loose bytes and type character by character, so a pasted newline
 would press Enter and submit a form. A paste outside a bar mode forwards
 through `SendPaste`, so the whole payload lands atomically; inside the URL
 editor or the find field it lands in that field instead. The parser's 1 MiB
-paste bound is unchanged.
+paste bound is unchanged. `SendPaste` reports a paste the page had no field to
+take, which the bar says out loud, under Copy and paste signals above.
 
 ## Correctness architecture
 

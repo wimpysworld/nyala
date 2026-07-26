@@ -51,7 +51,7 @@ func (e *tabCycleEngine) Resize(int, int)             {}
 func (e *tabCycleEngine) Navigate(string) error       { return nil }
 func (e *tabCycleEngine) SendKey(string)              {}
 func (e *tabCycleEngine) SendText(string)             {}
-func (e *tabCycleEngine) SendPaste(string)            {}
+func (e *tabCycleEngine) SendPaste(string) bool       { return false }
 func (e *tabCycleEngine) SendNav(NavAction)           {}
 func (e *tabCycleEngine) CurrentURL() string          { return "" }
 func (e *tabCycleEngine) OpenURL(string)              {}
@@ -61,7 +61,7 @@ func (e *tabCycleEngine) FindNext()                   {}
 func (e *tabCycleEngine) FindPrev()                   {}
 func (e *tabCycleEngine) FindClear()                  {}
 func (e *tabCycleEngine) FindState() FindState        { return FindState{} }
-func (e *tabCycleEngine) Selection() string           { return "" }
+func (e *tabCycleEngine) Selection() (string, bool)   { return "", false }
 func (e *tabCycleEngine) SendMouse(MouseEvent)        {}
 func (e *tabCycleEngine) Close() error                { return nil }
 

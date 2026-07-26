@@ -17,10 +17,17 @@ import (
 // bytes the session emitted.
 func clipSession(t *testing.T, selection string) (*streamSession, *bytes.Buffer) {
 	t.Helper()
+	return clipSessionOver(t, selection, false)
+}
+
+// clipSessionOver is clipSession with the over-bound flag the engine reports
+// beside the text, so a test can drive the refused-copy path as well.
+func clipSessionOver(t *testing.T, selection string, over bool) (*streamSession, *bytes.Buffer) {
+	t.Helper()
 	tty := &bytes.Buffer{}
 	st := NewState(80, 24)
 	s := &streamSession{
-		eng: streamTestEngine{selection: func() string { return selection }},
+		eng: streamTestEngine{selection: func() (string, bool) { return selection, over }},
 		st:  &st,
 		tty: tty,
 	}
@@ -266,13 +273,13 @@ func TestKeySenderPostsCopyOffTheInputLoop(t *testing.T) {
 	eng := &selectionEngine{fakeEngine: &fakeEngine{}, text: "worker copy", keys: make(chan string, 1)}
 	ks := newKeySender(eng)
 	t.Cleanup(ks.close)
-	clip := make(chan string, 1)
+	clip := make(chan inputOutcome, 1)
 
 	ks.sendCopy(clip)
 	select {
 	case got := <-clip:
-		if got != "worker copy" {
-			t.Fatalf("worker posted %q, want the page selection", got)
+		if got.kind != signalCopied || got.text != "worker copy" {
+			t.Fatalf("worker posted %+v, want the page selection as a completed copy", got)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the worker posted no copied text")
@@ -293,17 +300,19 @@ func TestKeySenderPostsCopyOffTheInputLoop(t *testing.T) {
 	}
 	select {
 	case got := <-clip:
-		t.Fatalf("a copy with no selection posted %q, want nothing", got)
+		t.Fatalf("a copy with no selection posted %+v, want nothing", got)
 	default:
 	}
 }
 
 // selectionEngine reports a page selection and records forwarded keys, so a
-// worker test can order a copy against a key.
+// worker test can order a copy against a key. over stands for a selection past
+// the copy bound, which the engine refuses rather than truncates.
 type selectionEngine struct {
 	*fakeEngine
 	mu   sync.Mutex
 	text string
+	over bool
 	keys chan string
 }
 
@@ -313,10 +322,16 @@ func (e *selectionEngine) setText(text string) {
 	e.mu.Unlock()
 }
 
-func (e *selectionEngine) Selection() string {
+func (e *selectionEngine) setOver(over bool) {
+	e.mu.Lock()
+	e.over = over
+	e.mu.Unlock()
+}
+
+func (e *selectionEngine) Selection() (string, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.text
+	return e.text, e.over
 }
 
 func (e *selectionEngine) SendKey(code string) { e.keys <- code }

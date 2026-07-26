@@ -58,7 +58,7 @@ func (e *switchOpEngine) Navigate(string) error       { return nil }
 func (e *switchOpEngine) Frames() <-chan render.Frame { return nil }
 func (e *switchOpEngine) SendKey(string)              {}
 func (e *switchOpEngine) SendText(string)             {}
-func (e *switchOpEngine) SendPaste(string)            {}
+func (e *switchOpEngine) SendPaste(string) bool       { return false }
 func (e *switchOpEngine) SendNav(NavAction)           {}
 func (e *switchOpEngine) CurrentURL() string          { return "" }
 func (e *switchOpEngine) OpenURL(string)              {}
@@ -68,7 +68,7 @@ func (e *switchOpEngine) FindNext()                   {}
 func (e *switchOpEngine) FindPrev()                   {}
 func (e *switchOpEngine) FindClear()                  {}
 func (e *switchOpEngine) FindState() FindState        { return FindState{} }
-func (e *switchOpEngine) Selection() string           { return "" }
+func (e *switchOpEngine) Selection() (string, bool)   { return "", false }
 func (e *switchOpEngine) SendMouse(MouseEvent)        {}
 func (e *switchOpEngine) Close() error                { return nil }
 

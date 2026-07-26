@@ -59,8 +59,12 @@ type Engine interface {
 	// SendPaste inserts one pasted unit at the caret in the focused page
 	// element. It is separate from SendText because a paste is not a key
 	// press: the engine always inserts it atomically, so a one-character
-	// paste reports no key press and runs no key default action.
-	SendPaste(text string)
+	// paste reports no key press and runs no key default action. It reports
+	// discarded only when the page proved the insert had no editable target,
+	// so the bar can say the paste reached nothing; a dropped dispatch or a
+	// frame the engine cannot read reports false, because neither proves
+	// where the text went.
+	SendPaste(text string) (discarded bool)
 	// SendNav forwards one navigation request: reload, a history step, or the
 	// launch page. The engine owns the launch URL and the navigation path.
 	SendNav(action NavAction)
@@ -93,11 +97,13 @@ type Engine interface {
 	// Pending with the previous counts, and a dropped dispatch reports Failed.
 	FindState() FindState
 	// Selection returns the text the page has selected, for an explicit copy to
-	// the terminal clipboard. It is empty when the page holds no selection, when
-	// the selection is over the copy bound, and when the read did not land, so
-	// the viewer treats all three as nothing to copy. It reads the page, never
-	// the terminal clipboard.
-	Selection() string
+	// the terminal clipboard, and whether that selection was over the copy
+	// bound. An over-bound selection is refused rather than truncated, so it
+	// carries no text and the viewer reports the refusal. Empty text with over
+	// false means the page holds no selection or the read did not land, which
+	// both mean nothing to copy. It reads the page, never the terminal
+	// clipboard.
+	Selection() (text string, over bool)
 	// SendMouse forwards one decoded mouse event. A wheel step scrolls at the
 	// pointer cell through the engine's wheel transport; a press or release
 	// dispatches a mouse event at the cell centre. The engine owns the
@@ -273,11 +279,11 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	keySender := newKeySender(eng)
 	defer keySender.close()
 
-	// clip carries a copied selection from the input worker, which read it from
-	// the page, back to the consumer loop, which owns the terminal writes. Cap 1
-	// is enough: a copy is one user action, and the worker's send waits on the
-	// loop rather than dropping the text.
-	clip := make(chan string, 1)
+	// outcomes carries a copy or paste result from the input worker, which read
+	// it from the page, back to the consumer loop, which owns the terminal
+	// writes. Cap 1 is enough: each is one user action, and the worker's send
+	// waits on the loop rather than dropping the result.
+	outcomes := make(chan inputOutcome, 1)
 
 	// The control goroutine runs the engine restarts (Resize, SetBackend) off the
 	// consumer loop, so a slow restartStream cannot freeze draw, keys, and quit
@@ -291,7 +297,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	diff := &block.GridDiff{}
 	st.SetDiff(diff)
 
-	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, clip: clip, ctl: ctl, diff: diff, fps: fps, launchURL: url, version: version}
+	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, outcomes: outcomes, ctl: ctl, diff: diff, fps: fps, launchURL: url, version: version}
 	session = s
 	// Clear the screen and draw the bar immediately, with a blank page region
 	// and the launch URL: the first user feedback is the bar, not a text cue.
@@ -438,12 +444,13 @@ type streamSession struct {
 	tty       io.Writer
 	fd        uintptr
 	keySender *keySender
-	// clip delivers a copied selection from the input worker to the consumer
-	// loop, which writes it as OSC 52 through the ordered control path. It is nil
-	// on a session with no worker, which reads and writes inline instead.
-	clip chan string
-	ctl  *control
-	diff *block.GridDiff
+	// outcomes delivers a copy or paste result from the input worker to the
+	// consumer loop, which writes the clipboard sequence and the bar signal
+	// through the ordered control path. It is nil on a session with no worker,
+	// which reads and reports inline instead.
+	outcomes chan inputOutcome
+	ctl      *control
+	diff     *block.GridDiff
 	// firstDrawn is atomic because the producer goroutine writes it per frame
 	// while Stream's SIGTERM watcher reads it for the teardown escapes.
 	firstDrawn   atomic.Bool
@@ -536,6 +543,12 @@ type streamSession struct {
 	findQuery string
 	// menuSel is the highlighted menu command index.
 	menuSel int
+	// signal is the transient copy or paste report the chrome row shows in the
+	// URL region, and signalUntil the instant it expires. Empty signal means the
+	// row shows the URL. The loop wakes at signalUntil to clear it, so it never
+	// needs a key press or a frame to go away.
+	signal      string
+	signalUntil time.Time
 	// pressed and pressedSet carry the chrome press feedback: the pressed
 	// button renders bold until its release.
 	pressed    barSegmentKind
@@ -555,9 +568,10 @@ type streamSession struct {
 // appends nothing, matching the engineRows reservation. A non-chrome bar
 // mode (edit, menu, about, find) swaps the row content through appendBarMode. In
 // chrome, the URL comes from Engine.CurrentURL at each repaint, falling back
-// to the launch URL, the indicator shows the startup spinner until the first
-// frame draws, a pressed button renders bold until its release, and the
-// layout is kept for bar-row mouse hit-testing.
+// to the launch URL, a live copy or paste signal takes the URL region for its
+// hold, the indicator shows the startup spinner until the first frame draws, a
+// pressed button renders bold until its release, and the layout is kept for
+// bar-row mouse hit-testing.
 func (s *streamSession) appendBar(buf *bytes.Buffer) {
 	if s.st.Rows < 2 {
 		return
@@ -574,7 +588,12 @@ func (s *streamSession) appendBar(buf *bytes.Buffer) {
 	if s.fpsBadgeShown() {
 		fps = s.fps.barText(time.Now())
 	}
-	content, layout := renderBar(s.st.Cols, barContent{indicator: indicator, url: s.currentURL(), fps: fps})
+	content, layout := renderBar(s.st.Cols, barContent{
+		indicator: indicator,
+		url:       s.currentURL(),
+		fps:       fps,
+		signal:    s.liveSignal(time.Now()),
+	})
 	s.barLay = layout
 	// A pressed button holds bold until its release.
 	if s.pressedSet {
@@ -748,6 +767,15 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			settleC = time.After(s.tmuxSixelSettleDelay() - time.Since(s.lastTmuxSixel))
 		}
 
+		// While a copy or paste signal holds the bar's URL region, wake at its
+		// expiry so the row falls back to the URL on its own. An idle page
+		// pushes no frames, so without this the signal would sit there until
+		// the next key or frame. A nil channel never fires.
+		var signalC <-chan time.Time
+		if s.signal != "" {
+			signalC = time.After(time.Until(s.signalUntil))
+		}
+
 		select {
 		case readyC <- item:
 			s.assembled = nil
@@ -844,11 +872,15 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			if s.handleKey(ev) {
 				return nil
 			}
-		case text := <-s.clip:
-			// A copy read the page's selection on the input worker; the write
-			// belongs here, on the goroutine that owns the terminal, so the
-			// sequence stays ordered against the frames and the bar.
-			s.writeClipboard(text)
+		case <-signalC:
+			// The signal's hold elapsed: the row falls back to the URL.
+			s.clearSignal()
+		case o := <-s.outcomes:
+			// A copy read the page's selection on the input worker, or a paste
+			// found no field there; the clipboard write and the bar signal
+			// belong here, on the goroutine that owns the terminal, so both
+			// stay ordered against the frames and the bar.
+			s.applyOutcome(o)
 		case err := <-w.errc:
 			// The writer hit a terminal write error; surface it as an I/O failure the
 			// same way the serial path did.
@@ -1564,13 +1596,17 @@ func (s *streamSession) forwardText(text string) {
 
 // forwardPaste forwards one pasted unit to the engine off the input loop
 // through the same worker as keys and typed text, so a paste lands in typing
-// order and a wedged browser never freezes quit or draw.
+// order and a wedged browser never freezes quit or draw. A paste the page
+// dropped for want of a focused field reports itself on the bar, so the reader
+// is not left to wonder where the text went.
 func (s *streamSession) forwardPaste(text string) {
 	if s.keySender != nil {
-		s.keySender.sendPaste(text)
+		s.keySender.sendPaste(text, s.outcomes)
 		return
 	}
-	s.eng.SendPaste(text)
+	if s.eng.SendPaste(text) {
+		s.showSignal(signalPasteDiscarded, 0)
+	}
 }
 
 // forwardNav forwards one navigation request to the engine through the same
@@ -1718,12 +1754,24 @@ func (s *keySender) sendText(text string) {
 
 // sendPaste queues one pasted unit for the worker on the same queue as keys
 // and typed text, so a paste never overtakes an earlier keystroke. The empty
-// string is ignored.
-func (s *keySender) sendPaste(text string) {
+// string is ignored. A paste the page dropped for want of a focused field posts
+// its outcome on out for the consumer loop to signal; every other result posts
+// nothing. The send waits on the loop rather than dropping the outcome, and
+// gives up on close, so a paste taken as the session ends cannot park the
+// worker.
+func (s *keySender) sendPaste(text string, out chan<- inputOutcome) {
 	if text == "" {
 		return
 	}
-	s.enqueue(func(e Engine) { e.SendPaste(text) })
+	s.enqueue(func(e Engine) {
+		if !e.SendPaste(text) {
+			return
+		}
+		select {
+		case out <- inputOutcome{kind: signalPasteDiscarded}:
+		case <-s.done:
+		}
+	})
 }
 
 // sendMouse queues one decoded mouse event for the worker on the same queue
@@ -1765,18 +1813,19 @@ func (s *keySender) sendFindPrev() {
 
 // sendCopy queues one selection read on the same queue as keys, so it never
 // overtakes an earlier keystroke and a slow read never blocks the input loop. The
-// worker posts the text on out for the consumer loop to write, and posts nothing
-// when there is nothing to copy. The send waits on the loop rather than dropping
-// the text, and gives up on close, so a copy taken as the session ends cannot
-// park the worker.
-func (s *keySender) sendCopy(out chan<- string) {
+// worker posts the outcome on out for the consumer loop to write and signal: the
+// text for a completed copy, the refusal for a selection over the bound, and
+// nothing at all when there was nothing to copy. The send waits on the loop
+// rather than dropping the outcome, and gives up on close, so a copy taken as
+// the session ends cannot park the worker.
+func (s *keySender) sendCopy(out chan<- inputOutcome) {
 	s.enqueue(func(e Engine) {
-		text := e.Selection()
-		if text == "" {
+		o, ok := copyOutcome(e.Selection())
+		if !ok {
 			return
 		}
 		select {
-		case out <- text:
+		case out <- o:
 		case <-s.done:
 		}
 	})

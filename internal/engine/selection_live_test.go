@@ -28,7 +28,7 @@ func waitForEngineSelection(t *testing.T, e *ChromiumEngine, want func(string) b
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		got = e.Selection()
+		got, _ = e.Selection()
 		if want(got) {
 			return got, true
 		}
@@ -108,16 +108,16 @@ func TestLiveSelectionFromTripleClick(t *testing.T) {
 func TestLiveSelectionEmptyWithNoSelection(t *testing.T) {
 	e, _ := liveEngineOn(t, liveDragPage)
 
-	if got := e.Selection(); got != "" {
-		t.Fatalf("selection read = %q on a page with no selection, want the empty string", got)
+	if got, over := e.Selection(); got != "" || over {
+		t.Fatalf("selection read = %q (over %v) on a page with no selection, want the empty string and no refusal", got, over)
 	}
 
 	// A plain click places a caret and selects nothing, so it still has nothing to
 	// copy: a collapsed selection must not read as text.
 	clickCells(e, 1, 8, 6)
 
-	if got := e.Selection(); got != "" {
-		t.Fatalf("selection read = %q after a plain click, want the empty string", got)
+	if got, over := e.Selection(); got != "" || over {
+		t.Fatalf("selection read = %q (over %v) after a plain click, want the empty string and no refusal", got, over)
 	}
 }
 
@@ -140,9 +140,10 @@ func TestLiveSelectionReadsTextControl(t *testing.T) {
 }
 
 // TestLiveSelectionRefusesOversizedSelection proves the read refuses a selection
-// past the copy bound at the source: nothing crosses the CDP wire, and the caller
-// sees the same empty result as no selection, so an over-long copy leaves the
-// clipboard untouched rather than pasting a truncated fragment later.
+// past the copy bound at the source: nothing crosses the CDP wire and the
+// clipboard is left untouched rather than taking a truncated fragment the user
+// discovers later. The refusal is reported beside the empty text, so the bar can
+// say why nothing was copied instead of looking like a completed copy.
 func TestLiveSelectionRefusesOversizedSelection(t *testing.T) {
 	e, ctx := liveEngineOn(t, liveDragPage)
 
@@ -155,7 +156,11 @@ func TestLiveSelectionRefusesOversizedSelection(t *testing.T) {
 	if got := evalString(t, ctx, "String(window.getSelection().toString().length)"); got != strconv.Itoa(selectionMaxBytes+1) {
 		t.Fatalf("page selection length = %q, want %d characters selected", got, selectionMaxBytes+1)
 	}
-	if got := e.Selection(); got != "" {
+	got, over := e.Selection()
+	if got != "" {
 		t.Fatalf("selection read returned %d bytes for an oversized selection, want the empty string", len(got))
+	}
+	if !over {
+		t.Fatal("an oversized selection reported no refusal, so the bar cannot tell it from a completed copy")
 	}
 }
