@@ -691,8 +691,8 @@ const enterFullScreen = "\x1b[?7l\x1b[?25l"
 // the startup handshake: the full-screen escapes, mouse reporting, bracketed
 // paste, and the kitty keyboard protocol when this terminal answered the
 // capability query. Every mode it turns on is undone by exitTerminal, which runs
-// on normal exit, on SIGTERM, and on an error return, so the pairing is one
-// function either side.
+// on normal exit, on every signal in fatalSignals, and on an error return, so
+// the pairing is one function either side.
 func enterTerminalModes(kittyKeyboard bool) string {
 	modes := enterFullScreen + enableMouseReporting + enableBracketedPaste
 	if kittyKeyboard {
