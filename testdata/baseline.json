@@ -249,6 +249,19 @@
         "bytesPerFrame": null,
         "lowContrastTextCells": 0
       }
+    },
+    {
+      "page": "overlay-contended",
+      "mode": "overlay",
+      "metrics": {
+        "ssim": null,
+        "msssim": null,
+        "psnr": null,
+        "deltaE2000Mean": null,
+        "histDivergence": null,
+        "bytesPerFrame": null,
+        "lowContrastTextCells": 0
+      }
     }
   ]
 }

@@ -49,6 +49,30 @@ func TestParseRunRejectsLegacyLine(t *testing.T) {
 	}
 }
 
+// TestParseRunReadsNumericLeadingLegacyLinePositionally documents the one legacy
+// line the mandatory rank field cannot reject: a four-field
+// "col row fgHex text" line whose text begins with an integer still holds five
+// space-separated fields, so it parses with every column shifted one to the left.
+// "10 5 FFFFFF 404 Not Found" was a run of "404 Not Found" and comes back as rank
+// 404 holding "Not Found".
+//
+// The parser reads the five fields positionally and guesses nothing, which is
+// exactly why the rank field is mandatory: sniffing whether the fourth field is a
+// rank or the start of the text would be ambiguous on this line. Migrating an old
+// fixture means adding the rank column by hand; nothing detects a missed one.
+func TestParseRunReadsNumericLeadingLegacyLinePositionally(t *testing.T) {
+	run, err := parseRun("10 5 FFFFFF 404 Not Found")
+	if err != nil {
+		t.Fatalf("parseRun: %v", err)
+	}
+	if run.StackRank != 404 {
+		t.Errorf("StackRank = %d, want 404 (the fourth field is read as the rank, never sniffed)", run.StackRank)
+	}
+	if run.Text != "Not Found" {
+		t.Errorf("Text = %q, want %q (the text starts at the fifth field)", run.Text, "Not Found")
+	}
+}
+
 // TestLowContrastTextCells counts a low-contrast and a high-contrast text cell,
 // and confirms bitmap and wide cells are ignored.
 func TestLowContrastTextCells(t *testing.T) {

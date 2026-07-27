@@ -80,7 +80,19 @@ func composeOverlay(t *testing.T, fx OverlayFixture) (block.Grid, string) {
 	}
 	br := block.Renderer{Cols: CalibCols, Rows: CalibRows}
 	g := br.Compose(render.Frame{Img: composeSrc, Text: runs})
-	return g, runTruth(runs)
+	return g, fixtureTruth(fx, runs)
+}
+
+// fixtureTruth returns the text the overlay is expected to show for a fixture:
+// the fixture's own Truth when its runs contend for a cell, and the joined run
+// text otherwise. A contested cell goes to the front-most run, so the run that
+// loses it drops that grapheme from the visible text and the joined run text is
+// no longer what the matcher can recover.
+func fixtureTruth(fx OverlayFixture, runs []render.GlyphRun) string {
+	if fx.Truth != "" {
+		return fx.Truth
+	}
+	return runTruth(runs)
 }
 
 // runTruth joins the run texts in the order Recover walks them. Recover scans
