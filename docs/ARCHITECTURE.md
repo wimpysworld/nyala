@@ -325,9 +325,14 @@ visible.
 
 The same walk reports the page's viewport-anchored boxes beside the runs. A box
 is a `position: fixed` ancestor of text the walk kept, carrying its screen rect
-from `getBoundingClientRect` and a flag set when its composited background
-reaches alpha 255. A negative `z-index` disqualifies an ancestor, because it
-paints behind content and so can never cover, as does a degenerate rect.
+from `getBoundingClientRect` and a flag set when its own background reaches
+alpha 255. The composite stops at the element's parent on purpose: walking
+further would reach the opaque `body` nearly every page carries and read a
+transparent bar as a cover, culling text the reader can see. A transparent
+wrapper around an opaque bar therefore reads non-opaque, so the coverage cull
+misses a real cover for one refresh window instead, the safe polarity. A
+negative `z-index` disqualifies an ancestor, because it paints behind content
+and so can never cover, as does a degenerate rect.
 Collection rides the ancestor climb the visibility filter already makes, and a
 cache stops that climb at the first element it has seen before, so a shared
 ancestry costs one lookup. The list is capped at 32 boxes; a page with more

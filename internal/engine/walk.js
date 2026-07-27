@@ -96,7 +96,12 @@ if(s.position!=='fixed')continue;
 var z=parseInt(s.zIndex,10);if(!isNaN(z)&&z<0)continue;
 var rc=a.getBoundingClientRect();
 if(rc.width<=0||rc.height<=0)continue;
-fixed.push({l:rc.left,t:rc.top,r:rc.right,b:rc.bottom,o:bgOf(a,null).a>=255});
+// The parent stops the composite, so only the element's own background counts.
+// Compositing past it would reach the opaque body nearly every page carries and
+// read a transparent bar as a cover, which culls text the reader can see. A
+// transparent wrapper around an opaque bar reads non-opaque instead: the cull
+// then misses a real cover for one refresh window, the safe polarity.
+fixed.push({l:rc.left,t:rc.top,r:rc.right,b:rc.bottom,o:bgOf(a,a.parentElement).a>=255});
 if(fixed.length>=FIXED_CAP)return;
 }
 }

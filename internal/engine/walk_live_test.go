@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/font"
 )
 
@@ -390,6 +391,78 @@ func TestLiveFixedBoxesReportViewportAnchoredRects(t *testing.T) {
 		if math.Abs(edge.got-edge.want) > tolerance {
 			t.Errorf("banner box %s = %.2f, want %.2f", edge.name, edge.got, edge.want)
 		}
+	}
+}
+
+// transparentFixedBoxTestPage pairs two position:fixed bars over an opaque body,
+// which is the discrimination the opaque flag has to make. The top bar sets no
+// background of its own, so it must read non-opaque even though the body under it is
+// solid white; compositing past the bar to the body would read it as a cover and cull
+// the text scrolling beneath. The bottom bar paints rgb(0,0,0) itself, so it must
+// still read opaque and the cull must still fire. The bars neither overlap nor share
+// text, so each is collected on its own. Colours use rgb() rather than hex: a '#' in
+// a data: URL starts the fragment and would drop the rest of the document.
+const transparentFixedBoxTestPage = "data:text/html," +
+	"<html><body style='margin:0;background:rgb(255,255,255)'>" +
+	"<div style='position:fixed;top:0;left:0;width:320px;height:32px'>transparentbar</div>" +
+	"<div style='position:fixed;top:96px;left:0;width:320px;height:32px;background:rgb(0,0,0);color:rgb(255,255,255)'>opaquebar</div>" +
+	"</body></html>"
+
+// TestLiveTransparentFixedBoxIsNotOpaque verifies the opaque flag reads the fixed
+// element's own background and nothing above it. A transparent bar on an opaque body
+// must report non-opaque, because a page that sets body{background} is the common
+// case and the flag drives a cull that deletes text. The opaque bar on the same page
+// is the control: it must still report opaque, so the pair proves the walk
+// discriminates rather than answering false to everything.
+//
+// It then feeds the live boxes into the real shiftRunsToBitmapScroll, which is where
+// a wrong flag does its damage: a flow run shifted under the transparent bar must
+// survive, and one shifted under the opaque bar must still be culled.
+//
+// The live tag keeps it off `just test` and CI; run it with `just live`.
+func TestLiveTransparentFixedBoxIsNotOpaque(t *testing.T) {
+	res := liveTextWalk(t, transparentFixedBoxTestPage)
+
+	if len(res.Fixed) != 2 {
+		t.Fatalf("fixed boxes = %d, want the two bars: %+v", len(res.Fixed), res.Fixed)
+	}
+	// Named by top edge rather than by index, so collection order cannot decide the
+	// result. The bars are 32 CSS pixels tall at Y 0 and Y 96.
+	const tolerance = 0.5
+	boxAtTop := func(top float64) walkFixedBox {
+		t.Helper()
+		for _, box := range res.Fixed {
+			if math.Abs(box.Top-top) <= tolerance {
+				return box
+			}
+		}
+		t.Fatalf("no fixed box with top %.0f: %+v", top, res.Fixed)
+		return walkFixedBox{}
+	}
+	transparent, opaque := boxAtTop(0), boxAtTop(96)
+
+	if transparent.Opaque {
+		t.Error("the bar with no background of its own reported opaque; only the body under it is solid, and compositing to the body culls text the reader can see")
+	}
+	if !opaque.Opaque {
+		t.Error("the bar painting rgb(0,0,0) reported non-opaque, so the coverage cull would never fire")
+	}
+
+	// The consequence, on the production shift. The cell is 16 CSS pixels and the grid
+	// 24 rows, matching liveWalkPage. Both runs start at Y 200, clear of either bar, so
+	// containment cannot hold them and the coverage test decides alone. A 192-pixel
+	// delta lands the first under the transparent bar and a 96-pixel one lands the
+	// second under the opaque bar.
+	const cellCSSH, rows = 16.0, 24
+	flow := []render.GlyphRun{{Col: 1, Row: 12, Text: "flowtext", X: 10, Y: 200, W: 64, H: 16}}
+
+	under := shiftRunsToBitmapScroll(flow, res.Fixed, 192, 0, cellCSSH, rows)
+	if len(under) != 1 {
+		t.Errorf("flow runs under the transparent bar = %d, want 1: a bar with no background of its own is not a cover", len(under))
+	}
+	culled := shiftRunsToBitmapScroll(flow, res.Fixed, 96, 0, cellCSSH, rows)
+	if len(culled) != 0 {
+		t.Errorf("flow runs under the opaque bar = %d, want 0: an opaque bar still covers what scrolls beneath it", len(culled))
 	}
 }
 

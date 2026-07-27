@@ -298,7 +298,7 @@ func TestBuildTextWalkScriptContents(t *testing.T) {
 		{"fixed-box position test", "if(s.position!=='fixed')continue;"},
 		{"fixed-box negative z-index skip", "if(!isNaN(z)&&z<0)continue;"},
 		{"fixed-box degenerate rect skip", "if(rc.width<=0||rc.height<=0)continue;"},
-		{"fixed-box opaque flag", "o:bgOf(a,null).a>=255"},
+		{"fixed-box opaque flag stops at the parent", "o:bgOf(a,a.parentElement).a>=255"},
 		{"fixed boxes ride the json envelope", "fixed:fixed}"},
 		{"computed colour read", "gcs(el).color"},
 		{"computed-style cache", "function gcs(el){"},
@@ -313,6 +313,9 @@ func TestBuildTextWalkScriptContents(t *testing.T) {
 	}
 	if strings.Contains(script, "position==='sticky'") {
 		t.Error("walk script collects sticky boxes: an unstuck sticky element scrolls with the page, so anchoring it would cull visible text")
+	}
+	if strings.Contains(script, "bgOf(a,null)") {
+		t.Error("walk script composites a fixed box's background past its own element: an unbounded composite reaches the opaque body nearly every page carries and reads a transparent bar as a cover, culling visible text")
 	}
 }
 
