@@ -332,9 +332,9 @@ func TestDecodeWalkResultRejectsMalformedJSON(t *testing.T) {
 // walk script: it snaps the origin against the passed cell (round(left/cw)), reads
 // per-line boxes from getClientRects, folds in the visibility and effective-opacity
 // drops, collects the viewport-anchored boxes the compose-time shift re-tests
-// against, resolves the computed color and the layout generation, and returns the
-// scroll offset. A format drift that dropped one of these would silently change the
-// overlay, so each fragment is asserted.
+// against, resolves the computed color and the layout generation, builds the CSS
+// stacking vector, and returns the scroll offset. A format drift that dropped one
+// of these would silently change the overlay, so each fragment is asserted.
 func TestBuildTextWalkScriptContents(t *testing.T) {
 	script := buildTextWalkScript(8.1, 16.7)
 	wants := []struct {
@@ -370,6 +370,13 @@ func TestBuildTextWalkScriptContents(t *testing.T) {
 		{"fixed-box degenerate rect skip", "if(rc.width<=0||rc.height<=0)continue;"},
 		{"fixed-box opaque flag stops at the parent", "o:bgOf(a,a.parentElement).a>=255"},
 		{"fixed boxes ride the json envelope", "fixed:fixed}"},
+		{"three-state stacking participation", "var STACK_NONE=0,STACK_PSEUDO=1,STACK_REAL=2;"},
+		{"positioned at z-index auto is a pseudo level", "return positioned?STACK_PSEUDO:STACK_NONE;"},
+		{"only a real level becomes the base deeper levels extend", "if(st!==STACK_NONE){vec=base.concat([[zOf(n),ord(n)]]);if(st===STACK_REAL)base=vec;}"},
+		{"flex container found through display: contents", "if(d==='contents')continue;"},
+		{"top-layer members collected once", "document.querySelectorAll(':modal,:popover-open')"},
+		{"top layer outranks any page z-index", "var TOP_LAYER_Z=2147483648;"},
+		{"top layer roots its own stacking vector", "if(topLayer.has(n))base=[];"},
 		{"computed colour read", "gcs(el).color"},
 		{"computed-style cache", "function gcs(el){"},
 		{"layout generation read", "window[config.generationProperty]"},
@@ -386,6 +393,9 @@ func TestBuildTextWalkScriptContents(t *testing.T) {
 	}
 	if strings.Contains(script, "bgOf(a,null)") {
 		t.Error("walk script composites a fixed box's background past its own element: an unbounded composite reaches the opaque body nearly every page carries and reads a transparent bar as a cover, culling visible text")
+	}
+	if strings.Contains(script, "if(s.position&&s.position!=='static')return") {
+		t.Error("walk script treats every positioned element as a stacking context: a relative or absolute box at z-index auto opens none, and a level for it traps a descendant's z-index below the wrapper and inverts paint order")
 	}
 }
 

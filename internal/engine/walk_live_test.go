@@ -671,3 +671,95 @@ func TestLiveStackRankFlexChildUsesZIndexAtStatic(t *testing.T) {
 	_, ranks := liveStackRanks(t, flexChildZIndexTestPage)
 	assertRankedInFront(t, ranks, "flexhigh", "flexlow")
 }
+
+// displayContentsFlexChildTestPage proves a flex item is found through a
+// 'display: contents' wrapper. That wrapper generates no box, so "contentslow" and
+// "contentshigh" are flex items of the outer column container and their z-index
+// takes effect. Reading only the immediate parent's display drops both z-indices
+// and leaves DOM order to decide, which puts the wrong box in front. Neither box
+// carries a background and the column keeps them on separate rows, so nothing
+// occludes anything.
+const displayContentsFlexChildTestPage = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<div style='display:flex;flex-direction:column'>" +
+	"<div style='display:contents'>" +
+	"<div style='z-index:1'>contentslow</div>" +
+	"<div style='z-index:5'>contentshigh</div>" +
+	"</div></div></body></html>"
+
+// TestLiveStackRankFlexChildThroughDisplayContents checks that the higher z-index
+// flex item ranks in front although a 'display: contents' wrapper sits between it
+// and the flex container.
+func TestLiveStackRankFlexChildThroughDisplayContents(t *testing.T) {
+	_, ranks := liveStackRanks(t, displayContentsFlexChildTestPage)
+	assertRankedInFront(t, ranks, "contentshigh", "contentslow")
+}
+
+// positionedAutoEscapeTestPage proves a positioned descendant escapes a
+// 'position: relative; z-index: auto' wrapper. Such a wrapper opens no stacking
+// context, so "trapped" competes at z-index 100 against "sibling" at z-index 1 in
+// the root context and Chromium paints trapped on top. Treating the wrapper as a
+// context resolves the pair on the wrapper's spurious level and inverts them.
+//
+// The two boxes sit at the same origin on purpose, so the rank decides a genuinely
+// contested cell rather than an abstract order. Neither carries a background, so
+// the occlusion cull cannot decide it instead and both runs reach the overlay.
+const positionedAutoEscapeTestPage = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<div style='position:relative'>" +
+	"<div style='position:absolute;top:0;left:0;z-index:100'>trapped</div>" +
+	"</div>" +
+	"<div style='position:absolute;top:0;left:0;z-index:1'>sibling</div>" +
+	"</body></html>"
+
+// TestLiveStackRankEscapesPositionedAutoWrapper checks that the z-index 100
+// descendant of a z-index auto wrapper ranks in front of the wrapper's z-index 1
+// sibling, the order Chromium paints.
+func TestLiveStackRankEscapesPositionedAutoWrapper(t *testing.T) {
+	_, ranks := liveStackRanks(t, positionedAutoEscapeTestPage)
+	assertRankedInFront(t, ranks, "trapped", "sibling")
+}
+
+// negativeZIndexEscapeTestPage proves the same escape in the negative direction.
+// "negtext" carries z-index -1 inside a 'position: relative; z-index: auto'
+// wrapper, so it joins the root context's negative-z-index children and Chromium
+// paints it behind the in-flow "inflowtext" paragraph. Treating the wrapper as a
+// context buries the negative level one step down, where the comparator's prefix
+// rule never reaches it, and the paragraph loses.
+//
+// The zero-height wrapper puts both boxes at the same origin, for the same reason
+// the escape page does, and neither carries a background.
+const negativeZIndexEscapeTestPage = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<div style='position:relative;height:0'>" +
+	"<div style='position:absolute;top:0;left:0;z-index:-1'>negtext</div>" +
+	"</div>" +
+	"<p style='margin:0'>inflowtext</p>" +
+	"</body></html>"
+
+// TestLiveStackRankNegativeZIndexEscapesPositionedAutoWrapper checks that the
+// z-index -1 descendant of a z-index auto wrapper ranks behind the in-flow
+// paragraph it overlaps.
+func TestLiveStackRankNegativeZIndexEscapesPositionedAutoWrapper(t *testing.T) {
+	_, ranks := liveStackRanks(t, negativeZIndexEscapeTestPage)
+	assertRankedInFront(t, ranks, "inflowtext", "negtext")
+}
+
+// topLayerTestPage proves the top layer outranks any z-index the page can set.
+// The modal dialog paints above the whole document, so "dialogtext" is in front of
+// "rivaltext" although the rival carries the largest z-index CSS accepts. The
+// dialog drops its own background so the occlusion cull cannot decide the pair,
+// and both boxes share an origin so the rank decides a contested cell.
+const topLayerTestPage = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<dialog id='modal' style='margin:0;padding:0;border:0;background:transparent;position:fixed;top:0;left:0'>dialogtext</dialog>" +
+	"<div style='position:absolute;top:0;left:0;z-index:2147483647'>rivaltext</div>" +
+	"<script>document.getElementById('modal').showModal()</script>" +
+	"</body></html>"
+
+// TestLiveStackRankTopLayerOutranksMaximumZIndex checks that an open modal dialog
+// ranks in front of a box at z-index 2147483647.
+func TestLiveStackRankTopLayerOutranksMaximumZIndex(t *testing.T) {
+	_, ranks := liveStackRanks(t, topLayerTestPage)
+	assertRankedInFront(t, ranks, "dialogtext", "rivaltext")
+}
