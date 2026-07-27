@@ -8,6 +8,13 @@ if(!csCache.has(el)){csCache.set(el,getComputedStyle(el));}
 return csCache.get(el);
 }
 
+var ordCache=null;
+
+function ord(el){
+if(!ordCache){ordCache=new Map();var r=document.documentElement,i=0,n;ordCache.set(r,i++);var ow=document.createTreeWalker(r,NodeFilter.SHOW_ELEMENT,null);while((n=ow.nextNode())){ordCache.set(n,i++);}}
+var v=ordCache.get(el);return v===undefined?-1:v;
+}
+
 function collapsed(clip){
 var m=/^rect\((.+)\)$/.exec(clip);if(!m)return false;
 var f=m[1].split(/[ ,]+/);if(f.length!==4)return false;
@@ -80,12 +87,76 @@ if(top===el||el.contains(top)||top.contains(el))return false;
 return bgOf(top,lca(top,el)).a>=255;
 }
 
+function nn(v){if(!v)return false;var f=String(v).trim();if(!f)return false;return f.split(/[ ,(]/)[0]!=='none';}
+
+function flexItem(el){
+var p=el.parentElement;if(!p)return false;
+var d=gcs(p).display;
+return d==='flex'||d==='inline-flex'||d==='grid'||d==='inline-grid';
+}
+
+function stacks(el){
+if(el===document.documentElement)return true;
+var s=gcs(el);
+if(s.position&&s.position!=='static')return true;
+if(s.zIndex&&s.zIndex!=='auto'&&flexItem(el))return true;
+if(parseFloat(s.opacity)<1)return true;
+if(s.mixBlendMode&&s.mixBlendMode!=='normal')return true;
+if(nn(s.transform)||nn(s.scale)||nn(s.rotate)||nn(s.translate)||nn(s.perspective))return true;
+if(nn(s.filter)||nn(s.backdropFilter))return true;
+if(nn(s.clipPath))return true;
+if(nn(s.mask)||nn(s.maskImage)||nn(s.maskBorder))return true;
+if(s.isolation==='isolate')return true;
+if(/\b(layout|paint|strict|content)\b/.test(s.contain||''))return true;
+if(s.contentVisibility==='auto')return true;
+if(/\b(opacity|transform|scale|rotate|translate|perspective|filter|backdrop-filter|clip-path|mask|mask-image|mask-border|isolation|mix-blend-mode|contain|content-visibility|position|z-index|view-transition-name)\b/.test(s.willChange||''))return true;
+if(nn(s.viewTransitionName))return true;
+return false;
+}
+
+var partCache=new Map();
+
+function participates(el){
+if(!partCache.has(el)){partCache.set(el,stacks(el));}
+return partCache.get(el);
+}
+
+function zOf(el){
+var s=gcs(el);
+if(s.position==='static'&&!flexItem(el))return 0;
+var z=parseInt(s.zIndex,10);return isNaN(z)?0:z;
+}
+
+var vecCache=new Map();
+
+function stackVector(el){
+if(vecCache.has(el))return vecCache.get(el);
+var chain=[],base=null;
+for(var a=el;a;a=a.parentElement){if(vecCache.has(a)){base=vecCache.get(a);break;}chain.push(a);}
+if(!base)base=[];
+for(var i=chain.length-1;i>=0;i--){var n=chain[i];base=participates(n)?base.concat([[zOf(n),ord(n)]]):base;vecCache.set(n,base);}
+return base;
+}
+
+function cmpVec(a,b){
+var n=Math.min(a.length,b.length);
+for(var i=0;i<n;i++){
+if(a[i][0]!==b[i][0])return b[i][0]-a[i][0];
+if(a[i][1]!==b[i][1])return b[i][1]-a[i][1];
+}
+if(a.length===b.length)return 0;
+// The shorter vector is the shared context's own in-flow content, so the longer
+// one paints behind it only when its next level carries a negative z-index.
+if(a.length>b.length)return a[n][0]<0?1:-1;
+return b[n][0]<0?-1:1;
+}
+
 var w=document.createTreeWalker(document.body||document.documentElement,NodeFilter.SHOW_TEXT,null);
 var node;while((node=w.nextNode())){
 var el=node.parentElement;if(!el)continue;
 if(!node.nodeValue||!node.nodeValue.trim())continue;
 if(hiddenStyle(el))continue;
-var fg=rgba(el);var bg=bgOf(el);
+var fg=rgba(el);var bg=bgOf(el);var sv=stackVector(el);
 var text=node.nodeValue;var lines=[];
 var rng=document.createRange();rng.selectNodeContents(node);
 var nodeRects=rng.getClientRects();var fragments=[];
@@ -163,9 +234,15 @@ var h=ln.bottom-ln.top;
 if(h<ch/4)continue;
 var cx=(ln.left+ln.right)/2,cy=(ln.top+ln.bottom)/2;
 if(occluded(el,cx,cy))continue;
-runs.push({t:t,c:Math.round(ln.left/cw),r:Math.round(ln.top/ch),x:ln.left,y:ln.top,w:ln.right-ln.left,h:h,fg:fg,bg:bg});
+runs.push({t:t,c:Math.round(ln.left/cw),r:Math.round(ln.top/ch),x:ln.left,y:ln.top,w:ln.right-ln.left,h:h,fg:fg,bg:bg,z:sv});
 }
 }
+
+// Each run carries its stacking vector until the sort below replaces it with the
+// dense front-to-back rank, 0 being front-most. The array itself stays in DOM order.
+var order=runs.map(function(_,i){return i;});
+order.sort(function(i,j){var c=cmpVec(runs[i].z,runs[j].z);return c!==0?c:i-j;});
+for(var oi=0;oi<order.length;oi++){runs[order[oi]].z=oi;}
 
 var gen=(window[config.generationProperty]||0);
 var de=document.documentElement||{};

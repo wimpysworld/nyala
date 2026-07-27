@@ -3,6 +3,9 @@
 package engine
 
 import (
+	"context"
+	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +52,12 @@ func TestLiveSameRowMultiColumnTextKeepsFragmentsSeparate(t *testing.T) {
 	assertFragmentGrid(t, res, 1, 20)
 }
 
-func liveTextWalk(t *testing.T, page string) walkResult {
+// liveWalkPage brings a real Chromium up on page, waits for the first synced frame
+// so the page has laid out, injects the production forcing stylesheet, and waits
+// for the embedded font. It returns the evaluate context and the forced CSS cell,
+// so every live walk test reads the same forced monospace layout production does.
+// It skips the test when no Chromium resolves.
+func liveWalkPage(t *testing.T, page string) (context.Context, float64, float64) {
 	t.Helper()
 	if _, err := resolveExecutable(""); err != nil {
 		t.Skipf("no Chromium for the live test: %v", err)
@@ -90,7 +98,12 @@ func liveTextWalk(t *testing.T, page string) walkResult {
 	if err := evaluateVoid(ctx, "fonts ready", "document.fonts.ready", true); err != nil {
 		t.Fatalf("await fonts ready: %v", err)
 	}
+	return ctx, cellW, cellH
+}
 
+func liveTextWalk(t *testing.T, page string) walkResult {
+	t.Helper()
+	ctx, cellW, cellH := liveWalkPage(t, page)
 	res, err := evaluateWalk(ctx, buildTextWalkScript(cellW, cellH))
 	if err != nil {
 		t.Fatalf("text walk: %v", err)
@@ -314,4 +327,210 @@ func TestLiveOccludedTextDropped(t *testing.T) {
 	if !strings.Contains(all, "badge86") {
 		t.Errorf("pointer-events:none badge over the image stand-in was culled; runs:\n%s", all)
 	}
+}
+
+// stackRun is the pair of walk run fields the stacking tests read: the run text
+// and the dense front-to-back rank. walkRun does not model the rank, so these
+// tests decode the walk's raw JSON into this local struct instead.
+type stackRun struct {
+	Text string `json:"t"`
+	Rank int    `json:"z"`
+}
+
+// stackWalk is the walk envelope reduced to the runs the stacking tests read.
+type stackWalk struct {
+	Runs []stackRun `json:"runs"`
+}
+
+// liveStackRanks walks page in a real Chromium and returns both the decoded runs
+// and a lookup from run text to stacking rank, rank 0 being front-most. Every
+// fixture below gives each box unique text, so the lookup names a box by what it
+// holds. The runs come back too, so a test can assert over the whole rank set.
+func liveStackRanks(t *testing.T, page string) ([]stackRun, map[string]int) {
+	t.Helper()
+	ctx, cellW, cellH := liveWalkPage(t, page)
+	raw, err := evaluateWalkJSON(ctx, buildTextWalkScript(cellW, cellH))
+	if err != nil {
+		t.Fatalf("text walk: %v", err)
+	}
+	var decoded stackWalk
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		t.Fatalf("decode walk JSON: %v", err)
+	}
+	ranks := make(map[string]int, len(decoded.Runs))
+	for _, run := range decoded.Runs {
+		ranks[run.Text] = run.Rank
+	}
+	return decoded.Runs, ranks
+}
+
+// stackRankOf returns the rank of the run holding text and fails when the walk
+// emitted no such run, so a silently culled run is never read as a pass.
+func stackRankOf(t *testing.T, ranks map[string]int, text string) int {
+	t.Helper()
+	rank, ok := ranks[text]
+	if !ok {
+		t.Fatalf("no run with text %q; ranks: %v", text, ranks)
+	}
+	return rank
+}
+
+// assertRankedInFront fails unless the run holding front carries a lower rank
+// than the run holding behind, because rank 0 is front-most.
+func assertRankedInFront(t *testing.T, ranks map[string]int, front, behind string) {
+	t.Helper()
+	frontRank := stackRankOf(t, ranks, front)
+	behindRank := stackRankOf(t, ranks, behind)
+	if frontRank >= behindRank {
+		t.Errorf("rank %q = %d and %q = %d; want %q in front", front, frontRank, behind, behindRank, front)
+	}
+}
+
+// zIndexOrderTestPage proves the rank follows z-index rather than DOM order. All
+// three boxes are absolutely positioned, carry no background, and sit at distinct
+// tops so none occludes another. "zbase" comes first in DOM at z-index 0, "zhigh"
+// second at z-index 5, and "zlow" last at z-index 1. CSS 2.1 Appendix E paints them
+// zbase, zlow, zhigh back to front, so DOM order alone cannot produce the expected
+// answer for any pair.
+const zIndexOrderTestPage = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<div style='position:absolute;top:80px;left:0;z-index:0'>zbase</div>" +
+	"<div style='position:absolute;top:0;left:0;z-index:5'>zhigh</div>" +
+	"<div style='position:absolute;top:40px;left:0;z-index:1'>zlow</div>" +
+	"</body></html>"
+
+// TestLiveStackRankFollowsZIndexNotDOMOrder checks that a higher z-index ranks in
+// front of a later sibling with a lower z-index, and that both rank in front of the
+// z-index 0 box that precedes them both in the document.
+func TestLiveStackRankFollowsZIndexNotDOMOrder(t *testing.T) {
+	_, ranks := liveStackRanks(t, zIndexOrderTestPage)
+	assertRankedInFront(t, ranks, "zhigh", "zlow")
+	assertRankedInFront(t, ranks, "zhigh", "zbase")
+	assertRankedInFront(t, ranks, "zlow", "zbase")
+}
+
+// TestLiveStackRanksAreDenseAndUnique checks that the emitted ranks over a page are
+// exactly the integers 0 to n-1 for n runs, so nothing downstream has to cope with
+// a gap or a repeat.
+func TestLiveStackRanksAreDenseAndUnique(t *testing.T) {
+	runs, _ := liveStackRanks(t, zIndexOrderTestPage)
+	if len(runs) == 0 {
+		t.Fatal("the walk emitted no runs")
+	}
+	got := make([]int, 0, len(runs))
+	for _, run := range runs {
+		got = append(got, run.Rank)
+	}
+	sort.Ints(got)
+	for i, rank := range got {
+		if rank != i {
+			t.Fatalf("ranks over %d runs = %v, want the integers 0 to %d", len(runs), got, len(runs)-1)
+		}
+	}
+}
+
+// negativeZIndexTestPage proves a negative z-index paints behind the stacking
+// context's own in-flow content. The in-flow "inflowtext" paragraph and the
+// absolutely positioned "behindz" box carry no background and sit at distinct tops,
+// so neither occludes the other. CSS 2.1 Appendix E paints negative-z-index
+// children before in-flow content, so inflowtext is in front.
+const negativeZIndexTestPage = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<p style='margin:0'>inflowtext</p>" +
+	"<div style='position:absolute;top:40px;left:0;z-index:-1'>behindz</div>" +
+	"</body></html>"
+
+// TestLiveStackRankNegativeZIndexBehindInFlowText checks the comparator's prefix
+// rule: the in-flow run's vector is a prefix of the positioned run's, and the next
+// level's negative z-index puts the longer vector behind.
+func TestLiveStackRankNegativeZIndexBehindInFlowText(t *testing.T) {
+	_, ranks := liveStackRanks(t, negativeZIndexTestPage)
+	assertRankedInFront(t, ranks, "inflowtext", "behindz")
+}
+
+// autoZIndexTestPage proves a positioned box at z-index auto paints in front of the
+// stacking context's own in-flow content. The in-flow "inflowtext" paragraph and the
+// positioned "overtext" box carry no background and sit at distinct tops, so neither
+// occludes the other. CSS 2.1 Appendix E paints positioned descendants after in-flow
+// content, so overtext is in front.
+const autoZIndexTestPage = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<p style='margin:0'>inflowtext</p>" +
+	"<div style='position:absolute;top:40px;left:0'>overtext</div>" +
+	"</body></html>"
+
+// TestLiveStackRankPositionedAutoInFrontOfInFlowText checks the other branch of the
+// prefix rule: a non-negative next level puts the longer vector in front.
+func TestLiveStackRankPositionedAutoInFrontOfInFlowText(t *testing.T) {
+	_, ranks := liveStackRanks(t, autoZIndexTestPage)
+	assertRankedInFront(t, ranks, "overtext", "inflowtext")
+}
+
+// stackingTrapTestPageTemplate proves a non-positioned wrapper that establishes a
+// stacking context traps its descendant's z-index. The wrapper carries a trigger in
+// place of the style placeholder and holds the absolutely positioned "trapped" box at
+// z-index 100. Its sibling "sibling" is absolutely positioned at z-index 1. When the
+// wrapper establishes a context, the trapped box cannot rise above the sibling,
+// because the wrapper itself paints as non-positioned in-flow content below every
+// positioned box. With the trigger removed the two boxes share the root context and
+// z-index 100 wins. Both boxes carry no background and sit at distinct tops, so
+// neither occludes the other.
+const stackingTrapTestPageTemplate = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<div style='__TRIGGER__'>" +
+	"<div style='position:absolute;top:0;left:0;z-index:100'>trapped</div>" +
+	"</div>" +
+	"<div style='position:absolute;top:40px;left:0;z-index:1'>sibling</div>" +
+	"</body></html>"
+
+// stackingTrapTestPage returns the trap page with trigger as the wrapper's style. An
+// empty trigger gives the control page whose wrapper establishes no context.
+func stackingTrapTestPage(trigger string) string {
+	return strings.Replace(stackingTrapTestPageTemplate, "__TRIGGER__", trigger, 1)
+}
+
+// TestLiveStackRankNonPositionedTriggersTrapDescendantZIndex checks each
+// non-positioned stacking-context trigger. The trapped z-index 100 descendant must
+// rank behind its wrapper's z-index 1 sibling, and the control with no trigger must
+// rank it in front, which proves the trigger was detected rather than the assertion
+// passing by accident.
+func TestLiveStackRankNonPositionedTriggersTrapDescendantZIndex(t *testing.T) {
+	triggers := []struct {
+		name  string
+		style string
+	}{
+		{name: "opacity", style: "opacity:0.5"},
+		{name: "transform", style: "transform:translateZ(0)"},
+		{name: "filter", style: "filter:blur(0px)"},
+		{name: "will-change", style: "will-change:transform"},
+	}
+	for _, trigger := range triggers {
+		t.Run(trigger.name, func(t *testing.T) {
+			_, ranks := liveStackRanks(t, stackingTrapTestPage(trigger.style))
+			assertRankedInFront(t, ranks, "sibling", "trapped")
+		})
+	}
+	t.Run("control", func(t *testing.T) {
+		_, ranks := liveStackRanks(t, stackingTrapTestPage(""))
+		assertRankedInFront(t, ranks, "trapped", "sibling")
+	})
+}
+
+// flexChildZIndexTestPage proves a flex child ranks by z-index while it stays at
+// position static. The column flex container stacks "flexlow" at z-index 1 above
+// "flexhigh" at z-index 5 in DOM and layout order, both without a background, so DOM
+// order and z-index disagree and the boxes do not occlude each other. CSS Flexbox
+// gives a flex item's z-index effect regardless of position, so flexhigh is in front.
+const flexChildZIndexTestPage = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<div style='display:flex;flex-direction:column'>" +
+	"<div style='z-index:1'>flexlow</div>" +
+	"<div style='z-index:5'>flexhigh</div>" +
+	"</div></body></html>"
+
+// TestLiveStackRankFlexChildUsesZIndexAtStatic checks that the later, higher
+// z-index flex child ranks in front of the earlier, lower one.
+func TestLiveStackRankFlexChildUsesZIndexAtStatic(t *testing.T) {
+	_, ranks := liveStackRanks(t, flexChildZIndexTestPage)
+	assertRankedInFront(t, ranks, "flexhigh", "flexlow")
 }

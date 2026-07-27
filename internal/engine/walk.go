@@ -89,7 +89,12 @@ type walkResult struct {
 // or vertical/ruby text) falls back to a per-code-unit measurement of the node. Before it pushes a line it culls the run
 // when an opaque element covers the line-box centre (an opaque-aware occlusion
 // hit-test), so text behind a cookie banner, sticky header, or modal no longer
-// leaks through the first-writer-wins overlay. It returns the current layout
+// leaks through the first-writer-wins overlay. Each run also carries a
+// front-to-back stacking rank the page derives from the stacking-context
+// ancestry of the run's element and flattens to a dense integer over the run
+// set, 0 being front-most (docs/ARCHITECTURE.md holds the ordering model); the
+// returned run array still comes back in DOM order and nothing decodes the rank
+// yet, so it changes no placement today. It returns the current layout
 // generation alongside the runs. The whole walk is one expression evaluated per
 // decode.
 func buildTextWalkScript(cellW, cellH float64) string {
@@ -120,13 +125,14 @@ func (e *ChromiumEngine) textWalk(ctx context.Context, cellW, cellH float64) (wa
 	return evaluateWalk(runCtx, buildTextWalkScript(cellW, cellH))
 }
 
-// evaluateWalk runs the in-page text-walk expression against ctx and decodes the
-// JSON result to a walkResult. The script returns a JSON string, so the evaluate
-// returns it by value and this unmarshals it. A non-nil ExceptionDetails is an
-// error even when the transport call succeeds, so a thrown walk surfaces as an
-// error the caller holds against rather than a false empty result.
-func evaluateWalk(ctx context.Context, expr string) (walkResult, error) {
-	var out walkResult
+// evaluateWalkJSON runs the in-page text-walk expression against ctx and returns
+// the page's JSON verbatim, so a caller reading a field that walkResult does not
+// model decodes the string itself rather than widening the shared type. A non-nil
+// ExceptionDetails is an error even when the transport call succeeds, so a thrown
+// walk surfaces as an error the caller holds against rather than a false empty
+// result.
+func evaluateWalkJSON(ctx context.Context, expr string) (string, error) {
+	var raw string
 	err := chromedp.Run(ctx, chromedp.ActionFunc(func(c context.Context) error {
 		res, exc, evalErr := runtime.Evaluate(expr).WithReturnByValue(true).Do(c)
 		if evalErr != nil {
@@ -139,17 +145,31 @@ func evaluateWalk(ctx context.Context, expr string) (walkResult, error) {
 			return fmt.Errorf("engine: text walk returned no value")
 		}
 		// The value is a JSON-encoded string (the script's JSON.stringify), so it
-		// unmarshals to a Go string first, then to the walkResult.
-		var raw string
+		// unmarshals to a Go string and that string is the page's JSON.
 		if err := json.Unmarshal(res.Value, &raw); err != nil {
 			return fmt.Errorf("engine: text walk decode envelope: %w", err)
 		}
-		if err := json.Unmarshal([]byte(raw), &out); err != nil {
-			return fmt.Errorf("engine: text walk decode result: %w", err)
-		}
 		return nil
 	}))
-	return out, err
+	if err != nil {
+		return "", err
+	}
+	return raw, nil
+}
+
+// evaluateWalk runs the in-page text-walk expression against ctx and decodes the
+// JSON result to a walkResult. The script returns a JSON string, so the evaluate
+// returns it by value and this unmarshals it.
+func evaluateWalk(ctx context.Context, expr string) (walkResult, error) {
+	var out walkResult
+	raw, err := evaluateWalkJSON(ctx, expr)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return out, fmt.Errorf("engine: text walk decode result: %w", err)
+	}
+	return out, nil
 }
 
 // decodeWalkRuns maps the in-page walk result to crisp text runs without any

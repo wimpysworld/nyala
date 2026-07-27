@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"image/color"
 	"strings"
 	"testing"
@@ -153,6 +154,98 @@ func TestDecodeWalkRunsGuards(t *testing.T) {
 	}
 	if runs := decodeWalkRuns(walkResult{}, 8, 200); len(runs) != 0 {
 		t.Fatalf("want no runs for an empty walk, got %d", len(runs))
+	}
+}
+
+// walkRunSpec is one run in a canned walk payload: the text, the snapped cell
+// origin, the box rect, the resolved colours, and the front-to-back stacking rank
+// the page emits per run. One spec renders both payload shapes, so a pair of
+// payloads built from the same specs can differ only by the rank key.
+type walkRunSpec struct {
+	text       string
+	col, row   int
+	x, y, w, h float64
+	fg, bg     walkColour
+	rank       int
+}
+
+// walkPayload renders specs as the JSON the in-page walk returns. When withRank is
+// true each run object carries the page's "z" stacking rank; when it is false the
+// key is absent, which is the shape the walk returned before the rank existed.
+func walkPayload(specs []walkRunSpec, withRank bool) string {
+	objects := make([]string, 0, len(specs))
+	for _, s := range specs {
+		rank := ""
+		if withRank {
+			rank = fmt.Sprintf(`,"z":%d`, s.rank)
+		}
+		objects = append(objects, fmt.Sprintf(
+			`{"t":%q,"c":%d,"r":%d,"x":%g,"y":%g,"w":%g,"h":%g,`+
+				`"fg":{"r":%d,"g":%d,"b":%d,"a":%d},"bg":{"r":%d,"g":%d,"b":%d,"a":%d}%s}`,
+			s.text, s.col, s.row, s.x, s.y, s.w, s.h,
+			s.fg.R, s.fg.G, s.fg.B, s.fg.A,
+			s.bg.R, s.bg.G, s.bg.B, s.bg.A, rank))
+	}
+	return fmt.Sprintf(`{"gen":9,"sx":0,"sy":240.5,"runs":[%s]}`, strings.Join(objects, ","))
+}
+
+// TestDecodeWalkRunsIgnoresStackingRank proves the per-run stacking rank the page
+// emits is inert on the client. The same runs, once with the rank key on every run
+// and once without it, decode to identical render.GlyphRun values, so the rank
+// cannot disturb the overlay until a consumer deliberately reads it. The runs carry
+// differing text, geometry, and colours, so the equality assertion is meaningful
+// rather than trivially empty. The ordering the rank encodes is decided in the page
+// and is proved against real Chromium, so nothing here reimplements it.
+func TestDecodeWalkRunsIgnoresStackingRank(t *testing.T) {
+	specs := []walkRunSpec{
+		{
+			text: "Headline", col: 0, row: 0, x: 0, y: 0, w: 64, h: 16,
+			fg:   walkColour{R: 17, G: 17, B: 17, A: 255},
+			bg:   walkColour{R: 255, G: 255, B: 255, A: 255},
+			rank: 2,
+		},
+		{
+			text: "modal copy", col: 4, row: 3, x: 32.4, y: 48, w: 80, h: 16,
+			fg:   walkColour{R: 255, G: 255, B: 255, A: 255},
+			bg:   walkColour{R: 32, G: 32, B: 48, A: 255},
+			rank: 0,
+		},
+		{
+			text: "世界 wide", col: 12, row: 7, x: 96, y: 112, w: 72, h: 16,
+			fg:   walkColour{R: 0, G: 128, B: 64, A: 200},
+			bg:   walkColour{R: 240, G: 248, B: 255, A: 255},
+			rank: 3,
+		},
+		{
+			text: "footer note", col: 30, row: 11, x: 240.9, y: 176, w: 88, h: 16,
+			fg:   walkColour{R: 90, G: 90, B: 90, A: 255},
+			bg:   walkColour{},
+			rank: 1,
+		},
+	}
+	ranked, plain := walkPayload(specs, true), walkPayload(specs, false)
+	if ranked == plain {
+		t.Fatalf("the two payloads are identical, so the ranked one carries no rank key")
+	}
+	var rankedResult, plainResult walkResult
+	if err := json.Unmarshal([]byte(ranked), &rankedResult); err != nil {
+		t.Fatalf("decode the ranked walk payload: %v", err)
+	}
+	if err := json.Unmarshal([]byte(plain), &plainResult); err != nil {
+		t.Fatalf("decode the unranked walk payload: %v", err)
+	}
+	rankedRuns := decodeWalkRuns(rankedResult, 8, 120)
+	plainRuns := decodeWalkRuns(plainResult, 8, 120)
+	if len(rankedRuns) != len(specs) {
+		t.Fatalf("want %d decoded runs, got %d: the fixture must exercise every run", len(specs), len(rankedRuns))
+	}
+	if len(rankedRuns) != len(plainRuns) {
+		t.Fatalf("run counts differ: ranked %d, unranked %d", len(rankedRuns), len(plainRuns))
+	}
+	for i := range rankedRuns {
+		if rankedRuns[i] != plainRuns[i] {
+			t.Fatalf("run %d differs: ranked %+v, unranked %+v: the stacking rank must not reach the render seam", i, rankedRuns[i], plainRuns[i])
+		}
 	}
 }
 
