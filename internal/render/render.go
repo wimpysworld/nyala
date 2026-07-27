@@ -96,6 +96,11 @@ type GlyphRun struct {
 	// in which case the compose path falls back to measuring Text. It is excluded
 	// from serialised diagnostic runs because it is derived data.
 	DisplayCells int `json:"-"`
+	// StackRank is the run's front-to-back stacking rank, 0 being front-most. The
+	// page derives it from the CSS stacking order of the run's element and the
+	// client only carries it, so it is page data rather than derived data. No
+	// consumer reads it yet, so it changes no placement today.
+	StackRank int
 }
 
 // IngestStats is the session ingest summary the NYALA_FPS_TIMING quit line

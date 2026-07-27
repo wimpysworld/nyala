@@ -53,10 +53,11 @@ func OverlayDir() string {
 }
 
 // LoadRunSet parses a .runs file into a slice of render.GlyphRun. Each non-blank,
-// non-comment line is "col row fgHex text": col and row are cell coordinates,
-// fgHex is a six-digit RRGGBB foreground (alpha forced opaque), and text runs to
-// the end of the line so it may contain spaces. Lines starting with # and blank
-// lines are skipped. It returns an error on a malformed line.
+// non-comment line is "col row fgHex rank text": col and row are cell coordinates,
+// fgHex is a six-digit RRGGBB foreground (alpha forced opaque), rank is the
+// front-to-back stacking rank with 0 front-most, and text runs to the end of the
+// line so it may contain spaces. The rank field is required. Lines starting with
+// # and blank lines are skipped. It returns an error on a malformed line.
 func LoadRunSet(path string) ([]render.GlyphRun, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -86,12 +87,14 @@ func LoadRunSet(path string) ([]render.GlyphRun, error) {
 	return runs, nil
 }
 
-// parseRun parses one "col row fgHex text" line into a render.GlyphRun. The text
-// field is everything after the third space, so it keeps internal spaces.
+// parseRun parses one "col row fgHex rank text" line into a render.GlyphRun. The
+// text field is everything after the fourth space, so it keeps internal spaces.
+// The rank field is required: an optional middle field would be ambiguous,
+// because a run whose text begins with an integer would parse either way.
 func parseRun(s string) (render.GlyphRun, error) {
-	fields := strings.SplitN(s, " ", 4)
-	if len(fields) < 4 {
-		return render.GlyphRun{}, fmt.Errorf("want \"col row fgHex text\", got %q", s)
+	fields := strings.SplitN(s, " ", 5)
+	if len(fields) < 5 {
+		return render.GlyphRun{}, fmt.Errorf("want \"col row fgHex rank text\", got %q", s)
 	}
 	col, err := strconv.Atoi(fields[0])
 	if err != nil {
@@ -105,7 +108,11 @@ func parseRun(s string) (render.GlyphRun, error) {
 	if err != nil {
 		return render.GlyphRun{}, fmt.Errorf("fgHex: %w", err)
 	}
-	return render.GlyphRun{Col: col, Row: row, Text: fields[3], FG: fg}, nil
+	rank, err := strconv.Atoi(fields[3])
+	if err != nil {
+		return render.GlyphRun{}, fmt.Errorf("rank: %w", err)
+	}
+	return render.GlyphRun{Col: col, Row: row, Text: fields[4], FG: fg, StackRank: rank}, nil
 }
 
 // parseHexRGB parses a six-digit RRGGBB hex string into an opaque color.RGBA.

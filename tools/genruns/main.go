@@ -37,7 +37,8 @@ func main() {
 }
 
 // regenerate composes one fixture and rewrites its .runs file with contrasting
-// foreground colours, preserving the run positions, order, and text.
+// foreground colours, preserving the run positions, order, text, and stacking
+// rank, so a hand-set fixture rank survives a regeneration.
 func regenerate(fx harness.OverlayFixture) error {
 	img, err := loadRGBA(filepath.Join("testdata", fx.PNG))
 	if err != nil {
@@ -55,7 +56,7 @@ func regenerate(fx harness.OverlayFixture) error {
 	out := make([]render.GlyphRun, len(runs))
 	for i, run := range runs {
 		fg := contrastFG(g, run)
-		out[i] = render.GlyphRun{Col: run.Col, Row: run.Row, Text: run.Text, FG: fg}
+		out[i] = render.GlyphRun{Col: run.Col, Row: run.Row, Text: run.Text, FG: fg, StackRank: run.StackRank}
 	}
 	return writeRuns(runsPath, fx.Page, out)
 }
@@ -116,15 +117,16 @@ func meanByte(sum, count float64) uint8 {
 	return uint8(v)
 }
 
-// writeRuns writes the run set back to path, one "col row fgHex text" line per
-// run, with a short header naming the page.
+// writeRuns writes the run set back to path, one "col row fgHex rank text" line
+// per run, with a short header naming the page.
 func writeRuns(path, page string, runs []render.GlyphRun) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Overlay run set for the %s page.\n", page)
-	b.WriteString("# Format: col row fgHex text. text runs to end of line.\n")
+	b.WriteString("# Format: col row fgHex rank text. text runs to end of line.\n")
+	b.WriteString("# rank is the stacking rank, 0 being front-most.\n")
 	b.WriteString("# Foreground is chosen per run to contrast with its local background.\n")
 	for _, r := range runs {
-		fmt.Fprintf(&b, "%d %d %02X%02X%02X %s\n", r.Col, r.Row, r.FG.R, r.FG.G, r.FG.B, r.Text)
+		fmt.Fprintf(&b, "%d %d %02X%02X%02X %d %s\n", r.Col, r.Row, r.FG.R, r.FG.G, r.FG.B, r.StackRank, r.Text)
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }

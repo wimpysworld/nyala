@@ -1,7 +1,8 @@
 # Overlay run set for the testpage-02-basic page.
-# Format: col row fgHex text. text runs to end of line.
+# Format: col row fgHex rank text. text runs to end of line.
+# rank is the stacking rank, 0 being front-most.
 # Foreground is chosen per run to contrast with its local background.
-4 2 000000 Text Size 8px
-4 6 000000 Text Size 14px
-4 10 000000 Text Size 22px
-4 14 000000 Text Size 28px
+4 2 000000 0 Text Size 8px
+4 6 000000 1 Text Size 14px
+4 10 000000 2 Text Size 22px
+4 14 000000 3 Text Size 28px
