@@ -101,6 +101,13 @@ type GlyphRun struct {
 	// client only carries it, so it is page data rather than derived data. The
 	// Block overlay fold orders runs by it, front-most first.
 	StackRank int
+	// ViewportAnchored is true when the page found a position: fixed element among
+	// the run's DOM ancestors, so the run holds its screen position while the page
+	// scrolls under it. Only the page can answer this, because it is a DOM
+	// relationship rather than a property of the run's rectangle. The engine's
+	// compose-time scroll shift is the only reader; the overlay fold ignores it, so
+	// it stays out of the harness .runs golden format.
+	ViewportAnchored bool
 }
 
 // IngestStats is the session ingest summary the NYALA_FPS_TIMING quit line

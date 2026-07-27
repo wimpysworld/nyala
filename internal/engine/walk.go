@@ -26,6 +26,10 @@ const textWalkConfigPlaceholder = "__NYALA_TEXT_WALK_CONFIG__"
 // frame-emit goroutine, a scan no context can interrupt, so an unbounded box
 // count makes each frame of a scroll quadratic. TestBuildTextWalkScriptContents
 // asserts the script's cap against this constant, so the two cannot drift apart.
+// The cap truncates in DOM text order, so the boxes it keeps need not be the ones
+// that matter, but it bounds the coverage cull alone: whether a run holds still
+// rides walkRun.Anchored, which no cap touches. A truncated box therefore loses a
+// cover and lets text bleed through, never drops text the reader can see.
 const walkFixedBoxCap = 32
 
 //go:embed walk.js
@@ -55,7 +59,9 @@ type walkColour struct {
 // page snaps the origin, so the client trusts Col and Row and never re-divides by
 // a cell width. X, Y, W, H carry the rect so the paint-displacement metric and the
 // sub-cell background recompose keep their geometry. StackRank carries the page's
-// front-to-back stacking rank for the run, 0 being front-most.
+// front-to-back stacking rank for the run, 0 being front-most. Anchored is the
+// page's own answer to whether the run descends from a position: fixed element,
+// which is a DOM relationship no client-side geometry can recover.
 type walkRun struct {
 	Text      string     `json:"t"`
 	Col       int        `json:"c"`
@@ -67,16 +73,18 @@ type walkRun struct {
 	FG        walkColour `json:"fg"`
 	BG        walkColour `json:"bg"`
 	StackRank int        `json:"z"`
+	Anchored  bool       `json:"f"`
 }
 
 // walkFixedBox is one viewport-anchored position: fixed box the in-page walk
 // reports, its edges on-screen CSS pixels and Opaque true when the element's own
 // background reaches alpha 255. Ancestor backgrounds are excluded on purpose, so
 // the opaque body nearly every page carries can never make a transparent bar read
-// as a cover. Such a box holds its screen rect while
-// the page scrolls, so the compose-time scroll shift uses it to tell
-// viewport-anchored text from flow text and to re-test occlusion on a shifted
-// frame.
+// as a cover. Such a box holds its screen rect while the page scrolls, so the
+// compose-time scroll shift re-tests occlusion against it on a shifted frame.
+// Telling viewport-anchored text from flow text is not its job: walkRun.Anchored
+// carries the DOM relationship the walk itself resolved, so a box collected here
+// is only ever asked what it covers.
 type walkFixedBox struct {
 	Left   float64 `json:"l"`
 	Top    float64 `json:"t"`
@@ -91,8 +99,8 @@ type walkFixedBox struct {
 // same evaluate as the walk, so the returned generation and the runs share one
 // layout generation and composeFrame can pair a bitmap to the run set by that
 // generation and shift it to the bitmap's own scroll. The boxes travel with the
-// runs because that shift needs them: a run inside a box is anchored and must not
-// move, and an opaque box covers whatever flow text scrolls beneath it.
+// runs because that shift needs them: an opaque box covers whatever flow text
+// scrolls beneath it. Which runs hold still rides the runs themselves.
 type walkResult struct {
 	Gen     int64          `json:"gen"`
 	ScrollX float64        `json:"sx"`
@@ -130,13 +138,16 @@ type walkResult struct {
 // ancestry of the run's element and flattens to a dense integer over the run
 // set, 0 being front-most (docs/ARCHITECTURE.md holds the ordering model); the
 // returned run array still comes back in DOM order, and the Block overlay fold
-// sorts on the rank at the render seam. Alongside the runs it collects the
-// viewport-anchored boxes: climbing the ancestors of the text it keeps, it records
-// each position: fixed ancestor once, skipping a negative z-index (which paints
-// behind content) and a degenerate rect. position: sticky is deliberately left
-// out, because separating a stuck element from an unstuck one needs a second
-// layout measurement. It returns the current layout generation alongside the runs
-// and the boxes. The whole walk is one expression evaluated per decode.
+// sorts on the rank at the render seam. Climbing the ancestors of the text it
+// keeps, it tags each run that descends from a position: fixed element and records
+// each such ancestor once as a viewport-anchored box, skipping a box with a
+// negative z-index (which paints behind content) or a degenerate rect. The tag and
+// the box are separate answers: the tag says what the compose-time shift must hold
+// still, the box says what it may cull, so a skipped box never costs a hold.
+// position: sticky is deliberately left out of both, because separating a stuck
+// element from an unstuck one needs a second layout measurement. It returns the
+// current layout generation alongside the runs and the boxes. The whole walk is
+// one expression evaluated per decode.
 func buildTextWalkScript(cellW, cellH float64) string {
 	return buildTextWalkScriptFromConfig(textWalkConfig{
 		CellWidth:          cellW,
@@ -242,7 +253,9 @@ func decodeWalkResult(raw string) (walkResult, error) {
 // the last cell. A non-positive cellW falls back to the grid edge alone. It copies
 // the page's stacking rank through untouched: the decode's own drops (an empty text,
 // a fully clipped run) leave the surviving ranks unique but no longer dense, which a
-// stable sort does not care about.
+// stable sort does not care about. The viewport-anchored tag comes through untouched
+// too, so the compose-time shift reads the page's own DOM answer rather than
+// re-deriving one from the run's rectangle.
 func decodeWalkRuns(res walkResult, cellW float64, cols int) []render.GlyphRun {
 	if cols <= 0 {
 		return nil
@@ -265,18 +278,19 @@ func decodeWalkRuns(res walkResult, cellW float64, cols int) []render.GlyphRun {
 			continue
 		}
 		runs = append(runs, render.GlyphRun{
-			Col:          r.Col,
-			Row:          r.Row,
-			Text:         clipped,
-			FG:           color.RGBA{R: r.FG.R, G: r.FG.G, B: r.FG.B, A: r.FG.A},
-			BG:           color.RGBA{R: r.BG.R, G: r.BG.G, B: r.BG.B, A: r.BG.A},
-			X:            r.X,
-			Y:            r.Y,
-			W:            r.W,
-			H:            r.H,
-			CellW:        cellW,
-			DisplayCells: render.DisplayWidth(clipped),
-			StackRank:    r.StackRank,
+			Col:              r.Col,
+			Row:              r.Row,
+			Text:             clipped,
+			FG:               color.RGBA{R: r.FG.R, G: r.FG.G, B: r.FG.B, A: r.FG.A},
+			BG:               color.RGBA{R: r.BG.R, G: r.BG.G, B: r.BG.B, A: r.BG.A},
+			X:                r.X,
+			Y:                r.Y,
+			W:                r.W,
+			H:                r.H,
+			CellW:            cellW,
+			DisplayCells:     render.DisplayWidth(clipped),
+			StackRank:        r.StackRank,
+			ViewportAnchored: r.Anchored,
 		})
 	}
 	return runs

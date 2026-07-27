@@ -449,8 +449,8 @@ func TestLiveTransparentFixedBoxIsNotOpaque(t *testing.T) {
 	}
 
 	// The consequence, on the production shift. The cell is 16 CSS pixels and the grid
-	// 24 rows, matching liveWalkPage. Both runs start at Y 200, clear of either bar, so
-	// containment cannot hold them and the coverage test decides alone. A 192-pixel
+	// 24 rows, matching liveWalkPage. The run is hand-built and unanchored, so the
+	// anchor test cannot hold it and the coverage test decides alone. A 192-pixel
 	// delta lands the first under the transparent bar and a 96-pixel one lands the
 	// second under the opaque bar.
 	const cellCSSH, rows = 16.0, 24
@@ -463,6 +463,96 @@ func TestLiveTransparentFixedBoxIsNotOpaque(t *testing.T) {
 	culled := shiftRunsToBitmapScroll(flow, res.Fixed, 96, 0, cellCSSH, rows)
 	if len(culled) != 0 {
 		t.Errorf("flow runs under the opaque bar = %d, want 0: an opaque bar still covers what scrolls beneath it", len(culled))
+	}
+}
+
+// fixedContainerTestPage is the shape that breaks a geometric answer to "is this run
+// anchored". A full-viewport transparent position:fixed container holds one toast, so
+// its rect encloses the whole page while it owns one line of text. Two flow lines sit
+// inside that rect without descending from it, and an opaque fixed banner at the foot
+// owns its own line. The rows fall at 16, 160, 320 and 352 CSS pixels, which is rows
+// 1, 10, 20 and 22 at the live cell of 16.
+const fixedContainerTestPage = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<div style='position:fixed;top:0;left:0;right:0;bottom:0'>" +
+	"<div style='position:absolute;top:16px;left:0'>toastnotice</div></div>" +
+	"<div style='position:absolute;top:160px;left:0'>flowalpha</div>" +
+	"<div style='position:absolute;top:320px;left:0'>flowbravo</div>" +
+	"<div style='position:fixed;top:352px;left:0;width:960px;height:32px;" +
+	"background:rgb(0,0,0);color:rgb(255,255,255)'>bannertext</div>" +
+	"</body></html>"
+
+// TestLiveFixedContainerDoesNotFreezeFlowText verifies that the compose-time shift
+// holds a run because it descends from a position:fixed element, not because its
+// rectangle happens to sit inside one. Geometric containment answers this page wrong:
+// the transparent container covers the viewport, so every flow run is inside it and
+// the whole overlay freezes for the scroll, holding rows [1 10 20] where the flow runs
+// must reach [6 16].
+//
+// The opaque banner is the control in the other direction. Its own text must still be
+// held, and held before the cover test runs, or the banner's own box would cull it.
+//
+// It drives the production path end to end: the live walk, decodeWalkRuns, and the
+// real shiftRunsToBitmapScroll. The live tag keeps it off `just test` and CI; run it
+// with `just live`.
+func TestLiveFixedContainerDoesNotFreezeFlowText(t *testing.T) {
+	res := liveTextWalk(t, fixedContainerTestPage)
+
+	// The container and the banner both hold text, so both are collected. The count
+	// also proves the flow divs produced no box of their own.
+	if len(res.Fixed) != 2 {
+		t.Fatalf("fixed boxes = %d, want the container and the banner: %+v", len(res.Fixed), res.Fixed)
+	}
+
+	const cellCSSW, cellCSSH, cols, rows = 8.0, 16.0, 120, 24
+	byText := func(runs []render.GlyphRun) map[string]render.GlyphRun {
+		t.Helper()
+		out := make(map[string]render.GlyphRun, len(runs))
+		for _, run := range runs {
+			out[run.Text] = run
+		}
+		for _, want := range []string{"toastnotice", "flowalpha", "flowbravo", "bannertext"} {
+			if _, ok := out[want]; !ok {
+				t.Fatalf("run %q missing; got %+v", want, runs)
+			}
+		}
+		return out
+	}
+
+	walked := byText(decodeWalkRuns(res, cellCSSW, cols))
+	for _, tc := range []struct {
+		text     string
+		row      int
+		anchored bool
+	}{
+		{"toastnotice", 1, true},
+		{"flowalpha", 10, false},
+		{"flowbravo", 20, false},
+		{"bannertext", 22, true},
+	} {
+		run := walked[tc.text]
+		if run.Row != tc.row {
+			t.Fatalf("run %q walked at row %d, want %d: the fixture is not laid out as the test reads it", tc.text, run.Row, tc.row)
+		}
+		if run.ViewportAnchored != tc.anchored {
+			t.Errorf("run %q anchored = %v, want %v: the tag must follow DOM descent from a position:fixed element", tc.text, run.ViewportAnchored, tc.anchored)
+		}
+	}
+
+	// Four cells of scroll. The two flow runs move up four rows; the toast and the
+	// banner hold, because the page moved under them and they did not.
+	shifted := byText(shiftRunsToBitmapScroll(decodeWalkRuns(res, cellCSSW, cols), res.Fixed, 4*cellCSSH, 0, cellCSSH, rows))
+	if got := shifted["flowalpha"].Row; got != 6 {
+		t.Errorf("flowalpha row = %d, want 6: a flow run inside a transparent fixed container's rect is not that container's text and must shift", got)
+	}
+	if got := shifted["flowbravo"].Row; got != 16 {
+		t.Errorf("flowbravo row = %d, want 16: a flow run inside a transparent fixed container's rect is not that container's text and must shift", got)
+	}
+	if got := shifted["toastnotice"].Row; got != 1 {
+		t.Errorf("toastnotice row = %d, want 1: the container's own text is viewport-anchored and holds its screen position", got)
+	}
+	if got := shifted["bannertext"].Row; got != 22 {
+		t.Errorf("bannertext row = %d, want 22: an opaque banner's own text is held before the cover test, so its own box never culls it", got)
 	}
 }
 

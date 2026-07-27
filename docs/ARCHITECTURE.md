@@ -323,20 +323,33 @@ composites backgrounds only below the lowest common ancestor. An occluding
 browser: showing text under a decorative overlay beats hiding text that is
 visible.
 
-The same walk reports the page's viewport-anchored boxes beside the runs. A box
-is a `position: fixed` ancestor of text the walk kept, carrying its screen rect
-from `getBoundingClientRect` and a flag set when its own background reaches
-alpha 255. The composite stops at the element's parent on purpose: walking
-further would reach the opaque `body` nearly every page carries and read a
-transparent bar as a cover, culling text the reader can see. A transparent
-wrapper around an opaque bar therefore reads non-opaque, so the coverage cull
-misses a real cover for one refresh window instead, the safe polarity. A
-negative `z-index` disqualifies an ancestor, because it paints behind content
-and so can never cover, as does a degenerate rect.
-Collection rides the ancestor climb the visibility filter already makes, and a
+The same climb answers two separate questions about `position: fixed` ancestors,
+and keeping them apart is deliberate. The first is which runs are anchored: a run
+carries a flag when the walk found a `position: fixed` element among its DOM
+ancestors, which is what the compose-time shift must hold still. Only the page
+can answer that. A rectangle test on the client cannot, because sitting inside a
+fixed box's rect is not descending from it, and a full-viewport transparent
+container (a toast root, a portal) encloses the whole page while owning one line
+of text.
+
+The second is what those elements cover, which the walk reports as
+viewport-anchored boxes beside the runs. A box is a `position: fixed` ancestor of
+text the walk kept, carrying its screen rect from `getBoundingClientRect` and a
+flag set when its own background reaches alpha 255. The composite stops at the
+element's parent on purpose: walking further would reach the opaque `body`
+nearly every page carries and read a transparent bar as a cover, culling text
+the reader can see. A transparent wrapper around an opaque bar therefore reads
+non-opaque, so the coverage cull misses a real cover for one refresh window
+instead, the safe polarity. A negative `z-index` disqualifies a box, because it
+paints behind content and so can never cover, as does a degenerate rect. Such an
+element still anchors its own text; only its cover is dropped.
+Both answers ride the ancestor climb the visibility filter already makes, and a
 cache stops that climb at the first element it has seen before, so a shared
-ancestry costs one lookup. The list is capped at 32 boxes; a page with more
-fixed text containers is not one this approximation helps. The client re-applies
+ancestry costs one lookup. The box list is capped at 32; a page with more fixed
+text containers is not one this approximation helps. Every skip here, the
+negative `z-index`, the degenerate rect and the cap, drops a box and never a
+tag, so it costs the cull a cover and lets text bleed through rather than letting
+anchored text drift. The client re-applies
 that cap when it decodes the walk JSON, because the walk evaluates in the page's
 main world and returns a string the page's own `JSON.stringify` produced, so the
 in-page cap is advice rather than a limit. Every box is re-tested against every
@@ -418,16 +431,17 @@ the moving page instead of freezing until the settle walk lands. Scroll is
 whole-cell, so the row shift is an exact integer.
 
 That translation is right for document-flow text and wrong for anything anchored
-to the viewport, which is why the boxes travel with the runs. A run whose box
-sits inside a fixed box is that box's own text: it holds its screen position
-while the page scrolls beneath it, so the shift keeps it exactly as it is. Every
-other run shifts, then drops when an opaque box covers it. The order is the only
-correct one. Containment compares the pre-shift box, because the run and the
-boxes were both measured in the snapshot's screen space, and coverage compares
-the post-shift box, because a viewport-anchored box keeps its screen rect while
-the page moves under it. Coverage takes the same three samples across the line's
-vertical centre that the walk's own cull takes, so the two agree on the same
-line box and a partly covered line keeps all its text.
+to the viewport, which is why each run carries the walk's anchor flag and the
+boxes travel beside them. An anchored run is a fixed element's own text: it holds
+its screen position while the page scrolls beneath it, so the shift keeps it
+exactly as it is, whether or not the element it descends from yielded a box.
+Every other run shifts, then drops when an opaque box covers it. The order is the
+only correct one. The anchor test runs first, so an opaque banner's own text is
+never culled by the banner's own box, and coverage compares the post-shift box,
+because a viewport-anchored box keeps its screen rect while the page moves under
+it. Coverage takes the same three samples across the line's vertical centre that
+the walk's own cull takes, so the two agree on the same line box and a partly
+covered line keeps all its text.
 
 Three limits are deliberate. `position: sticky` is not tracked: a stuck element
 behaves viewport-fixed and an unstuck one scrolls with the page, telling them

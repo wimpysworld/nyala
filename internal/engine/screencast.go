@@ -927,17 +927,20 @@ func (e *ChromiumEngine) composeFrame(pending pendingFrame, ts *textSync, lastCo
 // Columns are untouched: this is the vertical-scroll axis only. A run whose shifted
 // row falls outside the grid is dropped.
 //
-// fixed carries the viewport-anchored boxes the walk reported beside the runs, and
-// each run is tested against them twice, in this order. A run whose pre-shift box sits
-// inside a box (runInsideAnyFixedBox) is that box's own text: it holds its screen
-// position while the page scrolls under it, so it is kept exactly as it is. Every
-// other run shifts, then drops when an opaque box covers its post-shift box
-// (runCoveredByOpaqueFixedBox), because the walk hit-tested that text as visible at
-// the snapshot's scroll and it has since moved beneath the box. The order is
-// load-bearing: containment compares the pre-shift box, since the run and the boxes
-// were both measured in the snapshot's screen space, and coverage compares the
-// post-shift box, since a viewport-anchored box holds its screen rect while the page
-// moves under it.
+// A run marked ViewportAnchored descends from a position: fixed element, which the
+// walk resolved in the DOM. It is that element's own text: it holds its screen
+// position while the page scrolls under it, so it is kept exactly as it is. Geometry
+// cannot stand in for that relationship. A rectangle sitting inside a fixed box says
+// nothing about descent, so containment would also freeze every flow run under a
+// large transparent fixed container, a toast root or a full-viewport portal being the
+// common shapes.
+//
+// Every other run shifts, then drops when an opaque box in fixed covers its
+// post-shift box (runCoveredByOpaqueFixedBox), because the walk hit-tested that text
+// as visible at the snapshot's scroll and it has since moved beneath the box. The
+// order is load-bearing: the anchor test runs first, so an opaque banner's own text
+// is never culled by the banner's own box, and coverage compares the post-shift box,
+// since a viewport-anchored box holds its screen rect while the page moves under it.
 //
 // Two limits here are deliberate. position: sticky is not tracked, because telling a
 // stuck element from an unstuck one needs a second layout measurement the mid-scroll
@@ -964,10 +967,10 @@ func shiftRunsToBitmapScroll(runs []render.GlyphRun, fixed []walkFixedBox, bitma
 	hasFixed := len(fixed) > 0
 	shifted := make([]render.GlyphRun, 0, len(runs))
 	for _, run := range runs {
-		// Pre-shift: the run and the boxes share the snapshot's screen space, so this is
-		// the only space the containment test is valid in. An anchored run keeps its row
-		// and its Y, because the page moved and the box did not.
-		if hasFixed && runInsideAnyFixedBox(run, fixed) {
+		// An anchored run keeps its row and its Y, because the page moved and the fixed
+		// element it descends from did not. The tag stands on its own: a fixed ancestor
+		// the box collection skipped still holds its text still.
+		if run.ViewportAnchored {
 			shifted = append(shifted, run)
 			continue
 		}
@@ -986,28 +989,6 @@ func shiftRunsToBitmapScroll(runs []render.GlyphRun, fixed []walkFixedBox, bitma
 	return shifted
 }
 
-// fixedBoxEpsilon is the per-edge tolerance the containment test allows, in CSS
-// pixels. A line box is measured from getClientRects and a viewport-anchored box from
-// getBoundingClientRect, so a sub-pixel edge can put a run marginally outside the
-// container that owns it. Half a pixel absorbs that without reaching a neighbouring
-// element.
-const fixedBoxEpsilon = 0.5
-
-// runInsideAnyFixedBox reports whether the run's on-screen box sits wholly inside one
-// of the viewport-anchored boxes, within fixedBoxEpsilon per edge. Such a run is the
-// box's own text, so a page scroll leaves it where it is and the compose-time shift
-// must hold it rather than move it. Every box counts here, opaque or not: a
-// transparent viewport-anchored container still anchors the text inside it.
-func runInsideAnyFixedBox(run render.GlyphRun, fixed []walkFixedBox) bool {
-	for _, box := range fixed {
-		if run.X >= box.Left-fixedBoxEpsilon && run.X+run.W <= box.Right+fixedBoxEpsilon &&
-			run.Y >= box.Top-fixedBoxEpsilon && run.Y+run.H <= box.Bottom+fixedBoxEpsilon {
-			return true
-		}
-	}
-	return false
-}
-
 // runCoveredByOpaqueFixedBox reports whether an opaque viewport-anchored box covers
 // every one of three samples taken across the run's vertical centre: the left edge
 // plus an inset, the horizontal centre, and the right edge less the same inset, with
@@ -1015,6 +996,13 @@ func runInsideAnyFixedBox(run render.GlyphRun, fixed []walkFixedBox) bool {
 // this mid-scroll approximation and the walk's cull agree on the same line box. One
 // uncovered sample keeps the whole run, so a partly covered line keeps all its text.
 // Samples may fall in different boxes; only the opaque ones can cover.
+//
+// All four edges are inclusive and carry no tolerance, so the rule is the same on
+// every edge. This is now the only geometric test in the shift: what holds still is a
+// DOM answer the walk tags on the run, so there is no second test with a tolerance of
+// its own to lean the other way. A sample landing on an edge exactly is treated as
+// covered, which culls rather than bleeds, but it needs float equality against a
+// getBoundingClientRect edge and one uncovered sample of three keeps the whole run.
 func runCoveredByOpaqueFixedBox(run render.GlyphRun, fixed []walkFixedBox) bool {
 	l, r := run.X, run.X+run.W
 	cy := run.Y + run.H/2

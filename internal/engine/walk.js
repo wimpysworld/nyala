@@ -78,32 +78,51 @@ return{r:Math.round(or/cov),g:Math.round(og/cov),b:Math.round(ob/cov),a:Math.rou
 
 var FIXED_CAP=32;
 var fixed=[];
-var fixedCache=new Map();
+var anchorCache=new Map();
 
-// A 'fixed' ancestor holds its screen rect while the page scrolls, so the
-// compose-time shift can tell viewport-anchored text from flow text. 'sticky' is
-// left out on purpose: a stuck element is anchored but an unstuck one scrolls
-// with the page, and telling them apart needs a second layout measurement the
-// mid-scroll path cannot afford.
+// A 'fixed' ancestor holds its screen rect while the page scrolls, so the text
+// inside it must not move when the compose-time shift tracks the bitmap. Descent
+// is what decides that, not geometry: a rectangle test would also freeze every
+// flow run that happens to lie inside a large transparent fixed container, which
+// is what a toast root or a full-viewport portal is. 'sticky' is left out on
+// purpose: a stuck element is anchored but an unstuck one scrolls with the page,
+// and telling them apart needs a second layout measurement the mid-scroll path
+// cannot afford.
+//
+// The same climb collects the boxes the compose-time coverage cull tests against,
+// through collectFixed, which is deliberately narrower: it drops a box that can
+// cover nothing and stops at FIXED_CAP. Keeping the two answers apart means a
+// dropped or truncated box weakens the cull alone, never the hold, so the loss is
+// text bleeding through rather than text drifting away.
+function fixedAncestor(el){
+var chain=[],anchored=false;
+for(var a=el;a;a=a.parentElement){
+if(anchorCache.has(a)){anchored=anchorCache.get(a);break;}
+chain.push(a);
+}
+for(var i=chain.length-1;i>=0;i--){
+var n=chain[i];
+if(gcs(n).position==='fixed'){anchored=true;collectFixed(n);}
+anchorCache.set(n,anchored);
+}
+return anchored;
+}
+
+// collectFixed records one fixed element's screen rect for the coverage cull. Its
+// caller visits each element exactly once, so each box is recorded once.
 function collectFixed(el){
 if(fixed.length>=FIXED_CAP)return;
-for(var a=el;a;a=a.parentElement){
-if(fixedCache.has(a))return;
-fixedCache.set(a,1);
-var s=gcs(a);
-if(s.position!=='fixed')continue;
+var s=gcs(el);
 // A negative z-index paints the element behind content, so it can never cover.
-var z=parseInt(s.zIndex,10);if(!isNaN(z)&&z<0)continue;
-var rc=a.getBoundingClientRect();
-if(rc.width<=0||rc.height<=0)continue;
+var z=parseInt(s.zIndex,10);if(!isNaN(z)&&z<0)return;
+var rc=el.getBoundingClientRect();
+if(rc.width<=0||rc.height<=0)return;
 // The parent stops the composite, so only the element's own background counts.
 // Compositing past it would reach the opaque body nearly every page carries and
 // read a transparent bar as a cover, which culls text the reader can see. A
 // transparent wrapper around an opaque bar reads non-opaque instead: the cull
 // then misses a real cover for one refresh window, the safe polarity.
-fixed.push({l:rc.left,t:rc.top,r:rc.right,b:rc.bottom,o:bgOf(a,a.parentElement).a>=255});
-if(fixed.length>=FIXED_CAP)return;
-}
+fixed.push({l:rc.left,t:rc.top,r:rc.right,b:rc.bottom,o:bgOf(el,el.parentElement).a>=255});
 }
 
 function lca(a,b){
@@ -238,7 +257,7 @@ var node;while((node=w.nextNode())){
 var el=node.parentElement;if(!el)continue;
 if(!node.nodeValue||!node.nodeValue.trim())continue;
 if(hiddenStyle(el))continue;
-collectFixed(el);
+var fx=fixedAncestor(el);
 var fg=rgba(el);var bg=bgOf(el);var sv=stackVector(el);
 var text=node.nodeValue;var lines=[];
 var rng=document.createRange();rng.selectNodeContents(node);
@@ -316,7 +335,7 @@ var t=ln.chars.join('').replace(/\s+/g,' ').replace(/^ | $/g,'');if(!t)continue;
 var h=ln.bottom-ln.top;
 if(h<ch/4)continue;
 if(occluded(el,ln.left,ln.top,ln.right,ln.bottom))continue;
-runs.push({t:t,c:Math.round(ln.left/cw),r:Math.round(ln.top/ch),x:ln.left,y:ln.top,w:ln.right-ln.left,h:h,fg:fg,bg:bg,z:sv});
+runs.push({t:t,c:Math.round(ln.left/cw),r:Math.round(ln.top/ch),x:ln.left,y:ln.top,w:ln.right-ln.left,h:h,fg:fg,bg:bg,z:sv,f:fx});
 }
 }
 
