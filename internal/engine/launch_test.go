@@ -130,9 +130,16 @@ func TestLaunchArgvCarriesGPUFlags(t *testing.T) {
 	// up in milliseconds and no browser ever runs. The recorder writes the file
 	// before it exits, so the argv is on disk by the time launch returns the
 	// start failure.
+	//
+	// The output path reaches the recorder through an environment variable rather
+	// than the script body, so a temp path holding a shell metacharacter needs no
+	// escaping. chromedp's allocator leaves exec.Cmd.Env nil here (nothing sets
+	// chromedp.Env or ModifyCmdFunc), so the browser child inherits this process's
+	// environment and sees the t.Setenv value.
 	argvFile := filepath.Join(t.TempDir(), "argv")
+	t.Setenv("NYALA_TEST_ARGV_FILE", argvFile)
 	_, browserPath := fakeExecutable(t, "chromium",
-		"printf '%s\\n' \"$@\" > '"+argvFile+"'\nexit 1\n")
+		"printf '%s\\n' \"$@\" > \"$NYALA_TEST_ARGV_FILE\"\nexit 1\n")
 
 	// NYALA_BROWSER beats the empty PATH, so the recorder is the resolved browser.
 	t.Setenv("PATH", t.TempDir())
