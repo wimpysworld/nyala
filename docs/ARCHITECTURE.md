@@ -449,8 +449,21 @@ apart needs a second layout measurement the mid-scroll path cannot afford, and
 anchoring an unstuck one would cull text the reader can see. A fixed box with no
 text inside it is never discovered, because collection rides the text walk. A
 run culled at snapshot time stays absent while it scrolls out from under a
-cover. Each fails towards text bleeding through, the safe polarity for a text
-browser, and each self-corrects on the settle walk.
+cover.
+
+They do not all fail the same way. Only the undiscovered box fails towards text
+bleeding through, the safe polarity for a text browser: a box nobody collected
+costs a cover and never a hold. The other two hide text. A stuck sticky header's
+own text is treated as flow text, so it shifts away from the header the bitmap
+holds still and drops once its row leaves the grid, and a run culled under a
+cover it has since scrolled out from stays missing until the next walk retests
+it. Untracked sticky bleeds in the other direction too, because a stuck bar is
+never collected and so never covers the body text passing under it.
+
+Both hiding cases are accepted only because each self-corrects on the settle
+walk, so the worst case is one refresh window in which the bitmap shows text the
+crisp layer does not. Neither should be widened, and a new limit that hides text
+needs the same bound before it lands.
 
 This is a mid-scroll approximation and nothing more. At rest the bitmap and the
 run set share a scroll, `composeFrame` composes the runs as-is, and the walk's
@@ -1492,7 +1505,12 @@ floor was measured as the worst standard deviation over 64 repeated renders,
 text artefacts (JSON, txtar) behind an explicit `UPDATE_GOLDEN` refresh
 because they diff cleanly and survive font and Chromium bumps. Bitmap and
 overlay goldens regenerate on amd64 only: arm64 contracts float operations to
-FMA, shifting results below 1e-12, so their tests skip elsewhere.
+FMA, shifting results below 1e-12, so their tests skip elsewhere. The overlay
+run sets in `testdata/overlay/*.runs` are hand-written, one run per line as
+`col row fgHex rank text`, with the rank column mandatory: an optional one
+cannot be told from text that starts with an integer. `just genruns` rewrites
+only the foreground colours, picking the higher-contrast one against each run's
+composed background, so a hand-set rank survives regeneration.
 
 The legibility ruler is a pure-Go exact-template glyph matcher graded by
 character error rate. Its calibration measured the bitmap legibility floor

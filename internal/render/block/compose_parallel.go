@@ -35,7 +35,8 @@ func (br *Renderer) composeBand(g *Grid, f render.Frame, row0, row1 int) {
 // after the band-join. It is the parallel twin of Renderer.ComposeInto and
 // byte-identical to it: the binarise is per-cell independent, so a disjoint row
 // band writes the same cells the serial pass writes, and the overlay stays
-// sequential (first-writer-wins by DOM order) after every band completes. It holds
+// sequential after every band completes: it folds the runs front-to-back by
+// stacking rank, first-writer-wins, with equal ranks keeping DOM order. It holds
 // one band closure built once by NewParallelCompose, so a reused driver allocates
 // nothing per frame. Drive it from a single goroutine, so the pool's WaitGroup
 // never overlaps calls.

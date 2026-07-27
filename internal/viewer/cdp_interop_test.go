@@ -34,21 +34,26 @@ import (
 )
 
 const (
-	cdpInteropCols              = 120
-	cdpInteropRows              = 40
-	cdpInteropCellW             = 8
-	cdpInteropCellH             = 16
-	cdpInteropIdle              = 600 * time.Millisecond
-	cdpInteropDeadline          = 30 * time.Second
-	cdpInteropSixelDelta        = 2
-	cdpInteropPSNRFloor         = 24.0
-	cdpInteropSSIMFloor         = 0.90
-	cdpCorpusAttempts           = 2
-	cdpCalibrationSettle        = 2 * time.Second
-	cdpScrollRunTolerance       = 2
+	cdpInteropCols        = 120
+	cdpInteropRows        = 40
+	cdpInteropCellW       = 8
+	cdpInteropCellH       = 16
+	cdpInteropIdle        = 600 * time.Millisecond
+	cdpInteropDeadline    = 30 * time.Second
+	cdpInteropSixelDelta  = 2
+	cdpInteropPSNRFloor   = 24.0
+	cdpInteropSSIMFloor   = 0.90
+	cdpCorpusAttempts     = 2
+	cdpCalibrationSettle  = 2 * time.Second
+	cdpScrollRunTolerance = 2
+	// The four approved counts below are the measured layout-13-linuxmatters
+	// figures, not floors: cdpScrollRunTolerance supplies the whole slack. Change
+	// one only against a fresh measurement, and update the fixture's
+	// scroll_dance_gate reason in the same edit, because that is where the
+	// baseline is recorded.
 	cdpScrollApprovedPreRuns    = 56
 	cdpScrollApprovedPreBody    = 43
-	cdpScrollApprovedSettleBody = 43
+	cdpScrollApprovedSettleBody = 48
 	cdpScrollApprovedFixedRuns  = 13
 )
 
