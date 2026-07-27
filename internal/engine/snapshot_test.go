@@ -258,6 +258,76 @@ func TestDecodeWalkRunsCarriesStackingRank(t *testing.T) {
 	}
 }
 
+// walkFixedPayload builds one walk JSON envelope carrying count fixed boxes, each
+// box distinguishable by its left edge so a truncation test can name which boxes
+// survived. It mimics a page that ignores the in-page cap, which any page can do:
+// the walk runs in the main world and returns a string from its own
+// JSON.stringify.
+func walkFixedPayload(count int) string {
+	boxes := make([]string, 0, count)
+	for i := range count {
+		boxes = append(boxes, fmt.Sprintf(`{"l":%d,"t":0,"r":100,"b":50,"o":true}`, i))
+	}
+	return fmt.Sprintf(
+		`{"gen":7,"sx":0,"sy":120,"runs":[{"t":"flow text","c":0,"r":4,"x":0,"y":64,"w":72,"h":16,"fg":{"r":0,"g":0,"b":0,"a":255},"bg":{"r":255,"g":255,"b":255,"a":255},"z":0}],"fixed":[%s]}`,
+		strings.Join(boxes, ","),
+	)
+}
+
+// TestDecodeWalkResultClampsFixedBoxes proves the decode bounds the fixed boxes a
+// page can hand back. The in-page FIXED_CAP is advice, not a limit: the walk
+// evaluates in the page's main world, so a hostile page overriding
+// Array.prototype.push appends past the cap and the client receives whatever the
+// page chose. Every box is then re-tested against every run on the frame-emit
+// goroutine, a scan no context cancellation can interrupt, so an unbounded count
+// makes each frame of a scroll quadratic and stalls the terminal. The clamp is
+// asserted at the decode rather than at a call site, so a later consumer of the
+// boxes cannot miss it. Truncation keeps the earliest boxes, matching what the
+// in-page cap drops, and it must leave the runs and the envelope untouched.
+func TestDecodeWalkResultClampsFixedBoxes(t *testing.T) {
+	for _, tc := range []struct {
+		desc  string
+		count int
+		want  int
+	}{
+		{"a hostile page far past the cap", 100000, walkFixedBoxCap},
+		{"one box past the cap", walkFixedBoxCap + 1, walkFixedBoxCap},
+		{"exactly the cap", walkFixedBoxCap, walkFixedBoxCap},
+		{"under the cap", 3, 3},
+		{"no boxes at all", 0, 0},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			res, err := decodeWalkResult(walkFixedPayload(tc.count))
+			if err != nil {
+				t.Fatalf("decode a walk result with %d fixed boxes: %v", tc.count, err)
+			}
+			if len(res.Fixed) != tc.want {
+				t.Fatalf("decoded %d fixed boxes from %d, want %d: the decode must bound what the page returns", len(res.Fixed), tc.count, tc.want)
+			}
+			for i, box := range res.Fixed {
+				if box.Left != float64(i) {
+					t.Fatalf("fixed box %d has left %v, want %v: truncation must keep the earliest boxes in page order", i, box.Left, float64(i))
+				}
+			}
+			if len(res.Runs) != 1 || res.Runs[0].Text != "flow text" {
+				t.Fatalf("decoded runs = %+v, want the single flow run: the clamp must not touch the runs", res.Runs)
+			}
+			if res.Gen != 7 || res.ScrollY != 120 {
+				t.Fatalf("decoded gen %d and scrollY %v, want 7 and 120: the clamp must not touch the envelope", res.Gen, res.ScrollY)
+			}
+		})
+	}
+}
+
+// TestDecodeWalkResultRejectsMalformedJSON pins the decode's other failure mode: a
+// page returning something that is not a walk envelope is an error the caller
+// holds against, as a thrown walk already is, rather than a false empty result.
+func TestDecodeWalkResultRejectsMalformedJSON(t *testing.T) {
+	if _, err := decodeWalkResult(`{"fixed":`); err == nil {
+		t.Fatal("decoded a truncated walk envelope without an error: a malformed page result must not read as an empty walk")
+	}
+}
+
 // TestBuildTextWalkScriptContents pins the load-bearing fragments of the emitted
 // walk script: it snaps the origin against the passed cell (round(left/cw)), reads
 // per-line boxes from getClientRects, folds in the visibility and effective-opacity
@@ -292,7 +362,7 @@ func TestBuildTextWalkScriptContents(t *testing.T) {
 		{"effective-opacity drop", "if(op<config.opacityThreshold)return true;"},
 		{"fixed-box collector", "function collectFixed(el){"},
 		{"fixed-box collection rides the text-node walk", "collectFixed(el);"},
-		{"fixed-box collection cap", "var FIXED_CAP=32;"},
+		{"fixed-box collection cap matches the decode clamp", fmt.Sprintf("var FIXED_CAP=%d;", walkFixedBoxCap)},
 		{"fixed-box cap guard", "if(fixed.length>=FIXED_CAP)return;"},
 		{"fixed-box ancestor counted once", "if(fixedCache.has(a))return;"},
 		{"fixed-box position test", "if(s.position!=='fixed')continue;"},

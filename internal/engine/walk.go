@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image/color"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/chromedp/cdproto/runtime"
@@ -16,6 +17,16 @@ import (
 )
 
 const textWalkConfigPlaceholder = "__NYALA_TEXT_WALK_CONFIG__"
+
+// walkFixedBoxCap mirrors the walk script's own FIXED_CAP and bounds the boxes
+// the decode admits. The script runs in the page's main world and returns a
+// string from its own JSON.stringify, so the page controls the result and the
+// in-page cap is advice rather than a limit: overriding Array.prototype.push
+// alone appends past it. Every box is re-tested against every run on the
+// frame-emit goroutine, a scan no context can interrupt, so an unbounded box
+// count makes each frame of a scroll quadratic. TestBuildTextWalkScriptContents
+// asserts the script's cap against this constant, so the two cannot drift apart.
+const walkFixedBoxCap = 32
 
 //go:embed walk.js
 var textWalkSource string
@@ -190,13 +201,32 @@ func evaluateWalkJSON(ctx context.Context, expr string) (string, error) {
 // JSON result to a walkResult. The script returns a JSON string, so the evaluate
 // returns it by value and this unmarshals it.
 func evaluateWalk(ctx context.Context, expr string) (walkResult, error) {
-	var out walkResult
 	raw, err := evaluateWalkJSON(ctx, expr)
 	if err != nil {
-		return out, err
+		return walkResult{}, err
 	}
+	return decodeWalkResult(raw)
+}
+
+// decodeWalkResult unmarshals one walk JSON string to a walkResult and clamps the
+// fixed boxes to walkFixedBoxCap. This is the single trust boundary where page
+// JSON becomes Go data, so the clamp lives here rather than at a call site and no
+// later consumer can miss it. An over-cap result is truncated rather than
+// rejected: the in-page cap already drops boxes past the limit, so truncation is
+// what a page exceeding it asks for, and rejecting would let a page suppress the
+// whole text overlay by emitting one box too many, trading a slow frame for no
+// text at all. Truncation keeps the excess boxes off the per-frame scan while
+// leaving the overlay working, and it neither wedges the walk nor spams the
+// caller with errors on every read.
+func decodeWalkResult(raw string) (walkResult, error) {
+	var out walkResult
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return out, fmt.Errorf("engine: text walk decode result: %w", err)
+		return walkResult{}, fmt.Errorf("engine: text walk decode result: %w", err)
+	}
+	if len(out.Fixed) > walkFixedBoxCap {
+		// Copy rather than reslice: the published slice outlives the decode, so
+		// resliced excess would hold the page's whole array until the next walk.
+		out.Fixed = slices.Clone(out.Fixed[:walkFixedBoxCap])
 	}
 	return out, nil
 }
