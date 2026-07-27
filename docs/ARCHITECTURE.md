@@ -312,12 +312,16 @@ when an ancestor sets `visibility: hidden` or `collapse`. It drops
 screen-reader-only content, marked by a collapsed `clip` rect, an `inset(...)`
 clip-path, or a 1x1 overflow-hidden box. It drops a node whose effective
 opacity, multiplied up the ancestor chain, falls below `hiddenOpacityEps`
-(0.05), and any per-line rect under a quarter cell high. The occlusion cull hit-tests each run's line-box centre with
-`document.elementFromPoint` and drops the run when a different element covers
-it with a fully opaque background, compositing backgrounds only below the
-lowest common ancestor. An occluding `pointer-events: none` element bleeds
-through, the safe polarity for a text browser: showing text under a decorative
-overlay beats hiding text that is visible.
+(0.05), and any per-line rect under a quarter cell high. The occlusion cull
+hit-tests each run's line box at its start, centre, and end with
+`document.elementFromPoint`, and drops the run only when every sample that hit
+an element is covered by a different element with a fully opaque background, so
+a partly covered line keeps all its text. A sample outside the viewport returns
+no element and counts as no evidence rather than as uncovered. The cull
+composites backgrounds only below the lowest common ancestor. An occluding
+`pointer-events: none` element bleeds through, the safe polarity for a text
+browser: showing text under a decorative overlay beats hiding text that is
+visible.
 
 Each run also carries a stacking rank. Climbing from the run's element to the
 root, the walk records a `(z-index, document order)` pair for every ancestor

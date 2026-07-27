@@ -81,10 +81,25 @@ for(var n=a;n;n=n.parentElement){if(n.contains(b))return n;}
 return null;
 }
 
-function occluded(el,x,y){
-var top=document.elementFromPoint(x,y);if(!top)return false;
+function coveredAt(el,x,y){
+var top=document.elementFromPoint(x,y);if(!top)return null;
 if(top===el||el.contains(top)||top.contains(el))return false;
 return bgOf(top,lca(top,el)).a>=255;
+}
+
+// Sampling the line box's start, centre, and end keeps a partly covered run
+// whole: only a cover over every sample that hit an element drops it. A null hit
+// is no evidence, so an off-viewport sample neither culls nor saves the run.
+function occluded(el,l,t,r,b){
+var cy=(t+b)/2,inset=Math.min(1,(r-l)/4),sampled=false;
+var xs=[l+inset,(l+r)/2,r-inset];
+for(var i=0;i<xs.length;i++){
+var cov=coveredAt(el,xs[i],cy);
+if(cov===null)continue;
+if(!cov)return false;
+sampled=true;
+}
+return sampled;
 }
 
 function nn(v){if(!v)return false;var f=String(v).trim();if(!f)return false;return f.split(/[ ,(]/)[0]!=='none';}
@@ -232,8 +247,7 @@ if(!isFinite(ln.left))continue;
 var t=ln.chars.join('').replace(/\s+/g,' ').replace(/^ | $/g,'');if(!t)continue;
 var h=ln.bottom-ln.top;
 if(h<ch/4)continue;
-var cx=(ln.left+ln.right)/2,cy=(ln.top+ln.bottom)/2;
-if(occluded(el,cx,cy))continue;
+if(occluded(el,ln.left,ln.top,ln.right,ln.bottom))continue;
 runs.push({t:t,c:Math.round(ln.left/cw),r:Math.round(ln.top/ch),x:ln.left,y:ln.top,w:ln.right-ln.left,h:h,fg:fg,bg:bg,z:sv});
 }
 }
