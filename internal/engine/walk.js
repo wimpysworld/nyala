@@ -134,29 +134,55 @@ return sampled;
 
 function nn(v){if(!v)return false;var f=String(v).trim();if(!f)return false;return f.split(/[ ,(]/)[0]!=='none';}
 
+// A 'display: contents' element generates no box, so it is neither a flex item
+// itself nor the flex container of its children: the nearest ancestor that does
+// generate a box holds them.
 function flexItem(el){
-var p=el.parentElement;if(!p)return false;
+for(var p=el.parentElement;p;p=p.parentElement){
 var d=gcs(p).display;
+if(d==='contents')continue;
 return d==='flex'||d==='inline-flex'||d==='grid'||d==='inline-grid';
 }
+return false;
+}
+
+// The top layer paints above the whole page, outside the page's own stacking
+// order, so its members take a level above any z-index CSS can express and root
+// their own vector rather than extend the one they sit in. One query per walk
+// matches nothing on a page with no dialog or popover open, and the guard covers
+// an engine that does not know either selector.
+var TOP_LAYER_Z=2147483648;
+var topLayer=new Set();
+try{var tls=document.querySelectorAll(':modal,:popover-open');for(var tli=0;tli<tls.length;tli++){topLayer.add(tls[tli]);}}catch(e){}
+
+// Stacking participation is three-valued, because a 'relative' or 'absolute' box
+// at 'z-index: auto' opens no stacking context. CSS 2.1 Appendix E step 8 paints
+// such a box as if it did, after the parent context's in-flow content, but its
+// positioned descendants and any descendant that opens a real context belong to
+// the parent context, not to it. STACK_PSEUDO carries that half-level: it orders
+// the box's own text but never traps a descendant's z-index beneath it. 'fixed'
+// and 'sticky' open a real context whatever their z-index does.
+var STACK_NONE=0,STACK_PSEUDO=1,STACK_REAL=2;
 
 function stacks(el){
-if(el===document.documentElement)return true;
+if(el===document.documentElement||topLayer.has(el))return STACK_REAL;
 var s=gcs(el);
-if(s.position&&s.position!=='static')return true;
-if(s.zIndex&&s.zIndex!=='auto'&&flexItem(el))return true;
-if(parseFloat(s.opacity)<1)return true;
-if(s.mixBlendMode&&s.mixBlendMode!=='normal')return true;
-if(nn(s.transform)||nn(s.scale)||nn(s.rotate)||nn(s.translate)||nn(s.perspective))return true;
-if(nn(s.filter)||nn(s.backdropFilter))return true;
-if(nn(s.clipPath))return true;
-if(nn(s.mask)||nn(s.maskImage)||nn(s.maskBorder))return true;
-if(s.isolation==='isolate')return true;
-if(/\b(layout|paint|strict|content)\b/.test(s.contain||''))return true;
-if(s.contentVisibility==='auto')return true;
-if(/\b(opacity|transform|scale|rotate|translate|perspective|filter|backdrop-filter|clip-path|mask|mask-image|mask-border|isolation|mix-blend-mode|contain|content-visibility|position|z-index|view-transition-name)\b/.test(s.willChange||''))return true;
-if(nn(s.viewTransitionName))return true;
-return false;
+var pos=s.position,positioned=!!pos&&pos!=='static';
+if(positioned&&pos!=='relative'&&pos!=='absolute')return STACK_REAL;
+if(positioned&&s.zIndex&&s.zIndex!=='auto')return STACK_REAL;
+if(s.zIndex&&s.zIndex!=='auto'&&flexItem(el))return STACK_REAL;
+if(parseFloat(s.opacity)<1)return STACK_REAL;
+if(s.mixBlendMode&&s.mixBlendMode!=='normal')return STACK_REAL;
+if(nn(s.transform)||nn(s.scale)||nn(s.rotate)||nn(s.translate)||nn(s.perspective))return STACK_REAL;
+if(nn(s.filter)||nn(s.backdropFilter))return STACK_REAL;
+if(nn(s.clipPath))return STACK_REAL;
+if(nn(s.mask)||nn(s.maskImage)||nn(s.maskBorder))return STACK_REAL;
+if(s.isolation==='isolate')return STACK_REAL;
+if(/\b(layout|paint|strict|content)\b/.test(s.contain||''))return STACK_REAL;
+if(s.contentVisibility==='auto')return STACK_REAL;
+if(/\b(opacity|transform|scale|rotate|translate|perspective|filter|backdrop-filter|clip-path|mask|mask-image|mask-border|isolation|mix-blend-mode|contain|content-visibility|position|z-index|view-transition-name)\b/.test(s.willChange||''))return STACK_REAL;
+if(nn(s.viewTransitionName))return STACK_REAL;
+return positioned?STACK_PSEUDO:STACK_NONE;
 }
 
 var partCache=new Map();
@@ -167,20 +193,31 @@ return partCache.get(el);
 }
 
 function zOf(el){
+if(topLayer.has(el))return TOP_LAYER_Z;
 var s=gcs(el);
 if(s.position==='static'&&!flexItem(el))return 0;
 var z=parseInt(s.zIndex,10);return isNaN(z)?0:z;
 }
 
+// vecCache holds an element's own stacking vector; baseCache holds the vector its
+// descendants extend. The two differ by exactly one entry beneath a pseudo level,
+// which a deeper level replaces instead of nesting below. A pseudo level is
+// therefore always the last entry of the vector that carries it.
 var vecCache=new Map();
+var baseCache=new Map();
 
 function stackVector(el){
 if(vecCache.has(el))return vecCache.get(el);
-var chain=[],base=null;
-for(var a=el;a;a=a.parentElement){if(vecCache.has(a)){base=vecCache.get(a);break;}chain.push(a);}
-if(!base)base=[];
-for(var i=chain.length-1;i>=0;i--){var n=chain[i];base=participates(n)?base.concat([[zOf(n),ord(n)]]):base;vecCache.set(n,base);}
-return base;
+var chain=[],vec=null,base=null;
+for(var a=el;a;a=a.parentElement){if(vecCache.has(a)){vec=vecCache.get(a);base=baseCache.get(a);break;}chain.push(a);}
+if(!vec){vec=[];base=[];}
+for(var i=chain.length-1;i>=0;i--){
+var n=chain[i],st=participates(n);
+if(topLayer.has(n))base=[];
+if(st!==STACK_NONE){vec=base.concat([[zOf(n),ord(n)]]);if(st===STACK_REAL)base=vec;}
+vecCache.set(n,vec);baseCache.set(n,base);
+}
+return vec;
 }
 
 function cmpVec(a,b){

@@ -350,13 +350,37 @@ the harness golden run-set format widens for a motion-only correction.
 
 Each run also carries a stacking rank. Climbing from the run's element to the
 root, the walk records a `(z-index, document order)` pair for every ancestor
-that takes part in stacking: one that establishes a stacking context (opacity
-below 1, a transform, a filter, a clip-path, a mask, `mix-blend-mode`,
-`isolation`, `contain`, `content-visibility`, `view-transition-name`,
-`will-change` naming any of those, a flex or grid child with a `z-index`, and
-the root element), or one that is positioned. A `SHOW_ELEMENT` `TreeWalker`
-pre-pass numbers every element in document order, so two participants at
-different DOM depths still compare. The vectors compare root-first and
+that takes part in stacking, and an ancestor takes part in one of two ways.
+
+It establishes a stacking context: opacity below 1, a transform, a filter, a
+clip-path, a mask, `mix-blend-mode`, `isolation`, `contain`,
+`content-visibility`, `view-transition-name`, `will-change` naming any of those,
+a flex or grid child with a `z-index`, `position: fixed` or `sticky` whatever
+their `z-index`, a `relative` or `absolute` box with an explicit `z-index`, and
+the root element. The flex or grid container is found through any
+`display: contents` wrapper, because such a wrapper generates no box and its
+children are the items.
+
+Or it is a `relative` or `absolute` box at `z-index: auto`, which establishes
+none. CSS 2.1 Appendix E step 8 paints such a box as if it did, after the parent
+context's in-flow content, but its positioned descendants and any descendant
+that does establish a context belong to the parent context, not to it. The walk
+gives it a pseudo level, which orders the box's own text but never traps a
+descendant's `z-index` beneath it: a deeper level replaces the pseudo level
+instead of nesting below it, so a pseudo level is always the last entry of the
+vector that carries it. Treating the box as a full context instead inverts paint
+order, because the comparison then resolves on the wrapper rather than on the
+descendant that carries the `z-index`.
+
+A member of the top layer, an open modal `<dialog>` or popover, is a third case.
+It paints above the whole page, outside the page's own stacking order, so it
+takes a level above any `z-index` CSS can express and roots its own vector
+rather than extending the one it sits in. One `:modal, :popover-open` query per
+walk collects them, and it matches nothing on a page with none open.
+
+A `SHOW_ELEMENT` `TreeWalker` pre-pass numbers every element in document order,
+so two participants at different DOM depths still compare. The vectors compare
+root-first and
 lexicographically: at the first level where they differ the higher z-index
 paints in front, and on an equal z-index the later document order paints in
 front. When one vector runs out, the shorter one is the shared context's own
