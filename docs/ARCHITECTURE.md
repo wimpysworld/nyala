@@ -335,14 +335,16 @@ in-flow content, so the longer one paints behind it only when its next level
 carries a negative z-index. That is the CSS 2.1 Appendix E split between
 negative-z children and everything else. A sorted copy of the run indices then
 gives each run a dense integer rank, 0 being front-most, while the run array
-itself stays in DOM order.
+itself stays in DOM order. The walk decode carries the rank through to
+`render.GlyphRun`, and the harness golden run-set format carries it alongside
+each run, but the overlay fold still ignores it, so it changes no placement
+today.
 
 One approximation: a non-positioned element that establishes a stacking context
 through opacity or a transform paints in its in-flow position, but this model
 treats it as positioned at z-index 0 and lets document order break the tie,
 which is close enough for cell contention. Detection needs real computed style,
-so the live walk tests cover the model rather than the unit gate. Nothing
-consumes the rank yet, so it changes no placement today.
+so the live walk tests cover the model rather than the unit gate.
 
 ### Frame sync
 

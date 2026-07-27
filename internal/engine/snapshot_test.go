@@ -189,14 +189,15 @@ func walkPayload(specs []walkRunSpec, withRank bool) string {
 	return fmt.Sprintf(`{"gen":9,"sx":0,"sy":240.5,"runs":[%s]}`, strings.Join(objects, ","))
 }
 
-// TestDecodeWalkRunsIgnoresStackingRank proves the per-run stacking rank the page
-// emits is inert on the client. The same runs, once with the rank key on every run
-// and once without it, decode to identical render.GlyphRun values, so the rank
-// cannot disturb the overlay until a consumer deliberately reads it. The runs carry
+// TestDecodeWalkRunsCarriesStackingRank proves the per-run stacking rank the page
+// emits reaches render.GlyphRun on every run, in decode order, and that a payload
+// with no rank key decodes to rank 0 throughout. Every other field stays identical
+// between the ranked and the unranked payloads, so the rank rides along without
+// disturbing the overlay until a consumer deliberately reads it. The runs carry
 // differing text, geometry, and colours, so the equality assertion is meaningful
 // rather than trivially empty. The ordering the rank encodes is decided in the page
 // and is proved against real Chromium, so nothing here reimplements it.
-func TestDecodeWalkRunsIgnoresStackingRank(t *testing.T) {
+func TestDecodeWalkRunsCarriesStackingRank(t *testing.T) {
 	specs := []walkRunSpec{
 		{
 			text: "Headline", col: 0, row: 0, x: 0, y: 0, w: 64, h: 16,
@@ -243,8 +244,16 @@ func TestDecodeWalkRunsIgnoresStackingRank(t *testing.T) {
 		t.Fatalf("run counts differ: ranked %d, unranked %d", len(rankedRuns), len(plainRuns))
 	}
 	for i := range rankedRuns {
-		if rankedRuns[i] != plainRuns[i] {
-			t.Fatalf("run %d differs: ranked %+v, unranked %+v: the stacking rank must not reach the render seam", i, rankedRuns[i], plainRuns[i])
+		if rankedRuns[i].StackRank != specs[i].rank {
+			t.Fatalf("run %d StackRank = %d, want %d: the page rank must reach the render seam in decode order", i, rankedRuns[i].StackRank, specs[i].rank)
+		}
+		if plainRuns[i].StackRank != 0 {
+			t.Fatalf("run %d StackRank = %d without a rank key, want 0", i, plainRuns[i].StackRank)
+		}
+		stripped := rankedRuns[i]
+		stripped.StackRank = 0
+		if stripped != plainRuns[i] {
+			t.Fatalf("run %d differs beyond the rank: ranked %+v, unranked %+v: the stacking rank must change nothing else", i, rankedRuns[i], plainRuns[i])
 		}
 	}
 }

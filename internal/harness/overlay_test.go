@@ -9,7 +9,8 @@ import (
 )
 
 // TestLoadRunSet parses a committed run set and checks the run count, the first
-// run's fields in RGBA order, and that comment and blank lines are skipped.
+// run's fields in RGBA order, its stacking rank, and that comment and blank lines
+// are skipped.
 func TestLoadRunSet(t *testing.T) {
 	runs, err := LoadRunSet(filepath.Join(OverlayDir(), "testpage-01-grayscale.runs"))
 	if err != nil {
@@ -30,6 +31,21 @@ func TestLoadRunSet(t *testing.T) {
 	wantFG := color.RGBA{A: 0xFF}
 	if first.FG != wantFG {
 		t.Errorf("first run FG = %+v, want %+v (RGBA order)", first.FG, wantFG)
+	}
+	// The fixture ranks run 0..n-1 in file order, so the first run is front-most.
+	if first.StackRank != 0 {
+		t.Errorf("first run StackRank = %d, want 0 (front-most)", first.StackRank)
+	}
+}
+
+// TestParseRunRejectsLegacyLine confirms the rank field is required: a
+// four-field line in the old "col row fgHex text" format is an error, not a run
+// whose text starts with the size.
+func TestParseRunRejectsLegacyLine(t *testing.T) {
+	for _, line := range []string{"4 2 000000 Text", "4 2 000000 Text Size 8px"} {
+		if _, err := parseRun(line); err == nil {
+			t.Errorf("parseRun(%q) = nil error, want an error (rank field missing)", line)
+		}
 	}
 }
 

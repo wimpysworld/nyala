@@ -43,17 +43,19 @@ type walkColour struct {
 // rect in on-screen CSS pixels (scroll already subtracted by getClientRects). The
 // page snaps the origin, so the client trusts Col and Row and never re-divides by
 // a cell width. X, Y, W, H carry the rect so the paint-displacement metric and the
-// sub-cell background recompose keep their geometry.
+// sub-cell background recompose keep their geometry. StackRank carries the page's
+// front-to-back stacking rank for the run, 0 being front-most.
 type walkRun struct {
-	Text string     `json:"t"`
-	Col  int        `json:"c"`
-	Row  int        `json:"r"`
-	X    float64    `json:"x"`
-	Y    float64    `json:"y"`
-	W    float64    `json:"w"`
-	H    float64    `json:"h"`
-	FG   walkColour `json:"fg"`
-	BG   walkColour `json:"bg"`
+	Text      string     `json:"t"`
+	Col       int        `json:"c"`
+	Row       int        `json:"r"`
+	X         float64    `json:"x"`
+	Y         float64    `json:"y"`
+	W         float64    `json:"w"`
+	H         float64    `json:"h"`
+	FG        walkColour `json:"fg"`
+	BG        walkColour `json:"bg"`
+	StackRank int        `json:"z"`
 }
 
 // walkResult is the whole in-page walk return: the current layout generation, the
@@ -93,10 +95,10 @@ type walkResult struct {
 // front-to-back stacking rank the page derives from the stacking-context
 // ancestry of the run's element and flattens to a dense integer over the run
 // set, 0 being front-most (docs/ARCHITECTURE.md holds the ordering model); the
-// returned run array still comes back in DOM order and nothing decodes the rank
-// yet, so it changes no placement today. It returns the current layout
-// generation alongside the runs. The whole walk is one expression evaluated per
-// decode.
+// returned run array still comes back in DOM order and the rank now reaches the
+// render seam, but no consumer reads it, so it changes no placement today. It
+// returns the current layout generation alongside the runs. The whole walk is one
+// expression evaluated per decode.
 func buildTextWalkScript(cellW, cellH float64) string {
 	return buildTextWalkScriptFromConfig(textWalkConfig{
 		CellWidth:          cellW,
@@ -180,7 +182,10 @@ func evaluateWalk(ctx context.Context, expr string) (walkResult, error) {
 // decoded run width so a width-2 cluster is never half-emitted. cellW converts the
 // box right edge to a cell to cap the clip at the nearer of the box's own right edge
 // and the grid, so a font-metric residue never drops
-// the last cell. A non-positive cellW falls back to the grid edge alone.
+// the last cell. A non-positive cellW falls back to the grid edge alone. It copies
+// the page's stacking rank through untouched: the decode's own drops (an empty text,
+// a fully clipped run) leave the surviving ranks unique but no longer dense, which a
+// stable sort does not care about.
 func decodeWalkRuns(res walkResult, cellW float64, cols int) []render.GlyphRun {
 	if cols <= 0 {
 		return nil
@@ -214,6 +219,7 @@ func decodeWalkRuns(res walkResult, cellW float64, cols int) []render.GlyphRun {
 			H:            r.H,
 			CellW:        cellW,
 			DisplayCells: render.DisplayWidth(clipped),
+			StackRank:    r.StackRank,
 		})
 	}
 	return runs
