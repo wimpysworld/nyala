@@ -46,9 +46,10 @@ const (
 	cdpCorpusAttempts           = 2
 	cdpCalibrationSettle        = 2 * time.Second
 	cdpScrollRunTolerance       = 2
-	cdpScrollApprovedPreRuns    = 47
-	cdpScrollApprovedPreBody    = 47
+	cdpScrollApprovedPreRuns    = 56
+	cdpScrollApprovedPreBody    = 43
 	cdpScrollApprovedSettleBody = 43
+	cdpScrollApprovedFixedRuns  = 13
 )
 
 type cdpInteropCase struct {
@@ -556,8 +557,16 @@ func runCorpusScroll(fixture string, geom cdpGeometry, gate metrics.ScrollGate) 
 	if body := result.Settled.Runs - result.Settled.FixedRuns; body < minSettleBody {
 		return result, fmt.Errorf("settled non-fixed matched runs = %d, want at least %d", body, minSettleBody)
 	}
-	if result.Settled.FixedRuns != 13 {
-		return result, fmt.Errorf("settled fixed navigation cohort = %d, want 13", result.Settled.FixedRuns)
+	// The fixed navigation cohort must be the same size mid-scroll as it is at rest.
+	// The compose-time shift holds a viewport-anchored run in place rather than
+	// translating it with the page, so the nav's crisp text stays on the nav's pixels
+	// while the body scrolls under it. A pre-settle cohort of zero is the regression
+	// this guards: it means the shift moved the fixed nav off its own background.
+	if result.PreSettle.FixedRuns != cdpScrollApprovedFixedRuns {
+		return result, fmt.Errorf("pre-settle fixed navigation cohort = %d, want %d", result.PreSettle.FixedRuns, cdpScrollApprovedFixedRuns)
+	}
+	if result.Settled.FixedRuns != cdpScrollApprovedFixedRuns {
+		return result, fmt.Errorf("settled fixed navigation cohort = %d, want %d", result.Settled.FixedRuns, cdpScrollApprovedFixedRuns)
 	}
 	if err := metrics.CheckScrollGate(result.PreSettle, gate); err != nil {
 		return result, fmt.Errorf("pre-settle: %w", err)

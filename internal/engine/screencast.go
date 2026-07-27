@@ -388,12 +388,15 @@ func (e *ChromiumEngine) ackPump(ctx context.Context, acks *ackQueue) {
 }
 
 // overlayState is the text-sync state the snapshot goroutine threads across its
-// iterations. It holds the last-matched runs, the wall-clock start of the current
-// snapshot-failure run, and the wall-clock time of the last debounced re-snapshot.
-// The snapshot goroutine owns it, so the hold is single-goroutine and lock-free;
-// the snapshot read runs outside any lock.
+// iterations. It holds the last-matched runs and the viewport-anchored boxes they
+// were walked against, the wall-clock start of the current snapshot-failure run,
+// and the wall-clock time of the last debounced re-snapshot. The snapshot
+// goroutine owns it, so the hold is single-goroutine and lock-free; the snapshot
+// read runs outside any lock. Carrying the boxes here rather than returning them
+// separately keeps the snapshot function type the test hook implements unchanged.
 type overlayState struct {
 	lastText       []render.GlyphRun // last text matched to a bitmap
+	lastFixed      []walkFixedBox    // viewport-anchored boxes lastText was walked against, for the error-hold tag
 	lastScroll     scrollOffset      // DOM scroll offset lastText was decoded at, for the error-hold tag
 	lastGen        int64             // layout generation lastText was decoded at, for the error-hold tag
 	failingSince   time.Time         // start of the current snapshot-failure run, zero when not failing
@@ -406,11 +409,17 @@ type overlayState struct {
 // runs; composeFrame reads the latest set and folds it onto the frame. Decoupling
 // the DOM snapshot from the frame loop this way keeps snapshot latency from
 // withholding acks or stalling frame emission (the snapshot no longer runs on the
-// frame-emit goroutine). The held runs are read-only once published, so the
-// reader shares the slice without copying.
+// frame-emit goroutine). The held runs and boxes are read-only once published, so
+// the reader shares both slices without copying.
 type textSync struct {
 	mu   sync.Mutex
 	runs []render.GlyphRun
+	// fixed carries the viewport-anchored boxes the walk reported alongside the runs.
+	// A box holds its screen position while the page scrolls, so the compose-time
+	// scroll shift needs the boxes to tell anchored text from flow text and to
+	// re-test occlusion on a shifted frame. They are published with the runs because
+	// they are only meaningful against the set they were walked with.
+	fixed []walkFixedBox
 	// scrollY tags the runs with the DOM vertical scroll offset (CSS pixels) they were
 	// decoded at, so composeFrame pairs a bitmap to this set only when the bitmap's own
 	// scroll matches. Vertical scroll is the only axis that reflows rows, so the pair
@@ -423,23 +432,27 @@ type textSync struct {
 	gen int64
 }
 
-// store publishes the latest decoded runs, snapshot time, the DOM vertical scroll
-// offset the runs were decoded at, and the layout generation they were decoded at.
-func (t *textSync) store(runs []render.GlyphRun, scrollY float64, gen int64) {
+// store publishes the latest decoded runs, the viewport-anchored boxes they were
+// walked against, the DOM vertical scroll offset the runs were decoded at, and the
+// layout generation they were decoded at. The caller must not write to either
+// slice afterwards: both are read-only once published.
+func (t *textSync) store(runs []render.GlyphRun, fixed []walkFixedBox, scrollY float64, gen int64) {
 	t.mu.Lock()
 	t.runs = runs
+	t.fixed = fixed
 	t.scrollY = scrollY
 	t.gen = gen
 	t.mu.Unlock()
 }
 
-// latest returns the most recently published runs, the DOM vertical
-// scroll offset, and the layout generation the runs were decoded at, or nil and
-// zeroes before the first snapshot lands.
-func (t *textSync) latest() ([]render.GlyphRun, float64, int64) {
+// latest returns the most recently published runs, the viewport-anchored boxes
+// they were walked against, the DOM vertical scroll offset, and the layout
+// generation the runs were decoded at, or nil and zeroes before the first snapshot
+// lands. The returned slices are shared, not copied, so the caller only reads them.
+func (t *textSync) latest() ([]render.GlyphRun, []walkFixedBox, float64, int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.runs, t.scrollY, t.gen
+	return t.runs, t.fixed, t.scrollY, t.gen
 }
 
 // noSnapshotBackoff is the idle pause the snapshot goroutine takes between
@@ -614,7 +627,7 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 // the caller exits without snapshotting.
 func (e *ChromiumEngine) waitForFirstSnapshot(ctx context.Context, ts *textSync) bool {
 	for !e.textOverlayBackend() {
-		ts.store(nil, 0, 0)
+		ts.store(nil, nil, 0, 0)
 		if sleepCtx(ctx, noSnapshotBackoff) {
 			return false
 		}
@@ -701,15 +714,15 @@ func armDebounce(t *time.Timer, d time.Duration) *time.Timer {
 	return t
 }
 
-// publishSnapshot runs one snapshot and publishes its runs, scroll, and
-// layout generation to ts. It returns the updated hold state. It is the single
-// snapshot-and-publish step the first-after-paint and re-snapshot triggers share, so
-// the publish stays in one place. A graphics backend takes no overlay, so it
-// publishes nil and skips the layout read rather than snapshot the full viewport it
-// ignores.
+// publishSnapshot runs one snapshot and publishes its runs, viewport-anchored
+// boxes, scroll, and layout generation to ts. It returns the updated hold state. It
+// is the single snapshot-and-publish step the first-after-paint and re-snapshot
+// triggers share, so the publish stays in one place. A graphics backend takes no
+// overlay, so it publishes nil and skips the layout read rather than snapshot the
+// full viewport it ignores.
 func (e *ChromiumEngine) publishSnapshot(ctx context.Context, snapshot func(context.Context, overlayState) ([]render.GlyphRun, scrollOffset, int64, overlayState), ts *textSync, state overlayState) overlayState {
 	if !e.textOverlayBackend() {
-		ts.store(nil, 0, 0)
+		ts.store(nil, nil, 0, 0)
 		return state
 	}
 	runs, scroll, gen, next := snapshot(ctx, state)
@@ -719,8 +732,10 @@ func (e *ChromiumEngine) publishSnapshot(ctx context.Context, snapshot func(cont
 	next.lastScrollSnap = state.lastScrollSnap
 	// Tag the published runs with the DOM scroll and the layout generation they were
 	// decoded at, so composeFrame can pair them to a same-generation bitmap at the same
-	// scroll.
-	ts.store(runs, scroll.Y, gen)
+	// scroll. The boxes ride the returned state rather than the return values, since
+	// the snapshot function type is a test hook that must not change, and snapshotRuns
+	// pairs them to the emitted runs there.
+	ts.store(runs, next.lastFixed, scroll.Y, gen)
 	return next
 }
 
@@ -819,18 +834,22 @@ func (e *ChromiumEngine) emitFrame(ctx context.Context, frames chan render.Frame
 // walk placed each run on-screen at that scroll, so no shift is needed. When the
 // generation matches but the bitmap has scrolled past the snapshot, it shifts the runs
 // onto the bitmap's whole-cell scroll (shiftRunsToBitmapScroll) so the overlay tracks
-// the moving page. Only a genuinely different generation (a reflow) or an
-// uninferable generation holds the previous frame's composed overlay for one frame
+// the moving page. It hands that shift the viewport-anchored boxes the run set was
+// walked against, so a run anchored inside a box is held in place rather than shifted,
+// and a shifted run is re-tested against the opaque boxes it has moved under. Only a
+// genuinely different generation (a reflow) or an uninferable generation holds the
+// previous frame's composed overlay for one frame
 // rather than compose a stale set onto a freshly reflowed bitmap. lastComposed carries
 // the held set across frames; the frame loop owns it. Before the first publish (nil
 // run set) it composes nil, the bitmap alone.
 func (e *ChromiumEngine) composeFrame(pending pendingFrame, ts *textSync, lastComposed *[]render.GlyphRun) render.Frame {
 	var runs []render.GlyphRun
+	var fixed []walkFixedBox
 	var snapScrollY float64
 	var tsGen int64
 	var haveTS bool
 	if ts != nil {
-		runs, snapScrollY, tsGen = ts.latest()
+		runs, fixed, snapScrollY, tsGen = ts.latest()
 		haveTS = runs != nil
 	}
 	e.mu.Lock()
@@ -861,8 +880,10 @@ func (e *ChromiumEngine) composeFrame(pending pendingFrame, ts *textSync, lastCo
 		// the bitmap's scroll so the overlay stays glued to the moving page rather than
 		// freezing at the snapshot's scroll until the settle re-snapshot lands. Scroll is
 		// whole-cell (dispatchWheel snaps the DOM scroll to a multiple of cellH), so the
-		// row shift is an exact integer and the copy never aliases fractional rows.
-		composed = shiftRunsToBitmapScroll(runs, bitmapScrollY, snapScrollY, cellCSSH, rows)
+		// row shift is an exact integer and the copy never aliases fractional rows. The
+		// boxes the set was walked against ride along, so an anchored run holds its
+		// screen position and a shifted run is re-tested against the opaque boxes.
+		composed = shiftRunsToBitmapScroll(runs, fixed, bitmapScrollY, snapScrollY, cellCSSH, rows)
 	default:
 		// A genuinely different generation (a reflow bumped the counter): hold the
 		// previous composed overlay one frame rather than compose a stale set onto a
@@ -904,10 +925,32 @@ func (e *ChromiumEngine) composeFrame(pending pendingFrame, ts *textSync, lastCo
 // the run up by dy: the box Y shifts by -dy and the cell row by -round(dy/cellCSSH).
 // Scroll is whole-cell, so dy/cellCSSH is an integer and the row shift is exact.
 // Columns are untouched: this is the vertical-scroll axis only. A run whose shifted
-// row falls outside the grid is dropped. It returns the runs untouched (no copy) on a
-// zero delta, the production fast path; otherwise it returns a shifted copy and never
-// mutates runs, which textSync shares across composes.
-func shiftRunsToBitmapScroll(runs []render.GlyphRun, bitmapScrollY, snapScrollY, cellCSSH float64, rows int) []render.GlyphRun {
+// row falls outside the grid is dropped.
+//
+// fixed carries the viewport-anchored boxes the walk reported beside the runs, and
+// each run is tested against them twice, in this order. A run whose pre-shift box sits
+// inside a box (runInsideAnyFixedBox) is that box's own text: it holds its screen
+// position while the page scrolls under it, so it is kept exactly as it is. Every
+// other run shifts, then drops when an opaque box covers its post-shift box
+// (runCoveredByOpaqueFixedBox), because the walk hit-tested that text as visible at
+// the snapshot's scroll and it has since moved beneath the box. The order is
+// load-bearing: containment compares the pre-shift box, since the run and the boxes
+// were both measured in the snapshot's screen space, and coverage compares the
+// post-shift box, since a viewport-anchored box holds its screen rect while the page
+// moves under it.
+//
+// Two limits here are deliberate. position: sticky is not tracked, because telling a
+// stuck element from an unstuck one needs a second layout measurement the mid-scroll
+// path cannot afford, and treating an unstuck one as anchored would cull text that is
+// visible. A fixed box with no text inside it is never discovered, because collection
+// rides the text walk. Both fail towards text bleeding through, the safe polarity, and
+// both self-correct on the settle walk once the scroll stops.
+//
+// It returns the runs untouched (no copy) on a zero delta, the production fast path;
+// otherwise it returns a shifted copy and never mutates runs, which textSync shares
+// across composes. A nil or empty box list costs one length check per run and
+// reproduces the plain shift.
+func shiftRunsToBitmapScroll(runs []render.GlyphRun, fixed []walkFixedBox, bitmapScrollY, snapScrollY, cellCSSH float64, rows int) []render.GlyphRun {
 	dy := bitmapScrollY - snapScrollY
 	if len(runs) == 0 || dy == 0 {
 		return runs
@@ -916,11 +959,26 @@ func shiftRunsToBitmapScroll(runs []render.GlyphRun, bitmapScrollY, snapScrollY,
 	if cellCSSH > 0 {
 		rowShift = int(math.Round(dy / cellCSSH))
 	}
+	// Hoisted so a page with no viewport-anchored boxes pays one bool test per run on
+	// the frame loop rather than two helper calls.
+	hasFixed := len(fixed) > 0
 	shifted := make([]render.GlyphRun, 0, len(runs))
 	for _, run := range runs {
+		// Pre-shift: the run and the boxes share the snapshot's screen space, so this is
+		// the only space the containment test is valid in. An anchored run keeps its row
+		// and its Y, because the page moved and the box did not.
+		if hasFixed && runInsideAnyFixedBox(run, fixed) {
+			shifted = append(shifted, run)
+			continue
+		}
 		run.Row -= rowShift
 		run.Y -= dy
 		if run.Row < 0 || (rows > 0 && run.Row >= rows) {
+			continue
+		}
+		// Post-shift: the box holds its screen rect, so the cover test asks where the run
+		// has moved to, not where the walk found it.
+		if hasFixed && runCoveredByOpaqueFixedBox(run, fixed) {
 			continue
 		}
 		shifted = append(shifted, run)
@@ -928,20 +986,76 @@ func shiftRunsToBitmapScroll(runs []render.GlyphRun, bitmapScrollY, snapScrollY,
 	return shifted
 }
 
+// fixedBoxEpsilon is the per-edge tolerance the containment test allows, in CSS
+// pixels. A line box is measured from getClientRects and a viewport-anchored box from
+// getBoundingClientRect, so a sub-pixel edge can put a run marginally outside the
+// container that owns it. Half a pixel absorbs that without reaching a neighbouring
+// element.
+const fixedBoxEpsilon = 0.5
+
+// runInsideAnyFixedBox reports whether the run's on-screen box sits wholly inside one
+// of the viewport-anchored boxes, within fixedBoxEpsilon per edge. Such a run is the
+// box's own text, so a page scroll leaves it where it is and the compose-time shift
+// must hold it rather than move it. Every box counts here, opaque or not: a
+// transparent viewport-anchored container still anchors the text inside it.
+func runInsideAnyFixedBox(run render.GlyphRun, fixed []walkFixedBox) bool {
+	for _, box := range fixed {
+		if run.X >= box.Left-fixedBoxEpsilon && run.X+run.W <= box.Right+fixedBoxEpsilon &&
+			run.Y >= box.Top-fixedBoxEpsilon && run.Y+run.H <= box.Bottom+fixedBoxEpsilon {
+			return true
+		}
+	}
+	return false
+}
+
+// runCoveredByOpaqueFixedBox reports whether an opaque viewport-anchored box covers
+// every one of three samples taken across the run's vertical centre: the left edge
+// plus an inset, the horizontal centre, and the right edge less the same inset, with
+// the inset min(1, width/4). It mirrors the in-page walk's own occlusion sampling, so
+// this mid-scroll approximation and the walk's cull agree on the same line box. One
+// uncovered sample keeps the whole run, so a partly covered line keeps all its text.
+// Samples may fall in different boxes; only the opaque ones can cover.
+func runCoveredByOpaqueFixedBox(run render.GlyphRun, fixed []walkFixedBox) bool {
+	l, r := run.X, run.X+run.W
+	cy := run.Y + run.H/2
+	inset := math.Min(1, (r-l)/4)
+	for _, x := range [3]float64{l + inset, (l + r) / 2, r - inset} {
+		covered := false
+		for _, box := range fixed {
+			if box.Opaque && x >= box.Left && x <= box.Right && cy >= box.Top && cy <= box.Bottom {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
+}
+
 // snapshotRuns runs one in-page text walk, which returns per-line runs already
-// snapped to integer cells against the forced cell, the DOM scroll offset the walk
-// read at, and the layout generation, all in one Runtime.evaluate. It decodes the
-// walk result to glyph runs (trusting the page's integer origins, keeping only the
-// grid right-edge clip), then routes the result through the bounded holdDecision: a
-// successful read emits the fresh runs, a failing read holds the last-matched runs
-// for at most holdStalenessLimit before dropping to nil. It returns the emitted
-// runs, the scroll offset, the layout generation, and the updated state. It runs
-// on the snapshot goroutine; the walk chromedp.Run stays outside any
-// lock.
+// snapped to integer cells against the forced cell, the viewport-anchored boxes the
+// runs were walked against, the DOM scroll offset the walk read at, and the layout
+// generation, all in one Runtime.evaluate. It decodes the walk result to glyph runs
+// (trusting the page's integer origins, keeping only the grid right-edge clip), then
+// routes the result through the bounded holdDecision: a successful read emits the
+// fresh runs, a failing read holds the last-matched runs for at most
+// holdStalenessLimit before dropping to nil. It returns the emitted runs, the scroll
+// offset, the layout generation, and the updated state, whose lastFixed field
+// carries the boxes the emitted runs were walked against: the walk's own boxes on a
+// success, the held set's boxes on an error hold, and nil once the hold expires. The
+// boxes travel on the state rather than the return values so the snapshot function
+// type stays the one the test hook implements. It runs on the snapshot goroutine;
+// the walk chromedp.Run stays outside any lock.
 func (e *ChromiumEngine) snapshotRuns(ctx context.Context, state overlayState) ([]render.GlyphRun, scrollOffset, int64, overlayState) {
 	if ctx == nil {
 		emit, last, failing := holdDecision(context.Canceled, nil, state.lastText, state.failingSince, time.Now())
-		return emit, state.lastScroll, state.lastGen, overlayState{lastText: last, lastScroll: state.lastScroll, lastGen: state.lastGen, failingSince: failing}
+		fixed := state.lastFixed
+		if last == nil {
+			fixed = nil
+		}
+		return emit, state.lastScroll, state.lastGen, overlayState{lastText: last, lastFixed: fixed, lastScroll: state.lastScroll, lastGen: state.lastGen, failingSince: failing}
 	}
 	e.mu.Lock()
 	cellW, cellH := e.snapshotCellPx()
@@ -951,29 +1065,39 @@ func (e *ChromiumEngine) snapshotRuns(ctx context.Context, state overlayState) (
 	var decoded []render.GlyphRun
 	gen := state.lastGen
 	var scroll scrollOffset
+	var fixed []walkFixedBox
 	if err == nil {
 		// The walk returns runs already placed on-screen (getClientRects subtracts the
 		// scroll) and snapped to integer cells against the forced cell in the page, so
 		// the origin snap and the layout advance share one unit and a long run cannot
-		// drift across x. The tagged scroll and generation come from the same evaluate,
-		// so they are internally consistent with the runs.
+		// drift across x. The tagged scroll, generation, and viewport-anchored boxes come
+		// from the same evaluate, so they are internally consistent with the runs.
 		gen = result.Gen
 		scroll = scrollOffset{X: result.ScrollX, Y: result.ScrollY}
+		fixed = result.Fixed
 		decoded = decodeWalkRuns(result, cellW, cols)
 	}
 	emit, last, failing := holdDecision(err, decoded, state.lastText, state.failingSince, time.Now())
-	// Tag the emitted runs with the scroll and generation they were decoded at: a
-	// fresh success carries the new snapshot scroll and generation, an error hold
-	// re-emits the last-matched runs so it carries the scroll and generation those
-	// were decoded at (state.lastScroll, state.lastGen). The runs and their scroll and
-	// generation travel together so composeFrame shifts and pairs the right way.
+	// Tag the emitted runs with the scroll, generation, and viewport-anchored boxes
+	// they were decoded at: a fresh success carries the new snapshot scroll,
+	// generation, and boxes, an error hold re-emits the last-matched runs so it
+	// carries the scroll, generation, and boxes those were decoded at
+	// (state.lastScroll, state.lastGen, state.lastFixed). The runs and their scroll,
+	// generation, and boxes travel together so composeFrame shifts and pairs the right
+	// way. A hold that expires past its staleness bound drops the runs, so it drops
+	// the boxes with them rather than leave boxes with no set to test.
 	emitScroll := scroll
 	emitGen := gen
+	emitFixed := fixed
 	if err != nil {
 		emitScroll = state.lastScroll
 		emitGen = state.lastGen
+		emitFixed = state.lastFixed
 	}
-	return emit, emitScroll, emitGen, overlayState{lastText: last, lastScroll: emitScroll, lastGen: emitGen, failingSince: failing}
+	if last == nil {
+		emitFixed = nil
+	}
+	return emit, emitScroll, emitGen, overlayState{lastText: last, lastFixed: emitFixed, lastScroll: emitScroll, lastGen: emitGen, failingSince: failing}
 }
 
 // screencastMeta copies the CDP screencast frame metadata into a neutral
