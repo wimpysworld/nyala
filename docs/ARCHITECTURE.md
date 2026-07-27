@@ -319,6 +319,31 @@ lowest common ancestor. An occluding `pointer-events: none` element bleeds
 through, the safe polarity for a text browser: showing text under a decorative
 overlay beats hiding text that is visible.
 
+Each run also carries a stacking rank. Climbing from the run's element to the
+root, the walk records a `(z-index, document order)` pair for every ancestor
+that takes part in stacking: one that establishes a stacking context (opacity
+below 1, a transform, a filter, a clip-path, a mask, `mix-blend-mode`,
+`isolation`, `contain`, `content-visibility`, `view-transition-name`,
+`will-change` naming any of those, a flex or grid child with a `z-index`, and
+the root element), or one that is positioned. A `SHOW_ELEMENT` `TreeWalker`
+pre-pass numbers every element in document order, so two participants at
+different DOM depths still compare. The vectors compare root-first and
+lexicographically: at the first level where they differ the higher z-index
+paints in front, and on an equal z-index the later document order paints in
+front. When one vector runs out, the shorter one is the shared context's own
+in-flow content, so the longer one paints behind it only when its next level
+carries a negative z-index. That is the CSS 2.1 Appendix E split between
+negative-z children and everything else. A sorted copy of the run indices then
+gives each run a dense integer rank, 0 being front-most, while the run array
+itself stays in DOM order.
+
+One approximation: a non-positioned element that establishes a stacking context
+through opacity or a transform paints in its in-flow position, but this model
+treats it as positioned at z-index 0 and lets document order break the tie,
+which is close enough for cell contention. Detection needs real computed style,
+so the live walk tests cover the model rather than the unit gate. Nothing
+consumes the rank yet, so it changes no placement today.
+
 ### Frame sync
 
 The bitmap and the text share no frame id, so text is placed by construction,
