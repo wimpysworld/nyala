@@ -58,16 +58,34 @@ type walkRun struct {
 	StackRank int        `json:"z"`
 }
 
+// walkFixedBox is one viewport-anchored position: fixed box the in-page walk
+// reports, its edges on-screen CSS pixels and Opaque true when the element's
+// composited background reaches alpha 255. Such a box holds its screen rect while
+// the page scrolls, so the compose-time scroll shift uses it to tell
+// viewport-anchored text from flow text and to re-test occlusion on a shifted
+// frame.
+type walkFixedBox struct {
+	Left   float64 `json:"l"`
+	Top    float64 `json:"t"`
+	Right  float64 `json:"r"`
+	Bottom float64 `json:"b"`
+	Opaque bool    `json:"o"`
+}
+
 // walkResult is the whole in-page walk return: the current layout generation, the
-// DOM scroll offset the walk read at, and the per-line runs. The generation and
-// scroll are read in the same evaluate as the walk, so the returned generation and
-// the runs share one layout generation and composeFrame can pair a bitmap to the
-// run set by that generation and shift it to the bitmap's own scroll.
+// DOM scroll offset the walk read at, the per-line runs, and the viewport-anchored
+// boxes the runs were walked against. The generation and scroll are read in the
+// same evaluate as the walk, so the returned generation and the runs share one
+// layout generation and composeFrame can pair a bitmap to the run set by that
+// generation and shift it to the bitmap's own scroll. The boxes travel with the
+// runs because that shift needs them: a run inside a box is anchored and must not
+// move, and an opaque box covers whatever flow text scrolls beneath it.
 type walkResult struct {
-	Gen     int64     `json:"gen"`
-	ScrollX float64   `json:"sx"`
-	ScrollY float64   `json:"sy"`
-	Runs    []walkRun `json:"runs"`
+	Gen     int64          `json:"gen"`
+	ScrollX float64        `json:"sx"`
+	ScrollY float64        `json:"sy"`
+	Runs    []walkRun      `json:"runs"`
+	Fixed   []walkFixedBox `json:"fixed"`
 }
 
 // buildTextWalkScript returns the JavaScript that walks visible text nodes in the
@@ -99,8 +117,13 @@ type walkResult struct {
 // ancestry of the run's element and flattens to a dense integer over the run
 // set, 0 being front-most (docs/ARCHITECTURE.md holds the ordering model); the
 // returned run array still comes back in DOM order, and the Block overlay fold
-// sorts on the rank at the render seam. It returns the current layout generation
-// alongside the runs. The whole walk is one expression evaluated per decode.
+// sorts on the rank at the render seam. Alongside the runs it collects the
+// viewport-anchored boxes: climbing the ancestors of the text it keeps, it records
+// each position: fixed ancestor once, skipping a negative z-index (which paints
+// behind content) and a degenerate rect. position: sticky is deliberately left
+// out, because separating a stuck element from an unstuck one needs a second
+// layout measurement. It returns the current layout generation alongside the runs
+// and the boxes. The whole walk is one expression evaluated per decode.
 func buildTextWalkScript(cellW, cellH float64) string {
 	return buildTextWalkScriptFromConfig(textWalkConfig{
 		CellWidth:          cellW,

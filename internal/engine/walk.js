@@ -76,6 +76,31 @@ if(cov<=0)return{r:0,g:0,b:0,a:0};
 return{r:Math.round(or/cov),g:Math.round(og/cov),b:Math.round(ob/cov),a:Math.round(Math.min(1,cov)*255)};
 }
 
+var FIXED_CAP=32;
+var fixed=[];
+var fixedCache=new Map();
+
+// A 'fixed' ancestor holds its screen rect while the page scrolls, so the
+// compose-time shift can tell viewport-anchored text from flow text. 'sticky' is
+// left out on purpose: a stuck element is anchored but an unstuck one scrolls
+// with the page, and telling them apart needs a second layout measurement the
+// mid-scroll path cannot afford.
+function collectFixed(el){
+if(fixed.length>=FIXED_CAP)return;
+for(var a=el;a;a=a.parentElement){
+if(fixedCache.has(a))return;
+fixedCache.set(a,1);
+var s=gcs(a);
+if(s.position!=='fixed')continue;
+// A negative z-index paints the element behind content, so it can never cover.
+var z=parseInt(s.zIndex,10);if(!isNaN(z)&&z<0)continue;
+var rc=a.getBoundingClientRect();
+if(rc.width<=0||rc.height<=0)continue;
+fixed.push({l:rc.left,t:rc.top,r:rc.right,b:rc.bottom,o:bgOf(a,null).a>=255});
+if(fixed.length>=FIXED_CAP)return;
+}
+}
+
 function lca(a,b){
 for(var n=a;n;n=n.parentElement){if(n.contains(b))return n;}
 return null;
@@ -171,6 +196,7 @@ var node;while((node=w.nextNode())){
 var el=node.parentElement;if(!el)continue;
 if(!node.nodeValue||!node.nodeValue.trim())continue;
 if(hiddenStyle(el))continue;
+collectFixed(el);
 var fg=rgba(el);var bg=bgOf(el);var sv=stackVector(el);
 var text=node.nodeValue;var lines=[];
 var rng=document.createRange();rng.selectNodeContents(node);
@@ -262,5 +288,5 @@ var gen=(window[config.generationProperty]||0);
 var de=document.documentElement||{};
 var sx=(window.pageXOffset||de.scrollLeft||0);
 var sy=(window.pageYOffset||de.scrollTop||0);
-return JSON.stringify({gen:gen,sx:sx,sy:sy,runs:runs});
+return JSON.stringify({gen:gen,sx:sx,sy:sy,runs:runs,fixed:fixed});
 })(__NYALA_TEXT_WALK_CONFIG__);

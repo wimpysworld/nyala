@@ -5,6 +5,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"sort"
 	"strings"
 	"testing"
@@ -342,6 +343,53 @@ func TestLiveOccludedTextDropped(t *testing.T) {
 	}
 	if !strings.Contains(all, "halfcovered") {
 		t.Errorf("text with only its left half covered was culled; runs:\n%s", all)
+	}
+}
+
+// TestLiveFixedBoxesReportViewportAnchoredRects verifies that the walk reports the
+// viewport-anchored boxes the compose-time scroll shift re-tests against. Over the
+// occlusion page it must report exactly one box: the opaque position:fixed banner,
+// flagged opaque and carrying its screen rect. The page's position:absolute divs
+// are not viewport-anchored, so the exact count also proves none of them produced a
+// box.
+//
+// The translucent position:fixed scrim yields no box, and that is a documented
+// limit rather than a defect. Collection rides the text walk, so only a fixed
+// ancestor of text the walk keeps is ever recorded, and the scrim holds no text. An
+// undiscovered cover lets flow text bleed through for one refresh window, which is
+// the safe polarity: it can never cull text the reader can see. The next settle
+// walk corrects it. The non-opaque flag is covered without a browser instead.
+//
+// The live tag keeps it off `just test` and CI; run it with `just live`.
+func TestLiveFixedBoxesReportViewportAnchoredRects(t *testing.T) {
+	res := liveTextWalk(t, occlusionTestPage)
+
+	if len(res.Fixed) != 1 {
+		t.Fatalf("fixed boxes = %d, want the opaque banner alone: %+v", len(res.Fixed), res.Fixed)
+	}
+	box := res.Fixed[0]
+	if !box.Opaque {
+		t.Errorf("banner box opaque = false, want true for background rgb(0,0,0)")
+	}
+
+	// The banner's own width:640px fixes its left and right edges, and the 24-row
+	// grid at cell height 16 fixes the 384px viewport its bottom:0 anchors to, so
+	// the rect holds whatever column count the live walk page runs at.
+	const tolerance = 0.5
+	edges := []struct {
+		name string
+		got  float64
+		want float64
+	}{
+		{name: "left", got: box.Left, want: 0},
+		{name: "top", got: box.Top, want: 304},
+		{name: "right", got: box.Right, want: 640},
+		{name: "bottom", got: box.Bottom, want: 384},
+	}
+	for _, edge := range edges {
+		if math.Abs(edge.got-edge.want) > tolerance {
+			t.Errorf("banner box %s = %.2f, want %.2f", edge.name, edge.got, edge.want)
+		}
 	}
 }
 

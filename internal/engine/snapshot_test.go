@@ -261,7 +261,8 @@ func TestDecodeWalkRunsCarriesStackingRank(t *testing.T) {
 // TestBuildTextWalkScriptContents pins the load-bearing fragments of the emitted
 // walk script: it snaps the origin against the passed cell (round(left/cw)), reads
 // per-line boxes from getClientRects, folds in the visibility and effective-opacity
-// drops, resolves the computed color and the layout generation, and returns the
+// drops, collects the viewport-anchored boxes the compose-time shift re-tests
+// against, resolves the computed color and the layout generation, and returns the
 // scroll offset. A format drift that dropped one of these would silently change the
 // overlay, so each fragment is asserted.
 func TestBuildTextWalkScriptContents(t *testing.T) {
@@ -289,6 +290,16 @@ func TestBuildTextWalkScriptContents(t *testing.T) {
 		{"bounded composite skips document fallback", "if(cov<0.999&&!stop){"},
 		{"1px overflow-hidden drop", "s.overflow==='hidden'&&parseFloat(s.width)<=1&&parseFloat(s.height)<=1"},
 		{"effective-opacity drop", "if(op<config.opacityThreshold)return true;"},
+		{"fixed-box collector", "function collectFixed(el){"},
+		{"fixed-box collection rides the text-node walk", "collectFixed(el);"},
+		{"fixed-box collection cap", "var FIXED_CAP=32;"},
+		{"fixed-box cap guard", "if(fixed.length>=FIXED_CAP)return;"},
+		{"fixed-box ancestor counted once", "if(fixedCache.has(a))return;"},
+		{"fixed-box position test", "if(s.position!=='fixed')continue;"},
+		{"fixed-box negative z-index skip", "if(!isNaN(z)&&z<0)continue;"},
+		{"fixed-box degenerate rect skip", "if(rc.width<=0||rc.height<=0)continue;"},
+		{"fixed-box opaque flag", "o:bgOf(a,null).a>=255"},
+		{"fixed boxes ride the json envelope", "fixed:fixed}"},
 		{"computed colour read", "gcs(el).color"},
 		{"computed-style cache", "function gcs(el){"},
 		{"layout generation read", "window[config.generationProperty]"},
@@ -299,6 +310,9 @@ func TestBuildTextWalkScriptContents(t *testing.T) {
 		if !strings.Contains(script, w.fragment) {
 			t.Errorf("walk script missing %s: %q not found", w.desc, w.fragment)
 		}
+	}
+	if strings.Contains(script, "position==='sticky'") {
+		t.Error("walk script collects sticky boxes: an unstuck sticky element scrolls with the page, so anchoring it would cull visible text")
 	}
 }
 

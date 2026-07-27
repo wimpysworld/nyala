@@ -323,6 +323,18 @@ composites backgrounds only below the lowest common ancestor. An occluding
 browser: showing text under a decorative overlay beats hiding text that is
 visible.
 
+The same walk reports the page's viewport-anchored boxes beside the runs. A box
+is a `position: fixed` ancestor of text the walk kept, carrying its screen rect
+from `getBoundingClientRect` and a flag set when its composited background
+reaches alpha 255. A negative `z-index` disqualifies an ancestor, because it
+paints behind content and so can never cover, as does a degenerate rect.
+Collection rides the ancestor climb the visibility filter already makes, and a
+cache stops that climb at the first element it has seen before, so a shared
+ancestry costs one lookup. The list is capped at 32 boxes; a page with more
+fixed text containers is not one this approximation helps. The boxes travel on
+the walk result rather than on `render.GlyphRun`, so neither the render seam nor
+the harness golden run-set format widens for a motion-only correction.
+
 Each run also carries a stacking rank. Climbing from the run's element to the
 root, the walk records a `(z-index, document order)` pair for every ancestor
 that takes part in stacking: one that establishes a stacking context (opacity
@@ -360,6 +372,40 @@ hold: a successful snapshot publishes fresh runs; a failing read holds the
 last-matched runs for at most `holdStalenessLimit` (250 ms) of continuous
 failure, then drops to bitmap-only, so stale text never composites over a page
 it no longer matches.
+
+`composeFrame` pairs a bitmap to the published run set by layout generation and
+scroll. When both match it composes the set as-is. When the generation matches
+but the bitmap has scrolled past the snapshot, `shiftRunsToBitmapScroll`
+translates the runs onto the bitmap's own scroll, so the overlay stays glued to
+the moving page instead of freezing until the settle walk lands. Scroll is
+whole-cell, so the row shift is an exact integer.
+
+That translation is right for document-flow text and wrong for anything anchored
+to the viewport, which is why the boxes travel with the runs. A run whose box
+sits inside a fixed box is that box's own text: it holds its screen position
+while the page scrolls beneath it, so the shift keeps it exactly as it is. Every
+other run shifts, then drops when an opaque box covers it. The order is the only
+correct one. Containment compares the pre-shift box, because the run and the
+boxes were both measured in the snapshot's screen space, and coverage compares
+the post-shift box, because a viewport-anchored box keeps its screen rect while
+the page moves under it. Coverage takes the same three samples across the line's
+vertical centre that the walk's own cull takes, so the two agree on the same
+line box and a partly covered line keeps all its text.
+
+Three limits are deliberate. `position: sticky` is not tracked: a stuck element
+behaves viewport-fixed and an unstuck one scrolls with the page, telling them
+apart needs a second layout measurement the mid-scroll path cannot afford, and
+anchoring an unstuck one would cull text the reader can see. A fixed box with no
+text inside it is never discovered, because collection rides the text walk. A
+run culled at snapshot time stays absent while it scrolls out from under a
+cover. Each fails towards text bleeding through, the safe polarity for a text
+browser, and each self-corrects on the settle walk.
+
+This is a mid-scroll approximation and nothing more. At rest the bitmap and the
+run set share a scroll, `composeFrame` composes the runs as-is, and the walk's
+own hit-test is the only authority on occlusion. The approximation covers the
+window between a scroll landing in a bitmap and the next walk publishing, which
+`scrollCadence` (150 ms) and the settle debounce already bound.
 
 ### Input
 

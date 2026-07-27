@@ -37,7 +37,7 @@ func TestRunTextSyncSnapshotsOncePerPaint(t *testing.T) {
 	if got := snaps.Load(); got != 2 {
 		t.Fatalf("snapshots = %d on static page, want 2", got)
 	}
-	if got, _, _ := ts.latest(); len(got) != 1 || got[0] != want[0] {
+	if got, _, _, _ := ts.latest(); len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("published runs = %v, want %v", got, want)
 	}
 
@@ -103,7 +103,7 @@ func TestRunDecodeCollectorReEmitsHeldFrameWithText(t *testing.T) {
 	}
 
 	runs := []render.GlyphRun{{Col: 1, Row: 0, Text: "ok"}}
-	ts.store(runs, 0, 0)
+	ts.store(runs, nil, 0, 0)
 	reEmit <- struct{}{}
 	reframe := recvFrame(t, frames)
 	if reframe.Img != bitmap {

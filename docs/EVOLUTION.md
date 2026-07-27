@@ -158,7 +158,12 @@ hit-test per run drops text covered by an opaque overlay; cookie banners on
 bbc.co.uk had leaked through before. LCA-bounded background compositing
 later stopped false culls over `pointer-events: none` images, and the lone
 centre sample later grew to three across the line box, so a run covered at
-its centre alone keeps its text.
+its centre alone keeps its text. The walk now reports the `position: fixed`
+boxes it climbed past as well, so the compose-time scroll shift holds
+viewport-anchored text in place and re-tests a shifted run against the opaque
+boxes it has moved under. `sticky` stays out: separating a stuck element from
+an unstuck one needs a layout measurement mid-scroll cannot afford, and
+anchoring an unstuck one would cull visible text.
 
 **Sextant mode behind an allow-list.** A 2x3 scheme (Unicode 13, `U+1FB00`
 to `U+1FB3B`) gives 50% more vertical resolution. Auto mode resolves
