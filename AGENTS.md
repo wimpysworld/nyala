@@ -45,6 +45,10 @@ then `NYALA_BROWSER`, `CHROME_PATH`, and `PATH`.
   `just cdp-interop` are focused development selectors, not replacement gates.
 - `just live` runs the live Chromium integration tests.
 - `just update-golden` regenerates committed bitmap and overlay goldens.
+- `just genruns` rewrites only the foreground colours in
+  `testdata/overlay/*.runs`. Write each line by hand as
+  `col row fgHex rank text`; the rank column is mandatory, because an optional
+  one cannot be told from text that starts with an integer.
 - `just fmt` formats with the configured gofumpt formatter.
 - `just build`, `just test`, and `just lint` must pass after code changes.
 - `just check` runs the full local pre-commit gate.
