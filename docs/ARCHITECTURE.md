@@ -337,8 +337,8 @@ negative-z children and everything else. A sorted copy of the run indices then
 gives each run a dense integer rank, 0 being front-most, while the run array
 itself stays in DOM order. The walk decode carries the rank through to
 `render.GlyphRun`, and the harness golden run-set format carries it alongside
-each run, but the overlay fold still ignores it, so it changes no placement
-today.
+each run. The Block overlay fold sorts the runs by the rank, front-most first,
+before it folds them.
 
 One approximation: a non-positioned element that establishes a stacking context
 through opacity or a transform paints in its in-flow position, but this model
@@ -626,11 +626,19 @@ The background is the plain average of the bitmap pixels beneath the cell
 (`cellBGAverageFrom`); with sub-cell geometry it averages only the uncovered
 source columns, otherwise the whole cell. Contrast holds by construction.
 
-The overlay is first-writer-wins. The first run's grapheme keeps the cell;
-later runs never overwrite a claimed cell. A wide grapheme's trailing cell
-carries background only, and terminal writers emit nothing for it. The
-claim mask is a uint bitmask per run, not a per-grapheme bool slice, which
-removed all per-fold allocations (1,360 to 2,924 down to zero).
+The overlay is first-writer-wins, fed front-to-back. The fold reads the runs in
+ascending stacking rank, front-most first ("The text walk" above holds the CSS
+ordering model that assigns the rank), so the first run to reach a contested
+cell is the front-most one and the claim rule keeps it there. Sorting the input
+gives the z-order; the compositor itself did not change. That inverts Carbonyl's
+back-to-front, last-writer-wins feed, reaching the same stacking result from the
+opposite end. Later runs never overwrite a claimed cell. A wide grapheme's
+trailing cell carries background only, and terminal writers emit nothing for it.
+The claim mask is a uint bitmask per run, not a per-grapheme bool slice, which
+removed all per-fold allocations (1,360 to 2,924 down to zero). The sort keeps
+that count at zero: a frame whose runs already arrive in rank order takes a
+no-copy fast path, and a reorder lands in a scratch buffer on the `block.Grid`,
+which the live draw path reuses frame after frame.
 
 The producer owns cell positions; the compositor does no binning. The in-page
 walk snaps each run's origin with round, not floor: `col = round(px/cellW)`,

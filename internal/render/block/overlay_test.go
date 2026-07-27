@@ -118,6 +118,146 @@ func TestComposeFirstWriterWinsNarrow(t *testing.T) {
 	}
 }
 
+// TestComposeFrontMostRankWinsNarrow is the ranked pair of
+// TestComposeFirstWriterWinsNarrow. Two width-1 runs contest one cell, but here
+// the run later in the slice carries the lower (front-most) StackRank. The fold
+// reads runs front-to-back, so that later run must win the cell and bring its own
+// FG: stacking rank decides a contested cell, not DOM order.
+func TestComposeFrontMostRankWinsNarrow(t *testing.T) {
+	src := color.RGBA{R: 30, G: 40, B: 50, A: 0xff}
+	img := overlaySrc(2, 1, src)
+	front := color.RGBA{B: 0xff, A: 0xff}
+	br := &Renderer{Cols: 2, Rows: 1}
+	f := render.Frame{Img: img, Text: []render.GlyphRun{
+		{Col: 0, Row: 0, Text: "A", FG: color.RGBA{R: 0xff, A: 0xff}, StackRank: 1},
+		{Col: 0, Row: 0, Text: "B", FG: front, StackRank: 0},
+	}}
+	g := br.Compose(f)
+	cell := g.At(0, 0)
+	if cell.Text != "B" {
+		t.Fatalf("cell Text = %q, want B (the front-most rank wins, not DOM order)", cell.Text)
+	}
+	if cell.FG != front {
+		t.Fatalf("cell FG = %v, want the front-most run's FG %v", cell.FG, front)
+	}
+}
+
+// TestComposeEqualRanksKeepDOMOrder pins the sort as stable: two runs contest one
+// cell with the same rank, so DOM order still decides and the earlier run wins. A
+// third run with a higher rank sits first in the slice, which puts the frame out
+// of rank order and forces the copy-and-sort path; equal ranks alone are already
+// non-decreasing and would take the no-copy fast path instead.
+func TestComposeEqualRanksKeepDOMOrder(t *testing.T) {
+	src := color.RGBA{R: 30, G: 40, B: 50, A: 0xff}
+	img := overlaySrc(2, 1, src)
+	first := color.RGBA{R: 0xff, A: 0xff}
+	br := &Renderer{Cols: 2, Rows: 1}
+	f := render.Frame{Img: img, Text: []render.GlyphRun{
+		// Behind both contenders, and out of rank order, so the sort really runs.
+		{Col: 1, Row: 0, Text: "Z", FG: color.RGBA{G: 0xff, A: 0xff}, StackRank: 9},
+		{Col: 0, Row: 0, Text: "A", FG: first, StackRank: 3},
+		{Col: 0, Row: 0, Text: "B", FG: color.RGBA{B: 0xff, A: 0xff}, StackRank: 3},
+	}}
+	g := br.Compose(f)
+	cell := g.At(0, 0)
+	if cell.Text != "A" {
+		t.Fatalf("cell Text = %q, want A (equal ranks keep DOM order; the sort must be stable)", cell.Text)
+	}
+	if cell.FG != first {
+		t.Fatalf("cell FG = %v, want the earlier equal-rank run's FG %v", cell.FG, first)
+	}
+	if z := g.At(1, 0).Text; z != "Z" {
+		t.Fatalf("col 1 Text = %q, want Z (the behind run still places where nothing contests it)", z)
+	}
+}
+
+// TestComposeFrontMostWideKeepsTrailingCell pins the wide claim against a behind
+// run at the trailing column. The width-2 run is front-most but sits second in the
+// slice, so only the front-to-back order can let it keep both its lead cell and
+// its Wide trailing cell; the behind run must not land in the trailing column.
+func TestComposeFrontMostWideKeepsTrailingCell(t *testing.T) {
+	src := color.RGBA{R: 30, G: 40, B: 50, A: 0xff}
+	img := overlaySrc(3, 1, src)
+	br := &Renderer{Cols: 3, Rows: 1}
+	f := render.Frame{Img: img, Text: []render.GlyphRun{
+		{Col: 1, Row: 0, Text: "A", FG: color.RGBA{R: 0xff, A: 0xff}, StackRank: 1},
+		{Col: 0, Row: 0, Text: "世", FG: color.RGBA{A: 0xff}, StackRank: 0},
+	}}
+	g := br.Compose(f)
+	lead := g.At(0, 0)
+	if lead.Text != "世" {
+		t.Fatalf("lead Text = %q, want 世 (the front-most wide run claims its lead)", lead.Text)
+	}
+	trail := g.At(1, 0)
+	if !trail.Wide {
+		t.Fatal("trailing cell Wide = false, want true (the front-most wide claim holds)")
+	}
+	if trail.Text != "" {
+		t.Fatalf("trailing Text = %q, want empty (the behind run must not land in the trailing column)", trail.Text)
+	}
+}
+
+// TestComposeBehindWideSkipsWholeAtClaimedTrailing pins the other half of the
+// wide rule: a front-most narrow run claims the cell a behind width-2 run needs as
+// its trailing cell. The wide run sits first in the slice, so only the front-to-back
+// order claims the trailing cell first. The wide run must then be skipped whole
+// rather than half-written: its lead column carries no overlay text at all.
+func TestComposeBehindWideSkipsWholeAtClaimedTrailing(t *testing.T) {
+	src := color.RGBA{R: 30, G: 40, B: 50, A: 0xff}
+	img := overlaySrc(3, 1, src)
+	br := &Renderer{Cols: 3, Rows: 1}
+	f := render.Frame{Img: img, Text: []render.GlyphRun{
+		{Col: 0, Row: 0, Text: "世", FG: color.RGBA{A: 0xff}, StackRank: 1},
+		{Col: 1, Row: 0, Text: "A", FG: color.RGBA{R: 0xff, A: 0xff}, StackRank: 0},
+	}}
+	g := br.Compose(f)
+	lead := g.At(0, 0)
+	if lead.Text != "" {
+		t.Fatalf("lead Text = %q, want empty (the behind wide run is skipped whole)", lead.Text)
+	}
+	if lead.Wide {
+		t.Fatal("lead cell Wide = true, want false (no half-written wide glyph)")
+	}
+	trail := g.At(1, 0)
+	if trail.Text != "A" {
+		t.Fatalf("col 1 Text = %q, want A (the front-most narrow run claims the cell)", trail.Text)
+	}
+	if trail.Wide {
+		t.Fatal("col 1 Wide = true, want false (it is the narrow run's own cell)")
+	}
+}
+
+// TestComposeDoesNotReorderCallerRuns pins the sort as non-destructive. The frame's
+// runs are in descending rank order, so the fold must reorder them to compose the
+// front-most run onto the contested cell; the caller's own slice must still read in
+// its original order afterwards. The engine reuses that slice across frames, so a
+// sort in place would corrupt every later frame.
+func TestComposeDoesNotReorderCallerRuns(t *testing.T) {
+	src := color.RGBA{R: 30, G: 40, B: 50, A: 0xff}
+	img := overlaySrc(2, 1, src)
+	runs := []render.GlyphRun{
+		{Col: 0, Row: 0, Text: "C", FG: color.RGBA{B: 0xff, A: 0xff}, StackRank: 2},
+		{Col: 0, Row: 0, Text: "B", FG: color.RGBA{G: 0xff, A: 0xff}, StackRank: 1},
+		{Col: 0, Row: 0, Text: "A", FG: color.RGBA{R: 0xff, A: 0xff}, StackRank: 0},
+	}
+	br := &Renderer{Cols: 2, Rows: 1}
+	g := br.Compose(render.Frame{Img: img, Text: runs})
+	// The fold read the runs front-to-back, so the last run in the slice won.
+	if cell := g.At(0, 0); cell.Text != "A" {
+		t.Fatalf("cell Text = %q, want A (the front-most rank wins)", cell.Text)
+	}
+	want := []struct {
+		text string
+		rank int
+	}{{"C", 2}, {"B", 1}, {"A", 0}}
+	for i, w := range want {
+		if runs[i].Text != w.text || runs[i].StackRank != w.rank {
+			t.Fatalf("caller run %d = (%q, rank %d), want (%q, rank %d); the fold must not sort the caller's slice in place",
+				i, runs[i].Text, runs[i].StackRank, w.text, w.rank)
+		}
+	}
+}
+
 // TestComposeFirstWriterWinsWideLead places a width-2 run, then a second run over
 // its lead cell. The wide grapheme and its Wide trailing cell must survive; the
 // second run is skipped because the lead is claimed.
