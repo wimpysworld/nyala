@@ -168,13 +168,15 @@ func TestShiftRunsToBitmapScrollZeroDeltaIsFastPath(t *testing.T) {
 	}
 }
 
-// TestShiftRunsToBitmapScrollHoldsAnchoredRuns asserts a run whose box sits inside a
-// viewport-anchored box keeps its row, its Y, and its column while every other run
-// shifts, and that the containment test reads the pre-shift box. The cell is 20 CSS
-// pixels and the banner box spans Y 0-60, so it owns rows 0 to 2. The bitmap scrolls
-// 40 CSS pixels, exactly two cells, past the snapshot in the first case and 40 back up
-// in the second. It also pins fixedBoxEpsilon: a bottom edge 0.4 CSS pixels below the
-// box is still contained, 0.6 below it is not.
+// TestShiftRunsToBitmapScrollHoldsAnchoredRuns asserts a run the walk tagged
+// ViewportAnchored keeps its row, its Y, and its column while every other run shifts,
+// and that the tag alone decides it. The cell is 20 CSS pixels and the banner box
+// spans Y 0-60, so it owns rows 0 to 2. The bitmap scrolls 40 CSS pixels, exactly two
+// cells, past the snapshot in the first case and 40 back up in the second.
+//
+// The third case is the defect the tag replaced. Geometry cannot stand in for DOM
+// descent: a flow run sitting inside a large transparent fixed container is not that
+// container's text, and holding it freezes the overlay for the whole scroll.
 func TestShiftRunsToBitmapScrollHoldsAnchoredRuns(t *testing.T) {
 	const cellCSSH = 20.0
 	const rows = 30
@@ -182,7 +184,7 @@ func TestShiftRunsToBitmapScrollHoldsAnchoredRuns(t *testing.T) {
 
 	// Scrolled down two cells: the page moved up by 40, the banner did not.
 	down := []render.GlyphRun{
-		{Col: 1, Row: 1, Text: "banner", X: 10, Y: 20, W: 100, H: 20},
+		{Col: 1, Row: 1, Text: "banner", X: 10, Y: 20, W: 100, H: 20, ViewportAnchored: true},
 		{Col: 1, Row: 10, Text: "flow", X: 10, Y: 200, W: 100, H: 20},
 	}
 	got := shiftRunsToBitmapScroll(down, banner, 40, 0, cellCSSH, rows)
@@ -190,18 +192,17 @@ func TestShiftRunsToBitmapScrollHoldsAnchoredRuns(t *testing.T) {
 		t.Fatalf("scrolled-down runs = %d, want 2 (nothing is off-grid or covered)", len(got))
 	}
 	if got[0].Col != 1 || got[0].Row != 1 || got[0].Y != 20 {
-		t.Errorf("anchored run = (col %d, row %d, Y %v), want (1, 1, 20): a run inside a fixed box holds its screen position", got[0].Col, got[0].Row, got[0].Y)
+		t.Errorf("anchored run = (col %d, row %d, Y %v), want (1, 1, 20): a run descending from a fixed element holds its screen position", got[0].Col, got[0].Row, got[0].Y)
 	}
 	if got[1].Row != 8 || got[1].Y != 160 {
 		t.Errorf("flow run = (row %d, Y %v), want (8, 160): 40 CSS pixels is two cells", got[1].Row, got[1].Y)
 	}
 
-	// Containment reads the pre-shift box. The banner run is inside the box at the
-	// snapshot; the bitmap scrolled 40 back up, so a shift would put it at Y 60-80, past
-	// the box's bottom edge and no longer contained. It is still held, because the test
-	// ran before the shift.
+	// The banner's own text is held before the cover test runs, so its own opaque box
+	// never culls it. The bitmap scrolled 40 back up, so a shift would put it at Y 60-80
+	// and the flow run moves down two cells.
 	up := []render.GlyphRun{
-		{Col: 1, Row: 1, Text: "banner", X: 10, Y: 20, W: 100, H: 20},
+		{Col: 1, Row: 1, Text: "banner", X: 10, Y: 20, W: 100, H: 20, ViewportAnchored: true},
 		{Col: 1, Row: 4, Text: "flow", X: 10, Y: 80, W: 100, H: 20},
 	}
 	got = shiftRunsToBitmapScroll(up, banner, 0, 40, cellCSSH, rows)
@@ -209,29 +210,50 @@ func TestShiftRunsToBitmapScrollHoldsAnchoredRuns(t *testing.T) {
 		t.Fatalf("scrolled-up runs = %d, want 2", len(got))
 	}
 	if got[0].Row != 1 || got[0].Y != 20 {
-		t.Errorf("anchored run = (row %d, Y %v), want (1, 20): containment must be judged on the pre-shift box, which is inside the banner", got[0].Row, got[0].Y)
+		t.Errorf("anchored run = (row %d, Y %v), want (1, 20): the anchor test runs before the cover test, so a banner's own box never culls its own text", got[0].Row, got[0].Y)
 	}
 	if got[1].Row != 6 || got[1].Y != 120 {
 		t.Errorf("flow run = (row %d, Y %v), want (6, 120): the delta shifted every unanchored run down two cells", got[1].Row, got[1].Y)
 	}
 
-	// The epsilon. A non-opaque box so only containment can decide these two, never the
-	// cover test. "inside" ends at Y 60.4 and "outside" at Y 60.6, either side of the
-	// half-pixel tolerance on the box's bottom edge at 60.
-	scrim := []walkFixedBox{{Left: 0, Top: 0, Right: 400, Bottom: 60}}
-	edge := []render.GlyphRun{
-		{Col: 1, Row: 2, Text: "inside", X: 10, Y: 40, W: 100, H: 20.4},
-		{Col: 1, Row: 2, Text: "outside", X: 10, Y: 40, W: 100, H: 20.6},
+	// A full-viewport transparent container, the shape a toast root or a portal takes.
+	// Both runs sit wholly inside its rect and neither descends from it, so both shift.
+	// The box is non-opaque, so the cover test cannot decide these either.
+	container := []walkFixedBox{{Left: 0, Top: 0, Right: 400, Bottom: 600}}
+	inside := []render.GlyphRun{
+		{Col: 1, Row: 10, Text: "flowalpha", X: 10, Y: 200, W: 100, H: 20},
+		{Col: 1, Row: 20, Text: "flowbravo", X: 10, Y: 400, W: 100, H: 20},
 	}
-	got = shiftRunsToBitmapScroll(edge, scrim, 40, 0, cellCSSH, rows)
+	got = shiftRunsToBitmapScroll(inside, container, 40, 0, cellCSSH, rows)
 	if len(got) != 2 {
-		t.Fatalf("edge runs = %d, want 2 (a non-opaque box culls nothing)", len(got))
+		t.Fatalf("runs inside the container = %d, want 2 (a transparent box culls nothing)", len(got))
 	}
-	if got[0].Row != 2 || got[0].Y != 40 {
-		t.Errorf("run overhanging by 0.4 = (row %d, Y %v), want (2, 40): fixedBoxEpsilon is %v per edge", got[0].Row, got[0].Y, fixedBoxEpsilon)
+	if got[0].Row != 8 || got[1].Row != 18 {
+		t.Errorf("rows inside a full-viewport fixed container = [%d %d], want [8 18]: sitting inside a fixed box's rect is not descending from it, and freezing these disables the overlay for the whole scroll", got[0].Row, got[1].Row)
 	}
-	if got[1].Row != 0 || got[1].Y != 0 {
-		t.Errorf("run overhanging by 0.6 = (row %d, Y %v), want (0, 0): the overhang is past the tolerance, so the run is flow text and shifts", got[1].Row, got[1].Y)
+}
+
+// TestShiftRunsToBitmapScrollHoldsAnchoredRunsWithoutBoxes asserts the tag stands on
+// its own. The walk skips collecting a box it knows can cover nothing (a negative
+// z-index, a degenerate rect) and stops collecting at walkFixedBoxCap, but such an
+// element still anchors its own text, so a truncated or skipped box may only weaken
+// the cover cull and never let anchored text drift.
+func TestShiftRunsToBitmapScrollHoldsAnchoredRunsWithoutBoxes(t *testing.T) {
+	const cellCSSH = 20.0
+	const rows = 30
+	runs := []render.GlyphRun{
+		{Col: 1, Row: 1, Text: "uncollected", X: 10, Y: 20, W: 100, H: 20, ViewportAnchored: true},
+		{Col: 1, Row: 10, Text: "flow", X: 10, Y: 200, W: 100, H: 20},
+	}
+	got := shiftRunsToBitmapScroll(runs, nil, 40, 0, cellCSSH, rows)
+	if len(got) != 2 {
+		t.Fatalf("runs = %d, want 2", len(got))
+	}
+	if got[0].Row != 1 || got[0].Y != 20 {
+		t.Errorf("anchored run with no box list = (row %d, Y %v), want (1, 20): the tag is the page's DOM answer and needs no box to confirm it", got[0].Row, got[0].Y)
+	}
+	if got[1].Row != 8 {
+		t.Errorf("flow run = row %d, want 8", got[1].Row)
 	}
 }
 
@@ -367,13 +389,17 @@ func TestShiftRunsToBitmapScrollBoxListEdgeCases(t *testing.T) {
 		t.Error("zero delta with a box list returned a copy, want the input slice untouched")
 	}
 
-	// The banner holds the "gone" run (its box is inside the banner) and shifts the
-	// "here" run, so both branches write, and neither may write through to the input.
-	orig := append([]render.GlyphRun(nil), runs...)
-	if got := shiftRunsToBitmapScroll(runs, banner, 40, 0, cellCSSH, rows); len(got) != 2 {
+	// The tagged run is held and the "here" run shifts, so both branches write, and
+	// neither may write through to the input.
+	mixed := []render.GlyphRun{
+		runs[0],
+		{Col: 2, Row: 1, Text: "gone", X: 10, Y: 20, W: 100, H: 20, ViewportAnchored: true},
+	}
+	orig := append([]render.GlyphRun(nil), mixed...)
+	if got := shiftRunsToBitmapScroll(mixed, banner, 40, 0, cellCSSH, rows); len(got) != 2 {
 		t.Fatalf("shifted runs = %d, want 2 (the anchored run is held, not dropped off-grid)", len(got))
 	}
-	if !reflect.DeepEqual(runs, orig) {
+	if !reflect.DeepEqual(mixed, orig) {
 		t.Error("shiftRunsToBitmapScroll mutated the shared input slice when boxes were present")
 	}
 }
