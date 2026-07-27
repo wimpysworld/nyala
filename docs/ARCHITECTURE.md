@@ -336,7 +336,15 @@ and so can never cover, as does a degenerate rect.
 Collection rides the ancestor climb the visibility filter already makes, and a
 cache stops that climb at the first element it has seen before, so a shared
 ancestry costs one lookup. The list is capped at 32 boxes; a page with more
-fixed text containers is not one this approximation helps. The boxes travel on
+fixed text containers is not one this approximation helps. The client re-applies
+that cap when it decodes the walk JSON, because the walk evaluates in the page's
+main world and returns a string the page's own `JSON.stringify` produced, so the
+in-page cap is advice rather than a limit. Every box is re-tested against every
+run on the frame-emit goroutine, a scan no context cancellation interrupts, so
+an unbounded box count would make each frame of a scroll quadratic. The decode
+truncates rather than errors: the in-page cap already drops the excess, and
+rejecting would let a page suppress the whole text overlay with one box too
+many. The boxes travel on
 the walk result rather than on `render.GlyphRun`, so neither the render seam nor
 the harness golden run-set format widens for a motion-only correction.
 
