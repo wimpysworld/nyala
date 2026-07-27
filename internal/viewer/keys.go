@@ -116,8 +116,9 @@ const (
 	// the terminal's own copy, which a legacy terminal cannot even report apart
 	// from Ctrl+C, so the copy chord lives with the other Alt commands.
 	actionCopySelection
-	// actionDelete is the Delete key (CSI 3~). The chrome dispatch ignores
-	// it; the URL editor deletes the rune under the cursor.
+	// actionDelete forwards Delete (CSI 3~) to the page so the focused field
+	// deletes forward. The bar's text fields claim it first and delete the
+	// rune under their own cursor.
 	actionDelete
 	// actionBackspace forwards Backspace to the page so the focused field
 	// edits. Terminals send it as either 0x08 or DEL.

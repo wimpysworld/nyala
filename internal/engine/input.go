@@ -81,8 +81,9 @@ type strokeKey struct {
 
 // strokeKeys maps the named key codes the viewer forwards for native handling.
 // Any other code stays on the KeyChar path for a focused element to receive.
-// Backspace and Escape carry no char event: Chromium runs both from the key
-// down, editing the focused field and dismissing page state respectively.
+// Backspace, Delete, and Escape carry no char event: Chromium runs each from
+// the key down, the first two editing the focused field and the last
+// dismissing page state. A char event would type a character instead.
 //
 // The caret keys, the arrows plus Home, End, and the Page keys, stroke for the
 // same reason Space does: Chromium arbitrates between moving the caret in a
@@ -100,6 +101,7 @@ var strokeKeys = map[string]strokeKey{
 	"Tab":        {key: "Tab", vkey: 9},
 	"Enter":      {key: "Enter", vkey: 13, text: "\r"},
 	"Backspace":  {key: "Backspace", vkey: 8},
+	"Delete":     {key: "Delete", vkey: 46},
 	"Escape":     {key: "Escape", vkey: 27},
 	"ArrowLeft":  {key: "ArrowLeft", vkey: 37, scrolls: true},
 	"ArrowUp":    {key: "ArrowUp", vkey: 38, scrolls: true},
