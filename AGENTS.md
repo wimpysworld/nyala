@@ -66,8 +66,10 @@ Never set `FENCE_SANDBOX` by hand.
   memory. Diagnostics capture stays lossless PNG.
 - Block diagnostics must use `viewer.State.ComposeBlockFrame`, the same compose
   result consumed by production terminal writing. Do not add a second compositor.
-- The crisp text overlay is first-writer-wins. A wide grapheme's trailing cell
-  carries background only; terminal writers emit nothing for that cell.
+- The crisp text overlay is first-writer-wins, fed front-to-back: the fold sorts
+  runs by stacking rank, front-most first, and the sort must be stable so equal
+  ranks keep DOM order. A wide grapheme's trailing cell carries background only;
+  terminal writers emit nothing for that cell.
 - Find highlights paint transparent glyph ink on Block, where the overlay is the
   only text layer, and black ink elsewhere. Keep that split when changing either.
 - Keep `internal/ocr` pure Go and cgo-free.
