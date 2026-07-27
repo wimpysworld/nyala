@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 	"time"
@@ -266,12 +267,13 @@ func TestMouseParams(t *testing.T) {
 	}
 }
 
-// TestMouseParamsMove pins the drag dispatch shape: a move reports the
-// mouseMoved type, keeps the held button in both the name and the pressed
-// buttons mask (which is what makes Chromium treat it as a drag rather than a
-// hover), preserves the modifier bits, and carries clickCount 0 because it
-// starts no click. Modifier preservation is pinned deliberately: a synthetic
-// move that lost the modifier bits would break shift-extend drag-selection.
+// TestMouseParamsMove pins the move dispatch shape: a move reports the
+// mouseMoved type, repeats whatever button it carries in both the name and the
+// pressed-buttons mask (a held button reads as a drag of that button, and the
+// no-button value reads as a hover with an empty mask), preserves the modifier
+// bits, and carries clickCount 0 because it starts no click. Modifier
+// preservation is pinned deliberately: a synthetic move that lost the modifier
+// bits would break shift-extend drag-selection.
 func TestMouseParamsMove(t *testing.T) {
 	cases := []struct {
 		button MouseButton
@@ -281,6 +283,7 @@ func TestMouseParamsMove(t *testing.T) {
 		{MouseButtonLeft, input.Left, 1},
 		{MouseButtonRight, input.Right, 2},
 		{MouseButtonMiddle, input.Middle, 4},
+		{MouseButtonNone, input.None, 0},
 	}
 	for _, c := range cases {
 		p := mouseParams(MouseActionMove, c.button, cdpModShiftBits, 0, 12.5, 34.75)
@@ -291,7 +294,7 @@ func TestMouseParamsMove(t *testing.T) {
 			t.Errorf("move button = %q, want %q", p.Button, c.want)
 		}
 		if p.Buttons != c.mask {
-			t.Errorf("move buttons mask = %d, want %d (the held button)", p.Buttons, c.mask)
+			t.Errorf("move buttons mask = %d, want %d (the button the move carries)", p.Buttons, c.mask)
 		}
 		if p.Modifiers != cdpModShiftBits {
 			t.Errorf("move modifiers = %d, want %d", p.Modifiers, cdpModShiftBits)
@@ -302,6 +305,34 @@ func TestMouseParamsMove(t *testing.T) {
 		if p.X != 12.5 || p.Y != 34.75 {
 			t.Errorf("move position = (%g, %g), want (12.5, 34.75)", p.X, p.Y)
 		}
+	}
+}
+
+// TestMouseParamsHoverWireShape pins what a hover move puts on the wire, which
+// the typed field assertions above cannot see. Two things matter and only one
+// of them is visible in Go. The button name goes out in full as "none", the
+// value CDP documents as that field's default, because input.None is the
+// non-empty string "none" and neither omitempty nor omitzero drops it. The
+// pressed-buttons mask, by contrast, does not appear at all: cdproto tags the
+// field omitempty,omitzero, so the empty mask a hover carries is dropped rather
+// than sent as 0. The omission is the dispatch we want, not a bug. CDP
+// documents the field's absent value as None=0, which is exactly the empty mask
+// mouseParams built, so Chromium reads the move as a hover either way. A test
+// that demanded a literal "buttons":0 would fail on a correct dispatch.
+func TestMouseParamsHoverWireShape(t *testing.T) {
+	raw, err := json.Marshal(mouseParams(MouseActionMove, MouseButtonNone, 0, 0, 12.5, 34.75))
+	if err != nil {
+		t.Fatalf("marshal hover params: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal hover params: %v", err)
+	}
+	if got := string(fields["button"]); got != `"none"` {
+		t.Errorf("hover button field = %s, want \"none\" (the CDP default name)", got)
+	}
+	if _, ok := fields["buttons"]; ok {
+		t.Errorf("hover carried a buttons field %s, want it omitted (CDP reads the absent field as None=0)", fields["buttons"])
 	}
 }
 

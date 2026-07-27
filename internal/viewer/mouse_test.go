@@ -10,8 +10,8 @@ import (
 
 // TestDecodeSGRMouse pins the SGR mouse decode table: buttons and finals,
 // modifier bitmasks translated to CDP bits, wheel directions, drag motion with
-// its held button and modifiers, low coordinate clamping, and malformed bodies
-// dropped.
+// its held button and modifiers, buttonless motion decoded as a hover carrying
+// MouseButtonNone, low coordinate clamping, and malformed bodies dropped.
 func TestDecodeSGRMouse(t *testing.T) {
 	cases := []struct {
 		name string
@@ -165,7 +165,21 @@ func TestDecodeSGRMouse(t *testing.T) {
 			want: MouseEvent{Action: MouseActionMove, Button: MouseButtonLeft, Col: 4, Row: 4},
 			ok:   true,
 		},
-		{name: "buttonless motion dropped", body: "<35;5;5m"},
+		{
+			name: "buttonless motion is a hover",
+			body: "<35;5;5m",
+			want: MouseEvent{Action: MouseActionMove, Button: MouseButtonNone, Col: 4, Row: 4},
+			ok:   true,
+		},
+		{
+			name: "shift buttonless motion keeps the modifier",
+			body: "<39;5;5M",
+			want: MouseEvent{
+				Action: MouseActionMove, Button: MouseButtonNone,
+				Mod: cdpModShift, Col: 4, Row: 4,
+			},
+			ok: true,
+		},
 		{name: "wheel motion dropped", body: "<96;5;5M"},
 		{name: "side button motion dropped", body: "<160;5;5M"},
 		{
@@ -182,6 +196,7 @@ func TestDecodeSGRMouse(t *testing.T) {
 		},
 		{name: "wheel release dropped", body: "<64;10;10m"},
 		{name: "buttonless press dropped", body: "<3;1;1M"},
+		{name: "buttonless release dropped", body: "<3;1;1m"},
 		{
 			name: "back button press",
 			body: "<128;1;1M",
@@ -246,15 +261,19 @@ func collectEvents(t *testing.T, in string) []keyEvent {
 }
 
 // TestNextEventMouseAPCInterleave asserts SGR mouse reports, Kitty APC
-// replies, drag motion, and plain keys survive interleaving on the one stdin
-// parser: each event stays typed, a buttonless motion report is consumed
-// silently, and no report leaks bytes as keys.
+// replies, drag motion, hover motion, and plain keys survive interleaving on
+// the one stdin parser: each event stays typed, a buttonless motion report
+// arrives as a hover carrying MouseButtonNone, and no report leaks bytes as
+// keys.
 func TestNextEventMouseAPCInterleave(t *testing.T) {
 	in := "\x1b_Gi=1;OK\x1b\\" + "\x1b[<0;3;2M" + "\x1b[<32;4;2M" + "\x1b[<35;9;9M" +
 		"\x1b[<0;4;2m" + "\x1b[<65;4;4M" + "q"
 	events := collectEvents(t, in)
-	if len(events) != 6 {
-		t.Fatalf("events = %d (%+v), want 6: apc, press, move, release, wheel, key", len(events), events)
+	if len(events) != 7 {
+		t.Fatalf(
+			"events = %d (%+v), want 7: apc, press, move, hover, release, wheel, key",
+			len(events), events,
+		)
 	}
 	if events[0].apc != "i=1;OK" {
 		t.Errorf("event 0 apc = %q, want %q", events[0].apc, "i=1;OK")
@@ -268,16 +287,21 @@ func TestNextEventMouseAPCInterleave(t *testing.T) {
 		move.Col != 3 || move.Row != 1 {
 		t.Errorf("event 2 = %+v, want left drag motion at cell (3, 1)", events[2])
 	}
-	release := events[3].mouse
+	hover := events[3].mouse
+	if hover == nil || hover.Action != MouseActionMove || hover.Button != MouseButtonNone ||
+		hover.Col != 8 || hover.Row != 8 {
+		t.Errorf("event 3 = %+v, want buttonless hover motion at cell (8, 8)", events[3])
+	}
+	release := events[4].mouse
 	if release == nil || release.Action != MouseActionRelease || release.Col != 3 {
-		t.Errorf("event 3 = %+v, want left release at cell (3, 1)", events[3])
+		t.Errorf("event 4 = %+v, want left release at cell (3, 1)", events[4])
 	}
-	wheel := events[4].mouse
+	wheel := events[5].mouse
 	if wheel == nil || wheel.Action != MouseActionWheel || wheel.WheelDY != 1 {
-		t.Errorf("event 4 = %+v, want wheel down", events[4])
+		t.Errorf("event 5 = %+v, want wheel down", events[5])
 	}
-	if events[5].b != 'q' || events[5].mouse != nil {
-		t.Errorf("event 5 = %+v, want plain key 'q'", events[5])
+	if events[6].b != 'q' || events[6].mouse != nil {
+		t.Errorf("event 6 = %+v, want plain key 'q'", events[6])
 	}
 }
 
@@ -291,16 +315,16 @@ func TestNextEventMalformedMouseDropped(t *testing.T) {
 	}
 }
 
-// TestMouseReportingEscapes pins the mode pair Stream enables (1002
-// button-event tracking, 1006 SGR encoding) and asserts every teardown emits
-// the matching disables, drawn or not, so a leaked mode cannot spray reports
-// into the shell.
+// TestMouseReportingEscapes pins the three modes Stream enables in order (1002
+// button-event tracking, then 1003 any-event tracking for hover, then 1006 SGR
+// encoding) and asserts every teardown emits the matching disables, drawn or
+// not, so a leaked mode cannot spray reports into the shell.
 func TestMouseReportingEscapes(t *testing.T) {
-	if enableMouseReporting != "\x1b[?1002h\x1b[?1006h" {
-		t.Errorf("enableMouseReporting = %q, want ?1002h?1006h", enableMouseReporting)
+	if enableMouseReporting != "\x1b[?1002h\x1b[?1003h\x1b[?1006h" {
+		t.Errorf("enableMouseReporting = %q, want ?1002h?1003h?1006h", enableMouseReporting)
 	}
-	if disableMouseReporting != "\x1b[?1002l\x1b[?1006l" {
-		t.Errorf("disableMouseReporting = %q, want ?1002l?1006l", disableMouseReporting)
+	if disableMouseReporting != "\x1b[?1002l\x1b[?1003l\x1b[?1006l" {
+		t.Errorf("disableMouseReporting = %q, want ?1002l?1003l?1006l", disableMouseReporting)
 	}
 	for _, drawn := range []bool{true, false} {
 		if got := exitTerminal(24, drawn, false); !strings.Contains(got, disableMouseReporting) {
@@ -425,16 +449,18 @@ func TestHandleMouseDragFromBarRowStaysOnBar(t *testing.T) {
 	}
 }
 
-// TestHandleMouseMotionNeedsCapture asserts motion with no press in flight is
-// dropped, and that a release for a button never pressed leaves no capture
-// behind for a later stray move to ride on. Mode 1002 reports motion only
-// during a drag, so a bare move means the state is not ours to forward.
+// TestHandleMouseMotionNeedsCapture asserts the split mode 1003 introduces:
+// motion carrying a held button still needs a capture, because that report
+// belongs to a drag the page never saw begin, and a release for a button never
+// pressed leaves no capture behind for a later stray move to ride on.
+// Buttonless motion is the other half: it is a hover, it needs no capture, and
+// off the bar row it reaches the page.
 func TestHandleMouseMotionNeedsCapture(t *testing.T) {
 	s, got := dragSession(t)
 
 	s.handleMouse(MouseEvent{Action: MouseActionMove, Button: MouseButtonLeft, Col: 5, Row: 5})
 	if len(*got) != 0 {
-		t.Fatalf("uncaptured motion reached the page: %+v", *got)
+		t.Fatalf("uncaptured button-held motion reached the page: %+v", *got)
 	}
 
 	// A release with no matching press clears state rather than arming it.
@@ -447,14 +473,95 @@ func TestHandleMouseMotionNeedsCapture(t *testing.T) {
 	if len(*got) != before {
 		t.Fatalf("motion after a stray release reached the page: %+v", (*got)[before:])
 	}
+
+	hover := MouseEvent{Action: MouseActionMove, Button: MouseButtonNone, Col: 7, Row: 7}
+	s.handleMouse(hover)
+	if len(*got) != before+1 {
+		t.Fatalf("forwarded %d events, want the hover to reach the page", len(*got)-before)
+	}
+	if (*got)[before] != hover {
+		t.Fatalf("forwarded hover = %+v, want %+v", (*got)[before], hover)
+	}
+	if s.dragOnPage {
+		t.Fatal("a hover captured the pointer")
+	}
+}
+
+// TestHandleMouseHoverOnBarRowDropped asserts buttonless motion over the bar
+// row reaches nothing: the bar sits outside the engine grid and holds no page
+// to hover, and hit-testing it on a move would let a pointer merely crossing
+// the row press a button or open a bar mode.
+func TestHandleMouseHoverOnBarRowDropped(t *testing.T) {
+	s, got := dragSession(t)
+	barRow := s.st.Rows - 1
+	// Draw the bar once, so its spans exist and a bar-row hit would resolve.
+	s.repaintBar()
+	seg, ok := s.barLay.segment(barSegmentBack)
+	if !ok {
+		t.Fatal("the bar has no back button to hover")
+	}
+
+	s.handleMouse(MouseEvent{Action: MouseActionMove, Button: MouseButtonNone, Col: seg.col, Row: barRow})
+
+	if len(*got) != 0 {
+		t.Fatalf("a bar-row hover reached the page: %+v", *got)
+	}
+	if s.pressedSet {
+		t.Fatal("a bar-row hover pressed a bar button")
+	}
+	if s.barMode != barModeChrome {
+		t.Fatalf("a bar-row hover opened a bar mode: %d", s.barMode)
+	}
+}
+
+// TestHandleMouseHoverDuringBarModeDropped asserts a hover while a bar mode
+// owns input reaches neither the page nor the mode: each mode returns early on
+// a non-press action, so pointer motion cannot move the URL editor's caret,
+// change the find field, or highlight a menu item without a click.
+func TestHandleMouseHoverDuringBarModeDropped(t *testing.T) {
+	barRowModes := []struct {
+		name string
+		open func(s *streamSession)
+		want barMode
+	}{
+		{"edit", func(s *streamSession) { s.handleKey(keyEvent{b: keyCtrlL}) }, barModeEdit},
+		{"find", func(s *streamSession) { s.handleKey(keyEvent{b: keyCtrlF}) }, barModeFind},
+		{"menu", func(s *streamSession) { s.handleKey(keyEvent{act: actionOpenMenu}) }, barModeMenu},
+		{"about", func(s *streamSession) { s.barMode = barModeAbout }, barModeAbout},
+	}
+	for _, tc := range barRowModes {
+		t.Run(tc.name, func(t *testing.T) {
+			s, got := dragSession(t)
+			tc.open(s)
+			if s.barMode != tc.want {
+				t.Fatalf("mode = %d, want %d", s.barMode, tc.want)
+			}
+			s.repaintBar()
+			barRow := s.st.Rows - 1
+
+			s.handleMouse(MouseEvent{Action: MouseActionMove, Button: MouseButtonNone, Col: 10, Row: 10})
+			s.handleMouse(MouseEvent{Action: MouseActionMove, Button: MouseButtonNone, Col: 10, Row: barRow})
+
+			if len(*got) != 0 {
+				t.Fatalf("a hover under a bar mode reached the page: %+v", *got)
+			}
+			if s.barMode != tc.want {
+				t.Fatalf("a hover changed the mode: %d, want %d", s.barMode, tc.want)
+			}
+		})
+	}
 }
 
 // TestHandleMouseBarModeDropsCapture asserts a bar mode taking over input drops
 // the pointer capture: the mode swallows the release that would otherwise clear
 // it, so a page press, a Ctrl+L, and a release must not leave the capture armed
-// once the mode closes. Mode 1002 reports no buttonless motion today, so a stale
-// capture is latent rather than visible; it would forward motion to the page the
-// moment any-event tracking arrives.
+// once the mode closes. Under mode 1003 a stale capture can only forward the
+// reports the terminal sends, and with no button held those carry
+// MouseButtonNone and dispatch as a hover with an empty pressed-buttons mask,
+// so a stale capture cannot forge a drag. Only a press arms the capture, and
+// every event under a bar mode clears it whatever its action, so the case that
+// matters is the one asserted here: button-held motion on a stale capture must
+// reach nothing.
 func TestHandleMouseBarModeDropsCapture(t *testing.T) {
 	s, got := dragSession(t)
 
@@ -509,6 +616,163 @@ func TestHandleMouseDragDoesNotDisturbClickOrWheel(t *testing.T) {
 	last := (*got)[len(*got)-1]
 	if last.Action != MouseActionMove || last.Col != 9 {
 		t.Fatalf("post-wheel drag move = %+v, want the forwarded move at column 9", last)
+	}
+}
+
+// hoverAt builds one buttonless motion report at a page cell, the event mode
+// 1003 sends whenever the pointer moves with no button held.
+func hoverAt(col, row int) MouseEvent {
+	return MouseEvent{Action: MouseActionMove, Button: MouseButtonNone, Col: col, Row: row}
+}
+
+// assertDispatched asserts the recorded events are exactly want, in order, so a
+// coalescer test pins both what reached the engine and the order it arrived in.
+func assertDispatched(t *testing.T, got []MouseEvent, want ...MouseEvent) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("dispatched %d events (%+v), want %d (%+v)", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("dispatched event %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestForwardMouseCoalescesMotionBurst pins the shape of the coalescer: the
+// first move of a burst goes out at once and every further move inside the
+// window collapses into one held report, which the window edge then sends. It
+// matters because VTE reports motion per pixel, so a pointer crossing a few
+// cells produces dozens of reports the page has no use for, and because the
+// held report must be the newest position, not a stale one the pointer has
+// already left.
+func TestForwardMouseCoalescesMotionBurst(t *testing.T) {
+	s, got := dragSession(t)
+	t0 := time.Unix(1000, 0)
+
+	s.forwardMouseAt(hoverAt(4, 4), t0)
+	s.forwardMouseAt(hoverAt(5, 5), t0.Add(2*time.Millisecond))
+	s.forwardMouseAt(hoverAt(6, 6), t0.Add(4*time.Millisecond))
+	s.forwardMouseAt(hoverAt(7, 7), t0.Add(6*time.Millisecond))
+	assertDispatched(t, *got, hoverAt(4, 4))
+
+	s.flushMotionAt(t0.Add(motionCoalesceInterval))
+	assertDispatched(t, *got, hoverAt(4, 4), hoverAt(7, 7))
+}
+
+// TestForwardMouseFlushDeliversTheLastMove pins that no burst ends silently:
+// the flush always sends the held report, and a second flush with nothing held
+// sends nothing. It matters because the loop's timer calls the flush blind, and
+// a swallowed last move would leave the page hovering a cell the pointer left.
+func TestForwardMouseFlushDeliversTheLastMove(t *testing.T) {
+	s, got := dragSession(t)
+	t0 := time.Unix(1000, 0)
+
+	s.forwardMouseAt(hoverAt(4, 4), t0)
+	s.forwardMouseAt(hoverAt(9, 9), t0.Add(time.Millisecond))
+	if !s.motionHeld {
+		t.Fatal("the second move of the burst was not held")
+	}
+
+	s.flushMotionAt(t0.Add(motionCoalesceInterval))
+	if s.motionHeld {
+		t.Fatal("the flush left a report held")
+	}
+	s.flushMotionAt(t0.Add(time.Second))
+	assertDispatched(t, *got, hoverAt(4, 4), hoverAt(9, 9))
+}
+
+// TestForwardMousePressFlushesHeldMotion pins that a press never overtakes
+// motion the coalescer is holding: the held move goes out first, so the page
+// sees the pointer arrive before the button falls. Without the flush the press
+// would land at the last dispatched position, which is a click on the wrong
+// element.
+func TestForwardMousePressFlushesHeldMotion(t *testing.T) {
+	s, got := dragSession(t)
+	t0 := time.Unix(1000, 0)
+	press := MouseEvent{Action: MouseActionPress, Button: MouseButtonLeft, Col: 5, Row: 5}
+
+	s.forwardMouseAt(hoverAt(4, 4), t0)
+	s.forwardMouseAt(hoverAt(5, 5), t0.Add(2*time.Millisecond))
+	s.forwardMouseAt(press, t0.Add(4*time.Millisecond))
+	s.forwardMouseAt(hoverAt(6, 6), t0.Add(6*time.Millisecond))
+	s.flushMotionAt(t0.Add(30 * time.Millisecond))
+
+	assertDispatched(t, *got, hoverAt(4, 4), hoverAt(5, 5), press, hoverAt(6, 6))
+}
+
+// TestForwardMouseReleaseFlushesHeldMotion pins the same rule for a release, so
+// a drag's last move reaches the page before the button comes up. A release
+// that overtook the held move would end the gesture at a stale cell, which
+// truncates a drag-selection.
+func TestForwardMouseReleaseFlushesHeldMotion(t *testing.T) {
+	s, got := dragSession(t)
+	t0 := time.Unix(1000, 0)
+	drag := MouseEvent{Action: MouseActionMove, Button: MouseButtonLeft, Col: 5, Row: 5}
+	release := MouseEvent{Action: MouseActionRelease, Button: MouseButtonLeft, Col: 5, Row: 5}
+
+	s.forwardMouseAt(hoverAt(4, 4), t0)
+	s.forwardMouseAt(drag, t0.Add(2*time.Millisecond))
+	s.forwardMouseAt(release, t0.Add(4*time.Millisecond))
+	s.forwardMouseAt(hoverAt(6, 6), t0.Add(6*time.Millisecond))
+	s.flushMotionAt(t0.Add(30 * time.Millisecond))
+
+	assertDispatched(t, *got, hoverAt(4, 4), drag, release, hoverAt(6, 6))
+}
+
+// TestForwardMouseWheelFlushesHeldMotion pins that a wheel cannot overtake a
+// move either. The engine scrolls at the pointer cell, so a wheel dispatched
+// ahead of the held move would scroll the element the pointer has left.
+func TestForwardMouseWheelFlushesHeldMotion(t *testing.T) {
+	s, got := dragSession(t)
+	t0 := time.Unix(1000, 0)
+	wheel := MouseEvent{Action: MouseActionWheel, WheelDY: 1, Col: 5, Row: 5}
+
+	s.forwardMouseAt(hoverAt(4, 4), t0)
+	s.forwardMouseAt(hoverAt(5, 5), t0.Add(2*time.Millisecond))
+	s.forwardMouseAt(wheel, t0.Add(4*time.Millisecond))
+
+	assertDispatched(t, *got, hoverAt(4, 4), hoverAt(5, 5), wheel)
+}
+
+// TestForwardMouseMotionAfterWindowDispatchesAtOnce pins the leading send: a
+// move arriving once the window has closed goes straight out rather than
+// waiting for a timer. A pointer that moves slowly must still hover at once,
+// because the coalescer exists to cap a burst, not to add latency to a lone
+// move.
+func TestForwardMouseMotionAfterWindowDispatchesAtOnce(t *testing.T) {
+	s, got := dragSession(t)
+	t0 := time.Unix(1000, 0)
+
+	s.forwardMouseAt(hoverAt(4, 4), t0)
+	s.forwardMouseAt(hoverAt(5, 5), t0.Add(motionCoalesceInterval))
+
+	assertDispatched(t, *got, hoverAt(4, 4), hoverAt(5, 5))
+	if s.motionHeld {
+		t.Fatal("a move past the window edge was held rather than dispatched")
+	}
+}
+
+// TestForwardMouseCoalescesDragLikeHover pins that the coalescer never reads
+// the button: a held-button drag collapses exactly as a buttonless hover does.
+// A drag that coalesced differently would either flood CDP or lag the
+// selection, and both halves of mode 1003's motion belong on one code path.
+func TestForwardMouseCoalescesDragLikeHover(t *testing.T) {
+	for _, button := range []MouseButton{MouseButtonNone, MouseButtonLeft} {
+		t.Run(fmt.Sprintf("button %d", button), func(t *testing.T) {
+			s, got := dragSession(t)
+			t0 := time.Unix(1000, 0)
+			move := func(col, row int) MouseEvent {
+				return MouseEvent{Action: MouseActionMove, Button: button, Col: col, Row: row}
+			}
+
+			s.forwardMouseAt(move(4, 4), t0)
+			s.forwardMouseAt(move(5, 5), t0.Add(2*time.Millisecond))
+			s.forwardMouseAt(move(6, 6), t0.Add(4*time.Millisecond))
+			s.flushMotionAt(t0.Add(motionCoalesceInterval))
+
+			assertDispatched(t, *got, move(4, 4), move(6, 6))
+		})
 	}
 }
 

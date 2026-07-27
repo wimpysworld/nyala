@@ -59,7 +59,7 @@ Open a page:
 nyala example.com
 ```
 
-A bare host gains an `https://` scheme. The `http`, `https`, and `file` schemes are accepted; others are rejected. Nyala launches headless Chromium, streams the live page, and renders it to the TTY. The mouse works too: the wheel scrolls the page at the pointer, clicks reach the page, and dragging works on sliders, maps, scrollbars, and page text.
+A bare host gains an `https://` scheme. The `http`, `https`, and `file` schemes are accepted; others are rejected. Nyala launches headless Chromium, streams the live page, and renders it to the TTY. The mouse works too: the wheel scrolls the page at the pointer, clicks reach the page, and dragging works on sliders, maps, scrollbars, and page text. Pages also see the pointer move, so links highlight under it and menus that open on hover open.
 
 Nyala needs a Chromium executable at runtime. It resolves the path from `--browser`, then `NYALA_BROWSER`, then `CHROME_PATH`, then a `PATH` lookup.
 
@@ -113,6 +113,7 @@ Notes:
 - Typing goes to the page, so plain `q` does not quit. Use `Ctrl+Q`. Chromium decides what each key does, which is why `Space` types in a focused field and scrolls the page otherwise, and why the arrows, `Home`, `End`, `PgUp`, and `PgDn` move the caret in a focused field and scroll the page when nothing is focused.
 - A paste arrives as one unit, up to 1 MiB, so a pasted newline never submits a form by accident. Inside the URL editor and the find field the paste lands there instead. Paste into the page with no field focused and the bar says the paste was discarded, because Chromium drops it.
 - Select page text by dragging, double-clicking a word, triple-clicking a line, or pressing `Ctrl+A`. Chromium decides what `Ctrl+A` takes: the focused field's text, or the whole page. Inside the URL editor and the find field it keeps its readline meaning and moves to the line start. Selecting copies nothing; `Alt+W` or the ☰ menu's Copy sends it to the clipboard over OSC 52. Selections over 74,994 bytes are refused rather than truncated, so a silent half-copy cannot happen. `Shift`-drag is still your terminal's own selection.
+- Hover needs a terminal that reports pointer motion. Some terminals stop reporting it while their window is unfocused, so hover pauses until you focus the window again, and a few older terminals never report it at all. Clicks, drags, and the wheel are unaffected either way.
 - A copy reports itself in the bottom bar: the bytes it wrote, or why an over-long selection was refused. The line takes the URL region for two seconds and then the URL comes back; nothing is blocked while it shows.
 - Find searches when you press `Enter`, not as you type, because each search repaints every match in the page. Matches highlight amber and the current one orange. `Shift+Enter` steps back as well, on a terminal that speaks the Kitty keyboard protocol; `Down` and `Up` work everywhere.
 - `Alt+Home` returns to the URL Nyala was launched with, for the lifetime of the process. It is a normal navigation, so `Alt+Left` goes back to the page you were on.

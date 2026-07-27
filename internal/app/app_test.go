@@ -7,6 +7,7 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/wimpysworld/nyala/internal/engine"
+	"github.com/wimpysworld/nyala/internal/viewer"
 )
 
 // tryParse runs kong over args against a fresh CLI, the same wiring cmd/nyala
@@ -213,4 +214,90 @@ func TestEngineKeyMapsPseudoCodes(t *testing.T) {
 			t.Errorf("engineKey(%q) = %+v, want %+v", c.code, got, c.want)
 		}
 	}
+}
+
+// TestMouseActionMapping walks every viewer mouse action and pins the engine
+// action it becomes. The mapping ends in a default arm that answers Press, so a
+// missing case would not fail to compile: it would quietly turn a release, a
+// wheel step, or a hover into a button press on the page.
+func TestMouseActionMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		in   viewer.MouseAction
+		want engine.MouseAction
+	}{
+		{"press", viewer.MouseActionPress, engine.MouseActionPress},
+		{"release", viewer.MouseActionRelease, engine.MouseActionRelease},
+		{"wheel", viewer.MouseActionWheel, engine.MouseActionWheel},
+		{"move", viewer.MouseActionMove, engine.MouseActionMove},
+	}
+	for _, c := range cases {
+		if got := mouseAction(c.in); got != c.want {
+			t.Errorf("mouseAction(%s) = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// TestMouseButtonMapping walks every viewer mouse button and pins the engine
+// button it becomes. The mapping ends in a default arm that answers Left, so a
+// missing case would silently forge a held left button; that is the whole
+// meaning of the no-button hover value, which must survive as None or Chromium
+// reads the motion as a drag. Back and Forward map to Left through that default
+// on purpose: the viewer takes both as history navigation and never forwards
+// them, so the two rows pin the safety net rather than a live route.
+func TestMouseButtonMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		in   viewer.MouseButton
+		want engine.MouseButton
+	}{
+		{"left", viewer.MouseButtonLeft, engine.MouseButtonLeft},
+		{"middle", viewer.MouseButtonMiddle, engine.MouseButtonMiddle},
+		{"right", viewer.MouseButtonRight, engine.MouseButtonRight},
+		{"back", viewer.MouseButtonBack, engine.MouseButtonLeft},
+		{"forward", viewer.MouseButtonForward, engine.MouseButtonLeft},
+		{"none", viewer.MouseButtonNone, engine.MouseButtonNone},
+	}
+	for _, c := range cases {
+		if got := mouseButton(c.in); got != c.want {
+			t.Errorf("mouseButton(%s) = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// TestSendMouseCarriesHover pins the whole hover event across the adapter: the
+// action, the no-button value, the modifiers, and the cell all arrive intact.
+// The engine records nothing a test can read back, and SendMouse returns before
+// the CDP dispatch when no browser context exists, so the assertion is built
+// from the same mapping the adapter applies field by field; running the real
+// adapter over a browserless engine beside it proves a hover reaches SendMouse
+// and returns rather than panicking on the nil context.
+func TestSendMouseCarriesHover(t *testing.T) {
+	hover := viewer.MouseEvent{
+		Action: viewer.MouseActionMove,
+		Button: viewer.MouseButtonNone,
+		Mod:    8, // CDP Shift.
+		Col:    12,
+		Row:    5,
+	}
+	want := engine.MouseEvent{
+		Action: engine.MouseActionMove,
+		Button: engine.MouseButtonNone,
+		Mod:    8,
+		Col:    12,
+		Row:    5,
+	}
+	got := engine.MouseEvent{
+		Action:  mouseAction(hover.Action),
+		Button:  mouseButton(hover.Button),
+		Mod:     hover.Mod,
+		Col:     hover.Col,
+		Row:     hover.Row,
+		WheelDX: hover.WheelDX,
+		WheelDY: hover.WheelDY,
+	}
+	if got != want {
+		t.Errorf("hover mapping = %+v, want %+v", got, want)
+	}
+	engineAdapter{engine.New("")}.SendMouse(hover)
 }
