@@ -17,9 +17,11 @@ const (
 	// MouseActionWheel is one wheel step; WheelDX and WheelDY carry the
 	// direction. Wheel reports are press-only.
 	MouseActionWheel
-	// MouseActionMove is pointer motion with a button held (SGR bit 32 under
-	// mode 1002), the reports a drag is made of. Button carries the held
-	// button, so the engine can report it as the drag's pressed button.
+	// MouseActionMove is pointer motion (SGR bit 32). Button says which kind:
+	// a held button makes it a drag, the reports a drag is made of, and the
+	// engine reports that button as the drag's pressed button;
+	// MouseButtonNone makes it a hover, which mode 1003 any-event tracking
+	// delivers whenever the pointer moves with nothing held.
 	MouseActionMove
 )
 
@@ -39,6 +41,12 @@ const (
 	// MouseButtonForward is a side forward button (SGR buttons 9 and 11).
 	// The viewer dispatches it as history navigation and never forwards it.
 	MouseButtonForward
+	// MouseButtonNone is the no-button value hover motion carries: the
+	// buttonless SGR report (b&3 == 3) with the motion bit 32 set, which mode
+	// 1003 any-event tracking delivers. It comes last because MouseButtonLeft
+	// is the iota zero value a bare MouseEvent{} relies on. No press or
+	// release ever carries it.
+	MouseButtonNone
 )
 
 // SGR mouse report bits on the button number b. Modifiers are bitmasks on top
@@ -86,16 +94,17 @@ type MouseEvent struct {
 // decodeSGRMouse parses one SGR mouse CSI body: '<' then "b;x;y" with
 // 1-based coordinates, then final 'M' (press) or 'm' (release). Buttons and
 // modifiers decode by bitmask on b. Motion (bit 32) decodes as
-// MouseActionMove carrying the held button and the modifiers, the reports a
-// drag is made of; mode 1002 reports motion only while a button is held, so
-// buttonless motion (b&3 == 3) and motion with a side button held are dropped
-// as no drag of the page. The side buttons 8-11 (bit 128) decode as
-// MouseButtonBack (even) and MouseButtonForward (odd) for history
-// navigation. ok is false for a body that is not a well-formed SGR mouse
-// report the viewer handles: wrong shape, non-numeric parameters, a wheel
-// release, or the buttonless b&3 == 3. Terminals can emit zero or negative
-// coordinates; the decode clamps them non-negative and the engine clamps to
-// the grid.
+// MouseActionMove carrying the modifiers and either the held button, the
+// reports a drag is made of, or MouseButtonNone for the buttonless report
+// (b&3 == 3) mode 1003 any-event tracking delivers as a hover. Motion with a
+// side button held is dropped, as no drag of the page. The side buttons 8-11
+// (bit 128) decode as MouseButtonBack (even) and MouseButtonForward (odd) for
+// history navigation. ok is false for a body that is not a well-formed SGR
+// mouse report the viewer handles: wrong shape, non-numeric parameters, a
+// wheel release, or a buttonless b&3 == 3 report without the motion bit,
+// which is a press or release of no button and so malformed. Terminals can
+// emit zero or negative coordinates; the decode clamps them non-negative and
+// the engine clamps to the grid.
 func decodeSGRMouse(body []byte) (ev MouseEvent, ok bool) {
 	n := len(body)
 	if n < 2 || body[0] != '<' {
@@ -158,7 +167,12 @@ func decodeSGRMouse(body []byte) (ev MouseEvent, ok bool) {
 	case 2:
 		ev.Button = MouseButtonRight
 	default:
-		return MouseEvent{}, false
+		// No button. Only motion can mean it, as a hover under mode 1003; a
+		// press or release of no button is malformed.
+		if !motion {
+			return MouseEvent{}, false
+		}
+		ev.Button = MouseButtonNone
 	}
 	switch {
 	case motion:
@@ -188,15 +202,23 @@ func cdpModifiers(b int) int {
 }
 
 // enableMouseReporting turns on button-event mouse tracking (mode 1002:
-// press, release, and drag motion) with SGR encoding (mode 1006: decimal
-// coordinates, distinct release finals). Stream writes it beside
-// enterFullScreen, after the startup handshake, so mouse traffic cannot race
-// the probe replies. The pair is identical on every terminal; multiplexers
-// re-encode SGR cell reports pane-relative, so cells stay the one coordinate
-// currency.
-const enableMouseReporting = "\x1b[?1002h\x1b[?1006h"
+// press, release, and drag motion), then any-event tracking (mode 1003, which
+// adds buttonless motion so hover reports arrive and CSS hover reaches the
+// page), with SGR encoding (mode 1006: decimal coordinates, distinct release
+// finals). 1002 comes before 1003 deliberately: a terminal holds one
+// mouse-target state, so the last target it accepts wins, and one that
+// ignores 1003 keeps drag rather than losing mouse reporting altogether.
+// PuTTY before 0.79 and Chromebook hterm drop mouse reporting entirely when
+// asked for 1003 alone. Stream writes the set beside enterFullScreen, after
+// the startup handshake, so mouse traffic cannot race the probe replies. The
+// escapes are identical on every terminal; multiplexers re-encode SGR cell
+// reports pane-relative, so cells stay the one coordinate currency.
+const enableMouseReporting = "\x1b[?1002h\x1b[?1003h\x1b[?1006h"
 
-// disableMouseReporting is the unconditional exit pair for
+// disableMouseReporting is the unconditional exit set for
 // enableMouseReporting. exitTerminal emits it on every teardown, so a leaked
-// mouse mode cannot spray SGR reports into the shell.
-const disableMouseReporting = "\x1b[?1002l\x1b[?1006l"
+// mouse mode cannot spray SGR reports into the shell. On a terminal holding
+// one mouse-target state, resetting either target turns reporting off and the
+// second reset is a harmless no-op; both go out to keep the enable and
+// disable pair symmetric.
+const disableMouseReporting = "\x1b[?1002l\x1b[?1003l\x1b[?1006l"

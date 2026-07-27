@@ -1333,21 +1333,59 @@ dispatch history back and forward and never reach the page.
 
 A press captures the pointer for the surface under it until the release, the
 way a browser does, so a drag is one whole gesture rather than a row check per
-report. Held-button SGR motion (bit 32 under 1002) forwards as CDP
-`mouseMoved` carrying the held button in both the button name and the
-pressed-buttons mask, which is what makes Chromium treat it as a drag of that
-button instead of a hover. A drag that started on the page keeps reaching the
-page once the pointer crosses the bar row, because the engine clamps the cell
-to its grid; without that, sliding a slider off the bottom of the viewport
-would open the URL editor mid-gesture. A drag that started on the bar row
-never injects page motion, since the bar holds no draggable control. Motion
-with no capture is dropped, and a release with no capture reaches no page,
-because forwarding a bare release would click whatever now sits under the
-pointer. A bar mode taking over input drops the capture, since the mode
-swallows the release that would otherwise clear it. Moves leave the click
-chain untouched, so a drag inside a double-click gesture cannot break word
-selection. Mode 1003 any-event tracking stays off, so no hover motion is
-requested.
+report. SGR motion (bit 32) forwards as CDP `mouseMoved`, and the button it
+carries decides what Chromium reads it as. A held button goes out in both the
+button name and the pressed-buttons mask, which is what makes Chromium treat
+the move as a drag of that button. Buttonless motion goes out as the CDP `none`
+button with an empty mask, which Chromium reads as a hover, so CSS hover state
+follows the pointer. On the wire that hover carries `"button":"none"` and no
+`buttons` field at all: cdproto tags the field `omitempty,omitzero`, so the
+empty mask is dropped, and CDP reads the missing field as none. A drag that
+started on the page keeps reaching the page once the pointer crosses the bar
+row, because the engine clamps the cell to its grid; without that, sliding a
+slider off the bottom of the viewport would open the URL editor mid-gesture. A
+drag that started on the bar row never injects page motion, since the bar holds
+no draggable control. Button-held motion with no capture is dropped, and a
+release with no capture reaches no page, because forwarding a bare release
+would click whatever now sits under the pointer. Buttonless motion needs no
+capture, as it belongs to no gesture: off the bar row it forwards as a hover,
+and on the bar row it is dropped, because the bar sits outside the engine grid
+and holds no page to hover. A bar mode taking over input drops the capture,
+since the mode swallows the release that would otherwise clear it. Moves leave
+the click chain untouched, so neither a drag inside a double-click gesture nor
+a hover between two presses can break word selection.
+
+Mouse reporting enables button-event tracking (mode 1002) before any-event
+tracking (mode 1003), then SGR encoding (mode 1006). That order is deliberate.
+A terminal holds one mouse-target state, so the last target it accepts wins,
+and a terminal that ignores 1003 keeps drag rather than losing mouse reporting
+altogether. PuTTY before 0.79 and Chromebook hterm drop reporting entirely when
+asked for 1003 alone. `exitTerminal` resets all three unconditionally.
+
+Motion is coalesced at 16 ms, latest-wins, on the consumer loop goroutine ahead
+of the shared key worker. It reads no button, so a drag collapses exactly as a
+hover does and both halves of 1003's motion take one path. Most terminals report
+motion only when the
+pointer enters a new cell, but VTE reports every pixel and VTE drives
+gnome-terminal: a pointer that never left one cell was measured producing about
+thirty reports. Sixteen milliseconds is roughly one frame at 60 Hz, and a hover
+is a request to repaint, so dispatching faster than the page can repaint buys
+nothing. The first move of a burst goes out at once, further moves inside the
+window collapse into one held report, and the loop wakes at the window edge to
+send it, so the last move of a burst is never swallowed. A press, release, or
+wheel flushes the held report before dispatching itself, so coalescing can
+never reorder motion against a button. The coalescer sits outside `keySender`
+on purpose: that worker is cumulative and drops nothing by design, which is
+what a burst of caret keys needs and the opposite of what motion needs.
+
+Nyala tracks no terminal focus, so it dispatches whatever motion the terminal
+sends, focused or not. Terminals already disagree here: xterm, VTE, konsole, and
+foot report motion unfocused, while iTerm2 and Windows Terminal do not. Matching
+them would need focus reporting (mode 1004), a new input class, new session
+state, and a new teardown pairing, for no gain. An unfocused hover only
+repaints CSS hover state in a page nobody is looking at, and it cannot click,
+navigate, or type. The coalescer caps the cost either way, and a still pointer
+produces no motion at all.
 
 URL edit mode opens on Ctrl+L or a URL click. The editor takes the whole bar:
 reverse video, a ❯ prompt, and a hand-rolled readline subset (Ctrl+A/E/U/K/W,

@@ -17,9 +17,10 @@ const (
 	MouseActionRelease
 	// MouseActionWheel is one wheel step at the pointer cell.
 	MouseActionWheel
-	// MouseActionMove is pointer motion with a button held: the reports a drag
-	// is made of. Button carries the held button, which the dispatch reports as
-	// the move's pressed button so the page sees a drag, not a hover.
+	// MouseActionMove is pointer motion. Button carries either the held button,
+	// which the dispatch reports as the move's pressed button so the page sees a
+	// drag of that button, or MouseButtonNone, which the dispatch reports with an
+	// empty pressed-buttons mask so the page sees a hover.
 	MouseActionMove
 )
 
@@ -34,6 +35,12 @@ const (
 	// MouseButtonRight is the secondary button; Chromium turns a right press
 	// into the page's context-menu event.
 	MouseButtonRight
+	// MouseButtonNone is the no-button value a hover move carries. It dispatches
+	// as the CDP none button with an empty pressed-buttons mask, so Chromium
+	// reads the move as a hover rather than a drag. It is appended last on
+	// purpose: MouseButtonLeft is the iota zero value, so a zero MouseEvent still
+	// means the primary button.
+	MouseButtonNone
 )
 
 // MouseEvent is a terminal-neutral mouse event forwarded to the page. The
@@ -110,26 +117,34 @@ func cellCentreCSS(col, row, cols, rows int, cellW, cellH float64) (x, y float64
 	return (float64(col) + 0.5) * cellW, (float64(row) + 0.5) * cellH
 }
 
-// cdpButton maps a MouseButton to the CDP button name.
+// cdpButton maps a MouseButton to the CDP button name. MouseButtonNone needs
+// its own arm rather than the default one, which answers Left: without it the
+// no-button value a hover carries would forge a left button on the wire.
 func cdpButton(b MouseButton) input.MouseButton {
 	switch b {
 	case MouseButtonMiddle:
 		return input.Middle
 	case MouseButtonRight:
 		return input.Right
+	case MouseButtonNone:
+		return input.None
 	default:
 		return input.Left
 	}
 }
 
 // cdpButtonMask maps a MouseButton to its CDP pressed-buttons mask bit:
-// Left=1, Right=2, Middle=4.
+// Left=1, Right=2, Middle=4, and MouseButtonNone holds none at 0. The no-button
+// value needs its own arm for the same reason cdpButton does: the default arm
+// answers 1, so a hover would arrive carrying a held left button.
 func cdpButtonMask(b MouseButton) int64 {
 	switch b {
 	case MouseButtonMiddle:
 		return 4
 	case MouseButtonRight:
 		return 2
+	case MouseButtonNone:
+		return 0
 	default:
 		return 1
 	}
@@ -138,9 +153,13 @@ func cdpButtonMask(b MouseButton) int64 {
 // mouseParams builds one CDP mouse press, release, or move dispatch at the CSS
 // position x, y: the named button, the pressed-buttons mask (a release
 // reports no held button), the CDP modifier bits, and the synthesised
-// clickCount. A move keeps the held button in both the button name and the
-// mask, which is what makes Chromium treat it as a drag of that button rather
-// than a hover, and carries clickCount 0 because it starts no click.
+// clickCount. A move reports whatever button it carries in both the button
+// name and the mask, so a held button reads as a drag of that button and
+// MouseButtonNone reads as a hover with an empty mask, and it carries
+// clickCount 0 because it starts no click. On the wire a hover sends
+// button "none", the value CDP documents as the field's default, and no
+// buttons field at all: the cdproto field is tagged omitempty,omitzero, so the
+// empty mask is dropped, and CDP reads the missing field as None=0.
 func mouseParams(action MouseAction, button MouseButton, mod, clickCount int, x, y float64) *input.DispatchMouseEventParams {
 	mt, buttons := input.MousePressed, cdpButtonMask(button)
 	switch action {
@@ -172,11 +191,12 @@ func wheelParams(x, y float64, dx, dy, mod int) *input.DispatchMouseEventParams 
 // SendMouse forwards one mouse event to the page. A wheel step scrolls
 // through the one wheel transport at the pointer cell, so Block's whole-cell
 // vertical quantisation and the crash-recovery scroll offset keep working. A
-// press, release, or drag move dispatches a CDP mouse event at the cell centre,
-// a press and release with a synthesised clickCount and a move with none,
-// through the same bounded dispatch seam as keys, so a wedged browser drops the
-// event instead of parking the caller. A move leaves the click chain untouched,
-// so dragging between two presses cannot break a double click.
+// press, release, or move dispatches a CDP mouse event at the cell centre, a
+// press and release with a synthesised clickCount and a move with none, through
+// the same bounded dispatch seam as keys, so a wedged browser drops the event
+// instead of parking the caller. A move carrying a held button reads as a drag
+// and one carrying MouseButtonNone as a hover. Either way it leaves the click
+// chain untouched, so moving between two presses cannot break a double click.
 func (e *ChromiumEngine) SendMouse(ev MouseEvent) {
 	if ev.Action == MouseActionWheel {
 		// Both axes take the same fixed step: an SGR report carries a direction,

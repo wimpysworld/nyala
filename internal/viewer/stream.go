@@ -580,10 +580,23 @@ type streamSession struct {
 	pressedSet bool
 	// dragOnPage is the pointer capture: true from a chrome press on the page
 	// region until the matching release, so the drag's motion keeps reaching
-	// the page even over the bar row, and motion from a bar press or with no
-	// press at all reaches nothing. A release clears it, including a release
-	// for a button never pressed, which finds it already false.
+	// the page even over the bar row, and button-held motion from a bar press
+	// or with no press at all reaches nothing. It gates drags only: buttonless
+	// hover motion off the bar row forwards without any capture. A release
+	// clears it, including a release for a button never pressed, which finds it
+	// already false.
 	dragOnPage bool
+	// heldMotion is the motion report the coalescer holds back, latest-wins:
+	// the newest hover or drag move of the current burst, waiting for the
+	// window edge to send it. motionHeld says one waits, because the zero
+	// MouseEvent is itself a valid report (cell 0,0 with the left button).
+	// motionWindow is the instant the current coalescing window closes; the
+	// zero value is in the past, so the first move of a session goes out at
+	// once. All three are consumer-goroutine only, like the rest of the input
+	// state, so they need no lock.
+	heldMotion   MouseEvent
+	motionHeld   bool
+	motionWindow time.Time
 }
 
 // appendBar folds the bottom-bar bytes into buf, cursor-addressed to the
@@ -801,6 +814,14 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			signalC = time.After(time.Until(s.signalUntil))
 		}
 
+		// While a coalesced motion report waits out its window, wake at the
+		// window edge, so the last move of a burst reaches the page without
+		// needing another event to push it out. A nil channel never fires.
+		var motionC <-chan time.Time
+		if s.motionHeld {
+			motionC = time.After(time.Until(s.motionWindow))
+		}
+
 		select {
 		case readyC <- item:
 			s.assembled = nil
@@ -900,6 +921,10 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 		case <-signalC:
 			// The signal's hold elapsed: the row falls back to the URL.
 			s.clearSignal()
+		case <-motionC:
+			// The coalescing window closed: the newest move of the burst goes
+			// to the page.
+			s.flushMotionAt(time.Now())
 		case o := <-s.outcomes:
 			// A copy read the page's selection on the input worker, or a paste
 			// found no field there; the clipboard write and the bar signal
@@ -1392,8 +1417,11 @@ func switchBackendOp(backend Backend) func(Engine) {
 // the page keeps reaching the page even once the pointer crosses the bar row
 // (the engine clamps the cell to its grid, so the drag tracks the bottom row),
 // and a drag that started on the bar row never injects page motion, because the
-// bar has no draggable control. Motion with no capture is dropped, and a bar
-// mode taking over input drops the capture with it.
+// bar has no draggable control. Button-held motion with no capture is dropped,
+// because without a matching press the gesture is not the page's, and a bar
+// mode taking over input drops the capture with it. Buttonless motion needs no
+// capture: mode 1003 reports it whenever the pointer moves, and off the bar row
+// it forwards as a hover so CSS hover state follows the pointer.
 func (s *streamSession) handleMouse(ev MouseEvent) (quit bool) {
 	if ev.Button == MouseButtonBack || ev.Button == MouseButtonForward {
 		if s.barMode == barModeChrome && ev.Action == MouseActionPress {
@@ -1457,9 +1485,20 @@ func (s *streamSession) handleMouse(ev MouseEvent) (quit bool) {
 	case MouseActionPress:
 		s.dragOnPage = !onBar
 	case MouseActionMove:
-		if !s.dragOnPage {
+		switch {
+		case s.dragOnPage:
+			// A captured drag owns the pointer, so its motion reaches the page
+			// even over the bar row; the engine clamps the cell to its grid.
+		case ev.Button != MouseButtonNone:
+			// A held button with no capture behind it is somebody else's
+			// gesture, so the page never sees it.
+			return false
+		case onBar:
+			// The bar row sits outside the engine grid and holds no page, so
+			// there is nothing there to hover.
 			return false
 		}
+		// Buttonless motion off the bar row is a hover.
 		s.forwardMouse(ev)
 		return false
 	case MouseActionRelease:
@@ -1487,11 +1526,64 @@ func (s *streamSession) handleMouse(ev MouseEvent) (quit bool) {
 	return false
 }
 
-// forwardMouse forwards one mouse event to the engine off the input loop
+// motionCoalesceInterval bounds how often coalesced pointer motion reaches the
+// page. Mode 1003 reports every move, and where most terminals report one only
+// when the pointer enters a new cell, VTE reports every pixel: a pointer that
+// never left one cell was measured producing about thirty motion reports, and
+// VTE drives gnome-terminal, so uncoalesced hover would hand a GNOME user a
+// firehose of CDP dispatches. Sixteen milliseconds is roughly one frame at
+// 60 Hz, and a hover is a request to repaint, so dispatching faster than the
+// page can repaint buys nothing.
+const motionCoalesceInterval = 16 * time.Millisecond
+
+// forwardMouse forwards one mouse event to the engine, coalescing motion
+// against the wall clock. The clock is a parameter on forwardMouseAt, the way
+// nextClickCount takes the press instant, so tests drive explicit timestamps
+// with no sleeping.
+func (s *streamSession) forwardMouse(ev MouseEvent) {
+	s.forwardMouseAt(ev, time.Now())
+}
+
+// forwardMouseAt forwards one mouse event as at the instant now, with motion
+// coalesced latest-wins: a move always becomes the held report, because the
+// newest position is the one worth sending, and it goes out at once only when
+// the current window has closed. A move inside an open window stays held, and
+// the loop wakes at the window edge to send it, so the last move of a burst is
+// never swallowed. Every other action (a press, a release, a wheel) flushes the
+// held report before dispatching itself, so coalescing can never reorder motion
+// against a button. It runs on the consumer loop goroutine, which owns the held
+// state, so it needs no lock.
+func (s *streamSession) forwardMouseAt(ev MouseEvent, now time.Time) {
+	if ev.Action != MouseActionMove {
+		s.flushMotionAt(now)
+		s.dispatchMouse(ev)
+		return
+	}
+	s.heldMotion = ev
+	s.motionHeld = true
+	if !now.Before(s.motionWindow) {
+		s.flushMotionAt(now)
+	}
+}
+
+// flushMotionAt dispatches the held motion report and re-arms the window from
+// now, so the next burst gets a whole interval of its own. It returns at once
+// when nothing is held, so the loop's timer and the press, release, and wheel
+// paths all call it unconditionally.
+func (s *streamSession) flushMotionAt(now time.Time) {
+	if !s.motionHeld {
+		return
+	}
+	s.motionHeld = false
+	s.motionWindow = now.Add(motionCoalesceInterval)
+	s.dispatchMouse(s.heldMotion)
+}
+
+// dispatchMouse forwards one mouse event to the engine off the input loop
 // through the keySender worker, so a wedged browser never freezes quit or
 // draw. A drag's motion reports ride the same queue as its press and release,
 // so the gesture reaches the page in order.
-func (s *streamSession) forwardMouse(ev MouseEvent) {
+func (s *streamSession) dispatchMouse(ev MouseEvent) {
 	if s.keySender != nil {
 		s.keySender.sendMouse(ev)
 		return

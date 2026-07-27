@@ -15,7 +15,9 @@ import (
 // cell 8x16 and Z 1: a range input on row 0 spanning columns 0 to 49, a
 // paragraph whose first line sits on row 6, and an HTML5 draggable box on rows
 // 10 and 11. The box records its own pointer and drag events, so a test can
-// tell motion arriving from a drag gesture starting.
+// tell motion arriving from a drag gesture starting. The document records the
+// target of every move on top of that, so a test that crosses the slider and
+// the paragraph can prove its motion reached them.
 const liveDragPage = "data:text/html," +
 	"<html><body style='margin:0;font:16px monospace'>" +
 	"<input type='range' id='r' min='0' max='100' value='0' " +
@@ -24,9 +26,40 @@ const liveDragPage = "data:text/html," +
 	"alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima</p>" +
 	"<div id='d' draggable='true' " +
 	"style='position:absolute;left:0px;top:160px;width:200px;height:32px;background:silver'>dragme</div>" +
-	"<script>window.events=[];" +
+	"<script>window.events=[];window.moves=[];" +
 	"['dragstart','dragend','mousedown','mousemove','mouseup'].forEach(function(n){" +
 	"document.getElementById('d').addEventListener(n,function(){window.events.push(n)})});" +
+	"document.addEventListener('mousemove',function(e){window.moves.push(e.target.id||'body')});" +
+	"</script></body></html>"
+
+// liveHoverPage is a self-contained data: URL carrying a hover-triggered
+// navigation menu and a hover swatch at known CSS positions, so a test can aim
+// at a cell and know what it hits at cell 8x16 and Z 1: the menu trigger sits on
+// row 0 spanning columns 0 to 19, its submenu covers rows 1 to 3 once CSS
+// reveals it, and the swatch covers rows 6 and 7. CSS alone does the reveal
+// (`%23menu:hover %23submenu`), because CSS :hover is the thing under test and a
+// script reveal would prove nothing about it. Two authoring traps are avoided
+// here, and both make a working hover look broken. The `#` characters are
+// percent-encoded, because a raw one would start the URL fragment and cut the
+// page short. The submenu's `display:none` sits in the stylesheet rather than
+// an inline style attribute, because an inline declaration outranks every
+// selector: the hover rule would match and still lose the cascade, leaving the
+// submenu hidden. The page records the pointer events it sees, so a failure says
+// whether motion arrived at all or arrived and CSS ignored it.
+const liveHoverPage = "data:text/html," +
+	"<html><head><style>" +
+	"%23submenu{display:none;position:absolute;left:0px;top:16px;width:160px;height:48px}" +
+	"%23menu:hover %23submenu{display:block}" +
+	"%23swatch{background:navy}" +
+	"%23swatch:hover{background:red}" +
+	"</style></head><body style='margin:0;font:16px monospace'>" +
+	"<div id='menu' style='position:absolute;left:0px;top:0px;width:160px;height:16px'>menu" +
+	"<div id='submenu'>one two three</div>" +
+	"</div>" +
+	"<div id='swatch' style='position:absolute;left:0px;top:96px;width:160px;height:32px'>swatch</div>" +
+	"<script>window.hoverEvents=[];" +
+	"['mouseover','mousemove','mouseout'].forEach(function(n){" +
+	"document.addEventListener(n,function(e){window.hoverEvents.push(n+':'+(e.target.id||'body'))})});" +
 	"</script></body></html>"
 
 // liveScrollPage is a self-contained data: URL that scrolls on both axes, so a
@@ -206,6 +239,76 @@ func TestLiveDragOverDraggableElement(t *testing.T) {
 	if got, ok := waitForString(t, ctx, seen+".startsWith('mousedown,mousemove,dragstart').toString()", "true"); !ok {
 		t.Fatalf("draggable element saw %q (startsWith = %q), want mousedown, then mousemove, then dragstart",
 			evalString(t, ctx, seen), got)
+	}
+}
+
+// hoverCells sends buttonless pointer motion through the normal SendMouse seam:
+// one MouseActionMove carrying MouseButtonNone per cell, in the order given.
+// Each dispatch is synchronous, so the page sees the motion in that order.
+func hoverCells(e *ChromiumEngine, cells ...[2]int) {
+	for _, c := range cells {
+		e.SendMouse(MouseEvent{Action: MouseActionMove, Button: MouseButtonNone, Col: c[0], Row: c[1]})
+	}
+}
+
+// TestLiveHoverRevealsMenu proves CSS :hover responds to forwarded buttonless
+// motion on a real page, the acceptance criterion hover support exists for:
+// motion over the trigger reveals a submenu that only a CSS :hover rule can
+// show, motion away hides it again, and the swatch under the second position
+// paints its hover colour. The hide half is the point of the second move: it
+// proves the hover tracks the pointer rather than latching on the first cell it
+// lands on.
+func TestLiveHoverRevealsMenu(t *testing.T) {
+	e, ctx := liveEngineOn(t, liveHoverPage)
+
+	const display = "getComputedStyle(document.getElementById('submenu')).display"
+	const seen = "window.hoverEvents.join(',')"
+	if got := evalString(t, ctx, display); got != "none" {
+		t.Fatalf("submenu display = %q before any motion, want none", got)
+	}
+
+	hoverCells(e, [2]int{2, 0}, [2]int{8, 0})
+	if got, ok := waitForString(t, ctx, display, "block"); !ok {
+		t.Fatalf("submenu display = %q after buttonless motion over the trigger, want block (page saw %q)",
+			got, evalString(t, ctx, seen))
+	}
+
+	// Row 7 is 32 px clear of the revealed submenu and lands inside the swatch.
+	hoverCells(e, [2]int{5, 7})
+	if got, ok := waitForString(t, ctx, display, "none"); !ok {
+		t.Fatalf("submenu display = %q after motion away from the trigger, want none: the hover latched instead of tracking the pointer (page saw %q)",
+			got, evalString(t, ctx, seen))
+	}
+	const swatch = "getComputedStyle(document.getElementById('swatch')).backgroundColor"
+	if got, ok := waitForString(t, ctx, swatch, "rgb(255, 0, 0)"); !ok {
+		t.Fatalf("swatch background = %q under the pointer, want the hover colour rgb(255, 0, 0) (page saw %q)",
+			got, evalString(t, ctx, seen))
+	}
+}
+
+// TestLiveHoverDoesNotDragOrClick is the regression MouseButtonNone exists to
+// prevent: buttonless motion that reached Chromium carrying a held button would
+// drag whatever it crossed. Motion across the range input and the paragraph must
+// leave the slider value at 0 and the DOM selection empty. The recorded move
+// targets are the arrival evidence, so the test cannot pass by dispatching
+// nothing: they name the elements the motion crossed.
+func TestLiveHoverDoesNotDragOrClick(t *testing.T) {
+	e, ctx := liveEngineOn(t, liveDragPage)
+
+	hoverCells(e,
+		[2]int{2, 0}, [2]int{12, 0}, [2]int{25, 0}, [2]int{37, 0},
+		[2]int{0, 6}, [2]int{8, 6}, [2]int{20, 6}, [2]int{34, 6})
+
+	const crossed = "(window.moves.includes('r')&&window.moves.includes('t')).toString()"
+	if got, ok := waitForString(t, ctx, crossed, "true"); !ok {
+		t.Fatalf("page saw moves over %q (both slider and paragraph = %q), want the motion to reach both, or the rest of this test proves nothing",
+			evalString(t, ctx, "window.moves.join(',')"), got)
+	}
+	if got := evalFloat(t, ctx, "Number(document.getElementById('r').value)"); got != 0 {
+		t.Fatalf("range value = %g after buttonless motion across the slider, want 0: the hover carried a held button and dragged it", got)
+	}
+	if got := evalString(t, ctx, "window.getSelection().toString()"); got != "" {
+		t.Fatalf("selection = %q after buttonless motion across the paragraph, want empty: the hover carried a held button and selected text", got)
 	}
 }
 

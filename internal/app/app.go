@@ -162,13 +162,20 @@ func mouseAction(a viewer.MouseAction) engine.MouseAction {
 	}
 }
 
-// mouseButton maps the viewer mouse button enum to the engine's.
+// mouseButton maps the viewer mouse button enum to the engine's. The no-button
+// value needs its own arm rather than the default one: the default answers Left,
+// so every hover would forge a held left button and Chromium would read the
+// motion as a drag. The default stays for the viewer's Back and Forward buttons,
+// which the viewer takes as history navigation and never forwards here, so it is
+// only ever a safety net.
 func mouseButton(b viewer.MouseButton) engine.MouseButton {
 	switch b {
 	case viewer.MouseButtonMiddle:
 		return engine.MouseButtonMiddle
 	case viewer.MouseButtonRight:
 		return engine.MouseButtonRight
+	case viewer.MouseButtonNone:
+		return engine.MouseButtonNone
 	default:
 		return engine.MouseButtonLeft
 	}
