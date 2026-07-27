@@ -171,6 +171,69 @@ func TestComposeEqualRanksKeepDOMOrder(t *testing.T) {
 	}
 }
 
+// stableSortMinRuns is the size at which Go's pdqsort stops falling back to
+// insertion sort. Below it an unstable sort is incidentally stable, so a
+// stability fixture smaller than this passes whether or not the fold sorts
+// stably. The fixture below runs past it on purpose.
+const stableSortMinRuns = 13
+
+// TestComposeStableSortKeepsDOMOrderAtScale pins the whole ordering contract at a
+// size where an unstable sort genuinely reorders equal elements.
+// TestComposeEqualRanksKeepDOMOrder cannot: three runs land in the insertion-sort
+// fallback, which is stable by accident, and its one contested cell has only two
+// tied contenders, so a removed, reversed or rank-blind comparator also passes it.
+//
+// The fixture folds eighteen runs on one row. Columns 0 to 3 are each contested by
+// four runs sharing one rank, so DOM order alone decides those four cells and an
+// unstable sort moves the wrong glyph to the front. Column 4 is contested by two
+// runs at different ranks with the front-most one last in the slice, so rank alone
+// decides it. Ranks descend across the first four runs, so the frame is out of
+// rank order and takes the copy-and-sort path rather than the no-copy fast path.
+func TestComposeStableSortKeepsDOMOrderAtScale(t *testing.T) {
+	const cols = 5
+	src := color.RGBA{R: 30, G: 40, B: 50, A: 0xff}
+	img := overlaySrc(cols, 1, src)
+	br := &Renderer{Cols: cols, Rows: 1}
+
+	// Sixteen contenders, four per tie group: run i contests column i%4 at rank
+	// 3-(i%4), so every group is tied within itself and the groups are ordered
+	// back to front across the slice. Unique text names the run that won a cell.
+	const tied = "ABCDEFGHIJKLMNOP"
+	runs := make([]render.GlyphRun, 0, len(tied)+2)
+	for i := range len(tied) {
+		col := i % 4
+		runs = append(runs, render.GlyphRun{
+			Col:       col,
+			Row:       0,
+			Text:      tied[i : i+1],
+			FG:        color.RGBA{R: byte(16 * i), A: 0xff},
+			StackRank: 3 - col,
+		})
+	}
+	front := color.RGBA{B: 0xff, A: 0xff}
+	runs = append(runs,
+		render.GlyphRun{Col: 4, Row: 0, Text: "z", FG: color.RGBA{G: 0xff, A: 0xff}, StackRank: 5},
+		render.GlyphRun{Col: 4, Row: 0, Text: "!", FG: front, StackRank: 0},
+	)
+	if len(runs) < stableSortMinRuns {
+		t.Fatalf("fixture holds %d runs, want at least %d so the sort leaves the stable insertion-sort fallback", len(runs), stableSortMinRuns)
+	}
+
+	g := br.Compose(render.Frame{Img: img, Text: runs})
+	for col, want := range []string{"A", "B", "C", "D"} {
+		if got := g.At(col, 0).Text; got != want {
+			t.Errorf("col %d Text = %q, want %q (four runs share that cell's rank, so the earliest in DOM order keeps it; the sort must be stable)", col, got, want)
+		}
+	}
+	cell := g.At(4, 0)
+	if cell.Text != "!" {
+		t.Errorf("col 4 Text = %q, want ! (the lower rank wins a contested cell whatever its DOM position)", cell.Text)
+	}
+	if cell.FG != front {
+		t.Errorf("col 4 FG = %v, want the front-most run's FG %v", cell.FG, front)
+	}
+}
+
 // TestComposeFrontMostWideKeepsTrailingCell pins the wide claim against a behind
 // run at the trailing column. The width-2 run is front-most but sits second in the
 // slice, so only the front-to-back order can let it keep both its lead cell and

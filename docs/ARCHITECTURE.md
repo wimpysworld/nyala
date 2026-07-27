@@ -1512,6 +1512,16 @@ cannot be told from text that starts with an integer. `just genruns` rewrites
 only the foreground colours, picking the higher-contrast one against each run's
 composed background, so a hand-set rank survives regeneration.
 
+Five of the six run sets place one run per row in rank order, where the fold
+takes its no-copy fast path and no cell is ever contested, so paint order cannot
+show in the result. `overlay-contended` exists to close that: two of its runs
+overlap by two cells at different ranks, out of rank order in the file, straddling
+the page's dark-to-light boundary so the two runs carry different foregrounds.
+The contested cells then name their winner in the golden archive, in the
+recovered text, and in the contrast count. A fixture whose runs contend states
+the text the fold leaves visible in `OverlayFixture.Truth`, because the run that
+loses a cell also loses that grapheme from what the matcher can read back.
+
 The legibility ruler is a pure-Go exact-template glyph matcher graded by
 character error rate. Its calibration measured the bitmap legibility floor
 recorded in The crisp text overlay, the number that justifies the overlay.
@@ -1524,6 +1534,20 @@ only with a reason recorded in its `fixture.json`, and
 `paint-baseline.json` records expected paint failures explicitly rather than
 letting them pass silently. Live Chromium integration tests sit behind the
 `live` build tag (`just live`) and stay off CI.
+
+CI compiles more than the untagged suite. The `Gates` job runs the three
+Chromium-free tagged suites (the diagnostics harness, and the Block and Kitty
+protocol gates) on linux/amd64, and fails when a test skips or when a leg runs
+no test at all, so a wrong build tag or a self-skipping test cannot read as
+coverage. It is amd64-only because the golden comparisons skip by design
+elsewhere. The suites that need a browser (`cdpinterop`, `live`) and the one
+that needs `sixel2png` stay local, behind `just diagnostics`, `just live` and
+`nix flake check`. `just live` fails when no Chromium resolves rather than
+skipping every test green. What CI therefore cannot catch is a change in real
+browser behaviour: the in-page walk's stacking, occlusion and anchoring answers
+are pinned on CI only as script fragments in
+`TestBuildTextWalkScriptContents`, and semantically only by the local live
+suite.
 
 ## Performance envelope
 

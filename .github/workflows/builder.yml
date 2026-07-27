@@ -208,6 +208,65 @@ jobs:
       - name: Build Nyala
         run: go build -o "${RUNNER_TEMP}/nyala" ./cmd/nyala
 
+  gates:
+    name: Gates 🚦
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # The build-tagged correctness suites the untagged `go test ./...` leg
+      # never compiles. Only the Chromium-free ones run here: cdpinterop and
+      # live need a browser, and sixelinterop needs the sixel2png binary, which
+      # `nix flake check` already covers. Those three stay local, behind
+      # `just diagnostics` and `just live`.
+      #
+      # linux/amd64 only, deliberately: the diagnostics harness compares the
+      # committed golden archives byte for byte and skips that comparison on
+      # every other architecture, and this job treats a skip as a failure.
+      - name: Run the tagged gates
+        run: |
+          set -uo pipefail
+          fail=0
+          # -v is what makes a skip visible at all: go test prints nothing for a
+          # skipped test without it. A leg fails when go test fails, when any
+          # test skipped, or when no test ran, so a wrong build tag, an empty
+          # selector or a Chromium-style self-skip cannot read as coverage.
+          run_leg() {
+            name="$1"
+            shift
+            printf '\n== %s ==\n' "${name}"
+            log="$(mktemp)"
+            "$@" -v 2>&1 | tee "${log}" | grep -Ev '^=== (RUN|PAUSE|CONT)'
+            rc=${PIPESTATUS[0]}
+            skipped="$(grep -E '^[[:space:]]*--- SKIP: ' "${log}" | sed -E 's/^[[:space:]]*--- SKIP: ([^ ]+).*/\1/' || true)"
+            passed="$(grep -cE '^[[:space:]]*--- PASS: ' "${log}" || true)"
+            if [ -n "${skipped}" ]; then
+              printf '%s: these tests skipped, which is not a pass:\n%s\n' "${name}" "${skipped}"
+              rc=1
+            fi
+            if [ "${passed}" -eq 0 ]; then
+              printf '%s: no test passed; the build tag or the test selector is wrong.\n' "${name}"
+              rc=1
+            fi
+            printf '%s: %s passed, %s skipped, exit %s\n' \
+              "${name}" "${passed}" "$(printf '%s' "${skipped}" | grep -c . || true)" "${rc}"
+            rm -f "${log}"
+            [ "${rc}" -eq 0 ] || fail=1
+          }
+          run_leg 'browser-free quality' \
+            go test -count=1 -tags diagnostics ./internal/harness/
+          run_leg 'Block protocol interop' \
+            go test -count=1 -tags blockinterop ./internal/viewer/ -run '^TestBlockTerminalRoundTrip$'
+          run_leg 'Kitty protocol interop' \
+            go test -count=1 -tags kittyinterop ./internal/viewer/ -run '^TestKittyTerminalRoundTrip$'
+          exit "${fail}"
+
   build:
     name: Build 🏗️ (${{ matrix.goos }}/${{ matrix.goarch }})
     needs: changes
@@ -278,7 +337,7 @@ jobs:
 
   sentinel:
     name: Sentinel 👁️
-    needs: [changes, tidy, format, lint-code, lint-actions, nix, test, build, security]
+    needs: [changes, tidy, format, lint-code, lint-actions, nix, test, gates, build, security]
     if: always()
     runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions: {}

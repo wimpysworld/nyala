@@ -333,7 +333,8 @@ func TestDecodeWalkResultRejectsMalformedJSON(t *testing.T) {
 // per-line boxes from getClientRects, folds in the visibility and effective-opacity
 // drops, collects the viewport-anchored boxes the compose-time shift re-tests
 // against, resolves the computed color and the layout generation, builds the CSS
-// stacking vector, and returns the scroll offset. A format drift that dropped one
+// stacking vector, sorts on it and replaces it with the dense front-to-back rank,
+// and returns the scroll offset. A format drift that dropped one
 // of these would silently change the overlay, so each fragment is asserted.
 func TestBuildTextWalkScriptContents(t *testing.T) {
 	script := buildTextWalkScript(8.1, 16.7)
@@ -378,6 +379,9 @@ func TestBuildTextWalkScriptContents(t *testing.T) {
 		{"top-layer members collected once", "document.querySelectorAll(':modal,:popover-open')"},
 		{"top layer outranks any page z-index", "var TOP_LAYER_Z=2147483648;"},
 		{"top layer roots its own stacking vector", "if(topLayer.has(n))base=[];"},
+		{"runs ordered by the stacking comparator", "order.sort(function(i,j){var c=cmpVec(runs[i].z,runs[j].z);return c!==0?c:i-j;});"},
+		{"document order breaks a tie inside one level", "if(a[i][1]!==b[i][1])return b[i][1]-a[i][1];"},
+		{"the vector is replaced by a dense front-to-back rank", "for(var oi=0;oi<order.length;oi++){runs[order[oi]].z=oi;}"},
 		{"computed colour read", "gcs(el).color"},
 		{"computed-style cache", "function gcs(el){"},
 		{"layout generation read", "window[config.generationProperty]"},

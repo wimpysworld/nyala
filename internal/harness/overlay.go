@@ -34,16 +34,44 @@ type OverlayFixture struct {
 	PNG string
 	// Runs is the run-set filename under testdata/overlay/.
 	Runs string
+	// Truth is the text the fold leaves visible, in the order the matcher walks
+	// the cells. It is empty for a fixture whose runs never contend for a cell,
+	// where the joined run text is already what the overlay shows. A fixture
+	// whose runs overlap states it, because the run that loses a contested cell
+	// loses that grapheme from the visible text.
+	Truth string
 }
 
-// OverlayFixtures lists the five committed pages and their run sets, mirroring
-// the goldenFixtures order so the overlay grade runs the same corpus.
+// OverlayFixtures lists the committed pages and their run sets. The first five
+// mirror the goldenFixtures order, so the overlay grade runs the same corpus.
+// The sixth reuses the linuxmatters page to carry a contended run set: the other
+// five are the identity permutation on distinct rows, so their fold takes the
+// no-copy fast path and no cell is ever contested, which leaves the whole grade
+// blind to paint order.
 var OverlayFixtures = []OverlayFixture{
-	{"linuxmatters", "linuxmatters.png", "linuxmatters.runs"},
-	{"testpage-01-grayscale", "testpage-01-grayscale.png", "testpage-01-grayscale.runs"},
-	{"testpage-02-basic", "testpage-02-basic.png", "testpage-02-basic.runs"},
-	{"testpage-03-cmyk", "testpage-03-cmyk.png", "testpage-03-cmyk.runs"},
-	{"testpage-04-color", "testpage-04-color.png", "testpage-04-color.runs"},
+	{Page: "linuxmatters", PNG: "linuxmatters.png", Runs: "linuxmatters.runs"},
+	{Page: "testpage-01-grayscale", PNG: "testpage-01-grayscale.png", Runs: "testpage-01-grayscale.runs"},
+	{Page: "testpage-02-basic", PNG: "testpage-02-basic.png", Runs: "testpage-02-basic.runs"},
+	{Page: "testpage-03-cmyk", PNG: "testpage-03-cmyk.png", Runs: "testpage-03-cmyk.runs"},
+	{Page: "testpage-04-color", PNG: "testpage-04-color.png", Runs: "testpage-04-color.runs"},
+	{
+		Page: "overlay-contended",
+		PNG:  "linuxmatters.png",
+		Runs: "overlay-contended.runs",
+		// "BEHIND RUN" holds columns 14 to 23 of row 12 at rank 1, and "FRONT RUN"
+		// holds columns 22 to 30 at rank 0, so the two overlap on columns 22 and
+		// 23 and the front-most run keeps them: the behind run shows "BEHIND R"
+		// and loses its "UN". The run set is out of rank order, so the fold sorts
+		// rather than taking the no-copy fast path.
+		//
+		// The overlap sits exactly on the page's dark-to-light boundary, so the
+		// two runs carry different foregrounds and the contested cells name their
+		// winner in the golden archive as well as in the recovered text. It also
+		// keeps every visible cell legible: the behind run's white text never
+		// lands on the light side, because the only cells where it would are the
+		// two it loses.
+		Truth: "BEHIND RFRONT RUNUNCONTESTED LINE",
+	},
 }
 
 // OverlayDir is the directory under testdata/ that holds the committed run-set

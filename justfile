@@ -265,7 +265,46 @@ test:
 
 # Run the live engine integration test (needs Chromium; off CI, not in `test`)
 live:
-    @FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" go test -count=1 -tags live ./internal/engine/
+    #!/usr/bin/env bash
+    set -uo pipefail
+
+    # The live tests skip themselves when no Chromium resolves, so without this
+    # check the whole leg passes by running nothing. Same resolution order the
+    # binary uses, mirroring just diagnostics.
+    chromium_found=0
+    if [ -n "${NYALA_BROWSER:-}" ] || [ -n "${CHROME_PATH:-}" ]; then chromium_found=1; fi
+    for name in chromium chromium-browser google-chrome google-chrome-stable chrome; do
+        if command -v "$name" >/dev/null 2>&1; then chromium_found=1; break; fi
+    done
+    if [ "$chromium_found" -eq 0 ]; then
+        printf '%s\n' 'just live: Chromium not found; set NYALA_BROWSER or CHROME_PATH, or add Chromium/Chrome to PATH. Every live test would skip, and a skip is not a pass.' >&2
+        exit 1
+    fi
+
+    log="$(mktemp)"
+    trap 'rm -f "$log"' EXIT
+    # -v is what makes a skip visible at all: go test prints nothing for a skipped
+    # test without it. The === RUN lines are dropped again for readability.
+    FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" \
+        go test -count=1 -tags live ./internal/engine/ -v 2>&1 \
+        | tee "$log" | grep -Ev '^=== (RUN|PAUSE|CONT)'
+    rc=${PIPESTATUS[0]}
+
+    # No test in this package skips on Linux or macOS today. A skip here means a
+    # Chromium that resolved but would not launch, which is a failure, not a pass.
+    # A legitimate new platform skip needs an explicit exception right here.
+    skipped="$(grep -E '^[[:space:]]*--- SKIP: ' "$log" | sed -E 's/^[[:space:]]*--- SKIP: ([^ ]+).*/\1/' || true)"
+    if [ -n "$skipped" ]; then
+        printf '\njust live: these tests skipped, which is not a pass:\n%s\n' "$skipped" >&2
+        rc=1
+    fi
+    passed="$(grep -cE '^[[:space:]]*--- PASS: ' "$log" || true)"
+    if [ "$passed" -eq 0 ]; then
+        printf '\njust live: no test passed; the live build tag or the package selector is wrong.\n' >&2
+        rc=1
+    fi
+    printf '\njust live: %s tests passed, %s skipped.\n' "$passed" "$(printf '%s' "$skipped" | grep -c . || true)"
+    exit "$rc"
 
 # Measure internal renderer-to-terminal-byte costs from production CDP frames.
 internal-render-metrics:

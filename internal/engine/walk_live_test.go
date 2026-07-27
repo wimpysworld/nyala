@@ -5,6 +5,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -852,4 +853,139 @@ const topLayerTestPage = "data:text/html," +
 func TestLiveStackRankTopLayerOutranksMaximumZIndex(t *testing.T) {
 	_, ranks := liveStackRanks(t, topLayerTestPage)
 	assertRankedInFront(t, ranks, "dialogtext", "rivaltext")
+}
+
+// equalZIndexSiblingTestPage proves the comparator's document-order tie-break.
+// Two absolutely positioned siblings carry the same z-index 1 and share one
+// origin, so their stacking vectors agree on the z-index and only document order
+// can separate them. CSS 2.1 Appendix E paints tree order within one level, so
+// Chromium paints "laterbox" on top of "earlierbox". Neither carries a
+// background, so the occlusion cull cannot decide the pair, and the shared origin
+// makes the rank decide a genuinely contested cell.
+const equalZIndexSiblingTestPage = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<div style='position:absolute;top:0;left:0;z-index:1'>earlierbox</div>" +
+	"<div style='position:absolute;top:0;left:0;z-index:1'>laterbox</div>" +
+	"</body></html>"
+
+// TestLiveStackRankEqualZIndexKeepsLaterSiblingInFront checks that the later of
+// two tied siblings ranks in front, the order Chromium paints. Dropping the
+// document-order term from the comparator leaves the pair tied, and the sort's
+// own index fallback then puts the earlier sibling in front instead.
+func TestLiveStackRankEqualZIndexKeepsLaterSiblingInFront(t *testing.T) {
+	_, ranks := liveStackRanks(t, equalZIndexSiblingTestPage)
+	assertRankedInFront(t, ranks, "laterbox", "earlierbox")
+}
+
+// stackingTriggerTraps lists the stacking-context triggers that no other live
+// test covers, each with the wrapper style that carries it. Every one of them
+// makes the wrapper a real stacking context, so the z-index 100 box inside it
+// cannot rise above a z-index 1 box outside it. Deleting any one of these lines
+// from the walk's stacks() passes every other live test.
+//
+// The last two are positioned triggers rather than the non-positioned ones the
+// older test covers: a positioned box with an explicit z-index, and a sticky box
+// at z-index auto. Both take their own branch of the three-state participation
+// test, so neither falls out of the blanket positioned rule any more.
+var stackingTriggerTraps = []struct {
+	name  string
+	style string
+}{
+	{name: "mix-blend-mode", style: "mix-blend-mode:multiply"},
+	{name: "scale", style: "scale:1.01"},
+	{name: "rotate", style: "rotate:1deg"},
+	{name: "translate", style: "translate:1px"},
+	{name: "perspective", style: "perspective:100px"},
+	{name: "backdrop-filter", style: "backdrop-filter:blur(1px)"},
+	{name: "clip-path", style: "clip-path:inset(0)"},
+	{name: "mask-image", style: "mask-image:linear-gradient(black,black)"},
+	{name: "isolation", style: "isolation:isolate"},
+	{name: "contain", style: "contain:layout"},
+	{name: "content-visibility", style: "content-visibility:auto"},
+	{name: "view-transition-name", style: "view-transition-name:trapped"},
+	{name: "relative-with-z-index", style: "position:relative;z-index:0"},
+	{name: "sticky", style: "position:sticky;top:0"},
+}
+
+// trapTextFor returns the unique text the trapped box under the named trigger
+// carries, so one rank lookup names one trigger.
+func trapTextFor(name string) string {
+	return "trap" + strings.ReplaceAll(name, "-", "")
+}
+
+// stackingTriggerTrapPage builds one page carrying every trigger in
+// stackingTriggerTraps at once: one wrapper each, holding an absolutely
+// positioned z-index 100 box, against one shared z-index 1 sibling, plus an
+// untriggered control wrapper.
+//
+// One page rather than one page per trigger. Each trigger's assertion reads only
+// its own trapped box against the shared sibling, and the wrappers cannot
+// interfere: a trapped box compares against the sibling on its own wrapper's
+// level, which is z-index 0 (or 1 for the sticky and relative wrappers, still
+// below the sibling's own document position), so the answer for one trigger does
+// not depend on any other. That buys the whole matrix for one Chromium launch
+// and one walk instead of fifteen.
+//
+// Every wrapper is sized rather than collapsed, so a trigger that brings paint
+// containment with it (content-visibility, contain) does not clip its own box
+// away, and the whole column stays inside the 384px viewport so
+// content-visibility: auto renders rather than skipping its subtree. Nothing
+// carries a background, so the occlusion cull cannot decide any pair.
+func stackingTriggerTrapPage() string {
+	var b strings.Builder
+	b.WriteString("data:text/html,<html><body style='margin:0'>")
+	b.WriteString("<div style='position:absolute;top:0;left:0;z-index:1'>sibling</div>")
+	for _, trap := range stackingTriggerTraps {
+		fmt.Fprintf(
+			&b,
+			"<div style='width:200px;height:20px;%s'>"+
+				"<div style='position:absolute;top:0;left:0;z-index:100'>%s</div></div>",
+			trap.style, trapTextFor(trap.name),
+		)
+	}
+	b.WriteString(
+		"<div style='width:200px;height:20px'>" +
+			"<div style='position:absolute;top:0;left:0;z-index:100'>trapcontrol</div></div>")
+	b.WriteString("</body></html>")
+	return b.String()
+}
+
+// TestLiveStackRankTriggerMatrixTrapsDescendantZIndex checks every stacking
+// trigger the older non-positioned test leaves out. Each trigger's trapped
+// z-index 100 descendant must rank behind the shared z-index 1 sibling, and the
+// untriggered control must rank its own trapped box in front, which proves the
+// assertions are not passing by accident.
+func TestLiveStackRankTriggerMatrixTrapsDescendantZIndex(t *testing.T) {
+	_, ranks := liveStackRanks(t, stackingTriggerTrapPage())
+	for _, trap := range stackingTriggerTraps {
+		t.Run(trap.name, func(t *testing.T) {
+			assertRankedInFront(t, ranks, "sibling", trapTextFor(trap.name))
+		})
+	}
+	t.Run("control", func(t *testing.T) {
+		assertRankedInFront(t, ranks, "trapcontrol", "sibling")
+	})
+}
+
+// flexChildZIndexAgainstDOMOrderTestPage is the flex page with DOM order and
+// z-index in disagreement. "flexearlyhigh" comes first at z-index 5 and
+// "flexlatelow" second at z-index 1, so only a flex item's z-index taking effect
+// can rank the earlier box in front: dropping every flex item to z-index 0 leaves
+// the two tied, and the comparator's document-order tie-break then puts the later
+// box in front instead. flexChildZIndexTestPage cannot see that mutation, because
+// there DOM order and z-index agree on the answer. Neither box carries a
+// background and the column keeps them on separate rows, so nothing occludes
+// anything.
+const flexChildZIndexAgainstDOMOrderTestPage = "data:text/html," +
+	"<html><body style='margin:0'>" +
+	"<div style='display:flex;flex-direction:column'>" +
+	"<div style='z-index:5'>flexearlyhigh</div>" +
+	"<div style='z-index:1'>flexlatelow</div>" +
+	"</div></body></html>"
+
+// TestLiveStackRankFlexChildZIndexBeatsDOMOrder checks that the earlier, higher
+// z-index flex child ranks in front of the later, lower one.
+func TestLiveStackRankFlexChildZIndexBeatsDOMOrder(t *testing.T) {
+	_, ranks := liveStackRanks(t, flexChildZIndexAgainstDOMOrderTestPage)
+	assertRankedInFront(t, ranks, "flexearlyhigh", "flexlatelow")
 }
