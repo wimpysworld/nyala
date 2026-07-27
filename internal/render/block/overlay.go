@@ -1,8 +1,10 @@
 package block
 
 import (
+	"cmp"
 	"image"
 	"image/color"
+	"slices"
 
 	"github.com/rivo/uniseg"
 
@@ -27,7 +29,8 @@ import (
 // uncovered sub-columns out of the average. After the run's own cells, the two
 // bitmap cells beside it (recomposeBoundaryCellsFrom) are repainted to drop the
 // sub-cell residue the box paints into a neighbour the overlay never wrote.
-// Paint-order z-ordering (a later run overlaying an earlier one) stays deferred.
+// Runs fold front-to-back by stacking rank (orderedRuns), so first-writer-wins
+// keeps the front-most run at a contested cell.
 func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 	img, _ := f.Img.(*image.RGBA)
 	applyOverlayFrom(g, f, scheme, rgbaPixelSource{img: img})
@@ -52,8 +55,34 @@ func (s rgbaPixelSource) pixelAt(x, y int) (r, g, b uint8) {
 	return pixel(s.img, x, y)
 }
 
+// orderedRuns returns the frame's runs in front-to-back order, front-most first,
+// by ascending render.GlyphRun.StackRank. The fold is first-writer-wins, so
+// feeding it front-most first makes the front-most run keep a contested cell.
+// That is Carbonyl's back-to-front, last-writer-wins feed inverted: the same
+// stacking result from the opposite end.
+//
+// The sort must be stable. Runs of equal rank then keep their DOM order, which is
+// what decides a cell they both reach. Ranks from the walk are unique but gappy,
+// because decodeWalkRuns drops empty and clipped runs; a stable sort compares
+// ranks and never assumes they are dense or contiguous.
+//
+// Runs already in non-decreasing rank order are returned as they are: one scan,
+// no copy. That is the common case on the live path and the identity path for
+// hand-built runs, whose ranks are all zero. Otherwise the runs are copied into
+// the grid's scratch buffer and sorted there. f.Text is never sorted in place:
+// the engine owns that slice and reuses it across frames.
+func (g *Grid) orderedRuns(f render.Frame) []render.GlyphRun {
+	byRank := func(a, b render.GlyphRun) int { return cmp.Compare(a.StackRank, b.StackRank) }
+	if slices.IsSortedFunc(f.Text, byRank) {
+		return f.Text
+	}
+	g.runOrder = append(g.runOrder[:0], f.Text...)
+	slices.SortStableFunc(g.runOrder, byRank)
+	return g.runOrder
+}
+
 func applyOverlayFrom(g *Grid, f render.Frame, scheme Scheme, src pixelSource) {
-	for _, run := range f.Text {
+	for _, run := range g.orderedRuns(f) {
 		row := run.Row
 		if row < 0 || row >= g.Rows {
 			continue

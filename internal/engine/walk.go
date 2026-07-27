@@ -95,10 +95,9 @@ type walkResult struct {
 // front-to-back stacking rank the page derives from the stacking-context
 // ancestry of the run's element and flattens to a dense integer over the run
 // set, 0 being front-most (docs/ARCHITECTURE.md holds the ordering model); the
-// returned run array still comes back in DOM order and the rank now reaches the
-// render seam, but no consumer reads it, so it changes no placement today. It
-// returns the current layout generation alongside the runs. The whole walk is one
-// expression evaluated per decode.
+// returned run array still comes back in DOM order, and the Block overlay fold
+// sorts on the rank at the render seam. It returns the current layout generation
+// alongside the runs. The whole walk is one expression evaluated per decode.
 func buildTextWalkScript(cellW, cellH float64) string {
 	return buildTextWalkScriptFromConfig(textWalkConfig{
 		CellWidth:          cellW,

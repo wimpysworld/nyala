@@ -98,8 +98,8 @@ type GlyphRun struct {
 	DisplayCells int `json:"-"`
 	// StackRank is the run's front-to-back stacking rank, 0 being front-most. The
 	// page derives it from the CSS stacking order of the run's element and the
-	// client only carries it, so it is page data rather than derived data. No
-	// consumer reads it yet, so it changes no placement today.
+	// client only carries it, so it is page data rather than derived data. The
+	// Block overlay fold orders runs by it, front-most first.
 	StackRank int
 }
 

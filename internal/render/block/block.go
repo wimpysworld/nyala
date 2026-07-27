@@ -74,6 +74,11 @@ type Grid struct {
 	Cols  int    // grid width in cells
 	Rows  int    // grid height in cells
 	Cells []Cell // row-major, len == Cols*Rows
+	// runOrder is the overlay fold's scratch buffer for the front-to-back run
+	// order (orderedRuns). It hangs off the grid because the live draw path reuses
+	// one grid per frame (reuseGrid keeps it), so the reordering costs no
+	// allocation per frame after the first contended frame.
+	runOrder []render.GlyphRun
 }
 
 // At returns a pointer to the cell at (col, row). It panics on an out-of-range
