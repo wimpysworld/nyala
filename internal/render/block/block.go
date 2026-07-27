@@ -79,6 +79,45 @@ type Grid struct {
 	// one grid per frame (reuseGrid keeps it), so the reordering costs no
 	// allocation per frame after the first contended frame.
 	runOrder []render.GlyphRun
+	// boundaryClaimed is the overlay fold's first-writer-wins bitset for the
+	// boundary recompose (recomposeBoundaryCellsFrom), one bit per cell in the
+	// same row-major order as Cells. The glyph write is gated by claimed(), which
+	// reads the cell itself; a background-only boundary recompose leaves no such
+	// mark, so it needs its own record of which cells the fold has already
+	// repainted. Like runOrder it hangs off the grid, so the live draw path's
+	// reused grid pays no allocation per frame.
+	boundaryClaimed []uint64
+}
+
+// resetBoundaryClaims clears the boundary recompose bitset and sizes it to the
+// grid, reusing the backing array when it is already long enough. The fold calls
+// it once per frame, before the first run, and unconditionally: a reused grid
+// must not carry a text-free frame's claims over from the last frame that had
+// text, and the reset makes the bitset a pure function of the frame, so a reused
+// grid compares equal to a freshly composed one.
+func (g *Grid) resetBoundaryClaims() {
+	n := (len(g.Cells) + 63) / 64
+	if cap(g.boundaryClaimed) < n {
+		g.boundaryClaimed = make([]uint64, n)
+		return
+	}
+	g.boundaryClaimed = g.boundaryClaimed[:n]
+	clear(g.boundaryClaimed)
+}
+
+// claimBoundaryCell claims the cell at (col, row) for the boundary recompose and
+// reports whether the claim succeeded. It fails once the cell is already claimed,
+// which makes the recompose first-writer-wins: fed front-to-back, the front-most
+// run keeps a boundary cell two runs both spill into. The claim is separate from
+// claimed(), so a later run's glyph still writes over a recomposed cell.
+func (g *Grid) claimBoundaryCell(col, row int) bool {
+	i := row*g.Cols + col
+	word, bit := i/64, uint64(1)<<uint(i%64)
+	if g.boundaryClaimed[word]&bit != 0 {
+		return false
+	}
+	g.boundaryClaimed[word] |= bit
+	return true
 }
 
 // At returns a pointer to the cell at (col, row). It panics on an out-of-range

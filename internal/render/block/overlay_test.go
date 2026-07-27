@@ -586,6 +586,51 @@ func TestComposeAnchorsWithCarriedCellW(t *testing.T) {
 	}
 }
 
+// TestComposeBoundaryRecomposeIsFirstWriterWins proves the boundary recompose
+// resolves a contested cell the same way the glyph write does: front-most run
+// wins. Two runs spill into grid column 2, which neither writes a glyph to, with
+// masks that pick opposite source columns, so the winner is visible in the
+// repainted background.
+//
+// Column 2 spans CSS [20, 30), its source columns [20, 25) and [25, 30). The
+// front run sits at column 1 with box [10, 25), so column 2 is its right
+// boundary and its mask covers the left source column: uncovered is right. The
+// behind run sits at column 3 with box [25, 40), so column 2 is its left
+// boundary and its mask covers the right source column: uncovered is left. The
+// runs are fed out of rank order, so the fold sorts them front-to-back.
+//
+// Without the first-writer-wins bitset the behind run's repaint lands last and
+// the cell reads the left column instead.
+func TestComposeBoundaryRecomposeIsFirstWriterWins(t *testing.T) {
+	left := color.RGBA{R: 200, G: 100, B: 40, A: 0xff}
+	right := color.RGBA{R: 40, G: 60, B: 220, A: 0xff}
+	fill := color.RGBA{R: 10, G: 10, B: 10, A: 0xff}
+	const cellCSSW = 10.0
+	img := twoColumnQuadrantAt(5, 2, left, right, fill)
+	br := &Renderer{Cols: 5, Rows: 1}
+	behind := render.GlyphRun{
+		Col: 3, Row: 0, Text: "B", X: 25, W: 15,
+		CellW: cellCSSW, FG: color.RGBA{A: 0xff}, StackRank: 1,
+	}
+	front := render.GlyphRun{
+		Col: 1, Row: 0, Text: "F", X: 10, W: 15,
+		CellW: cellCSSW, FG: color.RGBA{A: 0xff}, StackRank: 0,
+	}
+	g := br.Compose(render.Frame{Img: img, Text: []render.GlyphRun{behind, front}})
+	boundary := g.At(2, 0)
+	if boundary.Text != "" || boundary.Wide {
+		t.Fatalf("boundary cell claimed an overlay: Text=%q Wide=%v", boundary.Text, boundary.Wide)
+	}
+	if boundary.BG != right {
+		t.Fatalf("contested boundary BG = %v, want the front run's uncovered right column %v", boundary.BG, right)
+	}
+	// The behind run still owns its own glyph cell, so the claim gates only the
+	// background repaint.
+	if own := g.At(3, 0); own.Text != "B" {
+		t.Fatalf("behind run's own cell Text = %q, want %q", own.Text, "B")
+	}
+}
+
 // TestCellBGAverageFullCoverageIdentity covers the whole cell and asserts the
 // background falls back to the whole-cell mean byte for byte, matching the
 // geometry-free identity.

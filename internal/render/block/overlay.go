@@ -30,7 +30,9 @@ import (
 // bitmap cells beside it (recomposeBoundaryCellsFrom) are repainted to drop the
 // sub-cell residue the box paints into a neighbour the overlay never wrote.
 // Runs fold front-to-back by stacking rank (orderedRuns), so first-writer-wins
-// keeps the front-most run at a contested cell.
+// keeps the front-most run at a contested cell. The boundary recompose follows
+// the same rule through its own bitset, so both halves of the fold hand a
+// contested cell to the same run.
 func applyOverlay(g *Grid, f render.Frame, scheme Scheme) {
 	img, _ := f.Img.(*image.RGBA)
 	applyOverlayFrom(g, f, scheme, rgbaPixelSource{img: img})
@@ -82,6 +84,7 @@ func (g *Grid) orderedRuns(f render.Frame) []render.GlyphRun {
 }
 
 func applyOverlayFrom(g *Grid, f render.Frame, scheme Scheme, src pixelSource) {
+	g.resetBoundaryClaims()
 	for _, run := range g.orderedRuns(f) {
 		row := run.Row
 		if row < 0 || row >= g.Rows {
@@ -154,6 +157,14 @@ func applyOverlayFrom(g *Grid, f render.Frame, scheme Scheme, src pixelSource) {
 // (Text set or a Wide trailing cell), and the run covers at least one of its
 // source columns. A run without geometry (cellCSSW <= 0) covers nothing, so the
 // whole-cell identity is preserved.
+//
+// The recompose is first-writer-wins like the glyph write, through the grid's
+// own claimBoundaryCell bitset rather than claimed(). Two runs can spill into
+// one unclaimed neighbour with different masks, and the fold runs front-to-back,
+// so the bitset keeps the front-most run's repaint. The bitset is separate
+// because claimed() also gates the glyph write: claiming the cell there would
+// suppress legitimate text from a run behind. Only a run that repaints claims;
+// one whose mask is empty covers nothing and leaves the cell to the next run.
 func recomposeBoundaryCellsFrom(g *Grid, src pixelSource, run render.GlyphRun, scheme Scheme, cellCSSW float64) {
 	if cellCSSW <= 0 {
 		return
@@ -183,6 +194,9 @@ func recomposeBoundaryCellsFrom(g *Grid, src pixelSource, run render.GlyphRun, s
 		}
 		covered := coveredColumnsAt(run, gridCol, cellCSSW, pxW)
 		if covered == 0 {
+			continue
+		}
+		if !g.claimBoundaryCell(gridCol, row) {
 			continue
 		}
 		bg := averageUncoveredFrom(src, gridCol*pxW, row*pxH, pxW, pxH, covered)
