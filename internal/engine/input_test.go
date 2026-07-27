@@ -257,16 +257,19 @@ func TestKeyStrokeParamsSelectAll(t *testing.T) {
 	}
 }
 
-// TestKeyStrokeParamsEditKeys asserts Backspace and Escape stroke as
+// TestKeyStrokeParamsEditKeys asserts Backspace, Delete, and Escape stroke as
 // rawKeyDown then keyUp with their virtual key codes and no char event, so
-// Chromium runs its own default action from the key down: Backspace edits the
-// focused field and Escape dismisses page state.
+// Chromium runs its own default action from the key down: Backspace deletes
+// behind the caret, Delete deletes ahead of it, and Escape dismisses page
+// state. The empty text is load-bearing for both delete keys: a char event
+// would type a character rather than remove one.
 func TestKeyStrokeParamsEditKeys(t *testing.T) {
 	cases := []struct {
 		code string
 		vkey int64
 	}{
 		{"Backspace", 8},
+		{"Delete", 46},
 		{"Escape", 27},
 	}
 	for _, c := range cases {
@@ -463,7 +466,7 @@ func TestCaretKeysStrokeRatherThanScroll(t *testing.T) {
 // keep the plain one-way dispatch and pay no scroll adopt round trip, and that
 // an unmapped code reports false rather than indexing a missing stroke.
 func TestStrokeScrollsOnlyCaretKeys(t *testing.T) {
-	for _, code := range []string{"Tab", "Enter", "Backspace", "Escape", "KeyA", ""} {
+	for _, code := range []string{"Tab", "Enter", "Backspace", "Delete", "Escape", "KeyA", ""} {
 		if strokeScrolls(code) {
 			t.Errorf("strokeScrolls(%q) = true, want false", code)
 		}

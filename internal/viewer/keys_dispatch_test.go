@@ -102,8 +102,8 @@ func TestHandleKeyForwardsPageText(t *testing.T) {
 }
 
 // TestHandleKeyForwardsEditKeys pins the field-editing keys: both Backspace
-// encodings (0x08 and DEL) and Esc forward as key codes for the engine to
-// dispatch as full strokes, and neither reaches the text seam.
+// encodings (0x08 and DEL), Delete, and Esc forward as key codes for the engine
+// to dispatch as full strokes, and none reaches the text seam.
 func TestHandleKeyForwardsEditKeys(t *testing.T) {
 	cases := []struct {
 		name string
@@ -112,6 +112,7 @@ func TestHandleKeyForwardsEditKeys(t *testing.T) {
 	}{
 		{"backspace", keyEvent{b: keyBackspace}, "Backspace"},
 		{"del", keyEvent{b: keyDel}, "Backspace"},
+		{"delete", keyEvent{act: actionDelete}, "Delete"},
 		{"esc", keyEvent{b: keyEsc}, "Escape"},
 	}
 	for _, c := range cases {
@@ -283,10 +284,50 @@ func TestBarModeKeepsSelectAllAsLineStart(t *testing.T) {
 	}
 }
 
+// TestBarModeKeepsDeleteAsForwardDelete pins the second readline binding the
+// page must not take: Delete in the URL editor and in the find field still
+// removes the rune under the bar's own cursor and never reaches the page. The
+// bar's first claim in handleKey is the only thing separating the two, because
+// chrome mode now forwards Delete to the focused page field.
+func TestBarModeKeepsDeleteAsForwardDelete(t *testing.T) {
+	modes := []struct {
+		name  string
+		enter keyEvent
+	}{
+		{"edit", keyEvent{b: keyCtrlL}},
+		{"find", keyEvent{b: keyCtrlF}},
+	}
+	for _, m := range modes {
+		t.Run(m.name, func(t *testing.T) {
+			var sent []string
+			s, _ := modeSession(t, streamTestEngine{
+				sendKey: func(code string) { sent = append(sent, code) },
+			})
+
+			s.handleKey(m.enter)
+			s.handleKey(keyEvent{b: keyCtrlU})
+			for _, b := range []byte("abc") {
+				s.handleKey(keyEvent{b: b})
+			}
+			// Park the caret at the line start, where a backspace has nothing to
+			// take, so only a forward delete can change the line.
+			s.handleKey(keyEvent{b: keyCtrlA})
+			s.handleKey(keyEvent{act: actionDelete})
+
+			if len(sent) != 0 {
+				t.Fatalf("%s mode leaked keys to the page: %v", m.name, sent)
+			}
+			if got := s.editor.String(); got != "bc" {
+				t.Fatalf("%s field after Delete = %q, want %q", m.name, got, "bc")
+			}
+		})
+	}
+}
+
 // TestBarModeOwnsTextAndEscape pins the bar-mode first claim: while the URL
-// editor or the menu is open, printable input and Esc belong to the mode, so
-// Esc closes it and nothing reaches the page. Only after the mode closes does
-// Esc forward to the page.
+// editor or the menu is open, printable input, Delete and Esc belong to the
+// mode, so Delete is the mode's own forward delete, Esc closes it and nothing
+// reaches the page. Only after the mode closes does Esc forward to the page.
 func TestBarModeOwnsTextAndEscape(t *testing.T) {
 	modes := []struct {
 		name  string
@@ -311,6 +352,7 @@ func TestBarModeOwnsTextAndEscape(t *testing.T) {
 			}
 			s.handleKey(keyEvent{b: 'a'})
 			s.handleKey(keyEvent{r: 'é'})
+			s.handleKey(keyEvent{act: actionDelete})
 			s.handleKey(keyEvent{b: keyEsc})
 			if s.barMode != barModeChrome {
 				t.Fatalf("Esc did not close %s mode: mode %d", m.name, s.barMode)

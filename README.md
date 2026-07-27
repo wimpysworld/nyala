@@ -82,6 +82,7 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 | Printable keys | Type into the focused page field |
 | <kbd>Space</kbd> | Type a space in a focused field, otherwise scroll down |
 | <kbd>Backspace</kbd> | Delete backwards in the focused page field |
+| <kbd>Del</kbd> | Delete forwards in the focused page field |
 | <kbd>Esc</kbd> | Send Escape to the page |
 | Paste | Insert the clipboard into the focused page field |
 | <kbd>Ctrl</kbd>+<kbd>F</kbd> | Find on the page; <kbd>Enter</kbd> searches, <kbd>Down</kbd> / <kbd>Up</kbd> step the matches, <kbd>Esc</kbd> closes |

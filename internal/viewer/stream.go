@@ -1663,6 +1663,8 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		s.forwardKey("Enter")
 	case actionBackspace:
 		s.forwardKey("Backspace")
+	case actionDelete:
+		s.forwardKey("Delete")
 	case actionEscape:
 		s.forwardKey("Escape")
 	case actionReload:

@@ -518,10 +518,11 @@ that assumption.
 
 Keys and typed text are one transport too, and the engine owns the choice of
 CDP event. `strokeKeys` (`input.go`) maps the named keys the viewer forwards,
-Tab, Enter, Backspace, Escape, the caret keys, and the A key select-all rides
-on, to a full `rawKeyDown`, optional char, `keyUp` stroke, so the page gets the
-browser-native default action: Tab traverses focus with the focus ring, Enter
-activates the focused element, an arrow moves the caret or scrolls, and Ctrl+A
+Tab, Enter, Backspace, Delete, Escape, the caret keys, and the A key
+select-all rides on, to a full `rawKeyDown`, optional char, `keyUp` stroke, so
+the page gets the browser-native default action: Tab traverses focus with the
+focus ring, Enter activates the focused element, Backspace and Delete edit
+either side of the caret, an arrow moves the caret or scrolls, and Ctrl+A
 selects. A stroke carries no char text unless the key produces some, which is
 why the Ctrl+A stroke selects rather than typing an "a". A
 typed printable ASCII character takes the opposite route. `printableStroke`
@@ -1462,7 +1463,7 @@ Chrome: Ctrl+L edits the URL, Ctrl+F opens find, Alt+F opens the menu, Ctrl+A
 selects the page, Alt+W copies the page selection, Ctrl+Q or Ctrl+C quits. Page keys: Tab, Shift+Tab,
 and Enter forward for focus traversal and activation, the arrows, Home, End,
 PageUp, and PageDown forward for the caret and page scrolling, and every
-unbound printable key, Backspace, and Escape forward as page text input.
+unbound printable key, Backspace, Delete, and Escape forward as page text input.
 
 The Kitty keyboard protocol is an enabler for find-in-page, which needs
 Shift+Enter for its previous-match step; legacy terminal encoding has no signal
@@ -1494,11 +1495,12 @@ step; in chrome mode it activates exactly like a legacy carriage return.
 
 Page text input is the default for unbound keys, which is why plain q does not
 quit. A printable byte or an assembled rune forwards through `SendText`, and
-Backspace and Escape forward as full key strokes; Escape reaches the page only
-when no bar mode claimed it. Text shares the serialised key worker, so typing
-and page keys reach the engine in arrival order and a wedged browser drops
-input instead of freezing quit or draw. Which CDP event each one becomes is the
-engine's choice, under Input above.
+Backspace, Delete, and Escape forward as full key strokes; Delete and Escape
+reach the page only when no bar mode claimed them, since the bar's text fields
+bind Delete to their own forward delete. Text shares the serialised key
+worker, so typing and page keys reach the engine in arrival order and a wedged
+browser drops input instead of freezing quit or draw. Which CDP event each one
+becomes is the engine's choice, under Input above.
 
 Bracketed paste (mode 2004) is a session mode, enabled beside mouse reporting
 after the startup handshake and disabled by `exitTerminal` on every teardown.

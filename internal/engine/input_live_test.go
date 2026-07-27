@@ -258,6 +258,68 @@ func TestLiveBackspaceEditsFocusedField(t *testing.T) {
 	}
 }
 
+// TestLiveDeleteEditsFocusedField proves the Delete stroke edits a focused
+// field: the character after the caret is removed. The caret is parked at the
+// field start, so a Backspace would have nothing to remove and only a real
+// forward delete can change the value. The value read is the assertion that
+// matters: a keydown log alone would hold whatever was dispatched.
+func TestLiveDeleteEditsFocusedField(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+	focusField(t, ctx)
+
+	e.SendText("ab")
+	if got, ok := waitForString(t, ctx, "document.getElementById('f').value", "ab"); !ok {
+		t.Fatalf("field value = %q before Delete, want %q", got, "ab")
+	}
+	evalVoid(t, ctx, "document.getElementById('f').setSelectionRange(0,0)")
+
+	e.SendKey(Key{Code: "Delete"})
+
+	if got, ok := waitForString(t, ctx, "document.getElementById('f').value", "b"); !ok {
+		t.Fatalf("field value = %q after Delete, want %q", got, "b")
+	}
+	if pressed := evalString(t, ctx, "window.pressed.includes('Delete').toString()"); pressed != "true" {
+		t.Fatal("the page saw no Delete keydown")
+	}
+}
+
+// TestLiveDeleteRemovesFocusedSelection proves the Delete stroke removes a
+// field selection rather than one character: Chromium's own default action
+// takes the whole selected range.
+func TestLiveDeleteRemovesFocusedSelection(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+	focusField(t, ctx)
+
+	e.SendText("abcd")
+	if got, ok := waitForString(t, ctx, "document.getElementById('f').value", "abcd"); !ok {
+		t.Fatalf("field value = %q before Delete, want %q", got, "abcd")
+	}
+	evalVoid(t, ctx, "document.getElementById('f').setSelectionRange(1,3)")
+
+	e.SendKey(Key{Code: "Delete"})
+
+	if got, ok := waitForString(t, ctx, "document.getElementById('f').value", "ad"); !ok {
+		t.Fatalf("field value = %q after Delete over a selection, want %q", got, "ad")
+	}
+}
+
+// TestLiveDeleteDoesNotScroll proves Delete with nothing focused leaves the
+// page where it was. Delete carries no scrolling default action, so it must
+// stay off the scroll-adopting dispatch the caret keys take.
+func TestLiveDeleteDoesNotScroll(t *testing.T) {
+	e, ctx := liveInputEngine(t)
+	blurField(t, ctx)
+
+	e.SendKey(Key{Code: "Delete"})
+
+	if got, ok := waitForString(t, ctx, "window.pressed.includes('Delete').toString()", "true"); !ok {
+		t.Fatalf("the page saw no Delete keydown (log check = %q)", got)
+	}
+	if got := evalFloat(t, ctx, "window.scrollY"); got != 0 {
+		t.Fatalf("window.scrollY = %g after an unfocused Delete, want 0", got)
+	}
+}
+
 // TestLivePasteInsertsIntoFocusedField proves an ASCII paste lands in a focused
 // field as one unit. The page's keydown log must stay empty: a paste inserts
 // atomically and is never synthesised as key presses, so a pasted newline
