@@ -754,6 +754,15 @@ that count at zero: a frame whose runs already arrive in rank order takes a
 no-copy fast path, and a reorder lands in a scratch buffer on the `block.Grid`,
 which the live draw path reuses frame after frame.
 
+A run's box can also spill a sub-cell residue into the cell beside it, which the
+overlay never writes, so the fold repaints those two neighbours from their
+uncovered source columns alone (`recomposeBoundaryCellsFrom`). That repaint is
+first-writer-wins too, through its own per-frame bitset on the grid, so both
+halves of the fold hand a contested cell to the same run. The bitset is separate
+from the cell claim because the cell claim also gates the glyph write: claiming
+a neighbour there would suppress legitimate text from a run behind. Like the
+scratch buffer it hangs off the grid, so the reused live grid allocates it once.
+
 The producer owns cell positions; the compositor does no binning. The in-page
 walk snaps each run's origin with round, not floor: `col = round(px/cellW)`,
 `row = round(py/cellH)`. Page insets are arbitrary sub-cell offsets, so
