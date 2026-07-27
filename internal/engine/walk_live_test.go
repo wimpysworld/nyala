@@ -222,7 +222,7 @@ func TestLiveScreenReaderOnlyTextDropped(t *testing.T) {
 	}
 }
 
-// occlusionTestPage carries five text nodes in a deterministic 640x384 CSS viewport
+// occlusionTestPage carries seven text nodes in a deterministic 640x384 CSS viewport
 // (grid 80x24 at cell 8x16, device scale 1). An opaque position:fixed banner at the
 // bottom (background rgb(0,0,0), its own text "acceptcookies") covers the absolute
 // "behindtext". A translucent position:fixed scrim (rgba(0,0,0,0.3)) covers the
@@ -233,8 +233,14 @@ func TestLiveScreenReaderOnlyTextDropped(t *testing.T) {
 // pointer-events:none sibling span "badge86" on top. The hit-test at the badge
 // centre returns the transparent stand-in, and only the opaque card ancestry, at
 // the LCA and above, carries alpha; the badge must survive the occlusion cull.
-// Colours use rgb()/rgba() rather than hex: a '#' in a data: URL starts the fragment
-// and would drop the rest of the document.
+// Two partly covered lines prove the cull reads more than the line-box centre. A
+// 16px opaque strip sits over the centre of "narrowcovered" (x 10..114) and nowhere
+// else, so the start and end samples stay clear. An opaque box covers the left half
+// of "halfcovered" (x 10..98), so the end sample stays clear. Each line keeps at
+// least one uncovered sample, so both runs must survive whole; the full-width
+// banner over "behindtext" covers every sample, so it must still cull. Colours use
+// rgb()/rgba() rather than hex: a '#' in a data: URL starts the fragment and would
+// drop the rest of the document.
 const occlusionTestPage = "data:text/html," +
 	"<html><body style='margin:0'>" +
 	"<div style='position:absolute;top:10px;left:10px'>visibletext</div>" +
@@ -244,6 +250,10 @@ const occlusionTestPage = "data:text/html," +
 	"</div>" +
 	"<div style='position:absolute;top:110px;left:10px'>underscrim</div>" +
 	"<div style='position:fixed;top:100px;left:0;width:400px;height:40px;background:rgba(0,0,0,0.3);z-index:10'></div>" +
+	"<div style='position:absolute;top:150px;left:10px'>narrowcovered</div>" +
+	"<div style='position:absolute;top:146px;left:54px;width:16px;height:24px;background:rgb(0,0,0);z-index:30'></div>" +
+	"<div style='position:absolute;top:190px;left:10px'>halfcovered</div>" +
+	"<div style='position:absolute;top:184px;left:0;width:64px;height:24px;background:rgb(0,0,0);z-index:30'></div>" +
 	"<div style='position:absolute;top:320px;left:10px'>behindtext</div>" +
 	"<div style='position:fixed;bottom:0;left:0;width:640px;height:80px;background:rgb(0,0,0);color:rgb(255,255,255);z-index:20'>acceptcookies</div>" +
 	"</body></html>"
@@ -253,9 +263,9 @@ const occlusionTestPage = "data:text/html," +
 // headers, modals). It launches a real Chromium, navigates the occlusion page,
 // injects the production forcing stylesheet, waits for the font, then runs the walk
 // and asserts the opaque banner culls the behind-text while the banner's own text,
-// the clear text, the text under a translucent scrim, and the pointer-events:none
-// badge over the image stand-in all survive. The live tag keeps it off `just test`
-// and CI; run it with `just live`.
+// the clear text, the text under a translucent scrim, the pointer-events:none badge
+// over the image stand-in, and the two partly covered lines all survive. The live
+// tag keeps it off `just test` and CI; run it with `just live`.
 func TestLiveOccludedTextDropped(t *testing.T) {
 	if _, err := resolveExecutable(""); err != nil {
 		t.Skipf("no Chromium for the live test: %v", err)
@@ -326,6 +336,12 @@ func TestLiveOccludedTextDropped(t *testing.T) {
 	}
 	if !strings.Contains(all, "badge86") {
 		t.Errorf("pointer-events:none badge over the image stand-in was culled; runs:\n%s", all)
+	}
+	if !strings.Contains(all, "narrowcovered") {
+		t.Errorf("text under a narrow strip over its centre alone was culled; runs:\n%s", all)
+	}
+	if !strings.Contains(all, "halfcovered") {
+		t.Errorf("text with only its left half covered was culled; runs:\n%s", all)
 	}
 }
 

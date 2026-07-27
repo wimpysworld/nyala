@@ -88,10 +88,13 @@ type walkResult struct {
 // puts every line box top at an integer multiple of the cell, so a word measured
 // with one Range.getClientRects() call whose rects share a row buckets as a unit;
 // only a word spanning more than one line box (a wrapped word, a spaceless CJK run,
-// or vertical/ruby text) falls back to a per-code-unit measurement of the node. Before it pushes a line it culls the run
-// when an opaque element covers the line-box centre (an opaque-aware occlusion
-// hit-test), so text behind a cookie banner, sticky header, or modal no longer
-// leaks through the first-writer-wins overlay. Each run also carries a
+// or vertical/ruby text) falls back to a per-code-unit measurement of the node.
+// Before it pushes a line it hit-tests the line box at its start, centre, and
+// end (an opaque-aware occlusion test) and culls the run only when every sample
+// that hit an element is covered by an opaque background, so text behind a
+// cookie banner, sticky header, or modal no longer leaks through the
+// first-writer-wins overlay while a partly covered line keeps all its text.
+// Each run also carries a
 // front-to-back stacking rank the page derives from the stacking-context
 // ancestry of the run's element and flattens to a dense integer over the run
 // set, 0 being front-most (docs/ARCHITECTURE.md holds the ordering model); the

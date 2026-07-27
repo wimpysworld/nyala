@@ -153,10 +153,12 @@ under 0.5 cells, zero drifted boxes, zero collisions, nine fixtures at two
 grid sizes.
 
 **Occlusion cull and hidden-text filters.** Screen-reader-only text
-(collapsed clip rects, 1 px boxes) is dropped, and one `elementFromPoint`
+(collapsed clip rects, 1 px boxes) is dropped, and an `elementFromPoint`
 hit-test per run drops text covered by an opaque overlay; cookie banners on
 bbc.co.uk had leaked through before. LCA-bounded background compositing
-later stopped false culls over `pointer-events: none` images.
+later stopped false culls over `pointer-events: none` images, and the lone
+centre sample later grew to three across the line box, so a run covered at
+its centre alone keeps its text.
 
 **Sextant mode behind an allow-list.** A 2x3 scheme (Unicode 13, `U+1FB00`
 to `U+1FB3B`) gives 50% more vertical resolution. Auto mode resolves
