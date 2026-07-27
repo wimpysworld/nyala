@@ -59,8 +59,10 @@ type walkRun struct {
 }
 
 // walkFixedBox is one viewport-anchored position: fixed box the in-page walk
-// reports, its edges on-screen CSS pixels and Opaque true when the element's
-// composited background reaches alpha 255. Such a box holds its screen rect while
+// reports, its edges on-screen CSS pixels and Opaque true when the element's own
+// background reaches alpha 255. Ancestor backgrounds are excluded on purpose, so
+// the opaque body nearly every page carries can never make a transparent bar read
+// as a cover. Such a box holds its screen rect while
 // the page scrolls, so the compose-time scroll shift uses it to tell
 // viewport-anchored text from flow text and to re-test occlusion on a shifted
 // frame.
