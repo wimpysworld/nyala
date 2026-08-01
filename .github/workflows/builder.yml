@@ -66,7 +66,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Check module files
@@ -87,7 +87,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Check Go formatting
@@ -108,7 +108,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Run go vet
@@ -135,7 +135,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Install actionlint
@@ -158,7 +158,7 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
       - name: Enable FlakeHub Cache
-        uses: DeterminateSystems/flakehub-cache-action@v3
+        uses: DeterminateSystems/flakehub-cache-action@v3.21.8
         continue-on-error: true
       - name: Check flake
         run: nix flake check
@@ -191,7 +191,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Run tests
@@ -217,7 +217,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       # The build-tagged correctness suites the untagged `go test ./...` leg
@@ -292,7 +292,7 @@ jobs:
       GOOS: ${{ matrix.goos }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Build Nyala
@@ -319,7 +319,7 @@ jobs:
           allow-licenses: 0BSD, AFL-2.0, AFL-2.1, AFL-3.0, ANTLR-PD, ANTLR-PD-fallback, Apache-1.0, Apache-1.1, Apache-2.0, Artistic-2.0, BlueOak-1.0.0, BSD-1-Clause, BSD-2-Clause, BSD-2-Clause-FreeBSD, BSD-2-Clause-NetBSD, BSD-2-Clause-Patent, BSD-2-Clause-Views, BSD-3-Clause, BSD-3-Clause-Attribution, BSD-3-Clause-Clear, BSD-3-Clause-HP, BSD-3-Clause-LBNL, BSD-3-Clause-Modification, BSD-3-Clause-No-Nuclear-License-2014, BSD-3-Clause-No-Nuclear-Warranty, BSD-3-Clause-Open-MPI, BSD-3-Clause-Sun, BSD-4-Clause, BSD-4-Clause-Shortened, BSD-4-Clause-UC, BSD-Source-Code, BSL-1.0, bzip2-1.0.5, bzip2-1.0.6, CC0-1.0, CNRI-Python, CNRI-Python-GPL-Compatible, curl, ECL-2.0, FTL, HPND-Fenneberg-Livingston, HPND-sell-regexpr, HTMLTIDY, ICU, ImageMagick, Info-ZIP, Intel, Intel-ACPI, ISC, JasPer-2.0, Libpng, libpng-2.0, libtiff, Linux-OpenIB, LZMA-SDK-9.22, MIT, MIT-0, MIT-advertising, MIT-CMU, MIT-Modern-Variant, MIT-open-group, MITNFA, MS-PL, MulanPSL-1.0, MulanPSL-2.0, Multics, NCSA, Net-SNMP, NetCDF, NIST-Software, NTP, OLDAP-2.7, OLDAP-2.8, OpenSSL, PostgreSQL, PSF-2.0, SGI-B-2.0, SHL-0.5, Spencer-99, SunPro, TCL, TCP-wrappers, UCAR, Unicode-DFS-2015, Unicode-DFS-2016, UnixCrypt, Unlicense, UPL-1.0, W3C, X11, XFree86-1.1, Xnet, Zlib, zlib-acknowledgement, ZPL-2.0, ZPL-2.1
           fail-on-scopes: runtime
           comment-summary-in-pr: on-failure
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Install govulncheck
@@ -330,7 +330,7 @@ jobs:
       # private repo lacks. Skip while private; re-enables when public.
       - name: Upload SARIF
         if: ${{ always() && github.event.repository.visibility == 'public' }}
-        uses: github/codeql-action/upload-sarif@v4.36.2
+        uses: github/codeql-action/upload-sarif@v4.37.3
         with:
           sarif_file: govulncheck.sarif
           category: govulncheck
@@ -372,7 +372,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Set up Docker Buildx
@@ -389,7 +389,7 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
       - name: Enable FlakeHub Cache
-        uses: DeterminateSystems/flakehub-cache-action@v3
+        uses: DeterminateSystems/flakehub-cache-action@v3.21.8
         continue-on-error: true
       - name: Install GoReleaser
         run: go install "github.com/goreleaser/goreleaser/v2@${GORELEASER_VERSION}"
@@ -415,7 +415,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Set up Docker Buildx
@@ -432,7 +432,7 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
       - name: Enable FlakeHub Cache
-        uses: DeterminateSystems/flakehub-cache-action@v3
+        uses: DeterminateSystems/flakehub-cache-action@v3.21.8
         continue-on-error: true
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.2
