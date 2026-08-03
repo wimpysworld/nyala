@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/chromedp"
 )
 
@@ -31,9 +32,11 @@ func (e *ChromiumEngine) fetchBrowserVersion(ctx context.Context) {
 		return
 	}
 	var product string
+	var userAgent string
 	err := chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {
-		_, p, _, _, _, gerr := browser.GetVersion().Do(runCtx)
+		_, p, _, ua, _, gerr := browser.GetVersion().Do(runCtx)
 		product = p
+		userAgent = ua
 		return gerr
 	}))
 	if err != nil {
@@ -41,7 +44,18 @@ func (e *ChromiumEngine) fetchBrowserVersion(ctx context.Context) {
 	}
 	e.mu.Lock()
 	e.browserProduct = product
+	e.browserUserAgent = userAgent
 	e.mu.Unlock()
+}
+
+func (e *ChromiumEngine) applyUserAgentOverride(ctx context.Context) error {
+	e.mu.Lock()
+	userAgent := formatBrowserUserAgent(e.browserUserAgent)
+	e.mu.Unlock()
+	if userAgent == "" {
+		return nil
+	}
+	return chromedp.Run(ctx, emulation.SetUserAgentOverride(userAgent))
 }
 
 // formatBrowserVersion normalises a Browser.getVersion product string for
@@ -58,4 +72,8 @@ func formatBrowserVersion(product string) string {
 		return version
 	}
 	return name + " " + version
+}
+
+func formatBrowserUserAgent(userAgent string) string {
+	return strings.ReplaceAll(userAgent, "HeadlessChrome", "Chrome")
 }

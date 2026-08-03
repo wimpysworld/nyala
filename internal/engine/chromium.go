@@ -47,12 +47,13 @@ type ChromiumEngine struct {
 	// before the first commit, when CurrentURL falls back to the launch URL.
 	currentURL string
 
-	// browserProduct is the raw Browser.getVersion product string (for
-	// example "HeadlessChrome/138.0.7204.49"), fetched once at session start
-	// and cached for the engine lifetime, so a crash rebuild does not refetch
-	// it. BrowserVersion normalises it for display. Empty when the fetch has
-	// not run or failed.
-	browserProduct string
+	// browserProduct and browserUserAgent are the raw Browser.getVersion values,
+	// fetched once at session start and cached for the engine lifetime, so a
+	// crash rebuild does not refetch them. BrowserVersion normalises product for
+	// display, while the user agent feeds the wire override. Empty when the fetch
+	// has not run or failed.
+	browserProduct   string
+	browserUserAgent string
 
 	// scrollYTarget is the raw intended vertical scroll offset in CSS pixels before
 	// whole-cell snapping. On the block backend dispatchWheel accumulates every raw
