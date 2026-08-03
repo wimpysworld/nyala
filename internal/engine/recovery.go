@@ -46,9 +46,13 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	}
 	cx, cy := wheelCentre(e.cols, e.rows, e.cellW, e.cellH, e.layoutScale())
 	e.mu.Unlock()
-	// Cache the browser product for BrowserVersion once per engine; a rebuild
-	// reuses the cache and a failure degrades to an empty version string.
+	// Cache the browser product and user agent once per engine; a rebuild reuses
+	// them, and a failure degrades to an empty version string and no UA override.
 	e.fetchBrowserVersion(ctx)
+	if err := e.applyUserAgentOverride(ctx); err != nil {
+		e.teardownSession()
+		return nil, err
+	}
 
 	// Feed a bounded, drop-oldest queue to a small pool of decode
 	// workers, so several frames decode in parallel and the block-backend frame rate is
