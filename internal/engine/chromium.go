@@ -31,9 +31,14 @@ type ChromiumEngine struct {
 	// across a chromedp.Run or a channel send, or it deadlocks with the supervisor.
 	mu sync.Mutex
 
-	// Browser context and its cancel, owned by chromedp.
-	ctx    context.Context
-	cancel context.CancelFunc
+	// Browser context, bounded graceful close, and raw cancellation, owned by
+	// chromedp. teardownSession snapshots and clears all three together.
+	ctx            context.Context
+	closeBrowserOp func(context.Context) error
+	cancel         context.CancelFunc
+	// closeTimeout is a lifecycle-test override. Production uses
+	// gracefulCloseTimeout.
+	closeTimeout time.Duration
 
 	// Page state held outside chromedp for crash recovery.
 	url     string // launch URL, recorded once by Navigate and never rewritten
@@ -221,6 +226,9 @@ type ChromiumEngine struct {
 	ackScreencastOp   func(context.Context, int64) error
 	navigateOp        func(context.Context, string) (cdp.FrameID, cdp.LoaderID, bool, error)
 	beforeInitialLock func()
+	// startSessionOp is nil in production. Recovery tests replace it to prove
+	// rebuild ordering without launching Chromium.
+	startSessionOp func() (chan struct{}, error)
 
 	// lifecycle tracks navigation commits and main-frame first contentful paint for
 	// one session. It is installed before navigation and cleared on teardown.

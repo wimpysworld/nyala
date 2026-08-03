@@ -189,6 +189,12 @@ func signalExitStatus(sig os.Signal) int {
 	return 128
 }
 
+func handleFatalSignal(sig os.Signal, restore func(), closeEngine func() error, exit func(int)) {
+	restore()
+	_ = closeEngine()
+	exit(signalExitStatus(sig))
+}
+
 // Stream runs the interactive viewer on tty, drawing the live frames eng pushes,
 // until the user quits. It puts the terminal into raw mode, detects which
 // backends the terminal supports, hands the resolved backend and cell px to the
@@ -330,24 +336,19 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	if werr := s.emitControl(startup.Bytes()); werr != nil {
 		return werr
 	}
-	// A terminating signal must restore the terminal before the process dies:
-	// Go runs no deferred function for a signal left on its default
-	// disposition, so a hard kill would otherwise leave raw mode and mouse
-	// reporting enabled, and the shell would read a stream of SGR mouse
-	// reports. The watcher shares restoreTerminal's Once with the deferred
-	// teardown, so the restore runs exactly once, and it exits via done on a
-	// normal quit. It starts after session is set, so the drawn-state read
-	// never races this goroutine's start. The browser needs no wind-down
-	// here: chromedp spawns Chromium with a parent-death signal, so the
-	// kernel kills it when this process exits.
+	// A caught signal restores the terminal before bounded browser teardown can
+	// wait, or raw mode and mouse reporting could remain active during that wait.
+	// The watcher shares restoreTerminal's Once with the deferred teardown, so the
+	// restore runs exactly once, then the engine closes before the process exits
+	// with the unchanged 128-plus-signal status. It starts after session is set,
+	// so the drawn-state read never races this goroutine's start.
 	fatal := make(chan os.Signal, 1)
 	signal.Notify(fatal, fatalSignals...)
 	defer signal.Stop(fatal)
 	go func() {
 		select {
 		case sig := <-fatal:
-			restoreTerminal()
-			os.Exit(signalExitStatus(sig))
+			handleFatalSignal(sig, restoreTerminal, eng.Close, os.Exit)
 		case <-done:
 		}
 	}()

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/chromedp/cdproto"
 	"github.com/chromedp/cdproto/cdp"
@@ -15,6 +16,10 @@ import (
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
+
+// gracefulCloseTimeout gives healthy local Chromium time to flush state while
+// keeping a stuck close below one second.
+const gracefulCloseTimeout = 500 * time.Millisecond
 
 // startSession builds one live browser session from the engine's held state and
 // starts the screencast and frame loop. It launches the allocator and context,
@@ -521,21 +526,26 @@ func (e *ChromiumEngine) pokeReflow() {
 }
 
 // teardownSession tears down the live session without closing the frames
-// channel, so it is safe on both a crash rebuild and Close. It cancels the context,
-// which stops the screencast, force-kills the managed
-// Chromium, and releases the publisher's send select. It then waits for the session's
-// sole frame publisher and drains frames buffered before cancellation won its selects.
+// channel, so normal Close, error cleanup, and crash rebuild share one path. For
+// a live session it asks chromedp.Cancel to send Browser.close, bounded by
+// gracefulCloseTimeout. A close error, timeout, or dead session selects raw
+// cancellation, so browser or CDP failure cannot block exit or crash rebuild.
+// It then waits for the session's sole frame publisher and drains frames buffered
+// before cancellation won its selects.
 // This prevents an old-session frame surviving recovery. Decode workers need no join
 // because their decoded channel is session-local and only the joined collector can
 // reach frames. It clears the per-session fields so a stale context is never reused.
 func (e *ChromiumEngine) teardownSession() {
 	e.mu.Lock()
+	ctx := e.ctx
+	closeBrowser := e.closeBrowserOp
 	cancel := e.cancel
+	closeTimeout := e.closeTimeout
 	acks := e.acks
 	ackPumpDone := e.ackPumpDone
 	publisherDone := e.framePublisherDone
 	frames := e.frames
-	e.ctx, e.cancel, e.acks, e.text = nil, nil, nil, nil
+	e.ctx, e.closeBrowserOp, e.cancel, e.acks, e.text = nil, nil, nil, nil, nil
 	e.ackPumpDone = nil
 	e.rawQ = nil
 	e.reSnap, e.reflow, e.scroll, e.reEmit = nil, nil, nil, nil
@@ -550,7 +560,29 @@ func (e *ChromiumEngine) teardownSession() {
 	e.layoutShiftID = ""
 	e.mu.Unlock()
 	acks.stop()
-	if cancel != nil {
+	if closeTimeout <= 0 {
+		closeTimeout = gracefulCloseTimeout
+	}
+	if ctx != nil && ctx.Err() == nil && closeBrowser != nil {
+		// chromedp.Cancel cancels ctx before it returns. Keep that cancellation
+		// separate from the deadline that bounds the graceful close attempt.
+		closeCtx, stopClose := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
+		closeDone := make(chan error, 1)
+		go func() {
+			closeDone <- closeBrowser(closeCtx)
+		}()
+		var closeFailed bool
+		select {
+		case err := <-closeDone:
+			closeFailed = err != nil || errors.Is(closeCtx.Err(), context.DeadlineExceeded)
+		case <-closeCtx.Done():
+			closeFailed = true
+		}
+		stopClose()
+		if closeFailed && cancel != nil {
+			cancel()
+		}
+	} else if cancel != nil {
 		cancel()
 	}
 	if ackPumpDone != nil {
@@ -619,7 +651,11 @@ func (e *ChromiumEngine) supervise(crashed chan struct{}) {
 // when the relaunch fails, in which case the supervisor stops.
 func (e *ChromiumEngine) rebuild() (crashed chan struct{}, ok bool) {
 	e.teardownSession()
-	next, err := e.startSession()
+	startSession := e.startSession
+	if e.startSessionOp != nil {
+		startSession = e.startSessionOp
+	}
+	next, err := startSession()
 	if err != nil {
 		return nil, false
 	}

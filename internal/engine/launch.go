@@ -355,8 +355,16 @@ func (e *ChromiumEngine) launch(flag string) error {
 		ctxCancel()
 		allocCancel()
 	}
+	closeBrowser := func(closeCtx context.Context) error {
+		if err := chromedp.Cancel(closeCtx); err != nil {
+			return err
+		}
+		allocCancel()
+		return nil
+	}
 	e.mu.Lock()
 	e.ctx = ctx
+	e.closeBrowserOp = closeBrowser
 	e.cancel = cancel
 	e.mu.Unlock()
 	// Fetch the window id once per session so SetContentsSize can size the captured
@@ -368,14 +376,14 @@ func (e *ChromiumEngine) launch(flag string) error {
 		windowID = id
 		return gerr
 	})); err != nil {
-		cancel()
+		e.teardownSession()
 		return err
 	}
 	e.mu.Lock()
 	e.windowID = windowID
 	e.mu.Unlock()
 	if err := enableLifecycle(ctx); err != nil {
-		cancel()
+		e.teardownSession()
 		return err
 	}
 	// Force the page onto the monospace grid only for the block backend, which folds
@@ -383,7 +391,7 @@ func (e *ChromiumEngine) launch(flag string) error {
 	// bitmap alone, so forcing the font would distort a page they render faithfully.
 	if forcing {
 		if err := e.injectFontStylesheet(ctx); err != nil {
-			cancel()
+			e.teardownSession()
 			return err
 		}
 		// Register the layout-shift observer and its binding on the block backend, so a
@@ -394,14 +402,14 @@ func (e *ChromiumEngine) launch(flag string) error {
 		e.enableLayoutShift(ctx)
 	}
 	if err := applySizing(ctx, windowID, surfW, surfH, z); err != nil {
-		cancel()
+		e.teardownSession()
 		return err
 	}
 	e.mu.Lock()
 	e.sizedSurfaceW, e.sizedSurfaceH, e.sizedScale = surfW, surfH, z
 	e.mu.Unlock()
 	if err := e.enableProxyAuth(ctx); err != nil {
-		cancel()
+		e.teardownSession()
 		return err
 	}
 	return nil
