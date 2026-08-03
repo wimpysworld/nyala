@@ -52,6 +52,10 @@ type Engine interface {
 }
 ```
 
+`Close()` is the viewer's browser teardown seam. Normal and error returns after
+session setup, plus caught signals, call it. Crash recovery enters the same
+engine teardown through the supervisor.
+
 ### One synced channel
 
 `Frames()` is the only frame source. The engine places the DOM text layer by
@@ -657,6 +661,12 @@ rebuild, so the consumer keeps reading. `navigateAsync` drives navigation on
 its own goroutine after the frame loop is live, so startup never blocks; a
 failed load renders Chromium's own error page rather than tearing the session
 down.
+
+Normal close, error cleanup, and crash recovery share `teardownSession`. For a
+live session, it asks `chromedp.Cancel` to send `Browser.close` with a 500 ms
+limit. A close error, timeout, or already-dead session falls back to raw
+cancellation. The limit gives a healthy local Chromium time to flush state,
+while browser or CDP failure cannot block process exit or crash rebuild.
 
 One mutex guards all shared session and geometry state. Every method locks,
 copies into locals, unlocks, then runs chromedp I/O on the locals; the mutex
@@ -1517,15 +1527,15 @@ take, which the bar says out loud, under Copy and paste signals above.
 signal left on its default disposition, so a signal that killed Nyala would
 strand raw mode, mouse reporting, and bracketed paste, and the shell would then
 read SGR mouse reports as typed input. `Stream` therefore watches SIGHUP,
-SIGINT, SIGQUIT, and SIGTERM on one channel, restores through the same `Once`,
-and exits 128 plus the signal number: 129, 130, 131, and 143. SIGHUP is the
-closed terminal window and the dropped SSH connection; SIGINT and SIGQUIT are a
-`kill` from another shell. Catching SIGINT does not touch interactive Ctrl+C,
-because raw mode clears ISIG and the byte `0x03` quits through the key path.
-SIGKILL is uncatchable and a dropped connection defeats in-process cleanup, so
-`reset` stays the answer to both. The browser needs no wind-down on this path:
-chromedp spawns Chromium with a parent-death signal, so the kernel kills it
-when Nyala exits.
+SIGINT, SIGQUIT, and SIGTERM on one channel. A caught signal restores through
+the same `Once`, calls `Engine.Close` to request the 500 ms bounded
+`Browser.close`, then exits 128 plus the signal number: 129, 130, 131, and 143.
+The browser result cannot change the status or block exit past the bounded raw
+cancellation fallback. SIGHUP is the closed terminal window and the dropped
+SSH connection; SIGINT and SIGQUIT are a `kill` from another shell. Catching
+SIGINT does not touch interactive Ctrl+C, because raw mode clears ISIG and the
+byte `0x03` quits through the key path. SIGKILL is uncatchable and a dropped
+connection defeats in-process cleanup, so `reset` stays the answer to both.
 
 ## Correctness architecture
 

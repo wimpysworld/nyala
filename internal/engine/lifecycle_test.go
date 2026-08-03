@@ -135,6 +135,222 @@ func TestSuperviseCloseWinsOverRebuild(t *testing.T) {
 	}
 }
 
+func TestCloseGracefullyClosesLiveSession(t *testing.T) {
+	e := New("")
+	ctx, cancel := context.WithCancel(context.Background())
+	gracefulCalled := false
+	rawCancelled := false
+	engineUnlocked := false
+	screencastUnlocked := false
+	e.ctx = ctx
+	e.closeBrowserOp = func(context.Context) error {
+		engineUnlocked = e.mu.TryLock()
+		if engineUnlocked {
+			e.mu.Unlock()
+		}
+		screencastUnlocked = e.screencastCtl.TryLock()
+		if screencastUnlocked {
+			e.screencastCtl.Unlock()
+		}
+		gracefulCalled = true
+		cancel()
+		return nil
+	}
+	e.cancel = func() {
+		rawCancelled = true
+		cancel()
+	}
+	e.frames = make(chan render.Frame)
+	e.closing, e.supDone = make(chan struct{}), make(chan struct{})
+	e.supervised = true
+	go e.supervise(make(chan struct{}))
+	if err := e.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	if !gracefulCalled {
+		t.Fatal("Close did not request graceful browser shutdown")
+	}
+	if rawCancelled {
+		t.Fatal("Close selected raw cancellation after a successful graceful close")
+	}
+	if !engineUnlocked || !screencastUnlocked {
+		t.Fatal("graceful close ran while an engine lock was held")
+	}
+}
+
+func TestTeardownSessionDeadlineFallsBackToRawCancellation(t *testing.T) {
+	if gracefulCloseTimeout != 500*time.Millisecond {
+		t.Fatalf("gracefulCloseTimeout = %v, want 500ms", gracefulCloseTimeout)
+	}
+	e := New("")
+	ctx, cancel := context.WithCancel(context.Background())
+	closeStarted := make(chan struct{})
+	rawCancelled := make(chan struct{})
+	releaseClose := make(chan struct{})
+	e.ctx = ctx
+	e.closeTimeout = 20 * time.Millisecond
+	e.closeBrowserOp = func(context.Context) error {
+		close(closeStarted)
+		<-releaseClose
+		return errors.New("close remained blocked")
+	}
+	e.cancel = func() {
+		cancel()
+		close(rawCancelled)
+		close(releaseClose)
+	}
+	done := make(chan struct{})
+	go func() {
+		e.teardownSession()
+		close(done)
+	}()
+	select {
+	case <-closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("graceful close did not start")
+	}
+	select {
+	case <-rawCancelled:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("deadline did not trigger raw cancellation")
+	}
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("teardown did not return after raw cancellation")
+	}
+}
+
+func TestTeardownCancelledSessionSkipsGracefulClose(t *testing.T) {
+	e := New("")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	gracefulCalled := false
+	rawCancelled := false
+	e.ctx = ctx
+	e.closeBrowserOp = func(context.Context) error {
+		gracefulCalled = true
+		return nil
+	}
+	e.cancel = func() { rawCancelled = true }
+	e.teardownSession()
+	if gracefulCalled {
+		t.Fatal("cancelled session attempted graceful browser shutdown")
+	}
+	if !rawCancelled {
+		t.Fatal("cancelled session did not use raw cancellation")
+	}
+}
+
+func TestRebuildContinuesAfterBoundedTeardown(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		gracefulClose func(context.Context, context.CancelFunc) error
+		wantFallback  bool
+	}{
+		{
+			name: "graceful close",
+			gracefulClose: func(_ context.Context, cancel context.CancelFunc) error {
+				cancel()
+				return nil
+			},
+		},
+		{
+			name: "deadline fallback",
+			gracefulClose: func(ctx context.Context, _ context.CancelFunc) error {
+				<-ctx.Done()
+				return ctx.Err()
+			},
+			wantFallback: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := New("")
+			oldCtx, cancelOld := context.WithCancel(context.Background())
+			replacementCtx, cancelReplacement := context.WithCancel(context.Background())
+			t.Cleanup(cancelReplacement)
+			fallback := make(chan struct{})
+			e.ctx = oldCtx
+			e.closeTimeout = 20 * time.Millisecond
+			e.closeBrowserOp = func(ctx context.Context) error {
+				return tc.gracefulClose(ctx, cancelOld)
+			}
+			e.cancel = func() {
+				cancelOld()
+				close(fallback)
+			}
+
+			replacementStarted := make(chan struct{})
+			replacementCrashed := make(chan struct{})
+			var replacementErr error
+			e.startSessionOp = func() (chan struct{}, error) {
+				defer close(replacementStarted)
+				select {
+				case <-oldCtx.Done():
+				default:
+					replacementErr = errors.New("replacement started before the old session was released")
+					return nil, replacementErr
+				}
+				e.mu.Lock()
+				oldSessionCleared := e.ctx == nil && e.closeBrowserOp == nil && e.cancel == nil
+				e.mu.Unlock()
+				if !oldSessionCleared {
+					replacementErr = errors.New("replacement started while old session fields remained")
+					return nil, replacementErr
+				}
+				if tc.wantFallback {
+					select {
+					case <-fallback:
+					default:
+						replacementErr = errors.New("replacement started before bounded fallback")
+						return nil, replacementErr
+					}
+				} else {
+					select {
+					case <-fallback:
+						replacementErr = errors.New("successful graceful close selected raw fallback")
+						return nil, replacementErr
+					default:
+					}
+				}
+				e.mu.Lock()
+				e.ctx = replacementCtx
+				e.cancel = cancelReplacement
+				e.mu.Unlock()
+				return replacementCrashed, nil
+			}
+
+			rebuildDone := make(chan bool, 1)
+			go func() {
+				crashed, ok := e.rebuild()
+				rebuildDone <- ok && crashed == replacementCrashed
+			}()
+			select {
+			case <-replacementStarted:
+			case <-time.After(time.Second):
+				t.Fatal("rebuild did not continue to the replacement session")
+			}
+			if replacementErr != nil {
+				t.Fatal(replacementErr)
+			}
+			select {
+			case ok := <-rebuildDone:
+				if !ok {
+					t.Fatal("rebuild did not return the replacement session")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("rebuild did not return")
+			}
+			e.mu.Lock()
+			gotCtx := e.ctx
+			e.mu.Unlock()
+			if gotCtx != replacementCtx {
+				t.Fatal("rebuild did not install the replacement session")
+			}
+		})
+	}
+}
+
 func TestComposeFrameNilTextKeepsBitmap(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
 	frame := New("").composeFrame(pendingFrame{img: img}, nil, nil)

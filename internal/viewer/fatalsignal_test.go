@@ -1,6 +1,7 @@
 package viewer
 
 import (
+	"errors"
 	"os"
 	"slices"
 	"strings"
@@ -50,6 +51,30 @@ func TestSignalExitStatusIsOneTwentyEightPlusSignal(t *testing.T) {
 	// clean exit.
 	if got := signalExitStatus(unnumberedSignal{}); got != 128 {
 		t.Errorf("signalExitStatus on a numberless signal = %d, want the 128 base", got)
+	}
+}
+
+func TestHandleFatalSignalRestoresClosesAndExitsInOrder(t *testing.T) {
+	var calls []string
+	exitStatus := 0
+	handleFatalSignal(
+		syscall.SIGTERM,
+		func() { calls = append(calls, "restore") },
+		func() error {
+			calls = append(calls, "close")
+			return errors.New("close failed")
+		},
+		func(status int) {
+			calls = append(calls, "exit")
+			exitStatus = status
+		},
+	)
+
+	if want := []string{"restore", "close", "exit"}; !slices.Equal(calls, want) {
+		t.Fatalf("fatal signal calls = %v, want %v", calls, want)
+	}
+	if exitStatus != 143 {
+		t.Fatalf("fatal signal exit status = %d, want 143", exitStatus)
 	}
 }
 
