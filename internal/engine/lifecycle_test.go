@@ -351,6 +351,45 @@ func TestRebuildContinuesAfterBoundedTeardown(t *testing.T) {
 	}
 }
 
+func TestRecoveryProfileGuardHeldUntilClose(t *testing.T) {
+	profileDir := filepath.Join(t.TempDir(), "profile")
+	e := New("")
+	other := New("")
+	for _, engine := range []*ChromiumEngine{e, other} {
+		if err := engine.SetProfileDir(profileDir); err != nil {
+			t.Fatalf("SetProfileDir(%q): %v", profileDir, err)
+		}
+	}
+	t.Cleanup(func() {
+		if err := other.Close(); err != nil {
+			t.Errorf("other Close: %v", err)
+		}
+		if err := e.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	if err := e.acquireProfileGuard(); err != nil {
+		t.Fatalf("initial acquireProfileGuard: %v", err)
+	}
+	guard := e.profileGuard
+	fd := guard.file.Fd()
+	if err := e.acquireProfileGuard(); err != nil {
+		t.Fatalf("recovery acquireProfileGuard: %v", err)
+	}
+	if e.profileGuard != guard || e.profileGuard.file.Fd() != fd {
+		t.Fatal("recovery acquisition replaced the held profile guard descriptor")
+	}
+	if err := e.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if e.profileGuard != nil {
+		t.Fatal("Close retained the profile guard")
+	}
+	if err := other.acquireProfileGuard(); err != nil {
+		t.Fatalf("acquireProfileGuard after owner Close: %v", err)
+	}
+}
+
 func TestComposeFrameNilTextKeepsBitmap(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
 	frame := New("").composeFrame(pendingFrame{img: img}, nil, nil)

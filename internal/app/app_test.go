@@ -46,8 +46,19 @@ func TestParseDefaults(t *testing.T) {
 	if cli.Browser != "" {
 		t.Errorf("Browser = %q, want empty by default", cli.Browser)
 	}
+	if cli.Profile != "" {
+		t.Errorf("Profile = %q, want empty by default", cli.Profile)
+	}
 	if cli.DisableFrameRateLimit {
 		t.Errorf("DisableFrameRateLimit = true, want false by default")
+	}
+}
+
+func TestParseProfile(t *testing.T) {
+	profileDir := t.TempDir()
+	cli := parse(t, "--profile", profileDir, "example.com")
+	if cli.Profile != profileDir {
+		t.Errorf("--profile %q: Profile = %q, want %q", profileDir, cli.Profile, profileDir)
 	}
 }
 
