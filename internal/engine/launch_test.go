@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chromedp/cdproto/fetch"
 )
@@ -81,6 +82,216 @@ func TestResolveExecutableNoneResolves(t *testing.T) {
 	}
 }
 
+func TestResolveProfileDirPrecedence(t *testing.T) {
+	root := t.TempDir()
+	flagPath := filepath.Join(root, "flag-profile")
+	nyalaPath := filepath.Join(root, "nyala-profile")
+	dataHome := filepath.Join(root, "xdg-data")
+	home := filepath.Join(root, "home")
+
+	cases := []struct {
+		name         string
+		flag         string
+		nyalaProfile string
+		dataHome     string
+		want         string
+	}{
+		{"flag wins over all", flagPath, nyalaPath, dataHome, flagPath},
+		{"NYALA_PROFILE wins over XDG and home", "", nyalaPath, dataHome, nyalaPath},
+		{"XDG_DATA_HOME wins over home", "", "", dataHome, filepath.Join(dataHome, "nyala", "profile")},
+		{"home is the fallback", "", "", "", filepath.Join(home, ".local", "share", "nyala", "profile")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("NYALA_PROFILE", c.nyalaProfile)
+			t.Setenv("XDG_DATA_HOME", c.dataHome)
+			t.Setenv("HOME", home)
+
+			got, err := resolveProfileDir(c.flag)
+			if err != nil {
+				t.Fatalf("resolveProfileDir(%q) error: %v", c.flag, err)
+			}
+			if got != c.want {
+				t.Errorf("resolveProfileDir(%q) = %q, want %q", c.flag, got, c.want)
+			}
+		})
+	}
+}
+
+func TestResolveProfileDirMissingHome(t *testing.T) {
+	t.Setenv("NYALA_PROFILE", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("HOME", "")
+
+	got, err := resolveProfileDir("")
+	if err == nil {
+		t.Fatalf("resolveProfileDir(\"\") = %q, want error", got)
+	}
+	if !strings.Contains(err.Error(), "profile directory") {
+		t.Errorf("resolveProfileDir(\"\") error = %q, want profile directory context", err)
+	}
+}
+
+func TestNewDoesNotTouchProfile(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	profileDir := filepath.Join(home, ".local", "share", "nyala", "profile")
+	t.Setenv("NYALA_PROFILE", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("HOME", home)
+
+	e := New("")
+	if e.profileDir != "" {
+		t.Errorf("New(\"\") profileDir = %q, want empty", e.profileDir)
+	}
+	if _, err := os.Stat(profileDir); !os.IsNotExist(err) {
+		t.Fatalf("profile path after New(\"\") Stat error = %v, want not exist", err)
+	}
+}
+
+func TestSetProfileDirResolvesWithoutTouchingPath(t *testing.T) {
+	profileDir := filepath.Join(t.TempDir(), "profile")
+	e := New("")
+
+	if err := e.SetProfileDir(profileDir); err != nil {
+		t.Fatalf("SetProfileDir(%q): %v", profileDir, err)
+	}
+	if e.profileDir != profileDir {
+		t.Errorf("profileDir = %q, want %q", e.profileDir, profileDir)
+	}
+	if _, err := os.Stat(profileDir); !os.IsNotExist(err) {
+		t.Fatalf("profile path after SetProfileDir Stat error = %v, want not exist", err)
+	}
+}
+
+func TestLaunchCreatesProfileBeforeExecutableResolution(t *testing.T) {
+	profileDir := filepath.Join(t.TempDir(), "profile")
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("NYALA_BROWSER", "")
+	t.Setenv("CHROME_PATH", "")
+	clearProxyEnv(t, nil)
+
+	e := New("")
+	t.Cleanup(func() {
+		if err := e.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	if err := e.SetProfileDir(profileDir); err != nil {
+		t.Fatalf("SetProfileDir(%q): %v", profileDir, err)
+	}
+	if _, err := os.Stat(profileDir); !os.IsNotExist(err) {
+		t.Fatalf("profile path before launch Stat error = %v, want not exist", err)
+	}
+
+	err := e.launch("")
+	if err == nil || !strings.Contains(err.Error(), "no Chromium found") {
+		t.Fatalf("launch error = %v, want executable resolution error", err)
+	}
+	info, err := os.Stat(profileDir)
+	if err != nil {
+		t.Fatalf("Stat created profile directory: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("profile directory mode = %04o, want 0700", got)
+	}
+	if e.profileGuard == nil {
+		t.Fatal("launch did not retain the profile guard before executable resolution")
+	}
+	lockInfo, err := os.Stat(filepath.Join(profileDir, profileLockName))
+	if err != nil {
+		t.Fatalf("Stat profile guard: %v", err)
+	}
+	if got := lockInfo.Mode().Perm(); got != 0o600 {
+		t.Errorf("profile guard mode = %04o, want 0600", got)
+	}
+}
+
+func TestProfileGuardContentionAndRecovery(t *testing.T) {
+	profileDir := filepath.Join(t.TempDir(), "profile")
+	first := New("")
+	second := New("")
+	for _, e := range []*ChromiumEngine{first, second} {
+		if err := e.SetProfileDir(profileDir); err != nil {
+			t.Fatalf("SetProfileDir(%q): %v", profileDir, err)
+		}
+	}
+	t.Cleanup(func() {
+		if err := second.Close(); err != nil {
+			t.Errorf("second Close: %v", err)
+		}
+		if err := first.Close(); err != nil {
+			t.Errorf("first Close: %v", err)
+		}
+	})
+	if err := first.acquireProfileGuard(); err != nil {
+		t.Fatalf("first acquireProfileGuard: %v", err)
+	}
+	lockPath := filepath.Join(profileDir, profileLockName)
+	before, err := os.Stat(lockPath)
+	if err != nil {
+		t.Fatalf("Stat profile guard: %v", err)
+	}
+
+	blocked := make(chan error, 1)
+	go func() { blocked <- second.acquireProfileGuard() }()
+	select {
+	case err := <-blocked:
+		if err == nil {
+			t.Fatal("second acquireProfileGuard succeeded while the first held the guard")
+		}
+		if !strings.Contains(err.Error(), profileDir) {
+			t.Errorf("contention error %q does not name profile directory %q", err, profileDir)
+		}
+		if !strings.Contains(err.Error(), "--private") {
+			t.Errorf("contention error %q does not suggest --private", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second acquireProfileGuard blocked")
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := second.acquireProfileGuard(); err != nil {
+		t.Fatalf("second acquireProfileGuard after first Close: %v", err)
+	}
+	after, err := os.Stat(lockPath)
+	if err != nil {
+		t.Fatalf("Stat recovered profile guard: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("recovery replaced the existing profile guard file")
+	}
+}
+
+func TestProfileGuardReusesStaleFile(t *testing.T) {
+	profileDir := t.TempDir()
+	lockPath := filepath.Join(profileDir, profileLockName)
+	const staleContents = "stale guard file\n"
+	if err := os.WriteFile(lockPath, []byte(staleContents), 0o600); err != nil {
+		t.Fatalf("write stale profile guard: %v", err)
+	}
+	e := New("")
+	t.Cleanup(func() {
+		if err := e.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	if err := e.SetProfileDir(profileDir); err != nil {
+		t.Fatalf("SetProfileDir(%q): %v", profileDir, err)
+	}
+	if err := e.acquireProfileGuard(); err != nil {
+		t.Fatalf("acquireProfileGuard with stale file: %v", err)
+	}
+	contents, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read reused profile guard: %v", err)
+	}
+	if string(contents) != staleContents {
+		t.Errorf("reused profile guard contents = %q, want %q", contents, staleContents)
+	}
+}
+
 func TestFrameRateLimitFlags(t *testing.T) {
 	if got := frameRateLimitFlags(false); got != nil {
 		t.Errorf("frameRateLimitFlags(false) = %v, want nil", got)
@@ -150,6 +361,15 @@ func TestLaunchArgvCarriesGPUFlags(t *testing.T) {
 	clearProxyEnv(t, nil)
 
 	e := New("")
+	profileDir := filepath.Join(t.TempDir(), "profile")
+	if err := e.SetProfileDir(profileDir); err != nil {
+		t.Fatalf("SetProfileDir(%q): %v", profileDir, err)
+	}
+	t.Cleanup(func() {
+		if err := e.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
 	if err := e.launch(""); err == nil {
 		t.Fatal("launch() = nil, want the start failure from the recording browser")
 	}
@@ -164,6 +384,11 @@ func TestLaunchArgvCarriesGPUFlags(t *testing.T) {
 	for _, want := range []string{"--enable-gpu", "--enable-unsafe-swiftshader"} {
 		if !slices.Contains(argv, want) {
 			t.Errorf("launch argv %v is missing %s", argv, want)
+		}
+	}
+	for _, arg := range argv {
+		if strings.Contains(arg, profileDir) {
+			t.Errorf("launch argv contains profile-derived argument %q", arg)
 		}
 	}
 }

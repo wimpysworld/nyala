@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"math"
@@ -26,9 +27,10 @@ type ChromiumEngine struct {
 	// dispatchWheel) and the supervisor goroutine (startSession,
 	// teardownSession, launch, rebuild): ctx, cancel, acks, text, frame, cols,
 	// rows, scrollX, scrollY, scrollYTarget, click, backend, cellW, cellH,
-	// windowID, inputFailures and fontForcingID. Lock, copy the fields into locals or write
-	// the updates, unlock, then run the chromedp I/O on the locals. Never hold mu
-	// across a chromedp.Run or a channel send, or it deadlocks with the supervisor.
+	// profileDir, profileGuard, windowID, inputFailures and fontForcingID. Lock,
+	// copy the fields into locals or write the updates, unlock, then run the
+	// chromedp I/O on the locals. Never hold mu across a chromedp.Run or a channel
+	// send, or it deadlocks with the supervisor.
 	mu sync.Mutex
 
 	// Browser context, bounded graceful close, and raw cancellation, owned by
@@ -83,8 +85,10 @@ type ChromiumEngine struct {
 	cellW int // resolved cell width in pixels
 	cellH int // resolved cell height in pixels
 
-	backend     render.Backend // active terminal rendering backend
-	browserFlag string         // --browser value, empty for env/PATH discovery
+	backend      render.Backend // active terminal rendering backend
+	browserFlag  string         // --browser value, empty for env/PATH discovery
+	profileDir   string         // resolved profile directory, empty until configured
+	profileGuard *profileGuard  // held for the engine lifetime, including recovery
 	// disableFrameRateLimit passes Chromium's launch-time
 	// --disable-frame-rate-limit switch. It is set before Navigate and remains
 	// false by default, preserving Chromium's normal frame scheduling.
@@ -285,6 +289,19 @@ func New(browserFlag string) *ChromiumEngine {
 		proxyErr:    proxyErr,
 		ingest:      newIngestCounter(),
 	}
+}
+
+// SetProfileDir resolves and records the browser profile directory. Call it
+// before Navigate. It does not create, inspect, or lock the directory.
+func (e *ChromiumEngine) SetProfileDir(flag string) error {
+	profileDir, err := resolveProfileDir(flag)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.profileDir = profileDir
+	e.mu.Unlock()
+	return nil
 }
 
 // SetDisableFrameRateLimit controls Chromium's launch-time
@@ -602,7 +619,10 @@ func (e *ChromiumEngine) wheelPositionLocked(atCell bool, col, row int) (cx, cy 
 // done-channel pattern, so no consumer goroutine blocks on a slot or a send that
 // will never complete. closeOnce makes a second Close a no-op rather than a double
 // channel close.
-func (e *ChromiumEngine) Close() error {
+func (e *ChromiumEngine) Close() (err error) {
+	defer func() {
+		err = errors.Join(err, e.releaseProfileGuard())
+	}()
 	e.mu.Lock()
 	closing := e.closing
 	supDone := e.supDone

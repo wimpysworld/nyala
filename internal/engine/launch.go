@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 
 	"github.com/chromedp/cdproto/browser"
@@ -54,6 +55,27 @@ func resolveExecutable(flag string) (string, error) {
 			"environment variable, or put one of %v on PATH",
 		chromiumNames,
 	)
+}
+
+// resolveProfileDir returns the profile directory to use. It tries, in order:
+// the --profile flag value, the NYALA_PROFILE environment variable, a profile
+// beneath XDG_DATA_HOME, then a profile beneath the user's home directory. It
+// only resolves a path; creation and locking are deferred until launch.
+func resolveProfileDir(flag string) (string, error) {
+	if flag != "" {
+		return flag, nil
+	}
+	if value := os.Getenv("NYALA_PROFILE"); value != "" {
+		return value, nil
+	}
+	if dataHome := os.Getenv("XDG_DATA_HOME"); dataHome != "" {
+		return filepath.Join(dataHome, "nyala", "profile"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve profile directory: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", "nyala", "profile"), nil
 }
 
 // surfaceFloorPx is the minimum captured-surface dimension. A 0x0 pty (the agent
@@ -327,6 +349,9 @@ func (e *ChromiumEngine) injectFontStylesheet(ctx context.Context) error {
 func (e *ChromiumEngine) launch(flag string) error {
 	if e.proxyErr != nil {
 		return e.proxyErr
+	}
+	if err := e.acquireProfileGuard(); err != nil {
+		return err
 	}
 	execPath, err := resolveExecutable(flag)
 	if err != nil {
