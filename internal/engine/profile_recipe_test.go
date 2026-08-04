@@ -17,7 +17,7 @@ func TestChromiumRecipesUseDisposableProfiles(t *testing.T) {
 	}
 	justPath, err := exec.LookPath("just")
 	if err != nil {
-		t.Fatalf("just is required to test repository recipes: %v", err)
+		t.Skipf("just is required to test repository recipes: %v", err)
 	}
 	justfile, err := filepath.Abs(filepath.Join("..", "..", "justfile"))
 	if err != nil {
