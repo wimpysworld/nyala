@@ -6,6 +6,9 @@ import (
 	"image"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -352,6 +355,10 @@ func TestRebuildContinuesAfterBoundedTeardown(t *testing.T) {
 }
 
 func TestRecoveryProfileGuardHeldUntilClose(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the rebuild recorder is a POSIX shell script")
+	}
+	clearProxyEnv(t, nil)
 	profileDir := filepath.Join(t.TempDir(), "profile")
 	e := New("")
 	other := New("")
@@ -373,11 +380,36 @@ func TestRecoveryProfileGuardHeldUntilClose(t *testing.T) {
 	}
 	guard := e.profileGuard
 	fd := guard.file.Fd()
-	if err := e.acquireProfileGuard(); err != nil {
-		t.Fatalf("recovery acquireProfileGuard: %v", err)
+
+	argvFile := filepath.Join(t.TempDir(), "argv")
+	t.Setenv("NYALA_TEST_ARGV_FILE", argvFile)
+	_, browserPath := fakeExecutable(t, "chromium",
+		"printf '%s\\n' \"$@\" > \"$NYALA_TEST_ARGV_FILE\"\nexit 1\n")
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("NYALA_BROWSER", browserPath)
+	t.Setenv("CHROME_PATH", "")
+	alternateProfile := filepath.Join(t.TempDir(), "alternate-profile")
+	t.Setenv("NYALA_PROFILE", alternateProfile)
+
+	if _, ok := e.rebuild(); ok {
+		t.Fatal("rebuild with recording browser succeeded, want its start failure")
 	}
 	if e.profileGuard != guard || e.profileGuard.file.Fd() != fd {
-		t.Fatal("recovery acquisition replaced the held profile guard descriptor")
+		t.Fatal("rebuild replaced the held profile guard descriptor")
+	}
+	if e.profileDir != profileDir {
+		t.Errorf("profileDir after rebuild = %q, want held path %q", e.profileDir, profileDir)
+	}
+	raw, err := os.ReadFile(argvFile)
+	if err != nil {
+		t.Fatalf("read rebuild argv: %v", err)
+	}
+	argv := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if want := "--user-data-dir=" + profileDir; !slices.Contains(argv, want) {
+		t.Errorf("rebuild argv %v is missing held profile argument %q", argv, want)
+	}
+	if _, err := os.Stat(alternateProfile); !os.IsNotExist(err) {
+		t.Fatalf("alternate profile Stat error = %v, want path absent", err)
 	}
 	if err := e.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

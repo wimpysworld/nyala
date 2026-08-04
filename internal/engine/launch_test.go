@@ -327,26 +327,11 @@ func TestGPUFlags(t *testing.T) {
 	}
 }
 
-func TestLaunchArgvCarriesGPUFlags(t *testing.T) {
+func recordLaunchArgv(t *testing.T, configure func(*ChromiumEngine)) []string {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the recorder is a POSIX shell script")
 	}
-	// gpuFlags is pure, so a test on it alone stays green even if newAllocator
-	// stops appending the result and the flags never reach the browser. This drives
-	// the real launch path and reads the argv Chromium is exec'd with, so that drop
-	// fails here. enable-unsafe-swiftshader is the only thing keeping software
-	// WebGL alive on a host with no usable GPU, and losing it silently is the bug.
-	//
-	// The fake browser records its arguments then exits non-zero, so chromedp gives
-	// up in milliseconds and no browser ever runs. The recorder writes the file
-	// before it exits, so the argv is on disk by the time launch returns the
-	// start failure.
-	//
-	// The output path reaches the recorder through an environment variable rather
-	// than the script body, so a temp path holding a shell metacharacter needs no
-	// escaping. chromedp's allocator leaves exec.Cmd.Env nil here (nothing sets
-	// chromedp.Env or ModifyCmdFunc), so the browser child inherits this process's
-	// environment and sees the t.Setenv value.
 	argvFile := filepath.Join(t.TempDir(), "argv")
 	t.Setenv("NYALA_TEST_ARGV_FILE", argvFile)
 	_, browserPath := fakeExecutable(t, "chromium",
@@ -361,9 +346,8 @@ func TestLaunchArgvCarriesGPUFlags(t *testing.T) {
 	clearProxyEnv(t, nil)
 
 	e := New("")
-	profileDir := filepath.Join(t.TempDir(), "profile")
-	if err := e.SetProfileDir(profileDir); err != nil {
-		t.Fatalf("SetProfileDir(%q): %v", profileDir, err)
+	if configure != nil {
+		configure(e)
 	}
 	t.Cleanup(func() {
 		if err := e.Close(); err != nil {
@@ -378,7 +362,14 @@ func TestLaunchArgvCarriesGPUFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read recorded argv: %v", err)
 	}
-	argv := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	return strings.Split(strings.TrimSpace(string(raw)), "\n")
+}
+
+func TestLaunchArgvCarriesGPUFlags(t *testing.T) {
+	// gpuFlags is pure, so a test on it alone stays green if newAllocator stops
+	// appending the result. The fake browser records the real launch argv and exits
+	// before a browser starts.
+	argv := recordLaunchArgv(t, nil)
 	// Assert presence, not position: chromedp holds flags in a map, so argv order
 	// is not stable between runs.
 	for _, want := range []string{"--enable-gpu", "--enable-unsafe-swiftshader"} {
@@ -386,10 +377,42 @@ func TestLaunchArgvCarriesGPUFlags(t *testing.T) {
 			t.Errorf("launch argv %v is missing %s", argv, want)
 		}
 	}
-	for _, arg := range argv {
-		if strings.Contains(arg, profileDir) {
-			t.Errorf("launch argv contains profile-derived argument %q", arg)
+}
+
+func TestLaunchArgvCarriesPersistentProfile(t *testing.T) {
+	profileDir := filepath.Join(t.TempDir(), "profile")
+	argv := recordLaunchArgv(t, func(e *ChromiumEngine) {
+		if err := e.SetProfileDir(profileDir); err != nil {
+			t.Fatalf("SetProfileDir(%q): %v", profileDir, err)
 		}
+	})
+	want := "--user-data-dir=" + profileDir
+	if !slices.Contains(argv, want) {
+		t.Errorf("launch argv %v is missing exact persistent profile argument %q", argv, want)
+	}
+}
+
+func TestLaunchWithoutConfiguredProfileUsesDisposableUserDataDir(t *testing.T) {
+	watchedProfile := filepath.Join(t.TempDir(), "watched-profile")
+	t.Setenv("NYALA_PROFILE", watchedProfile)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+
+	argv := recordLaunchArgv(t, nil)
+	var userDataDir string
+	for _, arg := range argv {
+		if strings.HasPrefix(arg, "--user-data-dir=") {
+			userDataDir = arg
+		}
+		if strings.Contains(arg, watchedProfile) {
+			t.Errorf("launch argv contains configured-profile-derived argument %q", arg)
+		}
+	}
+	if userDataDir == "" {
+		t.Fatalf("launch argv %v has no chromedp disposable --user-data-dir", argv)
+	}
+	if _, err := os.Stat(watchedProfile); !os.IsNotExist(err) {
+		t.Fatalf("unconfigured launch profile Stat error = %v, want path absent", err)
 	}
 }
 

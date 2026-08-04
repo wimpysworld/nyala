@@ -1,7 +1,9 @@
 package app
 
 import (
+	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -49,6 +51,9 @@ func TestParseDefaults(t *testing.T) {
 	if cli.Profile != "" {
 		t.Errorf("Profile = %q, want empty by default", cli.Profile)
 	}
+	if cli.Private {
+		t.Error("Private = true, want false by default")
+	}
 	if cli.DisableFrameRateLimit {
 		t.Errorf("DisableFrameRateLimit = true, want false by default")
 	}
@@ -59,6 +64,44 @@ func TestParseProfile(t *testing.T) {
 	cli := parse(t, "--profile", profileDir, "example.com")
 	if cli.Profile != profileDir {
 		t.Errorf("--profile %q: Profile = %q, want %q", profileDir, cli.Profile, profileDir)
+	}
+}
+
+func TestParsePrivate(t *testing.T) {
+	profileDir := filepath.Join(t.TempDir(), "ignored-profile")
+	cli := parse(t, "--private", "--profile", profileDir, "example.com")
+	if !cli.Private {
+		t.Error("--private: Private = false, want true")
+	}
+	if cli.Profile != profileDir {
+		t.Errorf("--profile %q with --private: Profile = %q, want parsed value retained", profileDir, cli.Profile)
+	}
+}
+
+func TestHelpDescribesProfileModes(t *testing.T) {
+	var cli CLI
+	var output bytes.Buffer
+	parser, err := kong.New(
+		&cli,
+		kong.Name("nyala"),
+		kong.Vars{"version": "test"},
+		kong.Writers(&output, &output),
+		kong.Exit(func(int) {}),
+	)
+	if err != nil {
+		t.Fatalf("kong.New: %v", err)
+	}
+	_, _ = parser.Parse([]string{"--help"})
+	help := strings.Join(strings.Fields(output.String()), " ")
+	for _, want := range []string{
+		"--profile=STRING",
+		"Browser profile directory. Defaults to $NYALA_PROFILE",
+		"--private",
+		"Use a disposable browser profile and ignore --profile.",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("help is missing %q:\n%s", want, output.String())
+		}
 	}
 }
 
@@ -189,6 +232,42 @@ func TestRunValidURLPassesValidation(t *testing.T) {
 				t.Errorf("Run(%q): err = %v, want the not-a-terminal guard", raw, err)
 			}
 		})
+	}
+}
+
+func TestRunPrivateBypassesProfileResolution(t *testing.T) {
+	t.Setenv("NYALA_PROFILE", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("HOME", "")
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+	err = Run(CLI{URL: "example.com", Private: true}, "dev", r)
+	if err == nil || !strings.Contains(err.Error(), "not a terminal") {
+		t.Fatalf("private Run error = %v, want the viewer's not-a-terminal error", err)
+	}
+}
+
+func TestRunPrivateLeavesConfiguredProfileAbsent(t *testing.T) {
+	profileDir := filepath.Join(t.TempDir(), "watched-profile")
+	t.Setenv("NYALA_PROFILE", profileDir)
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+	err = Run(CLI{URL: "example.com", Private: true}, "dev", r)
+	if err == nil || !strings.Contains(err.Error(), "not a terminal") {
+		t.Fatalf("private Run error = %v, want the viewer's not-a-terminal error", err)
+	}
+	if _, statErr := os.Stat(profileDir); !os.IsNotExist(statErr) {
+		t.Fatalf("private Run profile Stat error = %v, want path absent", statErr)
 	}
 }
 

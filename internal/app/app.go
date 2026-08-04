@@ -17,7 +17,8 @@ import (
 )
 
 // CLI is the parsed Nyala command line. cmd/nyala binds it to kong; the fields
-// carry the colour mode, the target URL, and optional browser and profile paths.
+// carry the colour mode, the target URL, optional browser and profile paths,
+// and the private-profile policy.
 type CLI struct {
 	Version kong.VersionFlag `help:"Show version."`
 
@@ -43,6 +44,9 @@ type CLI struct {
 	// resolves from the environment and the user's data directory.
 	Profile string `help:"Browser profile directory. Defaults to $NYALA_PROFILE, $XDG_DATA_HOME/nyala/profile, or ~/.local/share/nyala/profile."`
 
+	// Private uses a disposable browser profile and ignores persistent profile settings.
+	Private bool `help:"Use a disposable browser profile and ignore --profile." name:"private"`
+
 	// DisableFrameRateLimit removes Chromium's browser frame-rate limit. It does
 	// not control terminal or display synchronisation.
 	DisableFrameRateLimit bool `help:"Disable Chromium's browser frame-rate limit." name:"disable-frame-rate-limit"`
@@ -60,16 +64,19 @@ type CLI struct {
 // Run dispatches a parsed CLI on the given tty. It prepends https:// when the
 // URL has no scheme, accepts http, https, and file, and rejects any other
 // scheme with a clear error. It configures the Chromium engine from the
-// --browser and --profile flags, then runs the interactive viewer. version is
-// the build version main plumbs through for the viewer's About line.
+// --browser and --profile flags, unless --private bypasses persistent profile
+// setup, then runs the interactive viewer. version is the build version main
+// plumbs through for the viewer's About line.
 func Run(cli CLI, version string, tty *os.File) error {
 	target, err := normaliseURL(cli.URL)
 	if err != nil {
 		return err
 	}
 	chromium := engine.New(cli.Browser)
-	if err := chromium.SetProfileDir(cli.Profile); err != nil {
-		return err
+	if !cli.Private {
+		if err := chromium.SetProfileDir(cli.Profile); err != nil {
+			return err
+		}
 	}
 	chromium.SetDisableFrameRateLimit(cli.DisableFrameRateLimit)
 	eng := engineAdapter{chromium}

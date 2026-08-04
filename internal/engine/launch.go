@@ -131,6 +131,7 @@ func (e *ChromiumEngine) textOverlayBackend() bool {
 
 type allocatorConfig struct {
 	execPath              string
+	profileDir            string
 	surfaceWidth          int
 	surfaceHeight         int
 	scale                 float64
@@ -150,7 +151,8 @@ type allocatorConfig struct {
 // Browser.SetContentsSize once the context and window id exist. When
 // cfg.proxy.Server is set it adds --proxy-server; it adds --proxy-bypass-list only
 // when both cfg.proxy.Server and cfg.proxy.Bypass are set, so a stray NO_PROXY
-// without a proxy adds no flag.
+// without a proxy adds no flag. When cfg.profileDir is non-empty it uses that
+// resolved directory; empty preserves chromedp's temporary profile behaviour.
 // When enableGPU is set it adds the gpuFlags pair: --enable-gpu turns off the
 // forced SwiftShader (CPU) default of headless Chromium so a real driver can serve
 // WebGL, and --enable-unsafe-swiftshader keeps a software WebGL floor for a host
@@ -175,6 +177,9 @@ func newAllocator(parent context.Context, cfg allocatorConfig) (context.Context,
 		chromedp.Flag("force-device-scale-factor", strconv.FormatFloat(cfg.scale, 'g', -1, 64)),
 		chromedp.Flag("disable-smooth-scrolling", true),
 	)
+	if cfg.profileDir != "" {
+		opts = append(opts, chromedp.UserDataDir(cfg.profileDir))
+	}
 	for _, name := range gpuFlags(cfg.enableGPU) {
 		opts = append(opts, chromedp.Flag(name, true))
 	}
@@ -362,11 +367,13 @@ func (e *ChromiumEngine) launch(flag string) error {
 	forcing := e.backend.UsesTextOverlay()
 	z := e.layoutScale()
 	disableFrameRateLimit := e.disableFrameRateLimit
+	profileDir := e.profileDir
 	e.mu.Unlock()
 	enableGPU := true
 	enableAudio := audioAvailable()
 	allocCtx, allocCancel := newAllocator(context.Background(), allocatorConfig{
 		execPath:              execPath,
+		profileDir:            profileDir,
 		surfaceWidth:          surfW,
 		surfaceHeight:         surfH,
 		scale:                 z,
