@@ -101,6 +101,7 @@
                 just
                 libsixel
                 pkg-config
+                playwright-mcp
                 poppler-utils
               ])
               # Stage 3 runtime browser; Linux-only (nixpkgs chromium is
