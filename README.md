@@ -63,12 +63,28 @@ A bare host gains an `https://` scheme. The `http`, `https`, and `file` schemes 
 
 Nyala needs a Chromium executable at runtime. It resolves the path from `--browser`, then `NYALA_BROWSER`, then `CHROME_PATH`, then a `PATH` lookup.
 
+Nyala keeps cookies, logins, site data, and browser settings between runs. It resolves the profile directory from `--profile`, then `NYALA_PROFILE`, then `$XDG_DATA_HOME/nyala/profile`, then `~/.local/share/nyala/profile`. The last path is the normal default when the environment does not override it.
+
+Choose another persistent profile or start with a disposable one:
+
+```bash
+nyala --profile /path/to/nyala-profile example.com
+nyala --private example.com
+```
+
+`--private` ignores `--profile`, `NYALA_PROFILE`, and the default persistent profile. To clear saved browser state, stop every Nyala process that uses the profile, then delete the resolved profile directory.
+
+> [!WARNING]
+> chromedp launches Chromium with `--password-store=basic` and `--use-mock-keychain`. Saved passwords are stored in the plain `Login Data` file inside the profile, not in the desktop keychain. Protect the profile directory as sensitive data.
+
 Behind a proxy? Nyala reads the standard proxy environment variables and routes Chromium through them. It honours `HTTPS_PROXY`, `HTTP_PROXY`, and `ALL_PROXY` (and their lowercase forms), with `NO_PROXY` for hosts to skip. A proxy URL with credentials works too. Nyala authenticates over the DevTools Protocol, so the credentials stay out of the process arguments.
 
 | Flag | Default | Description |
 |---|---|---|
 | `<url>` | required | Page to open. |
 | `--browser` | auto | Path to the Chromium executable to drive. |
+| `--profile` | `~/.local/share/nyala/profile` | Persistent browser profile directory. `NYALA_PROFILE` and `XDG_DATA_HOME` can change the default. |
+| `--private` | off | Use a disposable browser profile and ignore persistent profile settings. |
 | `--backend` | `auto` | Renderer backend: `auto`, `block`, `kitty`, or `sixel`. `auto` picks the terminal's best supported backend. A named backend sets the starting renderer and fails fast if the terminal cannot run it. |
 | `--blocks` | `auto` | Block glyph mode: `auto`, `sextant` (2x3), `quadrant` (2x2), or `half` (1x2). `auto` picks sextant on terminals known to self-draw it, read from a static allow-list of environment variables, and quadrant elsewhere. |
 | `--color` | `auto` | Viewer colour mode: `auto`, `truecolor`, `256`, or `none`. |

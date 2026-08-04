@@ -179,7 +179,19 @@ diagnostics:
         fail=1
     fi
     if [ "$chromium_found" -eq 1 ]; then
-        run_leg 'CDP-fed correctness' env FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" go test -count=1 -tags cdpinterop ./internal/viewer/ -run '^TestCDP'
+        profile_dir=""
+        if ! profile_dir="$(mktemp -d)" || [ -z "$profile_dir" ] || [ ! -d "$profile_dir" ]; then
+            printf '%s\n' 'just diagnostics: could not create a disposable Chromium profile' >&2
+            exit 1
+        fi
+        readonly profile_dir
+        cleanup_profile() {
+            if [ -n "${profile_dir:-}" ] && [ -d "$profile_dir" ]; then
+                rm -rf -- "$profile_dir"
+            fi
+        }
+        trap cleanup_profile EXIT
+        run_leg 'CDP-fed correctness' env NYALA_PROFILE="$profile_dir" FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" go test -count=1 -tags cdpinterop ./internal/viewer/ -run '^TestCDP'
     else
         printf '\n== CDP-fed correctness ==\nSKIP: Chromium not found; set NYALA_BROWSER or CHROME_PATH, or add Chromium/Chrome to PATH\n' >&2
         fail=1
@@ -201,7 +213,22 @@ sixel-interop:
 
 # Run the Chromium-fed renderer correctness matrix
 cdp-interop:
-    @FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" go test -count=1 -tags cdpinterop ./internal/viewer/ -run '^TestCDP'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    profile_dir=""
+    if ! profile_dir="$(mktemp -d)" || [ -z "$profile_dir" ] || [ ! -d "$profile_dir" ]; then
+        printf '%s\n' 'just cdp-interop: could not create a disposable Chromium profile' >&2
+        exit 1
+    fi
+    readonly profile_dir
+    cleanup_profile() {
+        if [ -n "${profile_dir:-}" ] && [ -d "$profile_dir" ]; then
+            rm -rf -- "$profile_dir"
+        fi
+    }
+    trap cleanup_profile EXIT
+    NYALA_PROFILE="$profile_dir" FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" \
+        go test -count=1 -tags cdpinterop ./internal/viewer/ -run '^TestCDP'
 
 # Regenerate committed golden archives
 update-golden:
@@ -268,6 +295,22 @@ live:
     #!/usr/bin/env bash
     set -uo pipefail
 
+    profile_dir=""
+    if ! profile_dir="$(mktemp -d)" || [ -z "$profile_dir" ] || [ ! -d "$profile_dir" ]; then
+        printf '%s\n' 'just live: could not create a disposable Chromium profile' >&2
+        exit 1
+    fi
+    readonly profile_dir
+    cleanup() {
+        if [ -n "${log:-}" ]; then
+            rm -f -- "$log"
+        fi
+        if [ -n "${profile_dir:-}" ] && [ -d "$profile_dir" ]; then
+            rm -rf -- "$profile_dir"
+        fi
+    }
+    trap cleanup EXIT
+
     # The live tests skip themselves when no Chromium resolves, so without this
     # check the whole leg passes by running nothing. Same resolution order the
     # binary uses, mirroring just diagnostics.
@@ -282,10 +325,9 @@ live:
     fi
 
     log="$(mktemp)"
-    trap 'rm -f "$log"' EXIT
     # -v is what makes a skip visible at all: go test prints nothing for a skipped
     # test without it. The === RUN lines are dropped again for readability.
-    FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" \
+    NYALA_PROFILE="$profile_dir" FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" \
         go test -count=1 -tags live ./internal/engine/ -v 2>&1 \
         | tee "$log" | grep -Ev '^=== (RUN|PAUSE|CONT)'
     rc=${PIPESTATUS[0]}
@@ -308,8 +350,23 @@ live:
 
 # Measure internal renderer-to-terminal-byte costs from production CDP frames.
 internal-render-metrics:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    profile_dir=""
+    if ! profile_dir="$(mktemp -d)" || [ -z "$profile_dir" ] || [ ! -d "$profile_dir" ]; then
+        printf '%s\n' 'just internal-render-metrics: could not create a disposable Chromium profile' >&2
+        exit 1
+    fi
+    readonly profile_dir
+    cleanup_profile() {
+        if [ -n "${profile_dir:-}" ] && [ -d "$profile_dir" ]; then
+            rm -rf -- "$profile_dir"
+        fi
+    }
+    trap cleanup_profile EXIT
     # The fenced Chromium wrapper owns its no-sandbox diagnostic switch.
-    @FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" NYALA_INTERNAL_RENDER_METRICS=1 go test -tags live -run '^TestInternalRenderingMetrics$' -v -count=1 ./internal/viewer/
+    NYALA_PROFILE="$profile_dir" FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" \
+        NYALA_INTERNAL_RENDER_METRICS=1 go test -tags live -run '^TestInternalRenderingMetrics$' -v -count=1 ./internal/viewer/
 
 # Compare Sixel palette implementations on the committed still-image matrix.
 palette-bench:

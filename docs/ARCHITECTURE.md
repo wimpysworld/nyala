@@ -143,6 +143,17 @@ thin orchestration.
 `chromium-browser`, `google-chrome`, and `google-chrome-stable`. It fails fast
 with an error naming that order.
 
+The app owns profile policy. Persistent mode calls `SetProfileDir` before the
+viewer starts; private mode bypasses that call, even when `--profile` or
+`NYALA_PROFILE` is set. The engine owns the directory and its lifetime. It
+resolves a persistent path once, records it without touching the file system,
+then creates the directory lazily with `0700` permissions on first launch. It
+opens the `0600` `.nyala.lock` file and takes a non-blocking exclusive lock for
+the engine lifetime. A private engine keeps an empty profile path, so it never
+resolves, creates, inspects, or locks the persistent directory. `newAllocator`
+then omits `chromedp.UserDataDir`, leaving chromedp to create its disposable
+profile.
+
 `newAllocator` launches through `chromedp.NewExecAllocator`. When audio is
 enabled it appends `chromedp.Flag("mute-audio", false)` with a bool value; a
 bool `false` emits no flag at all, which is what unmutes Chromium, while the
@@ -660,13 +671,19 @@ the held scroll offset once the load signal lands. `Frames()` survives the
 rebuild, so the consumer keeps reading. `navigateAsync` drives navigation on
 its own goroutine after the frame loop is live, so startup never blocks; a
 failed load renders Chromium's own error page rather than tearing the session
-down.
+down. Every allocator uses the same engine-held profile path. Rebuilds neither
+resolve another path nor replace the profile guard, so the lock spans every
+Chromium process in one engine lifetime.
 
 Normal close, error cleanup, and crash recovery share `teardownSession`. For a
 live session, it asks `chromedp.Cancel` to send `Browser.close` with a 500 ms
 limit. A close error, timeout, or already-dead session falls back to raw
 cancellation. The limit gives a healthy local Chromium time to flush state,
-while browser or CDP failure cannot block process exit or crash rebuild.
+while browser or CDP failure cannot block process exit or crash rebuild. On
+engine close, this teardown completes before `Close` releases the profile
+guard. The ordering lets Chromium finish writing persistent state while Nyala
+still excludes another process from the profile. Releasing the guard first
+could allow two Chromium processes to write the same data.
 
 One mutex guards all shared session and geometry state. Every method locks,
 copies into locals, unlocks, then runs chromedp I/O on the locals; the mutex
@@ -1551,6 +1568,12 @@ Diagnostics drive the normal engine and viewer seams. Block checks consume
 writing consumes, so no second compositor exists to drift.
 `render.Frame.Diagnostics` is a sidecar carrying capture geometry and
 calibration evidence; it stays nil in production.
+
+The Chromium-backed leg of `just diagnostics` uses a fresh temporary profile.
+`just cdp-interop`, `just live`, and `just internal-render-metrics` do the same.
+Each recipe sets `NYALA_PROFILE` to the temporary directory and removes it on
+exit. They cannot read or change a developer's persistent profile. The
+browser-free protocol legs create no profile.
 
 Package ownership: `internal/cellraster` rasterises Block grids browser-free,
 `internal/renderdecode` owns the correctness-only Kitty and Sixel decoders,
