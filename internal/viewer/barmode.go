@@ -532,7 +532,7 @@ func (s *streamSession) pressSegment(kind barSegmentKind) {
 // appendBarMode renders the active non-chrome bar row into buf: the URL editor
 // or the find field with the terminal cursor parked at the edit position, or the
 // menu or About line with the highlight bolded. The row shares the chrome bar's
-// bottom-row reverse-video framing, and the text-mode cursor park is the last
+// bottom-row framing through barStyle, and the text-mode cursor park is the last
 // write so it lands inside the DEC 2026 bracket after every assembled frame.
 func (s *streamSession) appendBarMode(buf *bytes.Buffer) {
 	row := s.st.Rows
@@ -540,18 +540,18 @@ func (s *streamSession) appendBarMode(buf *bytes.Buffer) {
 	case barModeEdit:
 		content, cursorCol, promptW := renderBarEdit(s.st.Cols, s.editor)
 		s.editPromptW, s.editFieldW = promptW, s.st.Cols-promptW
-		fmt.Fprintf(buf, "\x1b[%d;1H\x1b[0;7m%s\x1b[0m\x1b[%d;%dH", row, content, row, cursorCol)
+		fmt.Fprintf(buf, "\x1b[%d;1H%s%s\x1b[0m\x1b[%d;%dH", row, s.st.barStyle(), content, row, cursorCol)
 	case barModeFind:
 		content, cursorCol, field, spans := renderBarFind(s.st.Cols, s.editor, renderFindCount(s.findState()))
 		s.editPromptW, s.editFieldW, s.modeSpans = field.col-1, field.width, spans
-		fmt.Fprintf(buf, "\x1b[%d;1H\x1b[0;7m%s\x1b[0m\x1b[%d;%dH", row, content, row, cursorCol)
+		fmt.Fprintf(buf, "\x1b[%d;1H%s%s\x1b[0m\x1b[%d;%dH", row, s.st.barStyle(), content, row, cursorCol)
 	case barModeMenu:
 		content, spans := renderBarMenu(s.st.Cols, barCommandNames(s.fpsBadgeShown()))
 		s.modeSpans = spans
 		if sp, ok := menuSpan(spans, s.menuSel); ok {
 			content = boldSpan(content, sp.col, sp.width)
 		}
-		fmt.Fprintf(buf, "\x1b[%d;1H\x1b[0;7m%s\x1b[0m", row, content)
+		fmt.Fprintf(buf, "\x1b[%d;1H%s%s\x1b[0m", row, s.st.barStyle(), content)
 	case barModeAbout:
 		browser := ""
 		if s.eng != nil {
@@ -559,7 +559,7 @@ func (s *streamSession) appendBarMode(buf *bytes.Buffer) {
 		}
 		content, spans := renderBarAbout(s.st.Cols, s.version, browser)
 		s.modeSpans = spans
-		fmt.Fprintf(buf, "\x1b[%d;1H\x1b[0;7m%s\x1b[0m", row, content)
+		fmt.Fprintf(buf, "\x1b[%d;1H%s%s\x1b[0m", row, s.st.barStyle(), content)
 	}
 }
 

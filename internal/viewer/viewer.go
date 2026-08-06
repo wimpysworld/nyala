@@ -156,6 +156,12 @@ type State struct {
 	// false under a multiplexer, which runs no keyboard query, so those sessions
 	// keep the legacy parser.
 	kittyKeyboard bool
+
+	// barSGR is the SGR opener the bottom bar row writes, resolved once by
+	// configureBackends from the OSC 11 background reply. Empty is the
+	// pre-detection value, which barStyle reads as reverse video, so a State
+	// that never ran a handshake still draws a legible bar.
+	barSGR string
 }
 
 // KittyTransport returns the effective Kitty transmission medium resolved by

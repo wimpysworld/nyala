@@ -46,6 +46,47 @@ const (
 	barEllipsis           = "…" // … URL truncation marker
 )
 
+// Bar row SGR openers, the base 16 ANSI colours only, so the bar follows the
+// user's theme rather than pinning a colour of its own. Each resets first, so
+// one opener fully describes the row whatever preceded it.
+//
+// barStyleReverse is the pre-detection and fallback style: reverse video on
+// the terminal default pair, the bar Nyala drew before OSC 11 detection
+// existed. barStyleDark and barStyleLight are the detected pair, a grey bar
+// that sits with the terminal's own polarity: index 8 with index 7 ink on a
+// dark terminal, index 7 with index 0 ink on a light one.
+const (
+	barStyleReverse = "\x1b[0;7m"
+	barStyleDark    = "\x1b[0;37;100m"
+	barStyleLight   = "\x1b[0;30;47m"
+)
+
+// barStyle returns the SGR opener for the bottom bar row. An unresolved
+// barSGR, which is every State that skipped configureBackends, reads as
+// reverse video.
+func (s *State) barStyle() string {
+	if s.barSGR == "" {
+		return barStyleReverse
+	}
+	return s.barSGR
+}
+
+// resolveBarStyle picks the bar's SGR opener from the OSC 11 handshake reply.
+// A dark terminal gets the dark grey bar and a light one the light grey bar.
+// Reverse video holds whenever the polarity is unknown: the terminal stayed
+// silent, answered unreadably, or runs under a multiplexer that sends no
+// query. ColourMono takes it too, because that is NO_COLOR or --color=none,
+// and reverse video is the only bar style that names no colour at all.
+func resolveBarStyle(dark, ok bool, colour ColourMode) string {
+	if !ok || colour == ColourMono {
+		return barStyleReverse
+	}
+	if dark {
+		return barStyleDark
+	}
+	return barStyleLight
+}
+
 // barSpinner is the braille startup spinner cycle shown in the indicator
 // slot while the launch navigation runs, before the first frame.
 var barSpinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
