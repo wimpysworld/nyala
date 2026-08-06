@@ -16,7 +16,7 @@ require (
 	github.com/ericpauley/go-quantize v0.0.0-20200331213906-ae555eb2afa4
 	github.com/gen2brain/jpegn v0.4.4
 	github.com/klauspost/compress v1.19.1
-	github.com/lucasb-eyer/go-colorful v1.4.0
+	github.com/lucasb-eyer/go-colorful v1.4.1
 	github.com/mattn/go-runewidth v0.0.27
 	github.com/mattn/go-sixel v0.0.12
 	github.com/raf555/pixelmatch v1.0.1
