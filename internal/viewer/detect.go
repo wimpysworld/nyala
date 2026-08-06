@@ -320,17 +320,24 @@ func parseXTVersion(buf []byte) string {
 // an XParseColor string. dark is the HSL lightness below one half, the same
 // test the wider terminal ecosystem applies, so Nyala agrees with the
 // terminals and libraries a reader already uses. ok is false when the terminal
-// stayed silent or answered with a spec this package cannot read, and the
-// caller then keeps the bar on reverse video.
+// stayed silent, answered without a terminator, or answered with a spec this
+// package cannot read, and the caller then keeps the bar on reverse video. An
+// unterminated reply is unreadable rather than short, because the first escape
+// byte after a truncated body belongs to the next reply, not to this one.
 func parseBackgroundDark(buf []byte) (dark, ok bool) {
 	i := bytes.Index(buf, []byte(osc11Prefix))
 	if i < 0 {
 		return false, false
 	}
 	spec := buf[i+len(osc11Prefix):]
-	if end := bytes.IndexAny(spec, "\x07\x1b"); end >= 0 {
-		spec = spec[:end]
+	end := bytes.IndexAny(spec, "\x07\x1b")
+	if end < 0 {
+		return false, false
 	}
+	if spec[end] == '\x1b' && (end+1 >= len(spec) || spec[end+1] != '\\') {
+		return false, false
+	}
+	spec = spec[:end]
 	r, g, b, specOK := parseXColour(spec)
 	if !specOK {
 		return false, false
