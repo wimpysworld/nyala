@@ -373,18 +373,22 @@ func parseXColour(spec []byte) (r, g, b float64, ok bool) {
 
 // parseXComponents parses the slash-separated components of an "rgb:" or
 // "rgba:" spec, requiring exactly want of them and returning the first three.
+// Every component must parse, the alpha included, so a malformed spec is
+// rejected rather than read as a colour.
 func parseXComponents(spec []byte, want int) (r, g, b float64, ok bool) {
 	parts := bytes.Split(spec, []byte("/"))
 	if len(parts) != want {
 		return 0, 0, 0, false
 	}
 	var v [3]float64
-	for i := range v {
-		c, cok := hexComponent(parts[i])
+	for i, p := range parts {
+		c, cok := hexComponent(p)
 		if !cok {
 			return 0, 0, 0, false
 		}
-		v[i] = c
+		if i < len(v) {
+			v[i] = c
+		}
 	}
 	return v[0], v[1], v[2], true
 }

@@ -310,6 +310,8 @@ func TestParseBackgroundDark(t *testing.T) {
 		{"missing component", "\x1b]11;rgb:0000/0000\x07", false, false},
 		{"non-hex digit", "\x1b]11;rgb:zzzz/0000/0000\x07", false, false},
 		{"too many digits", "\x1b]11;rgb:00000/0000/0000\x07", false, false},
+		{"non-hex alpha", "\x1b]11;rgba:0000/0000/0000/zz!!\x07", false, false},
+		{"too many digits in the alpha", "\x1b]11;rgba:0000/0000/0000/00000\x07", false, false},
 		{"empty component", "\x1b]11;rgb://\x07", false, false},
 		{"empty spec", "\x1b]11;\x07", false, false},
 		{"hex of no legal width", "\x1b]11;#ffff\x07", false, false},
