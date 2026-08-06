@@ -288,3 +288,95 @@ func TestAppendBarBoldsPressedButton(t *testing.T) {
 		t.Fatalf("released bar kept bold: %q", buf.String())
 	}
 }
+
+// TestResolveBarStyle pins the bar's colour decision: a detected dark terminal
+// gets the dark grey bar, a detected light one the light grey bar, and every
+// unresolved case keeps reverse video. NO_COLOR and --color=none arrive here as
+// ColourMono and take reverse video too, the one bar style that names no
+// colour at all.
+func TestResolveBarStyle(t *testing.T) {
+	cases := []struct {
+		name   string
+		dark   bool
+		ok     bool
+		colour ColourMode
+		want   string
+	}{
+		{"dark terminal", true, true, ColourTrue, barStyleDark},
+		{"light terminal", false, true, ColourTrue, barStyleLight},
+		{"dark terminal on a 256-colour session", true, true, ColourXTerm256, barStyleDark},
+		{"terminal stayed silent", false, false, ColourTrue, barStyleReverse},
+		{"unreadable reply cannot claim dark", true, false, ColourTrue, barStyleReverse},
+		{"no colour wanted", true, true, ColourMono, barStyleReverse},
+		{"no colour wanted and no reply", false, false, ColourMono, barStyleReverse},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := resolveBarStyle(c.dark, c.ok, c.colour); got != c.want {
+				t.Fatalf("resolveBarStyle(%v, %v, %v) = %q, want %q", c.dark, c.ok, c.colour, got, c.want)
+			}
+		})
+	}
+}
+
+// TestBarStyleFallsBackToReverse asserts a State that never ran the handshake
+// still draws a legible bar: the unresolved opener reads as reverse video, so
+// diagnostics and tests that build a State directly are never left writing a
+// bar with no style at all.
+func TestBarStyleFallsBackToReverse(t *testing.T) {
+	st := NewState(60, 4)
+	if got := st.barStyle(); got != barStyleReverse {
+		t.Fatalf("pre-detection barStyle = %q, want reverse video", got)
+	}
+	st.barSGR = barStyleDark
+	if got := st.barStyle(); got != barStyleDark {
+		t.Fatalf("resolved barStyle = %q, want the dark bar", got)
+	}
+}
+
+// TestBarStylesUseTheBase16Palette asserts every bar style stays inside the
+// base 16 ANSI colours, so the bar follows the user's theme. A 256-palette or
+// truecolour selector here would pin a shade the theme cannot move.
+func TestBarStylesUseTheBase16Palette(t *testing.T) {
+	for _, style := range []string{barStyleReverse, barStyleDark, barStyleLight} {
+		if strings.Contains(style, "38;5;") || strings.Contains(style, "48;5;") {
+			t.Fatalf("bar style %q selects a 256-palette entry", style)
+		}
+		if strings.Contains(style, "38;2;") || strings.Contains(style, "48;2;") {
+			t.Fatalf("bar style %q selects a truecolour value", style)
+		}
+	}
+}
+
+// TestBarRowsDrawTheResolvedStyle asserts every bar mode frames its row with
+// the style barStyle resolved, not a hard-coded reverse video, so one
+// detection result reaches the chrome row, the URL editor, the find field, the
+// menu, and the About line alike.
+func TestBarRowsDrawTheResolvedStyle(t *testing.T) {
+	modes := []struct {
+		name  string
+		enter func(s *streamSession)
+	}{
+		{"chrome", func(*streamSession) {}},
+		{"edit", func(s *streamSession) { s.barMode, s.editor = barModeEdit, newURLEditor("https://a.io/") }},
+		{"find", func(s *streamSession) { s.barMode, s.editor = barModeFind, newURLEditor("query") }},
+		{"menu", func(s *streamSession) { s.barMode = barModeMenu }},
+		{"about", func(s *streamSession) { s.barMode = barModeAbout }},
+	}
+	for _, m := range modes {
+		t.Run(m.name, func(t *testing.T) {
+			st := NewState(60, 4)
+			st.barSGR = barStyleLight
+			s := &streamSession{st: &st, launchURL: "https://a.io/"}
+			m.enter(s)
+			var buf bytes.Buffer
+			s.appendBar(&buf)
+			if !strings.HasPrefix(buf.String(), "\x1b[4;1H"+barStyleLight) {
+				t.Fatalf("%s row = %q, want the resolved light style", m.name, buf.String())
+			}
+			if strings.Contains(buf.String(), barStyleReverse) {
+				t.Fatalf("%s row = %q, still carries hard-coded reverse video", m.name, buf.String())
+			}
+		})
+	}
+}

@@ -18,9 +18,12 @@ import (
 // it runs the full terminal handshake and offers a
 // graphics backend only when the terminal confirms it. The colour mode resolves
 // on every path after terminal compatibility, so no multiplexer early return
-// can strand it at the NewState default. A NYALA_CELL_PX override (a diagnostic
-// and harness knob) takes precedence over the ioctl and handshake cell; a
-// malformed override returns an error so the run fails loudly. transportFlag is
+// can strand it at the NewState default. The bar's SGR opener resolves on
+// every path beside it, from the OSC 11 reply the full handshake collects;
+// every other path resolves to reverse video, because it sent no query. A
+// NYALA_CELL_PX override (a diagnostic and harness knob) takes precedence over
+// the ioctl and handshake cell; a malformed override returns an error so the
+// run fails loudly. transportFlag is
 // the --kitty-transport intent; the effective transport resolves here, once,
 // from the flag and the probe result, and lands on st for the kitty draw path.
 func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, transportFlag string) error {
@@ -52,6 +55,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 	case muxScreen, muxHerdr:
 		st.setTerminalCompatibility("", environ)
 		st.Colour = resolveCompatibleColour(colourFlag, environ, detected, st.compat)
+		st.barSGR = resolveBarStyle(false, false, st.Colour)
 		// No handshake runs here, so the transport resolves with no identity
 		// and no probe: an explicit override still wins and auto falls back
 		// to direct.
@@ -94,6 +98,10 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 			}
 		}
 		st.Colour = resolveCompatibleColour(colourFlag, environ, detected, st.compat)
+		// The reduced handshake sent no OSC 11 query, so the bar keeps reverse
+		// video: tmux would answer from a cache read once at attach, which
+		// describes the terminal as it was rather than as it is.
+		st.barSGR = resolveBarStyle(false, false, st.Colour)
 		// The reduced handshake sent no Kitty probe, so the transport resolves
 		// with no identity and no probe result: an explicit override still
 		// wins and auto falls back to direct.
@@ -115,6 +123,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 	st.kittyTransport = resolveKittyTransport(transportFlag, res.TermID, res.KittySHM, runtime.GOOS)
 	st.setTerminalCompatibility(res.TermID, environ)
 	st.Colour = resolveCompatibleColour(colourFlag, environ, detected, st.compat)
+	st.barSGR = resolveBarStyle(res.BackgroundDark, res.BackgroundOK, st.Colour)
 
 	st.SetEnabled(enabledBackends(res, st.compat))
 	return nil

@@ -601,8 +601,8 @@ type streamSession struct {
 }
 
 // appendBar folds the bottom-bar bytes into buf, cursor-addressed to the
-// bottom terminal row in reverse video: the base-16 palette only, so the bar
-// follows the user's theme. The bar exists only when the terminal is at
+// bottom terminal row in the style barStyle resolved: the base-16 palette
+// only, so the bar follows the user's theme. The bar exists only when the terminal is at
 // least two rows tall (one bar row plus one page row); a one-row terminal
 // appends nothing, matching the engineRows reservation. A non-chrome bar
 // mode (edit, menu, about, find) swaps the row content through appendBarMode. In
@@ -640,7 +640,7 @@ func (s *streamSession) appendBar(buf *bytes.Buffer) {
 			content = boldSpan(content, seg.col, seg.width)
 		}
 	}
-	fmt.Fprintf(buf, "\x1b[%d;1H\x1b[0;7m%s\x1b[0m", s.st.Rows, content)
+	fmt.Fprintf(buf, "\x1b[%d;1H%s%s\x1b[0m", s.st.Rows, s.st.barStyle(), content)
 }
 
 // armFPSHeartbeat starts the once-per-second badge refresh, if it is not

@@ -930,7 +930,9 @@ no-color.org. The flag spells `truecolor` the American way to match the
 `COLORTERM` token; Go identifiers stay British.
 
 Detection (`detectColour`) is env plus terminfo through `colorprofile.Detect`,
-hermetic and injectable, with no DCS round-trip. A present `COLORTERM` of
+hermetic and injectable, with no DCS round-trip. This is colour depth alone,
+a separate question from the terminal's background polarity, which the
+handshake does ask for over OSC 11 under Capability detection. A present `COLORTERM` of
 `kmscon`, `truecolor`, or `24bit` is a trusted positive that short-circuits to
 truecolour before `Detect` runs. The round-trip was dropped for three measured
 failures: DECRQSS is a no-op on KMSCON's libtsm, zellij leaks the reply into
@@ -971,7 +973,7 @@ the writer stays literal.
 One write batches the whole probe (`queryBytes`): the Kitty graphics query
 (`a=q`), an optional Kitty shared-memory transport query, the three cell-size
 queries, the XTVERSION identity query, the Kitty keyboard-protocol flags query,
-then DA1:
+the OSC 11 background-colour query, then DA1:
 
 ```
 CSI 16t   cell size in pixels
@@ -979,6 +981,7 @@ CSI 14t   text area in pixels
 CSI 18t   text area in cells
 CSI > 0 q XTVERSION
 CSI ? u   Kitty keyboard-protocol flags
+OSC 11 ?  terminal background colour
 CSI c     DA1
 ```
 
@@ -1000,6 +1003,21 @@ leaking through as keys. The DA1 reply shares the `CSI ?` prefix, so the parse
 requires the `u` final over a digit run alone and keeps scanning past a
 non-match. What Nyala does with the capability is under Key bindings and text
 input below.
+
+The background reply is an OSC 11 body carrying an XParseColor spec, read as
+dark when its HSL lightness falls below one half (`parseBackgroundDark`). It
+accepts the `rgb:` and `rgba:` forms at every legal digit width and the `#`
+form at three, six, nine, or twelve digits; an alpha component is parsed and
+discarded, because a background composites over the desktop and its opacity
+says nothing about the colour a reader sees. The legacy X11 colour names are
+refused rather than carried as a name table. The reply holds no `CSI ?`, so it
+can never terminate the DA1 read early, and no other handshake parser scans for
+an OSC introducer. The query is confined to the full handshake, which runs
+before the key reader goroutine exists: a mid-session query would land its
+reply in `nextEvent`, which has no `ESC ]` arm and would type the body into the
+page. The reduced multiplexer handshake omits it, because tmux answers from a
+cache read once at attach and so describes the terminal as it was rather than
+as it is. The only consumer is the bottom bar's colour, below.
 
 Backend nomination is ceiling-first: the enabled cycle orders Kitty, Sixel,
 Block, so the default backend is the best one the terminal confirmed. Block is
@@ -1289,9 +1307,27 @@ without breaking hit-testing.
 ### Colour and the fps segment
 
 The bar uses the terminal default foreground and background plus the base 16
-ANSI colours only, so it follows the user's theme. Reverse video is the base
-style; bold marks focus and press feedback. Fixed 240-palette entries were
-rejected because they ignore the theme. The fps segment is present when a meter
+ANSI colours only, so it follows the user's theme. Bold marks focus and press
+feedback. Fixed 240-palette entries were rejected because they ignore the theme.
+
+The bar is a grey band that sits with the terminal's own polarity, chosen once
+from the handshake's OSC 11 reply (`resolveBarStyle`). A dark terminal gets
+index 8 with index 7 ink, a light one index 7 with index 0 ink. Both are
+theme-defined, so the bar is the user's grey rather than a pinned shade.
+Reverse video holds wherever the polarity is unknown: the terminal stayed
+silent, answered unreadably, or runs under a multiplexer that sends no query.
+`NO_COLOR` and `--color=none` arrive as ColourMono and take it too, because
+reverse video is the one bar style that names no colour at all. The style is a
+single SGR opener resolved on every `configureBackends` path and read through
+`State.barStyle`, so the chrome row, the URL editor, the find field, the menu,
+and the About line share one decision, and a `State` that skipped the handshake
+still draws a legible bar.
+
+Bold over the light style is the one combination to watch: terminals that
+brighten indexes 0 to 7 under SGR 1 render index 0 ink as index 8, a grey on
+the index 7 band.
+
+The fps segment is present when a meter
 is armed and the menu has not hidden it: `NYALA_FPS_TIMING` arms one at startup,
 and the menu's Show FPS command arms one mid-session. Hiding keeps the meter,
 because the switch's quit summary reads that same one, so only the badge and its
@@ -1678,8 +1714,13 @@ decode-every-frame consumer streams JPEG q90.
   Engines).
 - Bubble Tea v2 dropped: PTY-ownership complexity; the viewer already owns
   the terminal.
-- The DCS/OSC colour round-trip dropped: it fails on three target platforms
-  (details under Colour).
+- The DCS colour-depth round-trip dropped: it fails on three target platforms
+  (details under Colour). The OSC 11 background query is a separate decision:
+  it rides the startup handshake, and the bar reads its answer (details under
+  Capability detection).
+- A theming library rejected for the bar: bubbletint and Lipgloss both pin
+  colours the user's theme cannot move, and the bar owns three SGR openers
+  drawn from the base 16.
 - Burning glyphs into the bitmap rejected permanently: it drops text back under
   the 10 px legibility floor.
 - Damage tracking, dirty tiles, and partial graphics emission are out of
