@@ -276,7 +276,7 @@ func TestParseCellPixels(t *testing.T) {
 // forms terminals send: XParseColor "rgb:" and "rgba:" at every legal digit
 // width, the "#" hex forms, and both terminators. A silent terminal and an
 // unreadable spec both report no answer, so the bar falls back rather than
-// guessing a polarity.
+// guessing a polarity, and so does a reply that never reaches its terminator.
 func TestParseBackgroundDark(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -314,6 +314,11 @@ func TestParseBackgroundDark(t *testing.T) {
 		{"empty spec", "\x1b]11;\x07", false, false},
 		{"hex of no legal width", "\x1b]11;#ffff\x07", false, false},
 		{"foreground reply is not the background", "\x1b]10;rgb:ffff/ffff/ffff\x07", false, false},
+		// A truncated reply must not borrow the next reply's escape byte as its
+		// terminator: the leading digits would otherwise parse as a colour.
+		{"truncated before the DA1 reply", "\x1b]11;rgb:0000/0000/0000\x1b[?62;4c", false, false},
+		{"truncated mid-spec before the DA1 reply", "\x1b]11;rgb:0000/0000/00\x1b[?62;4c", false, false},
+		{"no terminator at all", "\x1b]11;rgb:0000/0000/0000", false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
