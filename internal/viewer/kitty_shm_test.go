@@ -194,6 +194,9 @@ func assertKittySHMEncodeError(t *testing.T, s *State, shm *testSHMWriter, frame
 	if !shm.closed || s.kittySHM != nil {
 		t.Fatal("synchronous encode failure did not close the shm writer")
 	}
+	if runtime.GOOS != "linux" {
+		return
+	}
 	for _, name := range shm.names {
 		path := "/dev/shm/" + strings.TrimPrefix(name, "/")
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -218,9 +221,6 @@ func TestKittySHMCreateMapErrorReturns(t *testing.T) {
 // TestKittySHMObjectCloseErrorReturns asserts a mapped-object close failure is
 // returned and cleanup unlinks the object without selecting retained PNG.
 func TestKittySHMObjectCloseErrorReturns(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("kitty shm cleanup test requires Linux /dev/shm")
-	}
 	want := errors.New("forced shm object close failure")
 	s := shmState()
 	shm := newTestSHMWriter()
@@ -235,9 +235,6 @@ func TestKittySHMObjectCloseErrorReturns(t *testing.T) {
 // TestKittySHMAPCEncodeErrorReturns asserts an APC writer failure is returned
 // after SHM preparation and cleanup unlinks the unconsumed object.
 func TestKittySHMAPCEncodeErrorReturns(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("kitty shm cleanup test requires Linux /dev/shm")
-	}
 	want := errors.New("forced Kitty APC failure")
 	s := shmState()
 	shm := newTestSHMWriter()
