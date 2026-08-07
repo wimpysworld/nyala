@@ -4,6 +4,7 @@ package viewer
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"testing"
 
@@ -61,6 +62,43 @@ func TestDarwinProbeSHMCleanup(t *testing.T) {
 				t.Fatalf("unlink replacement object: %v", err)
 			}
 		})
+	}
+}
+
+func TestDarwinProbeSHMCleanupReporting(t *testing.T) {
+	capture := func(name string) []byte {
+		t.Helper()
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("capture stderr: %v", err)
+		}
+		originalStderr := os.Stderr
+		os.Stderr = writer
+		unlinkProbeSHM(name)
+		os.Stderr = originalStderr
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close captured stderr: %v", err)
+		}
+		got, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatalf("read captured stderr: %v", err)
+		}
+		if err := reader.Close(); err != nil {
+			t.Fatalf("close stderr reader: %v", err)
+		}
+		return got
+	}
+
+	missing := probeSHMName(uint32(os.Getpid()), probeSHMSeq.Add(1))
+	if err := posixshm.Unlink(missing); err != nil {
+		t.Fatalf("remove stale probe: %v", err)
+	}
+	if got := capture(missing); len(got) != 0 {
+		t.Errorf("missing probe output = %q, want silence", got)
+	}
+	got := capture("invalid")
+	if !bytes.Contains(got, []byte("nyala: remove shm probe object:")) {
+		t.Fatalf("unlink failure output = %q, want cleanup error", got)
 	}
 }
 

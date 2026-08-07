@@ -59,5 +59,7 @@ func createProbeSHMWithAttempts(attempts int) (string, error) {
 // unlinkProbeSHM removes the probe object when the terminal has not consumed
 // it. A missing object means the terminal consumed it and is not an error.
 func unlinkProbeSHM(name string) {
-	_ = posixshm.Unlink(name)
+	if err := posixshm.Unlink(name); err != nil {
+		fmt.Fprintf(os.Stderr, "nyala: remove shm probe object: %v\n", err)
+	}
 }
