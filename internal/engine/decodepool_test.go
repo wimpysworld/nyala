@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -15,6 +16,7 @@ import (
 	"github.com/chromedp/cdproto/page"
 
 	"github.com/wimpysworld/nyala/internal/render"
+	renderkitty "github.com/wimpysworld/nyala/internal/render/kitty"
 )
 
 // seqDecode returns a decode hook that reads the arrival sequence back from the raw
@@ -389,10 +391,9 @@ func TestDecodePoolByteIdenticalToSerial(t *testing.T) {
 	}
 }
 
-// TestDecodePoolKittyPassThroughAndStalePixels pins the Kitty worker selection.
-// PNG remains the exact CDP string, while a frame decoded under the prior format
-// remains pixels for the viewer to reject after the switch.
-func TestDecodePoolKittyPassThroughAndStalePixels(t *testing.T) {
+// TestDecodePoolKittyPassThroughAndPixelDecode pins the worker selection. A valid
+// direct Kitty PNG remains the exact CDP string, while a pixel backend decodes JPEG.
+func TestDecodePoolKittyPassThroughAndPixelDecode(t *testing.T) {
 	t.Run("PNG identity", func(t *testing.T) {
 		payload := pngPayload(t)
 		e := &ChromiumEngine{
@@ -412,21 +413,212 @@ func TestDecodePoolKittyPassThroughAndStalePixels(t *testing.T) {
 		}
 	})
 
-	t.Run("stale non-PNG pixels", func(t *testing.T) {
+	t.Run("pixel backend JPEG", func(t *testing.T) {
 		payload := encodeBase64JPEG(t)
-		e := &ChromiumEngine{backend: backendKitty}
+		e := &ChromiumEngine{backend: backendSixel}
 		rawQ, frames, stop := drivePool(t, e, 1)
 		defer stop()
 		rawQ.put(seqRawFrame{seq: 1, data: payload})
 
 		got := recvFrame(t, frames)
 		if got.Img == nil {
-			t.Fatal("stale Kitty non-PNG frame has no decoded pixels")
+			t.Fatal("pixel backend JPEG frame has no decoded pixels")
 		}
 		if got.EncodedPNG != "" {
-			t.Fatal("stale Kitty non-PNG frame retained a direct PNG payload")
+			t.Fatal("pixel backend JPEG frame retained a direct PNG payload")
 		}
 	})
+}
+
+func TestDecodeWorkerRejectsInvalidActiveDirectKittyBeforeDecode(t *testing.T) {
+	decodeCalls := atomic.Uint64{}
+	ingest := &ingestCounter{on: true, window: ingestWindow}
+	ingest.record(time.Now())
+	e := &ChromiumEngine{
+		backend: backendKitty,
+		ingest:  ingest,
+		decode: func(string) (*image.RGBA, error) {
+			decodeCalls.Add(1)
+			return seqImage(1), nil
+		},
+	}
+	if direct, err := e.directKittyPayload("not-a-png"); !direct {
+		t.Fatal("active direct Kitty transport was not selected")
+	} else if !errors.Is(err, renderkitty.ErrInvalidPNGData) {
+		t.Fatalf("directKittyPayload() error = %v, want ErrInvalidPNGData", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	q := newRawFrameQueue(1)
+	out := make(chan decodedFrame, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.runDecodeWorker(ctx, q, out)
+	}()
+	q.put(seqRawFrame{seq: 1, data: "not-a-png"})
+	waitDecodeDrops(t, ingest, 1)
+	cancel()
+	<-done
+
+	if got := decodeCalls.Load(); got != 0 {
+		t.Fatalf("override decoder calls = %d, want 0", got)
+	}
+	select {
+	case got := <-out:
+		t.Fatalf("invalid direct payload emitted frame %+v", got)
+	default:
+	}
+	stats := ingest.summary()
+	if stats.DecodeDrops != 1 {
+		t.Fatalf("decode drops = %d, want 1", stats.DecodeDrops)
+	}
+	if stats.DecodeFirstError != "engine: direct Kitty PNG validation: kitty: invalid base64 PNG payload" {
+		t.Fatalf("first decode error = %q, want direct Kitty validation context", stats.DecodeFirstError)
+	}
+}
+
+func TestDecodeWorkerCountsEachDecoderFailureOnce(t *testing.T) {
+	corruptPNG := base64.StdEncoding.EncodeToString(append(append([]byte(nil), pngSignature...), "broken"...))
+	corruptJPEG := base64.StdEncoding.EncodeToString([]byte{0xff, 0xd8, 0xff, 0xdb, 0x00})
+	tests := []struct {
+		name       string
+		engine     func() *ChromiumEngine
+		data       string
+		wantPrefix string
+	}{
+		{
+			name: "override",
+			engine: func() *ChromiumEngine {
+				return &ChromiumEngine{backend: backendBlock, decode: func(string) (*image.RGBA, error) {
+					return nil, errors.New("override decode failed")
+				}}
+			},
+			data:       "override-payload",
+			wantPrefix: "override decode failed",
+		},
+		{
+			name:       "live PNG",
+			engine:     func() *ChromiumEngine { return &ChromiumEngine{backend: backendBlock} },
+			data:       corruptPNG,
+			wantPrefix: "engine: live frame decode: native image decode: png decode:",
+		},
+		{
+			name:       "live JPEG",
+			engine:     func() *ChromiumEngine { return &ChromiumEngine{backend: backendSixel} },
+			data:       corruptJPEG,
+			wantPrefix: "engine: live frame decode: native image decode: jpeg decode:",
+		},
+		{
+			name: "Kitty plane",
+			engine: func() *ChromiumEngine {
+				return &ChromiumEngine{backend: backendKitty, kittyDecode: true}
+			},
+			data:       base64.StdEncoding.EncodeToString([]byte("not-an-image")),
+			wantPrefix: errUnknownPlaneFormat.Error(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			e := test.engine()
+			e.ingest = &ingestCounter{on: true, window: ingestWindow}
+			e.ingest.record(time.Now())
+			ctx, cancel := context.WithCancel(context.Background())
+			q := newRawFrameQueue(1)
+			out := make(chan decodedFrame, 1)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				e.runDecodeWorker(ctx, q, out)
+			}()
+			q.put(seqRawFrame{seq: 1, data: test.data})
+			waitDecodeDrops(t, e.ingest, 1)
+			cancel()
+			<-done
+
+			stats := e.ingest.summary()
+			if stats.DecodeDrops != 1 {
+				t.Fatalf("decode drops = %d, want 1", stats.DecodeDrops)
+			}
+			if !bytes.HasPrefix([]byte(stats.DecodeFirstError), []byte(test.wantPrefix)) {
+				t.Fatalf("first decode error = %q, want prefix %q", stats.DecodeFirstError, test.wantPrefix)
+			}
+			select {
+			case frame := <-out:
+				t.Fatalf("failed decode emitted frame %+v", frame)
+			default:
+			}
+		})
+	}
+}
+
+func TestDecodePoolNonDecodeDropsDoNotChangeStats(t *testing.T) {
+	t.Run("raw queue pressure", func(t *testing.T) {
+		ingest := &ingestCounter{on: true, window: ingestWindow}
+		q := newRawFrameQueue(1)
+		q.put(seqRawFrame{seq: 1})
+		q.put(seqRawFrame{seq: 2})
+		if got := ingest.decodeDrops.Load(); got != 0 {
+			t.Fatalf("decode drops = %d, want 0", got)
+		}
+	})
+
+	t.Run("collector stale drop", func(t *testing.T) {
+		ingest := &ingestCounter{on: true, window: ingestWindow}
+		e := &ChromiumEngine{backend: backendBlock, ingest: ingest}
+		ctx, cancel := context.WithCancel(context.Background())
+		in := make(chan decodedFrame, 2)
+		frames := make(chan render.Frame, 2)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			e.runDecodeCollector(ctx, in, frames, &textSync{}, nil, nil)
+		}()
+		in <- decodedFrame{seq: 2, pending: pendingFrame{img: seqImage(2)}}
+		<-frames
+		in <- decodedFrame{seq: 1, pending: pendingFrame{img: seqImage(1)}}
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+		<-done
+		if got := ingest.decodeDrops.Load(); got != 0 {
+			t.Fatalf("decode drops = %d, want 0", got)
+		}
+	})
+
+	t.Run("worker cancellation", func(t *testing.T) {
+		ingest := &ingestCounter{on: true, window: ingestWindow}
+		e := &ChromiumEngine{backend: backendBlock, ingest: ingest, decode: seqDecode(nil)}
+		ctx, cancel := context.WithCancel(context.Background())
+		q := newRawFrameQueue(1)
+		out := make(chan decodedFrame)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			e.runDecodeWorker(ctx, q, out)
+		}()
+		q.put(seqRawFrame{seq: 1, data: "1"})
+		cancel()
+		<-done
+		if got := ingest.decodeDrops.Load(); got != 0 {
+			t.Fatalf("decode drops = %d, want 0", got)
+		}
+	})
+}
+
+func waitDecodeDrops(t *testing.T, ingest *ingestCounter, want uint64) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for ingest.decodeDrops.Load() != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("decode drops = %d, want %d", ingest.decodeDrops.Load(), want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Give the worker time to expose an accidental second record for this frame.
+	time.Sleep(10 * time.Millisecond)
+	if got := ingest.decodeDrops.Load(); got != want {
+		t.Fatalf("decode drops = %d after settle, want %d", got, want)
+	}
 }
 
 // TestDecodePoolSixelDecodesJPEG pins the Sixel worker route for the live JPEG

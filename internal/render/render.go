@@ -135,6 +135,10 @@ type IngestStats struct {
 	DecodeMeanMS float64
 	// DecodeMaxMS is the slowest single worker decode in milliseconds.
 	DecodeMaxMS float64
+	// DecodeDrops is the count of frames dropped after a decode failure.
+	DecodeDrops uint64
+	// DecodeFirstError is the first decode failure's text, or empty when none failed.
+	DecodeFirstError string
 	// AckRTTMeanMS is the mean screencast acknowledgement command round trip in
 	// milliseconds, measured on the ack pump.
 	AckRTTMeanMS float64

@@ -29,10 +29,17 @@ var pngSignature = []byte("\x89PNG\r\n\x1a\n")
 // image.Decode dispatch init-order dependent.
 func decodeFrameImage(raw []byte) (image.Image, error) {
 	if bytes.HasPrefix(raw, pngSignature) {
-		return pngdecode.Decode(bytes.NewReader(raw))
+		img, err := pngdecode.Decode(bytes.NewReader(raw))
+		if err != nil {
+			return nil, fmt.Errorf("png decode: %w", err)
+		}
+		return img, nil
 	}
 	img, _, err := image.Decode(bytes.NewReader(raw))
-	return img, err
+	if err != nil {
+		return nil, fmt.Errorf("jpeg decode: %w", err)
+	}
+	return img, nil
 }
 
 // b64Buf is one pooled base64 output buffer plus its once-built release
@@ -223,7 +230,11 @@ func decodeJPEGFast(raw []byte) (image.Image, error) {
 	if img, err := jpegn.Decode(bytes.NewReader(raw)); err == nil {
 		return img, nil
 	}
-	return decodeFrameImage(raw)
+	img, err := decodeFrameImage(raw)
+	if err != nil {
+		return nil, fmt.Errorf("native image decode: %w", err)
+	}
+	return img, nil
 }
 
 // planeReaderPool recycles the bytes.Reader each kitty-shm plane decode wraps
@@ -257,7 +268,7 @@ var kittyPlaneJPEGOpts = &jpegn.Options{ToRGBA: true}
 func (e *ChromiumEngine) decodeKittyPlane(data string) (image.Image, func(), error) {
 	raw, release, err := decodeBase64Pooled(data)
 	if err != nil {
-		return nil, nil, fmt.Errorf("engine: base64-decode frame: %w", err)
+		return nil, nil, fmt.Errorf("engine: kitty plane base64 decode: %w", err)
 	}
 	defer release()
 	if w, h, ok := pngdecode.Dimensions(raw); ok {
@@ -269,7 +280,7 @@ func (e *ChromiumEngine) decodeKittyPlane(data string) (image.Image, func(), err
 		planeReaderPool.Put(br)
 		if derr != nil {
 			fp.release()
-			return nil, nil, fmt.Errorf("engine: decode kitty plane: %w", derr)
+			return nil, nil, fmt.Errorf("engine: kitty plane png decode: %w", derr)
 		}
 		return &fp.img, fp.release, nil
 	}
@@ -282,11 +293,11 @@ func (e *ChromiumEngine) decodeKittyPlane(data string) (image.Image, func(), err
 	br.Reset(nil) // drop the pooled payload reference before returning the reader
 	planeReaderPool.Put(br)
 	if derr != nil {
-		return nil, nil, fmt.Errorf("engine: decode kitty plane: %w", derr)
+		return nil, nil, fmt.Errorf("engine: kitty plane jpeg decode: %w", derr)
 	}
 	rgba, ok := img.(*image.RGBA)
 	if !ok {
-		return nil, nil, fmt.Errorf("engine: decode kitty plane: jpegn returned %T, want *image.RGBA", img)
+		return nil, nil, fmt.Errorf("engine: kitty plane jpeg decode: jpegn returned %T, want *image.RGBA", img)
 	}
 	return rgba, nil, nil
 }
@@ -299,12 +310,12 @@ func (e *ChromiumEngine) decodeKittyPlane(data string) (image.Image, func(), err
 func (e *ChromiumEngine) decodeLiveFrame(data string) (image.Image, error) {
 	raw, release, err := decodeBase64Pooled(data)
 	if err != nil {
-		return nil, fmt.Errorf("engine: base64-decode frame: %w", err)
+		return nil, fmt.Errorf("engine: live frame base64 decode: %w", err)
 	}
 	defer release()
 	img, err := decodeJPEGFast(raw)
 	if err != nil {
-		return nil, fmt.Errorf("engine: decode frame image: %w", err)
+		return nil, fmt.Errorf("engine: live frame decode: %w", err)
 	}
 	return img, nil
 }

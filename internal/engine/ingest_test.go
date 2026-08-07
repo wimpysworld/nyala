@@ -2,8 +2,10 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"image"
 	"math"
+	"sync"
 	"testing"
 	"time"
 
@@ -98,6 +100,84 @@ func TestIngestCounterDecodeBudget(t *testing.T) {
 	}
 }
 
+// TestIngestCounterDecodeDropsConcurrent checks that concurrent workers count
+// each non-nil failure once and retain one complete first-reason string.
+func TestIngestCounterDecodeDropsConcurrent(t *testing.T) {
+	t.Parallel()
+	c := &ingestCounter{on: true, window: time.Second}
+	c.record(time.Unix(0, 0)) // one frame, so summary reports
+
+	const workers = 64
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			c.recordDecodeDrop(errors.New("context: invalid image"))
+		}()
+	}
+	close(start)
+	wg.Wait()
+	c.recordDecodeDrop(nil)
+
+	stats := c.summary()
+	if stats.DecodeDrops != workers {
+		t.Fatalf("decode drops = %d, want %d", stats.DecodeDrops, workers)
+	}
+	if stats.DecodeFirstError != "context: invalid image" {
+		t.Fatalf("first decode error = %q, want contextual reason", stats.DecodeFirstError)
+	}
+}
+
+// TestIngestCounterDecodeDropDoesNotUseTimingMutex checks the failure path stays
+// independent of the mutex used by frame and timing statistics.
+func TestIngestCounterDecodeDropDoesNotUseTimingMutex(t *testing.T) {
+	t.Parallel()
+	c := &ingestCounter{on: true, window: time.Second}
+	c.mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		c.recordDecodeDrop(errors.New("context: invalid JPEG"))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		c.mu.Unlock()
+		t.Fatal("decode-drop recording waited for the timing mutex")
+	}
+	c.mu.Unlock()
+	c.record(time.Unix(0, 0))
+
+	stats := c.summary()
+	if stats.DecodeDrops != 1 || stats.DecodeFirstError != "context: invalid JPEG" {
+		t.Fatalf("decode-drop summary = %+v, want one contextual failure", stats)
+	}
+}
+
+type mutableDecodeError struct {
+	text string
+}
+
+func (e *mutableDecodeError) Error() string { return e.text }
+
+// TestIngestCounterDecodeDropStoresText checks the bounded slot does not retain
+// the error object after it captures the first reason.
+func TestIngestCounterDecodeDropStoresText(t *testing.T) {
+	t.Parallel()
+	c := &ingestCounter{on: true, window: time.Second}
+	c.record(time.Unix(0, 0))
+	err := &mutableDecodeError{text: "original reason"}
+	c.recordDecodeDrop(err)
+	err.text = "changed object"
+
+	if got := c.summary().DecodeFirstError; got != "original reason" {
+		t.Fatalf("first decode error = %q, want captured string", got)
+	}
+}
+
 // TestIngestCounterAckRTT checks the acknowledgement round-trip timings accumulate
 // into the summary mean and max.
 func TestIngestCounterAckRTT(t *testing.T) {
@@ -128,6 +208,7 @@ func TestIngestCounterGatedOffSilent(t *testing.T) {
 	c.record(time.Unix(0, 0))
 	c.record(time.Unix(0, int64(100*time.Millisecond)))
 	c.recordDecode(9)
+	c.recordDecodeDrop(errors.New("disabled failure"))
 	c.recordAck(3)
 	stats := c.summary()
 	if stats != (render.IngestStats{}) {

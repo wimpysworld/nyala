@@ -90,6 +90,7 @@ func TestFPSMeterWarmupGate(t *testing.T) {
 	m.ingest = fakeIngest{stats: render.IngestStats{
 		Frames: 40, MeanFPS: 23.6, MinFPS: 6.8, MaxFPS: 59.4,
 		MedianFPS: 50.1, WorstGapMS: 147.4, DecodeMeanMS: 8.2, DecodeMaxMS: 21.0,
+		DecodeDrops: 3, DecodeFirstError: `jpeg decode: marker "bad"`,
 		AckRTTMeanMS: 3.4, AckRTTMaxMS: 12.6,
 	}}
 	var b strings.Builder
@@ -99,11 +100,17 @@ func TestFPSMeterWarmupGate(t *testing.T) {
 		"warmup_ms=1800", "in_frames=40", "in_mean=23.6",
 		"in_min=6.8", "in_max=59.4", "in_median=50.1", "in_worst_gap_ms=147.4",
 		"in_decode_mean_ms=8.2", "in_decode_max_ms=21.0",
+		`in_decode_drops=3`, `in_decode_first_error="jpeg decode: marker \"bad\""`,
 		"out_frames=4", "wall=0.30s", "out_worst_gap_ms=100.0", "out_median=10.0",
 		"ack_rtt_mean_ms=3.4", "ack_rtt_max_ms=12.6",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("summary %q missing %q", out, want)
+		}
+	}
+	for _, field := range []string{"in_decode_drops=", "in_decode_first_error="} {
+		if got := strings.Count(out, field); got != 1 {
+			t.Fatalf("summary contains %q %d times, want once: %q", field, got, out)
 		}
 	}
 }
@@ -308,5 +315,22 @@ func TestFPSMeterSummaryReportsUnavailableWithoutFCP(t *testing.T) {
 	(&fpsMeter{window: time.Second, start: time.Unix(0, 0)}).printSummary(&b)
 	if got := b.String(); got != "nyala fps: warmup_ms=unavailable\n" {
 		t.Fatalf("summary without FCP = %q", got)
+	}
+}
+
+// TestFPSMeterSummaryReportsZeroDecodeDrops checks a session with no failures
+// keeps explicit zero values and writes only the one quit-summary line.
+func TestFPSMeterSummaryReportsZeroDecodeDrops(t *testing.T) {
+	m := &fpsMeter{window: time.Second, start: time.Unix(0, 0)}
+	m.tick(time.Unix(0, 0), true)
+
+	var b strings.Builder
+	m.printSummary(&b)
+	out := b.String()
+	if strings.Count(out, "\n") != 1 {
+		t.Fatalf("summary wrote %d lines, want 1: %q", strings.Count(out, "\n"), out)
+	}
+	if !strings.Contains(out, `in_decode_drops=0 in_decode_first_error=""`) {
+		t.Fatalf("zero-drop summary = %q", out)
 	}
 }
