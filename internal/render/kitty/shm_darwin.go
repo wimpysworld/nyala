@@ -6,14 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"sync/atomic"
 
 	"github.com/wimpysworld/nyala/internal/posixshm"
 	"golang.org/x/sys/unix"
 )
-
-const darwinSHMPrefix = "/ny-f-"
 
 // shmSeq numbers shared-memory objects across every SHMWriter in the process.
 // The pid and process-wide sequence keep names unique across writers and
@@ -141,10 +138,6 @@ func createSHMObject(size int) (*SHMObject, error) {
 		}, nil
 	}
 	return nil, errors.New("kitty: no free shm object name after 100 attempts")
-}
-
-func darwinSHMName(pid int, seq uint64) string {
-	return darwinSHMPrefix + strconv.Itoa(pid) + "-" + strconv.FormatUint(seq, 36)
 }
 
 func unlinkSHM(name string) error {

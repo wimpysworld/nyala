@@ -12,19 +12,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const (
-	darwinProbeSHMPrefix   = "/ny-p-"
-	probeSHMCreateAttempts = 100
-)
+const probeSHMCreateAttempts = 100
 
 // probePixel is the 1x1 f=24 probe payload: one black RGB pixel.
 var probePixel = []byte{0, 0, 0}
 
 var probeSHMSeq atomic.Uint64
-
-func probeSHMName(pid uint32, seq uint64) string {
-	return fmt.Sprintf("%s%x-%x", darwinProbeSHMPrefix, pid, seq)
-}
 
 func createProbeSHMObject(name string) (*posixshm.Object, error) {
 	obj, err := posixshm.Create(name, len(probePixel))

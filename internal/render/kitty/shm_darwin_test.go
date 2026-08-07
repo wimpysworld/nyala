@@ -4,7 +4,6 @@ package kitty
 
 import (
 	"bytes"
-	"math"
 	"sync"
 	"testing"
 
@@ -58,14 +57,6 @@ func TestDarwinSHMWriterMappedAndCopiedPayloads(t *testing.T) {
 }
 
 func TestDarwinSHMWriterNames(t *testing.T) {
-	boundary := darwinSHMName(math.MaxInt32, math.MaxUint64)
-	if len(boundary) > posixshm.MaxNameBytes {
-		t.Fatalf("maximum name length = %d, want at most %d: %q", len(boundary), posixshm.MaxNameBytes, boundary)
-	}
-	if err := posixshm.ValidateName(boundary); err != nil {
-		t.Fatalf("maximum name is invalid: %v", err)
-	}
-
 	const perWriter = 32
 	writers := []*SHMWriter{NewSHMWriter(), NewSHMWriter()}
 	names := make([][]string, len(writers))
