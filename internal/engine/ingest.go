@@ -4,6 +4,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wimpysworld/nyala/internal/render"
@@ -62,6 +63,12 @@ type ingestCounter struct {
 	decodeFrames int
 	decodeTotal  float64
 	decodeMax    float64
+
+	// decodeDrops counts failed worker decodes without contending with the timing
+	// mutex. decodeFirstError retains only the first failure's string, so a bad
+	// payload cannot grow session storage.
+	decodeDrops      atomic.Uint64
+	decodeFirstError atomic.Pointer[string]
 
 	// ackFrames/ackTotal/ackMax accumulate the acknowledgement round-trip budget:
 	// the count and sum give the mean, ackMax the slowest single round trip. Fed by
@@ -134,6 +141,21 @@ func (c *ingestCounter) recordDecode(ms float64) {
 	c.mu.Unlock()
 }
 
+// recordDecodeDrop counts one failed worker decode and retains only the first
+// failure's text. It uses atomics because several decode workers can fail at
+// once, and a failure must never block frame ingest. Nil errors and disabled
+// counters are ignored.
+func (c *ingestCounter) recordDecodeDrop(err error) {
+	if err == nil || !c.armed() {
+		return
+	}
+	c.decodeDrops.Add(1)
+	if c.decodeFirstError.Load() == nil {
+		reason := err.Error()
+		c.decodeFirstError.CompareAndSwap(nil, &reason)
+	}
+}
+
 // recordAck adds one acknowledgement command round trip in milliseconds: the
 // count and running sum feed the mean, and it tracks the slowest single round
 // trip. The ack pump calls it per completed acknowledgement, gated on the armed
@@ -195,7 +217,13 @@ func (c *ingestCounter) summary() render.IngestStats {
 	if c.frames == 0 {
 		return render.IngestStats{}
 	}
-	stats := render.IngestStats{Frames: c.frames}
+	stats := render.IngestStats{
+		Frames:      c.frames,
+		DecodeDrops: c.decodeDrops.Load(),
+	}
+	if reason := c.decodeFirstError.Load(); reason != nil {
+		stats.DecodeFirstError = *reason
+	}
 	if span := c.last.Sub(c.first).Seconds(); span > 0 {
 		stats.MeanFPS = float64(c.frames-1) / span
 	}

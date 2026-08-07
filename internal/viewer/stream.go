@@ -2313,7 +2313,8 @@ func (m *fpsMeter) refresh(now time.Time) {
 // and in_max instantaneous fps (the slowest and fastest single frames), in_median,
 // and in_worst_gap_ms, plus the worker decode budget in_decode_mean_ms and
 // in_decode_max_ms (how close each frame sits to the ~16.6ms 60fps ceiling the decode
-// wall imposes). Under the decoupled receiver/worker model the arrival times are true
+// wall imposes), the decode-drop total, and the quoted first failure. Under the
+// decoupled receiver/worker model the arrival times are true
 // per-frame instants, so the In extremes are meaningful and mirror Out exactly
 // (in_min is 1/maxGap, and so on). The Out stream (paint) gets out_frames, wall
 // seconds, out_mean and out_median fps, out_min and out_max, out_worst_gap_ms
@@ -2359,8 +2360,8 @@ func (m *fpsMeter) printSummary(w io.Writer) {
 	if m.ingest != nil {
 		in = m.ingest.IngestSummary()
 	}
-	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f in_frames=%d in_mean=%.1f in_min=%.1f in_max=%.1f in_median=%.1f in_worst_gap_ms=%.1f in_decode_mean_ms=%.1f in_decode_max_ms=%.1f out_frames=%d wall=%.2fs out_mean=%.1f out_median=%.1f out_min=%.1f out_max=%.1f out_worst_gap_ms=%.1f out_encode_mean_ms=%.1f out_encode_max_ms=%.1f out_write_mean_ms=%.1f out_write_max_ms=%.1f ack_rtt_mean_ms=%.1f ack_rtt_max_ms=%.1f\n",
-		warmupMS, in.Frames, in.MeanFPS, in.MinFPS, in.MaxFPS, in.MedianFPS, in.WorstGapMS, in.DecodeMeanMS, in.DecodeMaxMS,
+	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f in_frames=%d in_mean=%.1f in_min=%.1f in_max=%.1f in_median=%.1f in_worst_gap_ms=%.1f in_decode_mean_ms=%.1f in_decode_max_ms=%.1f in_decode_drops=%d in_decode_first_error=%q out_frames=%d wall=%.2fs out_mean=%.1f out_median=%.1f out_min=%.1f out_max=%.1f out_worst_gap_ms=%.1f out_encode_mean_ms=%.1f out_encode_max_ms=%.1f out_write_mean_ms=%.1f out_write_max_ms=%.1f ack_rtt_mean_ms=%.1f ack_rtt_max_ms=%.1f\n",
+		warmupMS, in.Frames, in.MeanFPS, in.MinFPS, in.MaxFPS, in.MedianFPS, in.WorstGapMS, in.DecodeMeanMS, in.DecodeMaxMS, in.DecodeDrops, in.DecodeFirstError,
 		m.frames, wall, mean, medianFPS(m.gaps), minInst, maxInst, worstGapMS,
 		encodeMean, m.encodeMax, writeMean, m.writeMax, in.AckRTTMeanMS, in.AckRTTMaxMS)
 }

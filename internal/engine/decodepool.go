@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"image"
 	"os"
 	"runtime"
@@ -94,14 +95,26 @@ type decodedFrame struct {
 }
 
 // directKittyPNG reports whether data can bypass the pixel decode and travel to a
-// live Kitty consumer unchanged. It reads the backend at worker time, while the
-// payload signature guards a format-switch race. A later backend switch is safe:
-// the viewer decodes the retained payload when the active consumer is not Kitty.
+// live Kitty consumer unchanged. Invalid direct payloads return false.
 func (e *ChromiumEngine) directKittyPNG(data string) bool {
+	direct, err := e.directKittyPayload(data)
+	return direct && err == nil
+}
+
+// directKittyPayload separates the active direct transport from payload validity.
+// The worker uses this distinction to reject corrupt direct PNG data before any
+// override or live pixel decoder can accept it.
+func (e *ChromiumEngine) directKittyPayload(data string) (bool, error) {
 	e.mu.Lock()
-	direct := e.backend.UsesDirectPayload()
+	direct := e.backend.UsesDirectPayload() && !e.kittyDecode
 	e.mu.Unlock()
-	return direct && renderkitty.ValidDirectPNGData(data)
+	if !direct {
+		return false, nil
+	}
+	if !renderkitty.ValidDirectPNGData(data) {
+		return true, fmt.Errorf("engine: direct Kitty PNG validation: %w", renderkitty.ErrInvalidPNGData)
+	}
+	return true, nil
 }
 
 // SetKittyDecode selects the kitty-shm decode mode. When on, frames that would
@@ -275,14 +288,7 @@ func (e *ChromiumEngine) runDecodeWorker(ctx context.Context, q *rawFrameQueue, 
 				start = time.Now()
 			}
 			pending := pendingFrame{meta: raw.meta, afterFCP: raw.afterFCP}
-			switch {
-			case decode != nil:
-				img, derr := decode(raw.data)
-				if derr != nil {
-					continue
-				}
-				pending.img = img
-			case e.kittyPlaneMode():
+			if e.kittyPlaneMode() {
 				// kitty-shm mode: decode into an RGBA plane the viewer copies
 				// into shared memory, sniffing the payload signature so both the
 				// JPEG capture format and a PNG in flight across a format
@@ -292,20 +298,37 @@ func (e *ChromiumEngine) runDecodeWorker(ctx context.Context, q *rawFrameQueue, 
 				// below (it was acked on receive).
 				img, release, derr := e.decodeKittyPlane(raw.data)
 				if derr != nil {
+					e.ingest.recordDecodeDrop(derr)
 					continue
 				}
 				pending.img = img
 				pending.release = release
-			case e.directKittyPNG(raw.data):
-				// Strings are immutable and the event owns this value, so retaining
-				// it in the held frame gives re-emits and queued draws stable bytes.
-				pending.png = raw.data
-			default:
-				img, derr := e.decodeLiveFrame(raw.data)
+			} else {
+				direct, derr := e.directKittyPayload(raw.data)
 				if derr != nil {
+					e.ingest.recordDecodeDrop(derr)
 					continue
 				}
-				pending.img = img
+				switch {
+				case direct:
+					// Strings are immutable and the event owns this value, so retaining
+					// it in the held frame gives re-emits and queued draws stable bytes.
+					pending.png = raw.data
+				case decode != nil:
+					img, decodeErr := decode(raw.data)
+					if decodeErr != nil {
+						e.ingest.recordDecodeDrop(decodeErr)
+						continue
+					}
+					pending.img = img
+				default:
+					img, decodeErr := e.decodeLiveFrame(raw.data)
+					if decodeErr != nil {
+						e.ingest.recordDecodeDrop(decodeErr)
+						continue
+					}
+					pending.img = img
+				}
 			}
 			if ingestArmed {
 				e.ingest.recordDecode(msSince(start))

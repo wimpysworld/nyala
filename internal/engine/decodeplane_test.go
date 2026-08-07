@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -136,27 +137,97 @@ func TestKittyShmDecodeJPEGPlane(t *testing.T) {
 	}
 }
 
-// TestDecodeKittyPlaneRejectsUnknownFormat proves the signature sniff: a
-// payload that is neither PNG nor JPEG fails with errUnknownPlaneFormat so the
-// worker drops the frame.
-func TestDecodeKittyPlaneRejectsUnknownFormat(t *testing.T) {
-	t.Parallel()
+func TestDecodeKittyPlaneErrorsExposeStableContext(t *testing.T) {
+	const payloadMarker = "WW19"
 	e := &ChromiumEngine{}
-	payload := base64.StdEncoding.EncodeToString([]byte("neither a PNG signature nor a JPEG start-of-image marker"))
-	if _, _, err := e.decodeKittyPlane(payload); !errors.Is(err, errUnknownPlaneFormat) {
-		t.Fatalf("decodeKittyPlane error = %v, want errUnknownPlaneFormat", err)
+	badBase64 := payloadMarker + "*"
+	_, _, base64Err := decodeBase64Pooled(badBase64)
+	if base64Err == nil {
+		t.Fatal("malformed Base64 fixture returned no error")
+	}
+	rawPNG, err := base64.StdEncoding.DecodeString(pngPayload(t))
+	if err != nil {
+		t.Fatalf("decode PNG fixture Base64: %v", err)
+	}
+	corruptPNG := bytes.Clone(rawPNG)
+	idat := bytes.Index(corruptPNG, []byte("IDAT"))
+	if idat < 0 || len(corruptPNG) < idat+4+len(payloadMarker) {
+		t.Fatal("PNG fixture has no usable IDAT payload")
+	}
+	copy(corruptPNG[idat+4:], payloadMarker)
+	corruptJPEG := append([]byte{0xff, 0xd8, 0xff, 0xdb, 0x00}, payloadMarker...)
+
+	tests := []struct {
+		name       string
+		data       string
+		wantPrefix string
+		wantCause  error
+	}{
+		{
+			name:       "base64",
+			data:       badBase64,
+			wantPrefix: "engine: kitty plane base64 decode:",
+			wantCause:  base64Err,
+		},
+		{
+			name:       "png",
+			data:       base64.StdEncoding.EncodeToString(corruptPNG),
+			wantPrefix: "engine: kitty plane png decode:",
+		},
+		{
+			name:       "jpeg",
+			data:       base64.StdEncoding.EncodeToString(corruptJPEG),
+			wantPrefix: "engine: kitty plane jpeg decode:",
+		},
+		{
+			name:       "unknown format",
+			data:       base64.StdEncoding.EncodeToString([]byte(payloadMarker)),
+			wantPrefix: errUnknownPlaneFormat.Error(),
+			wantCause:  errUnknownPlaneFormat,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			img, release, err := e.decodeKittyPlane(test.data)
+			if release != nil {
+				release()
+			}
+			if err == nil {
+				t.Fatalf("decodeKittyPlane returned %T, want error", img)
+			}
+			if !strings.HasPrefix(err.Error(), test.wantPrefix) {
+				t.Fatalf("error = %q, want prefix %q", err, test.wantPrefix)
+			}
+			if test.wantCause != nil && !errors.Is(err, test.wantCause) {
+				t.Fatalf("error = %v, want wrapped cause %v", err, test.wantCause)
+			}
+			if strings.Contains(err.Error(), payloadMarker) {
+				t.Fatalf("error exposed payload bytes: %q", err)
+			}
+		})
 	}
 }
 
 // TestKittyDemotionInFlightJPEGDrops proves the shm-to-direct demotion safety:
-// a JPEG frame still in flight after the format restarts to PNG never reaches
-// the direct pass-through. ValidDirectPNGData rejects it (directKittyPNG is
-// false), so the frame emerges with no EncodedPNG and the direct Kitty writer
-// emits nothing for it.
+// a JPEG frame still in flight after the format restarts to PNG fails direct
+// payload validation before any pixel decoder runs. The worker publishes no
+// frame and records one contextual decode drop without retaining the payload.
 func TestKittyDemotionInFlightJPEGDrops(t *testing.T) {
 	t.Parallel()
-	payload := encodeBase64JPEG(t)
-	e := &ChromiumEngine{backend: backendKitty}
+	const payloadMarker = "WW190-private-payload"
+	payload := base64.StdEncoding.EncodeToString(append([]byte{0xff, 0xd8, 0xff, 0xdb, 0x00}, payloadMarker...))
+	decodeCalls := atomic.Uint64{}
+	ingest := &ingestCounter{on: true, window: ingestWindow}
+	ingest.record(time.Now())
+	e := &ChromiumEngine{
+		backend: backendKitty,
+		ingest:  ingest,
+		decode: func(string) (*image.RGBA, error) {
+			decodeCalls.Add(1)
+			return seqImage(1), nil
+		},
+	}
 	e.SetKittyDecode(false)
 	if e.directKittyPNG(payload) {
 		t.Fatal("JPEG payload passed the direct PNG validation")
@@ -165,12 +236,25 @@ func TestKittyDemotionInFlightJPEGDrops(t *testing.T) {
 	defer stop()
 	rawQ.put(seqRawFrame{seq: 1, data: payload})
 
-	got := recvFrame(t, frames)
-	if got.EncodedPNG != "" {
-		t.Fatal("in-flight JPEG reached the direct Kitty pass-through")
+	waitDecodeDrops(t, ingest, 1)
+	if got := decodeCalls.Load(); got != 0 {
+		t.Fatalf("pixel decoder calls = %d, want 0", got)
 	}
-	if got.Release != nil {
-		t.Fatal("in-flight JPEG frame gained a Release hook off the plane path")
+	select {
+	case got := <-frames:
+		t.Fatalf("invalid in-flight JPEG emitted frame %+v", got)
+	default:
+	}
+	stats := ingest.summary()
+	if stats.DecodeDrops != 1 {
+		t.Fatalf("decode drops = %d, want 1", stats.DecodeDrops)
+	}
+	const wantPrefix = "engine: direct Kitty PNG validation:"
+	if !strings.HasPrefix(stats.DecodeFirstError, wantPrefix) {
+		t.Fatalf("first decode error = %q, want prefix %q", stats.DecodeFirstError, wantPrefix)
+	}
+	if strings.Contains(stats.DecodeFirstError, payloadMarker) || strings.Contains(stats.DecodeFirstError, payload) {
+		t.Fatalf("first decode error retained payload: %q", stats.DecodeFirstError)
 	}
 }
 

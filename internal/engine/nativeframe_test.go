@@ -7,6 +7,7 @@ import (
 	"image/png"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 
 	renderkitty "github.com/wimpysworld/nyala/internal/render/kitty"
@@ -81,6 +82,91 @@ func TestDecodePoolDecodesPNGForSixel(t *testing.T) {
 			}
 			if got.EncodedPNG != "" {
 				t.Fatal("Sixel PNG frame retained a direct Kitty payload")
+			}
+		})
+	}
+}
+
+func TestFrameDecodeErrorsExposeStableContext(t *testing.T) {
+	const payloadMarker = "WW190_PAYLOAD_BYTES"
+	corruptPNG := append(append([]byte(nil), pngSignature...), payloadMarker...)
+	corruptJPEG := append([]byte{0xff, 0xd8, 0xff, 0xdb, 0x00}, payloadMarker...)
+	e := &ChromiumEngine{backend: backendSixel}
+
+	tests := []struct {
+		name       string
+		wantPrefix string
+		decode     func() error
+	}{
+		{
+			name:       "frame png",
+			wantPrefix: "png decode:",
+			decode: func() error {
+				_, err := decodeFrameImage(corruptPNG)
+				return err
+			},
+		},
+		{
+			name:       "frame jpeg",
+			wantPrefix: "jpeg decode:",
+			decode: func() error {
+				_, err := decodeFrameImage(corruptJPEG)
+				return err
+			},
+		},
+		{
+			name:       "fast png fallback",
+			wantPrefix: "native image decode: png decode:",
+			decode: func() error {
+				_, err := decodeJPEGFast(corruptPNG)
+				return err
+			},
+		},
+		{
+			name:       "fast jpeg fallback",
+			wantPrefix: "native image decode: jpeg decode:",
+			decode: func() error {
+				_, err := decodeJPEGFast(corruptJPEG)
+				return err
+			},
+		},
+		{
+			name:       "live base64",
+			wantPrefix: "engine: live frame base64 decode:",
+			decode: func() error {
+				_, err := e.decodeLiveFrame(payloadMarker + "*")
+				return err
+			},
+		},
+		{
+			name:       "live png",
+			wantPrefix: "engine: live frame decode: native image decode: png decode:",
+			decode: func() error {
+				_, err := e.decodeLiveFrame(base64.StdEncoding.EncodeToString(corruptPNG))
+				return err
+			},
+		},
+		{
+			name:       "live jpeg",
+			wantPrefix: "engine: live frame decode: native image decode: jpeg decode:",
+			decode: func() error {
+				_, err := e.decodeLiveFrame(base64.StdEncoding.EncodeToString(corruptJPEG))
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.decode()
+			if err == nil {
+				t.Fatal("decode returned no error")
+			}
+			if !strings.HasPrefix(err.Error(), test.wantPrefix) {
+				t.Fatalf("error = %q, want prefix %q", err, test.wantPrefix)
+			}
+			if strings.Contains(err.Error(), payloadMarker) {
+				t.Fatalf("error exposed payload bytes: %q", err)
 			}
 		})
 	}
