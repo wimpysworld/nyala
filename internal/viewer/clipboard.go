@@ -1,6 +1,6 @@
 package viewer
 
-import "encoding/base64"
+import emmb64 "github.com/emmansun/base64"
 
 // OSC 52 framing for a clipboard write. The target parameter is `c`,
 // CLIPBOARD, and nothing else: `p` would write the X11 PRIMARY selection, which
@@ -48,9 +48,9 @@ func osc52Clipboard(text string) []byte {
 	if text == "" || len(text) > clipboardMaxBytes {
 		return nil
 	}
-	seq := make([]byte, 0, len(osc52Prefix)+base64.StdEncoding.EncodedLen(len(text))+len(osc52Terminator))
+	seq := make([]byte, 0, len(osc52Prefix)+emmb64.StdEncoding.EncodedLen(len(text))+len(osc52Terminator))
 	seq = append(seq, osc52Prefix...)
-	seq = base64.StdEncoding.AppendEncode(seq, []byte(text))
+	seq = emmb64.StdEncoding.AppendEncode(seq, []byte(text))
 	return append(seq, osc52Terminator...)
 }
 

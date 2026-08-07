@@ -1,6 +1,7 @@
 package engine
 
 import (
+	stdb64 "encoding/base64"
 	"fmt"
 	"math"
 	"strings"
@@ -118,14 +119,24 @@ func TestBuildStylesheetScriptContents(t *testing.T) {
 	}
 }
 
-func TestBuildStylesheetScriptEmbedsFontBytes(t *testing.T) {
-	// The @font-face src must carry the font bytes base64-encoded, so a distinct
-	// input appears as its own data URL and not a stale or empty one.
-	script := buildStylesheetScript([]byte("distinct-font-bytes"), 9, 18)
-	// base64 of "distinct-font-bytes"
-	const wantB64 = "ZGlzdGluY3QtZm9udC1ieXRlcw=="
-	if !strings.Contains(script, "data:font/ttf;base64,"+wantB64) {
-		t.Errorf("script does not embed the base64 font bytes %q", wantB64)
+func TestBuildStylesheetScriptFontDataURL(t *testing.T) {
+	cases := []struct {
+		name      string
+		fontBytes []byte
+	}{
+		{"empty", nil},
+		{"one byte with two padding characters", []byte{0xff}},
+		{"two bytes with one padding character", []byte{0x00, 0xff}},
+		{"representative font bytes", []byte("distinct-font-bytes")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			want := "data:font/ttf;base64," + stdb64.StdEncoding.EncodeToString(c.fontBytes)
+			script := buildStylesheetScript(c.fontBytes, 9, 18)
+			if !strings.Contains(script, `src: url("`+want+`") format("truetype")`) {
+				t.Errorf("script does not embed font data URL %q", want)
+			}
+		})
 	}
 }
 

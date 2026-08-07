@@ -12,13 +12,13 @@ package viewer
 import (
 	"bufio"
 	"bytes"
-	"encoding/base64"
 	"fmt"
 	"image"
 	"image/color"
 	"io"
 	"strconv"
 
+	emmb64 "github.com/emmansun/base64"
 	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/metrics"
 	"github.com/wimpysworld/nyala/internal/pngdecode"
@@ -495,7 +495,7 @@ func (s *State) ensureScratchPool() {
 // receives a frame queued before a backend switch. Normal settled Kitty frames
 // never call it.
 func decodeFramePNG(data string) (image.Image, error) {
-	raw, err := base64.StdEncoding.DecodeString(data)
+	raw, err := emmb64.StdEncoding.DecodeString(data)
 	if err != nil {
 		return nil, fmt.Errorf("viewer: decode retained PNG base64: %w", err)
 	}
