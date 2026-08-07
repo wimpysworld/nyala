@@ -117,10 +117,18 @@ func loadLibSystem() error {
 
 func shmOpen(name string, flags int, mode uint32) (int, error) {
 	cname := append([]byte(name), 0)
+	// Darwin arm64 reads the variadic mode from the first stack slot. purego
+	// places argument 9 there, so pass the mode in both positions.
 	r1, _, errno := purego.SyscallN(
 		shmOpenSym,
 		uintptr(unsafe.Pointer(&cname[0])),
 		uintptr(flags),
+		uintptr(mode),
+		0,
+		0,
+		0,
+		0,
+		0,
 		uintptr(mode),
 	)
 	runtime.KeepAlive(cname)
