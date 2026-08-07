@@ -334,7 +334,7 @@ func TestDrainFramesReleasesStale(t *testing.T) {
 // handoffKittySHM records one test transmit in the session's current reset
 // generation and runs the production handoff path.
 func handoffKittySHM(s *streamSession, id int) {
-	s.assembledSHM = kittySHMFrame{id: id, generation: s.kittySHMGeneration}
+	s.markKittySHMAssembled(id)
 	s.markKittySHMHandoff()
 }
 
@@ -375,6 +375,46 @@ func TestKittySHMPacingGate(t *testing.T) {
 	}
 	if !st.kittySHMLive() {
 		t.Fatal("failure response changed the selected shm transport")
+	}
+}
+
+// TestKittySHMLateErrorAfterDeadlinesAndIDReuseIsIgnored reproduces a terminal
+// opening an object after two acknowledgement deadlines let the double-buffer
+// image id cycle back. Reusing id 1 unlinks its old object, so the delayed old
+// rejection must not settle the gate for the new id 1 transmit. A rejection
+// for that current transmit remains fatal.
+func TestKittySHMLateErrorAfterDeadlinesAndIDReuseIsIgnored(t *testing.T) {
+	st := shmState()
+	s := &streamSession{st: &st, eng: &fakeEngine{}}
+
+	for _, id := range []int{1, 2} {
+		handoffKittySHM(s, id)
+		s.kittyShmDeadline = time.Now().Add(-time.Millisecond)
+		if s.kittySHMGated() {
+			t.Fatalf("id %d gate held past its deadline", id)
+		}
+	}
+
+	handoffKittySHM(s, 1)
+	if !s.kittySHMGated() {
+		t.Fatal("reused id did not arm the current transmit gate")
+	}
+	if err := s.handleKittyResponse("i=1;ENOENT:failed to open shared memory object"); err != nil {
+		t.Fatalf("delayed rejection for the unlinked old transmit returned error: %v", err)
+	}
+	if !s.kittySHMGated() {
+		t.Fatal("delayed old rejection settled the current transmit gate")
+	}
+
+	err := s.handleKittyResponse("i=1;EBADF:could not open current shared memory object")
+	if err == nil || !strings.Contains(err.Error(), "terminal rejected shm transmit") {
+		t.Fatalf("current rejection error = %v, want active shm rejection", err)
+	}
+	if s.kittySHMGated() {
+		t.Fatal("current rejection left its pacing gate armed")
+	}
+	if !st.kittySHMLive() {
+		t.Fatal("current rejection changed the selected shm transport")
 	}
 }
 

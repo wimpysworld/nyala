@@ -1048,6 +1048,17 @@ func (l *kittySHMReplyLedger) invalidate(generation uint64) {
 	}
 }
 
+// invalidateID marks every outstanding transmit for id as unlinked before a
+// new object reuses that double-buffer slot. The entries stay in reply order,
+// so their delayed failures cannot claim the new transmit's pacing gate.
+func (l *kittySHMReplyLedger) invalidateID(id int) {
+	for i := range l.len {
+		if l.entries[i].id == id {
+			l.entries[i].invalidated = true
+		}
+	}
+}
+
 // take removes and returns the oldest outstanding transmit for id.
 func (l *kittySHMReplyLedger) take(id int) (kittySHMTransmit, bool) {
 	for i := range l.len {
@@ -1094,6 +1105,18 @@ func (s *streamSession) markKittySHMHandoff() {
 	s.kittyShmAwait = true
 	s.kittyShmAwaitSeq = tx.sequence
 	s.kittyShmDeadline = time.Now().Add(kittySHMAckTimeout)
+}
+
+// markKittySHMAssembled records one encoded shm transmit before writer handoff.
+// Creating its object has already unlinked any unconsumed object for the same
+// image id, so the reply ledger invalidates those older transmits at this point.
+func (s *streamSession) markKittySHMAssembled(id int) {
+	if id == 0 {
+		s.assembledSHM = kittySHMFrame{}
+		return
+	}
+	s.kittySHMLedger.invalidateID(id)
+	s.assembledSHM = kittySHMFrame{id: id, generation: s.kittySHMGeneration}
 }
 
 // invalidateKittySHMTransmits marks every object owned by the current reset
@@ -1389,11 +1412,7 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 		encodeMS = msSince(encodeStart)
 	}
 	// Tag an shm transmit for reply correlation and the pacing gate.
-	if id := s.st.takeKittySHMID(); id != 0 {
-		s.assembledSHM = kittySHMFrame{id: id, generation: s.kittySHMGeneration}
-	} else {
-		s.assembledSHM = kittySHMFrame{}
-	}
+	s.markKittySHMAssembled(s.st.takeKittySHMID())
 	s.assembledTmuxSixel = nonScrollingSixel && s.st.mux == muxTmux
 
 	if s.fps != nil {
