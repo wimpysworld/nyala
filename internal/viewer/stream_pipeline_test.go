@@ -714,7 +714,15 @@ func TestStreamLoopKittySHMAssemblyErrorReleasesOnce(t *testing.T) {
 	released := 0
 	img := solidImageSize(6, 4, color.RGBA{A: 0xff})
 	frames <- render.Frame{Img: img, EncodedPNG: encodedPNG(t, img), Release: func() { released++ }}
-	err := s.loop(nil, make(chan keyEvent))
+	loopDone := make(chan error, 1)
+	go func() { loopDone <- s.loop(nil, make(chan keyEvent)) }()
+
+	var err error
+	select {
+	case err = <-loopDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("loop did not return after the Kitty SHM assembly error")
+	}
 
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("loop returned %v, want %v", err, wantErr)
@@ -753,7 +761,15 @@ func TestStreamLoopKittySHMWriteErrorStopsWithoutDirect(t *testing.T) {
 	released := 0
 	img := solidImageSize(6, 4, color.RGBA{A: 0xff})
 	frames <- render.Frame{Img: img, EncodedPNG: encodedPNG(t, img), Release: func() { released++ }}
-	err := s.loop(nil, make(chan keyEvent))
+	loopDone := make(chan error, 1)
+	go func() { loopDone <- s.loop(nil, make(chan keyEvent)) }()
+
+	var err error
+	select {
+	case err = <-loopDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("loop did not return after the Kitty SHM write error")
+	}
 
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("loop returned %v, want %v", err, wantErr)
