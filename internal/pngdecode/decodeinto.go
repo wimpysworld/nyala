@@ -14,11 +14,8 @@
 package pngdecode
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
-	"image"
-	"image/draw"
 	"io"
 	"sync"
 
@@ -47,12 +44,15 @@ const (
 // cannot hold the decoded image at four bytes per pixel.
 var ErrDstTooSmall = errors.New("pngdecode: destination plane too small")
 
+// ErrUnsupportedPNG reports that DecodeInto was given a PNG feature or chunk
+// sequence that its direct RGB and RGBA decoder does not support.
+var ErrUnsupportedPNG = errors.New("pngdecode: unsupported PNG")
+
 // maxDecodeDim bounds each IHDR dimension the fast path accepts, so the
 // 4*w*h size arithmetic cannot overflow int and admit a too-small dst.
 const maxDecodeDim = 1 << 20
 
-// errFormat is the generic malformed-stream error for the fast path. The
-// fallback path surfaces the upstream decoder's richer errors instead.
+// errFormat is the generic malformed-stream error for the direct decoder.
 var errFormat = errors.New("pngdecode: invalid PNG stream")
 
 // Dimensions reads the pixel size of a PNG payload from its IHDR without
@@ -91,9 +91,8 @@ var intoPool = sync.Pool{New: func() any { return new(intoState) }}
 // (RGBA byte order, stride 4*w) and reports the pixel size. Non-interlaced
 // 8-bit truecolour images, the shapes Chromium screencasts emit, decode row
 // by row into dst with no per-decode image allocation; an RGB row expands
-// with alpha 0xFF. Any other PNG shape falls back to Decode plus a copy into
-// dst. dst must hold at least 4*w*h bytes or DecodeInto returns
-// ErrDstTooSmall.
+// with alpha 0xFF. Other PNG shapes return ErrUnsupportedPNG. dst must hold at
+// least 4*w*h bytes or DecodeInto returns ErrDstTooSmall.
 func DecodeInto(r io.Reader, dst []byte) (w, h int, err error) {
 	st, _ := intoPool.Get().(*intoState)
 	defer func() {
@@ -107,30 +106,29 @@ func DecodeInto(r io.Reader, dst []byte) (w, h int, err error) {
 	}
 	if string(head[:8]) != pngHeader ||
 		binary.BigEndian.Uint32(head[8:12]) != 13 || string(head[12:16]) != "IHDR" {
-		return fallbackInto(head, nil, r, dst)
+		return 0, 0, errFormat
 	}
 	w = int(binary.BigEndian.Uint32(head[16:20]))
 	h = int(binary.BigEndian.Uint32(head[20:24]))
+	if w <= 0 || h <= 0 {
+		return 0, 0, errFormat
+	}
 	depth, colour := head[24], head[25]
 	compression, filter, interlace := head[26], head[27], head[28]
-	fast := depth == 8 && (colour == ctTrueColor || colour == ctTrueColorAlpha) &&
-		compression == 0 && filter == 0 && interlace == 0
-	if !fast || w <= 0 || h <= 0 {
-		return fallbackInto(head, nil, r, dst)
+	if depth != 8 || (colour != ctTrueColor && colour != ctTrueColorAlpha) ||
+		compression != 0 || filter != 0 || interlace != 0 {
+		return 0, 0, ErrUnsupportedPNG
 	}
 	// The dimension cap keeps 4*w*h inside the int range: unchecked uint32
 	// dimensions could overflow the size check and admit a dst far too small.
 	// Chromium screencast frames sit orders of magnitude under it.
-	if w > maxDecodeDim || h > maxDecodeDim || len(dst) < 4*w*h {
+	if w > maxDecodeDim || h > maxDecodeDim {
 		return 0, 0, ErrDstTooSmall
 	}
 
-	// Walk chunks up to the first IDAT. Ancillary chunks and PLTE (ignorable
-	// for truecolour) are skipped but buffered into pre, so a tRNS chunk,
-	// which changes truecolour semantics, can still fall back to the full
-	// decoder over the buffered prefix. Chromium emits IHDR then IDAT, so pre
-	// stays nil on the hot path.
-	var pre []byte
+	// Walk chunks up to the first IDAT. Ancillary chunks and one optional PLTE
+	// are ignorable for truecolour. tRNS changes truecolour semantics.
+	seenPLTE := false
 	for {
 		ch := st.tmp[:8]
 		if _, err := io.ReadFull(r, ch); err != nil {
@@ -139,19 +137,38 @@ func DecodeInto(r io.Reader, dst []byte) (w, h int, err error) {
 		length := binary.BigEndian.Uint32(ch[:4])
 		typ := string(ch[4:8])
 		if typ == "IDAT" {
+			if len(dst) < 4*w*h {
+				return 0, 0, ErrDstTooSmall
+			}
 			return decodeTruecolourInto(st, r, dst, w, h, int(colour), length)
 		}
-		if typ == "tRNS" || typ == "IEND" {
-			return fallbackInto(head, append(pre, ch...), r, dst)
+		if typ == "tRNS" || typ == "IEND" || typ == "IHDR" {
+			return 0, 0, ErrUnsupportedPNG
 		}
-		// Skip the chunk data and CRC, buffering for a possible fallback.
-		pre = append(pre, ch...)
-		n := len(pre)
-		pre = append(pre, make([]byte, int(length)+4)...)
-		if _, err := io.ReadFull(r, pre[n:]); err != nil {
+		if typ == "PLTE" {
+			if seenPLTE {
+				return 0, 0, ErrUnsupportedPNG
+			}
+			seenPLTE = true
+		} else if ch[4]&0x20 == 0 {
+			return 0, 0, ErrUnsupportedPNG
+		}
+		if err := skipChunk(r, st.tmp[:], length); err != nil {
 			return 0, 0, err
 		}
 	}
+}
+
+func skipChunk(r io.Reader, scratch []byte, length uint32) error {
+	remaining := uint64(length) + 4 // chunk data plus CRC
+	for remaining > 0 {
+		n := min(uint64(len(scratch)), remaining)
+		if _, err := io.ReadFull(r, scratch[:n]); err != nil {
+			return err
+		}
+		remaining -= n
+	}
+	return nil
 }
 
 // decodeTruecolourInto runs the fast row loop: inflate the IDAT stream,
@@ -188,6 +205,9 @@ func decodeTruecolourInto(st *intoState, r io.Reader, dst []byte, w, h, colour i
 
 	for y := range h {
 		if _, err := io.ReadFull(st.zr, cr); err != nil {
+			if errors.Is(err, ErrUnsupportedPNG) {
+				return 0, 0, ErrUnsupportedPNG
+			}
 			return 0, 0, errFormat
 		}
 		cdat, pdat := cr[1:], pr[1:]
@@ -253,44 +273,6 @@ func decodeTruecolourInto(st *intoState, r io.Reader, dst []byte, w, h, colour i
 	return 0, 0, io.ErrNoProgress
 }
 
-// fallbackInto handles every PNG shape outside the fast path: it re-decodes
-// the whole stream (the consumed head and pre prefixes plus the rest of r)
-// through the pooled upstream decoder and copies the result into dst as
-// straight-alpha RGBA. It allocates a full image, which is acceptable off the
-// screencast hot path.
-func fallbackInto(head, pre []byte, r io.Reader, dst []byte) (int, int, error) {
-	prefix := make([]byte, 0, len(head)+len(pre))
-	prefix = append(prefix, head...)
-	prefix = append(prefix, pre...)
-	img, err := decoder.Decode(io.MultiReader(bytes.NewReader(prefix), r))
-	if err != nil {
-		return 0, 0, err
-	}
-	b := img.Bounds()
-	w, h := b.Dx(), b.Dy()
-	if len(dst) < 4*w*h {
-		return 0, 0, ErrDstTooSmall
-	}
-	switch src := img.(type) {
-	case *image.NRGBA:
-		copyRows(dst, src.Pix, src.Stride, w, h)
-	case *image.RGBA:
-		copyRows(dst, src.Pix, src.Stride, w, h)
-	default:
-		out := &image.RGBA{Pix: dst[:4*w*h], Stride: 4 * w, Rect: image.Rect(0, 0, w, h)}
-		draw.Draw(out, out.Rect, img, b.Min, draw.Src)
-	}
-	return w, h, nil
-}
-
-// copyRows packs h rows of 4-byte pixels from src (with the given stride)
-// tightly into dst.
-func copyRows(dst, src []byte, stride, w, h int) {
-	for y := range h {
-		copy(dst[y*w*4:(y+1)*w*4], src[y*stride:y*stride+w*4])
-	}
-}
-
 // idatReader presents one or more IDAT chunks as one continuous zlib stream,
 // adapted from the upstream decoder's Read without CRC accounting. remain is
 // the unread byte count of the current chunk; between chunks it skips the
@@ -314,7 +296,7 @@ func (d *idatReader) Read(p []byte) (int, error) {
 			return 0, err
 		}
 		if string(d.tmp[8:12]) != "IDAT" {
-			return 0, errFormat
+			return 0, ErrUnsupportedPNG
 		}
 		d.remain = binary.BigEndian.Uint32(d.tmp[4:8])
 	}

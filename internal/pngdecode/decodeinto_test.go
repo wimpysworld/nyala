@@ -80,7 +80,7 @@ func writeChunk(b *bytes.Buffer, typ string, data []byte) {
 }
 
 // interlacedPNG hand-builds a 1x1 Adam7-interlaced truecolour PNG, a shape the
-// stdlib encoder cannot produce, to drive the DecodeInto fallback.
+// stdlib encoder cannot produce.
 func interlacedPNG(t *testing.T) []byte {
 	t.Helper()
 	var b bytes.Buffer
@@ -112,11 +112,9 @@ func interlacedPNG(t *testing.T) []byte {
 func TestDecodeIntoMatchesStdlib(t *testing.T) {
 	t.Parallel()
 	cases := map[string][]byte{
-		"rgb":                 encodePNG(t, rgbFixture(23, 17)),
-		"rgba":                encodePNG(t, rgbaFixture(23, 17)),
-		"multi idat rgb":      encodePNG(t, noisyFixture(160, 120)),
-		"gray fallback":       encodePNG(t, image.NewGray(image.Rect(0, 0, 9, 7))),
-		"interlaced fallback": interlacedPNG(t),
+		"rgb":            encodePNG(t, rgbFixture(23, 17)),
+		"rgba":           encodePNG(t, rgbaFixture(23, 17)),
+		"multi idat rgb": encodePNG(t, noisyFixture(160, 120)),
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -149,13 +147,105 @@ func TestDecodeIntoMatchesStdlib(t *testing.T) {
 	}
 }
 
-// TestDecodeIntoDstTooSmall proves an undersized plane fails cleanly on both
-// the fast path and the fallback.
+// TestDecodeIntoRejectsUnsupportedPNG checks the public error taxonomy for
+// valid PNG features and chunk sequences outside the direct decoder.
+func TestDecodeIntoRejectsUnsupportedPNG(t *testing.T) {
+	t.Parallel()
+	rgb := encodePNG(t, rgbFixture(2, 2))
+	withIHDRByte := func(offset int, value byte) []byte {
+		raw := append([]byte(nil), rgb...)
+		raw[offset] = value
+		binary.BigEndian.PutUint32(raw[29:33], crc32.ChecksumIEEE(raw[12:29]))
+		return raw
+	}
+	withChunkAfterIHDR := func(typ string, data []byte) []byte {
+		var b bytes.Buffer
+		b.Write(rgb[:33])
+		writeChunk(&b, typ, data)
+		b.Write(rgb[33:])
+		return b.Bytes()
+	}
+
+	cases := map[string][]byte{
+		"bit depth":              withIHDRByte(24, 16),
+		"greyscale colour type":  encodePNG(t, image.NewGray(image.Rect(0, 0, 2, 2))),
+		"palette colour type":    encodePNG(t, image.NewPaletted(image.Rect(0, 0, 2, 2), color.Palette{color.Black, color.White})),
+		"compression method":     withIHDRByte(26, 1),
+		"filter method":          withIHDRByte(27, 1),
+		"Adam7":                  interlacedPNG(t),
+		"tRNS":                   withChunkAfterIHDR("tRNS", []byte{0, 0, 0, 0, 0, 0}),
+		"IEND before IDAT":       withChunkAfterIHDR("IEND", nil),
+		"unknown critical chunk": withChunkAfterIHDR("ABCD", nil),
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, _, err := DecodeInto(bytes.NewReader(raw), make([]byte, 16)); !errors.Is(err, ErrUnsupportedPNG) {
+				t.Fatalf("DecodeInto error = %v, want ErrUnsupportedPNG", err)
+			} else if errors.Is(err, ErrDstTooSmall) {
+				t.Fatalf("DecodeInto error = %v, must differ from ErrDstTooSmall", err)
+			}
+		})
+	}
+	if _, _, err := DecodeInto(bytes.NewReader(cases["tRNS"]), nil); !errors.Is(err, ErrUnsupportedPNG) {
+		t.Fatalf("DecodeInto tRNS with empty destination error = %v, want ErrUnsupportedPNG", err)
+	}
+}
+
+// TestDecodeIntoRejectsNonContiguousIDAT checks that the row decoder exposes
+// an unsupported chunk sequence instead of reporting malformed pixel data.
+func TestDecodeIntoRejectsNonContiguousIDAT(t *testing.T) {
+	t.Parallel()
+	var b bytes.Buffer
+	b.WriteString(pngHeader)
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], 1)
+	binary.BigEndian.PutUint32(ihdr[4:8], 1)
+	ihdr[8] = 8
+	ihdr[9] = ctTrueColor
+	writeChunk(&b, "IHDR", ihdr)
+	var z bytes.Buffer
+	zw := zlib.NewWriter(&z)
+	if _, err := zw.Write([]byte{0, 0x12, 0x34, 0x56}); err != nil {
+		t.Fatalf("compress payload: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zlib writer: %v", err)
+	}
+	compressed := z.Bytes()
+	writeChunk(&b, "IDAT", compressed[:2])
+	writeChunk(&b, "tEXt", nil)
+	writeChunk(&b, "IDAT", compressed[2:])
+	writeChunk(&b, "IEND", nil)
+
+	if _, _, err := DecodeInto(bytes.NewReader(b.Bytes()), make([]byte, 4)); !errors.Is(err, ErrUnsupportedPNG) {
+		t.Fatalf("DecodeInto error = %v, want ErrUnsupportedPNG", err)
+	}
+}
+
+// TestDecodeIntoMalformedIsNotUnsupported checks that invalid PNG data stays
+// separate from unsupported but valid input.
+func TestDecodeIntoMalformedIsNotUnsupported(t *testing.T) {
+	t.Parallel()
+	raw := encodePNG(t, rgbFixture(2, 2))
+	raw[0] = 0
+	errDst := make([]byte, 16)
+	_, _, err := DecodeInto(bytes.NewReader(raw), errDst)
+	if err == nil {
+		t.Fatal("DecodeInto accepted malformed PNG data")
+	}
+	if errors.Is(err, ErrUnsupportedPNG) || errors.Is(err, ErrDstTooSmall) {
+		t.Fatalf("DecodeInto error = %v, want a distinct malformed-data error", err)
+	}
+}
+
+// TestDecodeIntoDstTooSmall proves an undersized plane fails cleanly for both
+// supported colour types.
 func TestDecodeIntoDstTooSmall(t *testing.T) {
 	t.Parallel()
 	cases := map[string][]byte{
-		"fast":     encodePNG(t, rgbaFixture(8, 8)),
-		"fallback": encodePNG(t, image.NewGray(image.Rect(0, 0, 8, 8))),
+		"rgb":  encodePNG(t, rgbFixture(8, 8)),
+		"rgba": encodePNG(t, rgbaFixture(8, 8)),
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
