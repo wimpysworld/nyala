@@ -67,9 +67,9 @@ func (s *State) takeKittySHMWrote() bool {
 }
 
 // closeKittySHM unlinks any shared-memory objects the terminal never consumed
-// and drops the writer, so no /dev/shm entry outlives the kitty session. The
-// unlink is best-effort: a failure leaves at most a stale tmpfs entry, which
-// must not abort a backend switch or teardown.
+// and drops the writer, so no POSIX shared-memory object outlives the kitty
+// session. The unlink is best-effort: a failure leaves at most a stale object,
+// which must not abort a backend switch or teardown.
 func (s *State) closeKittySHM() {
 	if s.kittySHM == nil {
 		return

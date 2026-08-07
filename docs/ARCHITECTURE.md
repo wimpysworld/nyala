@@ -1103,13 +1103,22 @@ The pre-agreed sub-2x gate fired, so raw-over-shm shipped.
 
 The transport resolves once per run (`internal/viewer/transport.go`):
 override, then deny list, then probe, then allow list, then direct. The
-probe is icat-style, a real 1x1 payload in `/dev/shm` inside the DA1-fenced
-handshake. Seeds: allow WezTerm on Linux (supports `t=s` but never acks the
-probe), deny WezTerm on macOS (renders it wrongly). Each shm object carries
-one complete transmission, because chunked shm does not display on Ghostty.
-Pacing keeps one frame in flight, opened by the terminal's OK reply or a
-40 ms deadline (the gate lives in `internal/viewer/stream.go`; the frame
-assembler arms it). Any shm failure demotes the current stint to direct PNG.
+probe is icat-style, a real 1x1 payload inside the DA1-fenced handshake.
+Linux opens the POSIX objects through `/dev/shm`; Darwin binds `shm_open` and
+`shm_unlink` from libSystem through purego, so the binary remains cgo-free.
+Both implementations use a fresh object for each frame. Names have one leading
+slash and no other slash. Creation is exclusive and read-write with mode
+`0600`; each object is sized once, mapped shared and read-write, filled through
+the mapping, unmapped, and closed. Darwin validates its 31-byte name limit
+before the libSystem call and never writes through the descriptor.
+
+Transport policy is common across the platforms. Seeds allow WezTerm on Linux
+(it supports `t=s` but never acks the probe) and deny WezTerm on macOS (it
+renders it wrongly). Each shm object carries one complete transmission,
+because chunked shm does not display on Ghostty. Pacing keeps one frame in
+flight, opened by the terminal's OK reply or a 40 ms deadline (the gate lives
+in `internal/viewer/stream.go`; the frame assembler arms it). Any shm failure
+demotes the current stint to direct PNG.
 
 JPEG q90 is the shm capture format because PNG plane decode is
 content-scaled (96.9 ms on live pages) while JPEG q90 is content-stable

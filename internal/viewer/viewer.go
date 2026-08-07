@@ -121,9 +121,9 @@ type State struct {
 
 	// kittyShmDemoted marks the runtime fallback from the shm transport to
 	// direct PNG. An shm create or write failure sets it for the rest of the
-	// Kitty stint, so a flaky /dev/shm cannot fail every frame; a cycle back to
-	// Kitty re-arms it via rearmKittySHM because the startup probe proved the
-	// transport.
+	// Kitty stint, so a shared-memory failure cannot fail every frame; a cycle
+	// back to Kitty re-arms it via rearmKittySHM because the startup probe proved
+	// the transport.
 	kittyShmDemoted bool
 
 	// kittyShmDemoteErr holds the error that demoted the shm transport until
