@@ -110,14 +110,16 @@ type GlyphRun struct {
 	ViewportAnchored bool
 }
 
-// IngestStats is the session ingest summary the NYALA_FPS_TIMING quit line
-// reports: the screencast ingest frame count and rate statistics, plus the worker
-// decode budget. The engine computes it from the true per-frame arrival times
+// IngestStats is the session ingest summary the viewer reads at quit. With
+// NYALA_FPS_TIMING set, it supplies the detailed screencast frame, rate, decode,
+// and acknowledgement statistics. Decode failures remain available without the
+// switch so the default path can warn once. The engine computes timing data from
+// the true per-frame arrival times
 // (recorded before the live queue drops any) and the per-frame worker decode
 // times, so under the decoupled receiver/worker model the gap-based extremes are
 // meaningful. The viewer reads it over the ingestReporter seam without importing the
-// engine, so it lives in the render seam. Every field is zero when the switch
-// is off or the session recorded no frame.
+// engine, so it lives in the render seam. When the switch is off, every field
+// except DecodeDrops and DecodeFirstError is zero.
 type IngestStats struct {
 	// Frames is the count of delivered screencast frames over the session.
 	Frames int

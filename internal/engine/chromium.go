@@ -330,11 +330,12 @@ func (e *ChromiumEngine) IngestFPS(now time.Time) float64 {
 	return e.ingest.fps(now)
 }
 
-// IngestSummary returns the session ingest statistics for the fps quit summary: the
-// frame count, mean/min/max/median ingest fps, worst inter-arrival gap, the
-// worker decode mean and max, and the acknowledgement round-trip mean and max. It
-// returns the zero value when NYALA_FPS_TIMING is unset. It is the ingestReporter
-// capability the viewer fps meter reads.
+// IngestSummary returns the session ingest statistics for the session-end report:
+// the frame count, mean/min/max/median ingest fps, worst inter-arrival gap, the
+// worker decode mean and max, decode failures, and the acknowledgement round-trip
+// mean and max. When NYALA_FPS_TIMING is unset, only decode-failure fields can be
+// non-zero so the viewer can warn once without arming the timing counters. It is
+// the ingestReporter capability the viewer reads.
 func (e *ChromiumEngine) IngestSummary() render.IngestStats {
 	return e.ingest.summary()
 }
