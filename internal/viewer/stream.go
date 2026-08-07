@@ -157,8 +157,8 @@ type kittyDecodeSetter interface {
 
 // syncEngineKittyDecode aligns the engine's kitty-shm decode mode with the
 // viewer state: on only while the active backend is Kitty and the shm
-// transport is live (resolved shm, not demoted). It runs at startup after the
-// backend settles, on every backend cycle, and on runtime demotion.
+// transport is resolved. It runs at startup after the backend settles and on
+// every backend cycle.
 func syncEngineKittyDecode(eng Engine, st *State) {
 	d, ok := eng.(kittyDecodeSetter)
 	if !ok {
@@ -763,14 +763,19 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 		if s.assembled == nil && havePending && len(avail) > 0 && !s.kittySHMGated() && !s.tmuxSixelGated() {
 			buf := avail[len(avail)-1]
 			avail = avail[:len(avail)-1]
-			encodeMS, err := s.assemble(buf, pending)
+			// Transfer ownership before assembly. renderStreamFrame releases the
+			// frame on every exit, including an encode failure, so the loop's
+			// pending-frame defer must no longer own it when assemble returns.
+			frame := pending
+			pending = render.Frame{}
+			havePending = false
+			encodeMS, err := s.assemble(buf, frame)
 			if err != nil {
 				return err
 			}
 			s.assembled = buf
 			s.assembledEncodeMS = encodeMS
 			s.assembledTimed = s.fps != nil && s.fps.gated
-			havePending = false
 		}
 
 		// Enable the handoff case only when a buffer waits. A nil channel send never
@@ -779,7 +784,10 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 		var item writeItem
 		if s.assembled != nil {
 			readyC = w.ready
-			item = writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed, tmuxSixel: s.assembledTmuxSixel}
+			item = writeItem{
+				buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed,
+				tmuxSixel: s.assembledTmuxSixel, kittySHM: s.assembledSHM,
+			}
 		}
 
 		// While a pacing gate alone holds back a pending frame, wake at the
@@ -907,7 +915,9 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 				return nil
 			}
 			if ev.apc != "" {
-				s.handleKittyResponse(ev.apc)
+				if err := s.handleKittyResponse(ev.apc); err != nil {
+					return err
+				}
 				continue
 			}
 			if ev.mouse != nil {
@@ -932,10 +942,12 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			// belong here, on the goroutine that owns the terminal, so both
 			// stay ordered against the frames and the bar.
 			s.applyOutcome(o)
-		case err := <-w.errc:
-			// The writer hit a terminal write error; surface it as an I/O failure the
-			// same way the serial path did.
-			return err
+		case failure := <-w.errc:
+			if failure.kittySHM {
+				return fmt.Errorf("write Kitty shm frame: %w", failure.err)
+			}
+			// Non-shm writes keep the serial path's original I/O error.
+			return failure.err
 		}
 	}
 }
@@ -1134,35 +1146,19 @@ func (s *streamSession) assembleSettle(buf *bytes.Buffer) error {
 // handleKittyResponse consumes one Kitty graphics response from the input
 // stream. Any response settles the in-flight shm transmit, so the pacing gate
 // opens. A failure response (no ";OK") while the session is on the Kitty
-// backend with the shm transport live means the terminal could not read the
-// object, so the stint demotes to direct. A failure that lands after the
-// backend cycled away is ignored: resetKitty has already unlinked unconsumed
-// objects, so a busy terminal that reads the switch-window escape late reports
-// a failure Nyala itself caused, and demoting on it would falsely pin later
-// Kitty stints on the parser-bound direct path.
-func (s *streamSession) handleKittyResponse(body string) {
+// backend with the shm transport live stops the stream. A failure that lands
+// after the backend cycled away is ignored: resetKitty has already unlinked
+// unconsumed objects, so a busy terminal that reads the switch-window escape
+// late reports a failure Nyala itself caused.
+func (s *streamSession) handleKittyResponse(body string) error {
 	s.kittyShmAwait = false
 	if strings.Contains(body, ";OK") {
-		return
+		return nil
 	}
 	if s.st.Backend != BackendKitty || !s.st.kittySHMLive() {
-		return
+		return nil
 	}
-	s.st.demoteKittySHM(fmt.Errorf("terminal rejected shm transmit: %s", body))
-	s.applyKittySHMDemotion()
-}
-
-// applyKittySHMDemotion runs the session side of a pending shm demotion: it
-// logs the fallback once and turns off the engine's kitty-shm decode, so the
-// following frames arrive as direct PNG payloads again. It is a no-op when no
-// demotion is pending, so the assemble path calls it unconditionally.
-func (s *streamSession) applyKittySHMDemotion() {
-	err := s.st.takeKittySHMDemotion()
-	if err == nil {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "nyala: kitty shm transport disabled, falling back to direct: %v\n", err)
-	syncEngineKittyDecode(s.eng, s.st)
+	return fmt.Errorf("terminal rejected shm transmit: %s", body)
 }
 
 // barSpinnerInterval paces the startup spinner in the bar's indicator slot:
@@ -1261,11 +1257,9 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	if timed {
 		encodeMS = msSince(encodeStart)
 	}
-	// Tag an shm transmit for the pacing gate and settle any shm failure the
-	// render just recorded: one log line, then direct PNG for the session.
+	// Tag an shm transmit for the pacing gate.
 	s.assembledSHM = s.st.takeKittySHMWrote()
 	s.assembledTmuxSixel = nonScrollingSixel && s.st.mux == muxTmux
-	s.applyKittySHMDemotion()
 
 	if s.fps != nil {
 		// The engine stamps frames received after main-frame first contentful paint.
@@ -1292,7 +1286,10 @@ func (s *streamSession) flushAssembled() {
 	if s.writer == nil || s.assembled == nil {
 		return
 	}
-	s.writer.send(writeItem{buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed, tmuxSixel: s.assembledTmuxSixel})
+	s.writer.send(writeItem{
+		buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed,
+		tmuxSixel: s.assembledTmuxSixel, kittySHM: s.assembledSHM,
+	})
 	s.assembled = nil
 	s.markKittySHMHandoff()
 	s.markTmuxSixelHandoff()
@@ -1768,12 +1765,6 @@ func (s *streamSession) cycleBackend(reverse bool) {
 		// wait cannot gate the next stint's first frame against the old
 		// stream's deadline.
 		s.kittyShmAwait = false
-	}
-	if s.st.Backend == BackendKitty && !wasKitty {
-		// Returning to Kitty re-arms a demoted shm transport: the startup
-		// probe proved it, so a switch-window false failure costs at most
-		// one stint, never the session.
-		s.st.rearmKittySHM()
 	}
 	if s.st.Backend != previous {
 		// Every backend change erases the screen before the new backend's

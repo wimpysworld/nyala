@@ -81,114 +81,117 @@ func TestBackendRestartsUseFixedFormats(t *testing.T) {
 	}
 }
 
-// TestKittyDecodeToggleRestartsFormat proves the capture format follows the
-// Kitty transport: enabling the shm decode on a running Kitty PNG stream
-// restarts it at JPEG q90, a repeat enable is a no-op, and disabling restarts
-// it back at PNG for the direct pass-through.
-func TestKittyDecodeToggleRestartsFormat(t *testing.T) {
-	e, _ := newStreamControlTestEngine(t)
-	e.backend = backendKitty
-	e.screencastFmt = screencastFmt{format: page.ScreencastFormatPng} // running direct Kitty stream
-	stops := 0
-	e.stopScreencastOp = func(context.Context) error {
-		stops++
-		return nil
-	}
-	e.applySizingOp = func(context.Context, browser.WindowID, int, int, float64) error { return nil }
-	var starts []screencastFmt
-	e.startScreencastOp = func(_ context.Context, _, _ int, format screencastFmt) error {
-		starts = append(starts, format)
-		return nil
-	}
-
-	e.SetKittyDecode(true)
-	e.SetKittyDecode(true) // format already JPEG: no second restart
-	e.SetKittyDecode(false)
-	want := []screencastFmt{
-		{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality},
-		{format: page.ScreencastFormatPng},
-	}
-	if stops != 2 || !slices.Equal(starts, want) {
-		t.Fatalf("toggle issued stops=%d starts=%v, want 2 stops and %v", stops, starts, want)
-	}
-}
-
-// TestKittyDecodeToggleOffKittyIssuesNoRestart proves the shm flag alone never
-// restarts a stream whose format it cannot change: a Sixel stream (no direct
-// payload) and an unstarted stream both see no stop or start.
-func TestKittyDecodeToggleOffKittyIssuesNoRestart(t *testing.T) {
+// TestKittyDecodeBackendCycleUsesFixedDestinationFormat proves the transport
+// mode update issues no stream control. The paired backend change performs one
+// restart with its fixed destination format, without an intermediate restart.
+func TestKittyDecodeBackendCycleUsesFixedDestinationFormat(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		started bool
+		name        string
+		backend     backend
+		format      screencastFmt
+		kittyDecode bool
+		nextDecode  bool
+		nextBackend backend
+		want        screencastFmt
 	}{
-		{"sixel stream", true},
-		{"unstarted kitty stream", false},
+		{
+			name:        "enter shm Kitty",
+			backend:     backendSixel,
+			format:      screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality},
+			nextDecode:  true,
+			nextBackend: backendKitty,
+			want:        screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality},
+		},
+		{
+			name:        "leave shm Kitty",
+			backend:     backendKitty,
+			format:      screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality},
+			kittyDecode: true,
+			nextBackend: backendSixel,
+			want:        screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality},
+		},
+		{
+			name:        "enter direct Kitty",
+			backend:     backendBlock,
+			format:      screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality},
+			nextBackend: backendKitty,
+			want:        screencastFmt{format: page.ScreencastFormatPng},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, _ := newStreamControlTestEngine(t)
-			if !tc.started {
-				e.backend = backendKitty
-				e.screencastFmt = screencastFmt{}
-				e.screencastStarted = false
-			}
+			e.backend = tc.backend
+			e.screencastFmt = tc.format
+			e.kittyDecode = tc.kittyDecode
 			stops, starts := 0, 0
 			e.stopScreencastOp = func(context.Context) error {
 				stops++
 				return nil
 			}
 			e.applySizingOp = func(context.Context, browser.WindowID, int, int, float64) error { return nil }
-			e.startScreencastOp = func(context.Context, int, int, screencastFmt) error {
+			var startedFormats []screencastFmt
+			e.startScreencastOp = func(_ context.Context, _, _ int, format screencastFmt) error {
 				starts++
+				startedFormats = append(startedFormats, format)
 				return nil
 			}
-			e.SetKittyDecode(true)
-			e.SetKittyDecode(false)
+			e.SetKittyDecode(tc.nextDecode)
 			if stops != 0 || starts != 0 {
-				t.Fatalf("toggle issued stops=%d starts=%d, want none", stops, starts)
+				t.Fatalf("mode update issued stops=%d starts=%d, want none", stops, starts)
+			}
+			e.SetBackend(tc.nextBackend)
+			wantFormats := []screencastFmt{tc.want}
+			if stops != 1 || starts != 1 || !slices.Equal(startedFormats, wantFormats) {
+				t.Fatalf("backend change issued stops=%d starts=%v, want one stop and %v", stops, startedFormats, wantFormats)
 			}
 		})
 	}
 }
 
-// TestKittySHMPreStartResolveStartsOnce pins the startup ordering the viewer
-// relies on: the shm transport resolves and SetKittyDecode lands before
-// Navigate publishes the frame sink, so the session issues exactly one
-// StartScreencast, already at JPEG q90, with no PNG start and no stop/start
-// pair.
-func TestKittySHMPreStartResolveStartsOnce(t *testing.T) {
-	e, ctx := newStreamControlTestEngine(t)
-	e.backend = backendKitty
-	e.screencastFmt = screencastFmt{}
-	e.screencastStarted = false
-	sink := e.rawQ
-	e.rawQ = nil // Navigate has not published the frame sink yet
-	stops := 0
-	e.stopScreencastOp = func(context.Context) error {
-		stops++
-		return nil
-	}
-	e.applySizingOp = func(context.Context, browser.WindowID, int, int, float64) error { return nil }
-	var starts []screencastFmt
-	e.startScreencastOp = func(_ context.Context, _, _ int, format screencastFmt) error {
-		starts = append(starts, format)
-		return nil
-	}
+// TestKittyTransportPreStartStartsOnce pins startup format selection: resolved
+// shm starts once at JPEG q90, while direct transport starts once at PNG.
+func TestKittyTransportPreStartStartsOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		kittyDecode bool
+		want        screencastFmt
+	}{
+		{"shm", true, screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality}},
+		{"direct", false, screencastFmt{format: page.ScreencastFormatPng}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, ctx := newStreamControlTestEngine(t)
+			e.backend = backendKitty
+			e.screencastFmt = screencastFmt{}
+			e.screencastStarted = false
+			sink := e.rawQ
+			e.rawQ = nil // Navigate has not published the frame sink yet
+			stops := 0
+			e.stopScreencastOp = func(context.Context) error {
+				stops++
+				return nil
+			}
+			e.applySizingOp = func(context.Context, browser.WindowID, int, int, float64) error { return nil }
+			var starts []screencastFmt
+			e.startScreencastOp = func(_ context.Context, _, _ int, format screencastFmt) error {
+				starts = append(starts, format)
+				return nil
+			}
 
-	// The viewer resolves the transport and arms the decode before Navigate,
-	// so the toggle is a flag write with no stream control.
-	e.SetKittyDecode(true)
-	if stops != 0 || len(starts) != 0 {
-		t.Fatalf("pre-start toggle issued stops=%d starts=%d, want none", stops, len(starts))
-	}
+			e.SetKittyDecode(tc.kittyDecode)
+			if stops != 0 || len(starts) != 0 {
+				t.Fatalf("pre-start mode update issued stops=%d starts=%d, want none", stops, len(starts))
+			}
 
-	// startSession publishes the sink, then issues the single initial start.
-	e.rawQ = sink
-	if err := e.startInitialScreencast(ctx); err != nil {
-		t.Fatalf("initial start: %v", err)
-	}
-	want := []screencastFmt{{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality}}
-	if stops != 0 || !slices.Equal(starts, want) {
-		t.Fatalf("initial start issued stops=%d starts=%v, want no stop and %v", stops, starts, want)
+			e.rawQ = sink
+			if err := e.startInitialScreencast(ctx); err != nil {
+				t.Fatalf("initial start: %v", err)
+			}
+			want := []screencastFmt{tc.want}
+			if stops != 0 || !slices.Equal(starts, want) {
+				t.Fatalf("initial start issued stops=%d starts=%v, want no stop and %v", stops, starts, want)
+			}
+		})
 	}
 }
 
