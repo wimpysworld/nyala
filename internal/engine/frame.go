@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	_ "image/jpeg" // register the JPEG decoder for the image.Decode JPEG fallback
 	"sync"
 	"unsafe"
 
@@ -16,17 +15,12 @@ import (
 )
 
 // pngSignature is the 8-byte PNG file magic. decodeFrameImage sniffs it to route
-// PNG frames explicitly through the woozymasta decoder instead of the image.Decode
-// registry, so a second registered "png" format cannot make dispatch init-order
-// dependent (correctness packages also import stdlib image/png for encoding).
+// PNG frames explicitly through the woozymasta decoder before trying JPEG.
 var pngSignature = []byte("\x89PNG\r\n\x1a\n")
 
 // decodeFrameImage decodes one raw image payload, routing by file signature. A PNG
 // (matched by its 8-byte magic) decodes through woozymasta/png, a byte-identical and
-// faster drop-in for image/png; everything else (JPEG) decodes through the stdlib
-// image.Decode registry. The explicit PNG route avoids registering a second "png"
-// format alongside correctness code's stdlib image/png import, which would make
-// image.Decode dispatch init-order dependent.
+// faster drop-in for image/png; everything else decodes once through jpegn.
 func decodeFrameImage(raw []byte) (image.Image, error) {
 	if bytes.HasPrefix(raw, pngSignature) {
 		img, err := pngdecode.Decode(bytes.NewReader(raw))
@@ -35,11 +29,7 @@ func decodeFrameImage(raw []byte) (image.Image, error) {
 		}
 		return img, nil
 	}
-	img, _, err := image.Decode(bytes.NewReader(raw))
-	if err != nil {
-		return nil, fmt.Errorf("jpeg decode: %w", err)
-	}
-	return img, nil
+	return decodeJPEGFast(raw)
 }
 
 // b64Buf is one pooled base64 output buffer plus its once-built release
@@ -221,18 +211,13 @@ func (e *ChromiumEngine) snapshotCellPx() (cellW, cellH float64) {
 	return float64(e.cellW), float64(e.cellH)
 }
 
-// decodeJPEGFast decodes one live-frame image, preferring the SIMD jpegn decoder
-// and falling back to decodeFrameImage on the same bytes. JPEG remains native
-// *image.YCbCr for Block and other pixel consumers. Any non-nil jpegn error falls
-// back, including jpegn.ErrUnsupported and non-JPEG input. Each call gets its own
-// reader, so parallel workers share no decode state.
+// decodeJPEGFast decodes one live-frame image through the SIMD jpegn decoder.
+// JPEG remains native *image.YCbCr for Block and other pixel consumers. Each call
+// gets its own reader, so parallel workers share no decode state.
 func decodeJPEGFast(raw []byte) (image.Image, error) {
-	if img, err := jpegn.Decode(bytes.NewReader(raw)); err == nil {
-		return img, nil
-	}
-	img, err := decodeFrameImage(raw)
+	img, err := jpegn.Decode(bytes.NewReader(raw))
 	if err != nil {
-		return nil, fmt.Errorf("native image decode: %w", err)
+		return nil, fmt.Errorf("native image decode: jpeg decode: %w", err)
 	}
 	return img, nil
 }
@@ -304,16 +289,16 @@ func (e *ChromiumEngine) decodeKittyPlane(data string) (image.Image, func(), err
 
 // decodeLiveFrame is the live decode-pool's pixel decode. It keeps the decoder's
 // native image layout. Block averages native JPEG YCbCr planes directly while
-// composing its final grid. Sixel decodes JPEG q90 through the same signature
-// sniff, so its encoder receives native YCbCr; Kitty passes its PNG through
-// without calling this method.
+// composing its final grid. Sixel routes PNG and JPEG by signature, so its encoder
+// receives native YCbCr for JPEG; Kitty passes its PNG through without calling this
+// method.
 func (e *ChromiumEngine) decodeLiveFrame(data string) (image.Image, error) {
 	raw, release, err := decodeBase64Pooled(data)
 	if err != nil {
 		return nil, fmt.Errorf("engine: live frame base64 decode: %w", err)
 	}
 	defer release()
-	img, err := decodeJPEGFast(raw)
+	img, err := decodeFrameImage(raw)
 	if err != nil {
 		return nil, fmt.Errorf("engine: live frame decode: %w", err)
 	}

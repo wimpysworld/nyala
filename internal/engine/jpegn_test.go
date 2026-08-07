@@ -1,25 +1,29 @@
 package engine
 
-// jpegn wiring guard: the live block screencast path decodes through
-// github.com/gen2brain/jpegn (SIMD, native image.YCbCr) with a stdlib fallback
-// (decodeJPEGFast in frame.go). These tests guard the near-identical decode
-// guarantee, prove the fallback engages on an input jpegn declines, and keep a
-// jpegn-vs-stdlib decode benchmark so the win stays measurable.
+// jpegn wiring guard: non-PNG live frames decode once through
+// github.com/gen2brain/jpegn (SIMD, native image.YCbCr). These tests guard the
+// signature route, the near-identical decode guarantee, authoritative failures,
+// and the jpegn-vs-stdlib benchmark that keeps the win measurable.
 //
 // Run:
-//   go test -run 'TestJpegn|TestDecodeJPEGFast' ./internal/engine/
+//   go test -run 'TestJpegn|TestDecodeFrameImage' ./internal/engine/
 //   go test -bench BenchmarkJPEGDecode -benchmem ./internal/engine/
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/gen2brain/jpegn"
+	woozypng "github.com/woozymasta/png"
+
+	"github.com/wimpysworld/nyala/internal/pngdecode"
 )
 
 // jpegnSize is one benchmark corpus entry.
@@ -77,6 +81,39 @@ func encodeBaseline420(tb testing.TB, img image.Image) []byte {
 	return buf.Bytes()
 }
 
+// unsupportedSequentialJPEG returns an extended sequential JPEG. The stdlib
+// decoder accepts this valid SOF1 form, while jpegn deliberately rejects it.
+func unsupportedSequentialJPEG(tb testing.TB) []byte {
+	tb.Helper()
+	raw := encodeBaseline420(tb, loadSourceRGBA(tb))
+	sof := bytes.Index(raw, []byte{0xff, 0xc0})
+	if sof < 0 {
+		tb.Fatal("baseline JPEG fixture has no SOF0 marker")
+	}
+	raw = bytes.Clone(raw)
+	raw[sof+1] = 0xc1
+	if _, err := jpeg.Decode(bytes.NewReader(raw)); err != nil {
+		tb.Fatalf("stdlib rejected extended sequential JPEG fixture: %v", err)
+	}
+	return raw
+}
+
+// unsupportedFramePNG returns a PNG with an unsupported compression method.
+// The signature and IHDR remain sufficient for pngdecode to classify the input.
+func unsupportedFramePNG(tb testing.TB) []byte {
+	tb.Helper()
+	raw, err := os.ReadFile("../../testdata/linuxmatters.png")
+	if err != nil {
+		tb.Fatalf("read source PNG: %v", err)
+	}
+	if !bytes.HasPrefix(raw, pngSignature) || len(raw) < 29 {
+		tb.Fatal("source PNG has no complete IHDR")
+	}
+	raw = bytes.Clone(raw)
+	raw[26] = 1
+	return raw
+}
+
 // corpusJPEG builds and encodes the corpus JPEG for one size.
 func corpusJPEG(tb testing.TB, src *image.RGBA, s jpegnSize) []byte {
 	return encodeBaseline420(tb, tileTo(src, s.w, s.h))
@@ -103,12 +140,11 @@ func maxRGBADelta(tb testing.TB, a, b image.Image) int {
 	return max
 }
 
-// TestJpegnEquivalence confirms the live decode helper's jpegn path returns a
-// native YCbCr 4:2:0 image that matches stdlib within a small bounded per-channel
-// RGBA delta, so the fused sub-cell downscale stays near-identical. The spike
-// measured a max delta of 3 on amd64; the tolerance leaves headroom for the arm64
-// FMA rounding difference.
-func TestJpegnEquivalence(t *testing.T) {
+// TestDecodeFrameImageRoutesBaselineJPEGToJpegn confirms the non-PNG route
+// returns native YCbCr 4:2:0 that matches stdlib within a small bounded
+// per-channel RGBA delta. The spike measured a max delta of 3 on amd64; the
+// tolerance leaves headroom for the arm64 FMA rounding difference.
+func TestDecodeFrameImageRoutesBaselineJPEGToJpegn(t *testing.T) {
 	const tolerance = 8
 	src := loadSourceRGBA(t)
 	for _, s := range jpegnSizes {
@@ -119,13 +155,13 @@ func TestJpegnEquivalence(t *testing.T) {
 			t.Fatalf("%s: stdlib decode: %v", s.name, err)
 		}
 
-		got, err := decodeJPEGFast(jbytes)
+		got, err := decodeFrameImage(jbytes)
 		if err != nil {
-			t.Fatalf("%s: decodeJPEGFast: %v", s.name, err)
+			t.Fatalf("%s: decodeFrameImage: %v", s.name, err)
 		}
 		yc, ok := got.(*image.YCbCr)
 		if !ok {
-			t.Fatalf("%s: decodeJPEGFast returned %T, want *image.YCbCr; the fused downscale needs YCbCr", s.name, got)
+			t.Fatalf("%s: decodeFrameImage returned %T, want *image.YCbCr; the fused downscale needs YCbCr", s.name, got)
 		}
 		if yc.SubsampleRatio != image.YCbCrSubsampleRatio420 {
 			t.Errorf("%s: subsample ratio = %v, want 420", s.name, yc.SubsampleRatio)
@@ -139,39 +175,101 @@ func TestJpegnEquivalence(t *testing.T) {
 	}
 }
 
-// TestDecodeJPEGFastFallback proves PNG bytes declined by jpegn fall back to the PNG
-// decoder unchanged. This exercises the same branch as jpegn.ErrUnsupported JPEG
-// input.
-func TestDecodeJPEGFastFallback(t *testing.T) {
+// TestDecodeFrameImageRoutesPNGBySignature proves a PNG reaches pngdecode even
+// though jpegn rejects the same bytes. The decoder-native type and pixels stay
+// unchanged.
+func TestDecodeFrameImageRoutesPNGBySignature(t *testing.T) {
 	raw, err := os.ReadFile("../../testdata/linuxmatters.png")
 	if err != nil {
-		t.Fatalf("read source png: %v", err)
+		t.Fatalf("read source PNG: %v", err)
 	}
-
-	// Confirm jpegn declines the bytes, so the fallback branch is the one taken.
-	if _, err := jpegn.Decode(bytes.NewReader(raw)); err == nil {
-		t.Fatal("jpegn decoded PNG bytes without error; the fallback branch is not exercised")
+	if _, err := jpegn.Decode(bytes.NewReader(raw)); !errors.Is(err, jpegn.ErrNoJPEG) {
+		t.Fatalf("jpegn error = %v, want ErrNoJPEG", err)
 	}
-
-	want, err := png.Decode(bytes.NewReader(raw))
+	want, err := pngdecode.Decode(bytes.NewReader(raw))
 	if err != nil {
-		t.Fatalf("stdlib png decode: %v", err)
+		t.Fatalf("pngdecode: %v", err)
 	}
-	got, err := decodeJPEGFast(raw)
+	got, err := decodeFrameImage(raw)
 	if err != nil {
-		t.Fatalf("decodeJPEGFast fallback: %v", err)
+		t.Fatalf("decodeFrameImage: %v", err)
+	}
+	if reflect.TypeOf(got) != reflect.TypeOf(want) {
+		t.Fatalf("decodeFrameImage type = %T, want pngdecode-native %T", got, want)
 	}
 	if d := maxRGBADelta(t, want, got); d != 0 {
-		t.Errorf("fallback differs from stdlib PNG: max delta %d, want 0", d)
+		t.Errorf("PNG route differs from pngdecode: max delta %d, want 0", d)
 	}
 }
 
-// TestDecodeJPEGFastCorruptReturnsError proves corrupt input survives both jpegn
-// attempts and reaches the fallback error without producing a partial frame.
-func TestDecodeJPEGFastCorruptReturnsError(t *testing.T) {
-	raw := []byte{0xff, 0xd8, 0xff, 0xdb, 0x00}
-	if img, err := decodeJPEGFast(raw); err == nil {
-		t.Fatalf("decodeJPEGFast returned %T, want error", img)
+// TestDecodeFrameImageKeepsPNGErrorsOnThePNGRoute proves both malformed and
+// unsupported PNG input return the direct pngdecode cause. A jpegn error cannot
+// enter either wrapped chain.
+func TestDecodeFrameImageKeepsPNGErrorsOnThePNGRoute(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		raw         []byte
+		unsupported bool
+	}{
+		{name: "corrupt", raw: append(bytes.Clone(pngSignature), "truncated"...)},
+		{name: "unsupported", raw: unsupportedFramePNG(t), unsupported: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, directErr := pngdecode.Decode(bytes.NewReader(test.raw))
+			if directErr == nil {
+				t.Fatal("pngdecode accepted error fixture")
+			}
+			if test.unsupported {
+				var unsupported woozypng.UnsupportedError
+				if !errors.As(directErr, &unsupported) {
+					t.Fatalf("pngdecode error = %T %v, want UnsupportedError", directErr, directErr)
+				}
+			}
+			if _, jpegErr := jpegn.Decode(bytes.NewReader(test.raw)); !errors.Is(jpegErr, jpegn.ErrNoJPEG) {
+				t.Fatalf("jpegn error = %v, want ErrNoJPEG", jpegErr)
+			}
+
+			img, err := decodeFrameImage(test.raw)
+			if err == nil || img != nil {
+				t.Fatalf("decodeFrameImage = (%T, %v), want nil image and error", img, err)
+			}
+			if !errors.Is(err, directErr) {
+				t.Fatalf("decodeFrameImage error = %v, want direct pngdecode cause %v", err, directErr)
+			}
+			if errors.Is(err, jpegn.ErrNoJPEG) {
+				t.Fatalf("decodeFrameImage error contains a prior jpegn attempt: %v", err)
+			}
+		})
+	}
+}
+
+// TestDecodeFrameImageKeepsJpegnFailuresAuthoritative proves corrupt and
+// unsupported JPEG input return nil with the direct jpegn sentinel. The
+// unsupported fixture remains decodable by stdlib, so success would expose a
+// forbidden second decoder.
+func TestDecodeFrameImageKeepsJpegnFailuresAuthoritative(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		raw       []byte
+		wantCause error
+	}{
+		{name: "corrupt", raw: []byte{0xff, 0xd8, 0xff, 0xdb, 0x00}, wantCause: jpegn.ErrSyntax},
+		{name: "unsupported", raw: unsupportedSequentialJPEG(t), wantCause: jpegn.ErrUnsupported},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directImg, directErr := jpegn.Decode(bytes.NewReader(test.raw))
+			if directImg != nil || !errors.Is(directErr, test.wantCause) {
+				t.Fatalf("jpegn.Decode = (%T, %v), want nil and %v", directImg, directErr, test.wantCause)
+			}
+
+			img, err := decodeFrameImage(test.raw)
+			if err == nil || img != nil {
+				t.Fatalf("decodeFrameImage = (%T, %v), want nil image and error", img, err)
+			}
+			if !errors.Is(err, directErr) || !errors.Is(err, test.wantCause) {
+				t.Fatalf("decodeFrameImage error = %v, want direct jpegn cause %v", err, directErr)
+			}
+		})
 	}
 }
 
