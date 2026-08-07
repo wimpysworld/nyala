@@ -21,14 +21,29 @@ func msSince(start time.Time) float64 {
 // it owns no pooled buffer, so the writer emits it and returns nothing. timed
 // gates the write-phase clock read to the armed fps meter. tmuxSixel marks a
 // tmux Sixel frame, whose write is timed unconditionally because the adaptive
-// pacing gate feeds on the duration even with the fps meter off.
+// pacing gate feeds on the duration even with the fps meter off. kittySHM marks
+// a Kitty shared-memory frame so a failed write keeps that provenance after the
+// producer's acknowledgement state changes.
 type writeItem struct {
 	buf       *bytes.Buffer
 	ctrl      []byte
 	encodeMS  float64
 	timed     bool
 	tmuxSixel bool
+	kittySHM  bool
 }
+
+// writeFailure carries the first terminal error and the kind of item whose
+// write failed. It unwraps to the terminal error for errors.Is checks at the
+// writer boundary.
+type writeFailure struct {
+	err      error
+	kittySHM bool
+}
+
+func (f writeFailure) Error() string { return f.err.Error() }
+
+func (f writeFailure) Unwrap() error { return f.err }
 
 // freeItem returns a drained frame buffer to the producer with the frame's encode
 // and write times. The producer reuses the buffer and records the paint split on
@@ -55,7 +70,7 @@ type streamWriter struct {
 	tty   io.Writer
 	ready chan writeItem
 	free  chan freeItem
-	errc  chan error
+	errc  chan writeFailure
 	done  chan struct{}
 }
 
@@ -69,7 +84,7 @@ func newStreamWriter(tty io.Writer) *streamWriter {
 		tty:   tty,
 		ready: make(chan writeItem, 1),
 		free:  make(chan freeItem, 2),
-		errc:  make(chan error, 1),
+		errc:  make(chan writeFailure, 1),
 		done:  make(chan struct{}),
 	}
 	go w.run()
@@ -109,7 +124,7 @@ func (w *streamWriter) run() {
 			if err != nil {
 				failed = true
 				select {
-				case w.errc <- err:
+				case w.errc <- writeFailure{err: err, kittySHM: item.kittySHM}:
 				default:
 				}
 			} else if clocked {

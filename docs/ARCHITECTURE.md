@@ -1087,10 +1087,11 @@ same bytes.
 
 ### Kitty
 
-The live path reuses Chromium's work. CDP delivers each screencast frame as a
-base64 PNG payload, and Nyala rechunks that payload directly as Kitty
-`f=100,t=d,a=T` data. There is no decode and no re-encode; the bytes Chromium
-encoded are the bytes the terminal receives.
+When startup selects the direct transport, the live path reuses Chromium's
+work. CDP delivers each screencast frame as a base64 PNG payload, and Nyala
+rechunks that payload directly as Kitty `f=100,t=d,a=T` data. There is no
+decode and no re-encode; the bytes Chromium encoded are the bytes the terminal
+receives.
 
 Direct transport has a hard in-band ceiling. Kitty's post-SIMD escape
 parser measures about 270 MB/s (kitty issue #7005); raw RGBA at 2560x1500
@@ -1098,8 +1099,8 @@ is 20.5 MB of base64 per frame, about 13 fps, and no in-band pixel format
 escapes that arithmetic. Live direct PNG sat on that ceiling, with 78.9 ms
 terminal-side write stalls.
 
-A runtime-detected POSIX shared-memory fast path sits above the direct PNG
-fallback. It captures JPEG q90 instead, decodes it in Nyala, and sends raw
+A startup-detected POSIX shared-memory fast path sits above the direct PNG
+transport. It captures JPEG q90 instead, decodes it in Nyala, and sends raw
 `f=32` RGBA over POSIX shared memory (`f=32,t=s`). Terminal-side PNG decode
 dominates at full-grid sizes, so moving the decode into Nyala and handing the
 terminal raw pixels is the faster trade where shm works.
@@ -1125,8 +1126,12 @@ Transport policy is common across the platforms. Seeds allow WezTerm on Linux
 renders it wrongly). Each shm object carries one complete transmission,
 because chunked shm does not display on Ghostty. Pacing keeps one frame in
 flight, opened by the terminal's OK reply or a 40 ms deadline (the gate lives
-in `internal/viewer/stream.go`; the frame assembler arms it). Any shm failure
-demotes the current stint to direct PNG.
+in `internal/viewer/stream.go`; the frame assembler arms it). Startup may
+select direct PNG when capability policy does not select shm. Once startup
+selects shm, a per-frame object creation, mapping, close, transmit, terminal
+write, or active rejection error stops the stream through its normal shutdown
+path. Nyala does not demote the Kitty stint to direct PNG or re-arm a demotion
+on a later backend cycle.
 
 JPEG q90 is the shm capture format because PNG plane decode is
 content-scaled (96.9 ms on live pages) while JPEG q90 is content-stable
@@ -1143,7 +1148,9 @@ Frame discipline avoids blanking:
   placed, so no blank shows between frames. The `a=f,r=1,o=z`
   animation-frame edit was tried and rejected: it rendered partial or black
   on kitty and WezTerm, so the double-buffered id swap stays.
-- `q=2` suppresses terminal replies in the loop; queries run only at startup.
+- Direct PNG uses `q=2` to suppress terminal replies. Shared memory uses `q=0`
+  so each transmit returns the acknowledgement used for pacing or a rejection
+  that stops the stream.
 
 Placement is classic cursor-anchored (`a=T`) with `C=1` so the cursor does
 not move, followed by an explicit absolute cursor position (`CSI <row>;<col> H`)

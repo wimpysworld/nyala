@@ -7,6 +7,7 @@ import (
 	"errors"
 	"image"
 	"image/color"
+	"io"
 	"os"
 	"runtime"
 	"strings"
@@ -120,61 +121,131 @@ func TestKittySHMTransmitAlternatesIDs(t *testing.T) {
 	}
 }
 
-// failSHMWriter is a kittySHMWriter stub whose Create always fails, forcing
-// the runtime demotion path without a broken /dev/shm.
-type failSHMWriter struct{ closed bool }
-
-func (w *failSHMWriter) Create(int, int) (*kitty.SHMObject, error) {
-	return nil, errors.New("forced shm failure")
+// testSHMWriter delegates object creation and cleanup to kitty.SHMWriter while
+// exposing the viewer-local failure points.
+type testSHMWriter struct {
+	writer         *kitty.SHMWriter
+	createErr      error
+	objectCloseErr error
+	names          []string
+	closed         bool
 }
 
-func (w *failSHMWriter) Close() error {
-	w.closed = true
-	return nil
-}
-
-// TestKittySHMDemotesOnCreateFailure asserts an shm create failure demotes the
-// stint to the direct path: the failing plane-only frame drops cleanly with
-// its plane released, the demotion error surfaces exactly once, and the next
-// retained-payload frame paints via direct PNG.
-func TestKittySHMDemotesOnCreateFailure(t *testing.T) {
-	s := shmState()
-	stub := &failSHMWriter{}
-	s.kittySHM = stub
-
-	released := 0
-	var buf bytes.Buffer
-	frame := render.Frame{Img: solidImageSize(6, 4, color.RGBA{A: 0xff}), Release: func() { released++ }}
-	if err := s.RenderStreamFrame(frame, &buf); err != nil {
-		t.Fatalf("failing shm frame must demote, not error: %v", err)
+func (w *testSHMWriter) Create(id, size int) (kittySHMObject, error) {
+	if w.createErr != nil {
+		return nil, w.createErr
 	}
-	if buf.Len() != 0 {
-		t.Fatalf("dropped plane-only frame wrote %d bytes, want 0", buf.Len())
+	obj, err := w.writer.Create(id, size)
+	if err != nil {
+		return nil, err
+	}
+	w.names = append(w.names, obj.Name())
+	if w.objectCloseErr != nil {
+		return &testSHMObject{kittySHMObject: obj, closeErr: w.objectCloseErr}, nil
+	}
+	return obj, nil
+}
+
+func (w *testSHMWriter) Close() error {
+	w.closed = true
+	return w.writer.Close()
+}
+
+type testSHMObject struct {
+	kittySHMObject
+	closeErr error
+}
+
+func (o *testSHMObject) Close() error {
+	return errors.Join(o.kittySHMObject.Close(), o.closeErr)
+}
+
+type failKittyAPCWriter struct {
+	bytes.Buffer
+	err error
+}
+
+func (w *failKittyAPCWriter) Write(p []byte) (int, error) {
+	_, _ = w.Buffer.Write(p)
+	return 0, w.err
+}
+
+func newTestSHMWriter() *testSHMWriter {
+	return &testSHMWriter{writer: kitty.NewSHMWriter()}
+}
+
+func assertKittySHMEncodeError(t *testing.T, s *State, shm *testSHMWriter, frame render.Frame, w io.Writer, want error, output func() string) {
+	t.Helper()
+	released := 0
+	frame.Release = func() { released++ }
+	err := s.RenderStreamFrame(frame, w)
+	if !errors.Is(err, want) {
+		t.Fatalf("RenderStreamFrame() error = %v, want %v", err, want)
 	}
 	if released != 1 {
-		t.Fatalf("dropped frame released the plane %d times, want 1", released)
+		t.Fatalf("failed frame released the plane %d times, want 1", released)
 	}
-	if s.kittySHMLive() {
-		t.Fatal("shm transport still live after a create failure")
+	if strings.Contains(output(), "t=d") {
+		t.Fatalf("failed shm frame fell through to direct PNG: %q", output())
 	}
-	if !stub.closed {
-		t.Fatal("demotion did not close the shm writer")
+	if !s.kittySHMLive() {
+		t.Fatal("synchronous encode failure changed the selected shm transport")
 	}
-	if err := s.takeKittySHMDemotion(); err == nil {
-		t.Fatal("demotion error not recorded for the one-shot log")
+	if !shm.closed || s.kittySHM != nil {
+		t.Fatal("synchronous encode failure did not close the shm writer")
 	}
-	if err := s.takeKittySHMDemotion(); err != nil {
-		t.Fatalf("demotion error surfaced twice: %v", err)
+	for _, name := range shm.names {
+		path := "/dev/shm/" + strings.TrimPrefix(name, "/")
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("shm object %s survived failed encode cleanup (stat err %v)", name, err)
+		}
 	}
+}
 
-	direct := renderKittyFrame(t, &s, solidImage(color.RGBA{A: 0xff}))
-	if len(direct) != 1 {
-		t.Fatalf("post-demotion direct frame emitted %d commands, want 1", len(direct))
+// TestKittySHMCreateMapErrorReturns asserts a create or map/setup failure is
+// returned for a plane-only frame without changing the selected transport.
+func TestKittySHMCreateMapErrorReturns(t *testing.T) {
+	want := errors.New("forced shm create/map failure")
+	s := shmState()
+	shm := newTestSHMWriter()
+	shm.createErr = want
+	s.kittySHM = shm
+	var out bytes.Buffer
+	frame := render.Frame{Img: solidImageSize(6, 4, color.RGBA{A: 0xff})}
+	assertKittySHMEncodeError(t, &s, shm, frame, &out, want, out.String)
+}
+
+// TestKittySHMObjectCloseErrorReturns asserts a mapped-object close failure is
+// returned and cleanup unlinks the object without selecting retained PNG.
+func TestKittySHMObjectCloseErrorReturns(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("kitty shm cleanup test requires Linux /dev/shm")
 	}
-	assertTransmit(t, direct[0], "1")
-	if !hasOpt(direct[0], "f=100") || !hasOpt(direct[0], "t=d") {
-		t.Fatalf("post-demotion frame %q is not a direct PNG transmit", direct[0])
+	want := errors.New("forced shm object close failure")
+	s := shmState()
+	shm := newTestSHMWriter()
+	shm.objectCloseErr = want
+	s.kittySHM = shm
+	var out bytes.Buffer
+	img := solidImageSize(6, 4, color.RGBA{A: 0xff})
+	frame := render.Frame{Img: img, EncodedPNG: encodedPNG(t, img)}
+	assertKittySHMEncodeError(t, &s, shm, frame, &out, want, out.String)
+}
+
+// TestKittySHMAPCEncodeErrorReturns asserts an APC writer failure is returned
+// after SHM preparation and cleanup unlinks the unconsumed object.
+func TestKittySHMAPCEncodeErrorReturns(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("kitty shm cleanup test requires Linux /dev/shm")
 	}
+	want := errors.New("forced Kitty APC failure")
+	s := shmState()
+	shm := newTestSHMWriter()
+	s.kittySHM = shm
+	out := &failKittyAPCWriter{err: want}
+	img := solidImageSize(6, 4, color.RGBA{A: 0xff})
+	frame := render.Frame{Img: img, EncodedPNG: encodedPNG(t, img)}
+	assertKittySHMEncodeError(t, &s, shm, frame, out, want, out.String)
 }
 
 // TestKittySHMEncodedPNGFallsBackDirect asserts a retained-payload frame that
@@ -194,7 +265,7 @@ func TestKittySHMEncodedPNGFallsBackDirect(t *testing.T) {
 		t.Fatal("direct fallback frame flagged as an shm transmit")
 	}
 	if !s.kittySHMLive() {
-		t.Fatal("direct fallback for one frame must not demote the transport")
+		t.Fatal("direct fallback for one frame changed the selected transport")
 	}
 }
 
@@ -261,8 +332,8 @@ func TestDrainFramesReleasesStale(t *testing.T) {
 }
 
 // TestKittySHMPacingGate asserts the one-in-flight gate arms on an shm
-// handoff, opens on any terminal response or its deadline, and demotes on a
-// failure response.
+// handoff, opens on any terminal response or its deadline, and returns a
+// failure response without changing the selected transport.
 func TestKittySHMPacingGate(t *testing.T) {
 	st := shmState()
 	s := &streamSession{st: &st, eng: &fakeEngine{}}
@@ -275,7 +346,9 @@ func TestKittySHMPacingGate(t *testing.T) {
 	if !s.kittySHMGated() {
 		t.Fatal("gate not armed after an shm handoff")
 	}
-	s.handleKittyResponse("i=1;OK")
+	if err := s.handleKittyResponse("i=1;OK"); err != nil {
+		t.Fatalf("OK response returned error: %v", err)
+	}
 	if s.kittySHMGated() {
 		t.Fatal("gate still armed after the OK response")
 	}
@@ -289,23 +362,26 @@ func TestKittySHMPacingGate(t *testing.T) {
 
 	s.assembledSHM = true
 	s.markKittySHMHandoff()
-	s.handleKittyResponse("i=2;EBADF:could not open shared memory")
+	err := s.handleKittyResponse("i=2;EBADF:could not open shared memory")
+	if err == nil || !strings.Contains(err.Error(), "terminal rejected shm transmit") {
+		t.Fatalf("failure response error = %v, want active shm rejection", err)
+	}
 	if s.kittySHMGated() {
 		t.Fatal("gate still armed after a failure response")
 	}
-	if st.kittySHMLive() {
-		t.Fatal("failure response did not demote the shm transport")
+	if !st.kittySHMLive() {
+		t.Fatal("failure response changed the selected shm transport")
 	}
 }
 
-// TestKittySHMLateErrorAfterCycleAwayDoesNotDemote reproduces the Ghostty
+// TestKittySHMLateErrorAfterCycleAwayIsIgnored reproduces the Ghostty
 // switch-window race: an shm transmit is in flight when Alt+R cycles away from
 // Kitty, so resetKitty unlinks the object before the busy terminal reads the
 // escape, and the terminal's ENOENT reply lands after the switch. That failure
-// is self-inflicted, not a transport fault, so it must not demote the shm
-// transport; the next cycle back to Kitty must run shm again with the engine
-// decode on and the stale pacing gate dropped.
-func TestKittySHMLateErrorAfterCycleAwayDoesNotDemote(t *testing.T) {
+// is self-inflicted, so the viewer ignores it. The next cycle back to Kitty
+// must run shm again with the engine decode on and the stale pacing gate
+// dropped.
+func TestKittySHMLateErrorAfterCycleAwayIsIgnored(t *testing.T) {
 	st := shmState()
 	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
 	st.kittyID = 1
@@ -327,9 +403,11 @@ func TestKittySHMLateErrorAfterCycleAwayDoesNotDemote(t *testing.T) {
 
 	// The busy terminal processes the escape after the unlink and replies with
 	// a failure. The transport itself is healthy.
-	s.handleKittyResponse("i=2;ENOENT:failed to open shared memory object")
+	if err := s.handleKittyResponse("i=2;ENOENT:failed to open shared memory object"); err != nil {
+		t.Fatalf("late failure response after cycling away returned error: %v", err)
+	}
 	if !st.kittySHMLive() {
-		t.Fatal("late failure response after cycling away falsely demoted the shm transport")
+		t.Fatal("late failure response after cycling away changed the selected transport")
 	}
 
 	s.handleKey(keyEvent{act: actionCycleBackend})
@@ -347,39 +425,26 @@ func TestKittySHMLateErrorAfterCycleAwayDoesNotDemote(t *testing.T) {
 	}
 }
 
-// TestKittySHMDemotionRearmsOnReturnToKitty asserts a runtime demotion lasts
-// one Kitty stint, not the whole session: the startup probe proved the
-// transport, so cycling back to Kitty re-arms shm and re-enables the engine
-// decode. A genuinely broken transport demotes again on its next failure.
-func TestKittySHMDemotionRearmsOnReturnToKitty(t *testing.T) {
+// TestKittySHMResponseErrorPreservesTransportAndDecode asserts a runtime
+// rejection returns an error without switching transport or disabling the
+// engine's shm plane decode.
+func TestKittySHMResponseErrorPreservesTransportAndDecode(t *testing.T) {
 	st := shmState()
-	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
 	eng := &decodeFakeEngine{}
-	done := make(chan struct{})
-	defer close(done)
-	s := &streamSession{eng: eng, st: &st, tty: &bytes.Buffer{}, ctl: newControl(eng, done)}
+	syncEngineKittyDecode(eng, &st)
+	s := &streamSession{eng: eng, st: &st}
 
-	// A failure response while on Kitty still demotes the stint.
 	s.assembledSHM = true
 	s.markKittySHMHandoff()
-	s.handleKittyResponse("i=1;EBADF:could not open shared memory")
-	if st.kittySHMLive() {
-		t.Fatal("failure response on Kitty did not demote the shm transport")
-	}
-	if eng.kittyDecode {
-		t.Fatal("demotion did not disable the engine kitty-shm decode")
-	}
-
-	s.handleKey(keyEvent{act: actionCycleBackend})
-	s.handleKey(keyEvent{act: actionCycleBackend})
-	if st.Backend != BackendKitty {
-		t.Fatalf("backend after two cycles = %v, want Kitty", st.Backend)
+	err := s.handleKittyResponse("i=1;EBADF:could not open shared memory")
+	if err == nil || !strings.Contains(err.Error(), "terminal rejected shm transmit") {
+		t.Fatalf("failure response error = %v, want active shm rejection", err)
 	}
 	if !st.kittySHMLive() {
-		t.Fatal("returning to Kitty did not re-arm the demoted shm transport")
+		t.Fatal("failure response changed the selected shm transport")
 	}
 	if !eng.kittyDecode {
-		t.Fatal("returning to Kitty did not re-enable the engine kitty-shm decode")
+		t.Fatal("failure response disabled the engine kitty-shm decode")
 	}
 }
 
@@ -394,8 +459,8 @@ func (e *decodeFakeEngine) SetKittyDecode(on bool) { e.kittyDecode = on }
 
 // TestSyncEngineKittyDecode asserts the engine decode mode follows the
 // backend and transport: on only for Kitty plus a live shm transport, off
-// after a cycle away or a demotion, and a no-op for engines without the
-// capability.
+// after a cycle away or direct transport resolution, and a no-op for engines
+// without the capability.
 func TestSyncEngineKittyDecode(t *testing.T) {
 	st := shmState()
 	eng := &decodeFakeEngine{}
@@ -412,10 +477,10 @@ func TestSyncEngineKittyDecode(t *testing.T) {
 	}
 
 	st.Backend = BackendKitty
-	st.demoteKittySHM(errors.New("forced"))
+	st.kittyTransport = KittyTransportDirect
 	syncEngineKittyDecode(eng, &st)
 	if eng.kittyDecode {
-		t.Fatal("a demoted transport must keep the decode off")
+		t.Fatal("direct transport must keep the decode off")
 	}
 
 	syncEngineKittyDecode(&fakeEngine{}, &st) // must not panic without the capability

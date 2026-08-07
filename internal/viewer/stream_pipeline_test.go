@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -97,6 +98,41 @@ func (e *pipeEngine) FindState() FindState        { return FindState{} }
 func (e *pipeEngine) Selection() (string, bool)   { return "", false }
 func (e *pipeEngine) SendMouse(MouseEvent)        {}
 func (e *pipeEngine) Close() error                { return nil }
+
+// shmPipeEngine records the optional Kitty shm decode mode while exposing the
+// same scripted frame channel as pipeEngine.
+type shmPipeEngine struct {
+	pipeEngine
+	kittyDecode bool
+	keyC        chan string
+}
+
+func (e *shmPipeEngine) SetKittyDecode(on bool) { e.kittyDecode = on }
+
+func (e *shmPipeEngine) SendKey(code string) {
+	if e.keyC != nil {
+		e.keyC <- code
+	}
+}
+
+func assertNoKittyDirectTransmit(t *testing.T, out string) {
+	t.Helper()
+	for _, cmd := range kittyCommands(out) {
+		if hasOpt(cmd, "f=100") && hasOpt(cmd, "t=d") {
+			t.Fatalf("SHM pipeline emitted a direct PNG transmit: %q", cmd)
+		}
+	}
+}
+
+func assertKittySHMObjectsUnlinked(t *testing.T, shm *testSHMWriter) {
+	t.Helper()
+	for _, name := range shm.names {
+		path := "/dev/shm/" + strings.TrimPrefix(name, "/")
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("SHM object %s survived stream cleanup (stat err %v)", name, err)
+		}
+	}
+}
 
 // TestStreamWriterOrdersItemsUnderSlowTTY drives the two-buffer ping-pong against a
 // slow in-memory tty and asserts the writer emits every frame in submission order
@@ -497,6 +533,64 @@ func (w *errWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// captureErrWriter records the bytes a failed terminal write attempted, then
+// returns its configured error.
+type captureErrWriter struct {
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	err    error
+	writes int
+	failAt int
+	wrote  chan int
+}
+
+func (w *captureErrWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	_, _ = w.buf.Write(p)
+	w.writes++
+	writes := w.writes
+	fail := w.failAt == 0 || writes >= w.failAt
+	w.mu.Unlock()
+	if w.wrote != nil {
+		w.wrote <- writes
+	}
+	if fail {
+		return 0, w.err
+	}
+	return len(p), nil
+}
+
+func (w *captureErrWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+// blockingErrWriter records one write, then lets the test change producer
+// state before releasing the write with an error.
+type blockingErrWriter struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	err     error
+	started chan struct{}
+	release chan struct{}
+}
+
+func (w *blockingErrWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	_, _ = w.buf.Write(p)
+	w.mu.Unlock()
+	close(w.started)
+	<-w.release
+	return 0, w.err
+}
+
+func (w *blockingErrWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
 // shortWriter is a tty stand-in whose Write returns one byte short with a nil error,
 // the io.Writer contract the production *os.File never trips. It verifies that
 // the writer treats n < len(p) as a failure.
@@ -548,11 +642,294 @@ func TestStreamLoopReturnsWriteError(t *testing.T) {
 	select {
 	case err := <-loopDone:
 		if !errors.Is(err, wantErr) {
-			t.Fatalf("loop returned %v, want %v", err, wantErr)
+			t.Fatalf("loop returned %v, want unchanged %v", err, wantErr)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("loop did not surface the write error")
 	}
+}
+
+// TestStreamLoopKittySHMAssemblyErrorReleasesOnce asserts a synchronous SHM
+// assembly failure closes and unlinks its writer, returns the source error,
+// releases the transferred plane once, and never uses retained direct PNG.
+func TestStreamLoopKittySHMAssemblyErrorReleasesOnce(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Kitty SHM cleanup test requires Linux /dev/shm")
+	}
+	wantErr := errors.New("forced SHM object close failure")
+	shm := newTestSHMWriter()
+	shm.objectCloseErr = wantErr
+	frames := make(chan render.Frame, 1)
+	eng := &shmPipeEngine{pipeEngine: pipeEngine{frames: frames}}
+	st := shmState()
+	st.kittySHM = shm
+	defer st.closeKittySHM()
+	syncEngineKittyDecode(eng, &st)
+	out := &syncBuf{}
+	s := &streamSession{eng: eng, st: &st, tty: out}
+
+	released := 0
+	img := solidImageSize(6, 4, color.RGBA{A: 0xff})
+	frames <- render.Frame{Img: img, EncodedPNG: encodedPNG(t, img), Release: func() { released++ }}
+	err := s.loop(nil, make(chan keyEvent))
+
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("loop returned %v, want %v", err, wantErr)
+	}
+	if released != 1 {
+		t.Fatalf("failed assembled plane released %d times, want 1", released)
+	}
+	if !st.kittySHMLive() || !eng.kittyDecode {
+		t.Fatal("assembly failure changed SHM transport or engine decode state")
+	}
+	if !shm.closed || st.kittySHM != nil {
+		t.Fatal("assembly failure did not transfer SHM cleanup ownership")
+	}
+	assertKittySHMObjectsUnlinked(t, shm)
+	assertNoKittyDirectTransmit(t, out.String())
+}
+
+// TestStreamLoopKittySHMWriteErrorStopsWithoutDirect asserts the writer error
+// channel remains the terminal write failure path after an SHM transmit. The
+// stream owner retains cleanup responsibility and the decode mode stays on.
+func TestStreamLoopKittySHMWriteErrorStopsWithoutDirect(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Kitty SHM cleanup test requires Linux /dev/shm")
+	}
+	wantErr := errors.New("forced terminal write failure")
+	out := &captureErrWriter{err: wantErr}
+	shm := newTestSHMWriter()
+	frames := make(chan render.Frame, 1)
+	eng := &shmPipeEngine{pipeEngine: pipeEngine{frames: frames}}
+	st := shmState()
+	st.kittySHM = shm
+	defer st.closeKittySHM()
+	syncEngineKittyDecode(eng, &st)
+	s := &streamSession{eng: eng, st: &st, tty: out}
+
+	released := 0
+	img := solidImageSize(6, 4, color.RGBA{A: 0xff})
+	frames <- render.Frame{Img: img, EncodedPNG: encodedPNG(t, img), Release: func() { released++ }}
+	err := s.loop(nil, make(chan keyEvent))
+
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("loop returned %v, want %v", err, wantErr)
+	}
+	if got, want := err.Error(), "write Kitty shm frame: "+wantErr.Error(); got != want {
+		t.Fatalf("loop error = %q, want %q", got, want)
+	}
+	if released != 1 {
+		t.Fatalf("written plane released %d times, want 1", released)
+	}
+	if !st.kittySHMLive() || !eng.kittyDecode {
+		t.Fatal("terminal write failure changed SHM transport or engine decode state")
+	}
+	if shm.closed || st.kittySHM == nil {
+		t.Fatal("loop took SHM cleanup ownership from the stream owner")
+	}
+	assertNoKittyDirectTransmit(t, out.String())
+	st.closeKittySHM()
+	if !shm.closed || st.kittySHM != nil {
+		t.Fatal("stream-owner cleanup did not close the SHM writer")
+	}
+	assertKittySHMObjectsUnlinked(t, shm)
+}
+
+// TestStreamLoopControlWriteErrorWithKittySHMAwaiting keeps an SHM
+// acknowledgement outstanding while a later bar repaint fails. The control
+// write must keep its unwrapped terminal error despite the unrelated SHM gate.
+func TestStreamLoopControlWriteErrorWithKittySHMAwaiting(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Kitty SHM cleanup test requires Linux /dev/shm")
+	}
+	wantErr := errors.New("forced control write failure")
+	out := &captureErrWriter{err: wantErr, failAt: 2, wrote: make(chan int, 2)}
+	shm := newTestSHMWriter()
+	frames := make(chan render.Frame, 1)
+	eng := &shmPipeEngine{pipeEngine: pipeEngine{frames: frames}}
+	st := shmState()
+	st.kittySHM = shm
+	defer st.closeKittySHM()
+	syncEngineKittyDecode(eng, &st)
+	outcomes := make(chan inputOutcome, 1)
+	s := &streamSession{eng: eng, st: &st, tty: out, outcomes: outcomes}
+
+	released := 0
+	img := solidImageSize(6, 4, color.RGBA{A: 0xff})
+	frames <- render.Frame{Img: img, EncodedPNG: encodedPNG(t, img), Release: func() { released++ }}
+	loopDone := make(chan error, 1)
+	go func() { loopDone <- s.loop(nil, make(chan keyEvent)) }()
+
+	select {
+	case writes := <-out.wrote:
+		if writes != 1 {
+			t.Fatalf("first completed write = %d, want SHM frame write 1", writes)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SHM frame write did not complete")
+	}
+	outcomes <- inputOutcome{kind: signalCopyRefused}
+	select {
+	case writes := <-out.wrote:
+		if writes != 2 {
+			t.Fatalf("failed write = %d, want control write 2", writes)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("control write did not fail")
+	}
+
+	select {
+	case err := <-loopDone:
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("loop returned %v, want %v", err, wantErr)
+		}
+		if got := err.Error(); got != wantErr.Error() {
+			t.Fatalf("loop error = %q, want unwrapped control error %q", got, wantErr)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("loop did not return the control write error")
+	}
+	if released != 1 {
+		t.Fatalf("control failure released the SHM plane %d times, want 1", released)
+	}
+	if !st.kittySHMLive() || !eng.kittyDecode {
+		t.Fatal("control failure changed SHM transport or engine decode state")
+	}
+	if shm.closed || st.kittySHM == nil {
+		t.Fatal("control failure took SHM cleanup ownership from the stream owner")
+	}
+	assertNoKittyDirectTransmit(t, out.String())
+	st.closeKittySHM()
+	if !shm.closed || st.kittySHM != nil {
+		t.Fatal("stream-owner cleanup did not close the SHM writer")
+	}
+	assertKittySHMObjectsUnlinked(t, shm)
+}
+
+// TestStreamLoopKittySHMWriteErrorAfterAcknowledgement clears the pacing state
+// while the SHM terminal write is blocked. The eventual failure must retain the
+// failed frame's SHM context and release its ownership exactly once.
+func TestStreamLoopKittySHMWriteErrorAfterAcknowledgement(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Kitty SHM cleanup test requires Linux /dev/shm")
+	}
+	wantErr := errors.New("forced delayed SHM write failure")
+	out := &blockingErrWriter{
+		err: wantErr, started: make(chan struct{}), release: make(chan struct{}),
+	}
+	shm := newTestSHMWriter()
+	frames := make(chan render.Frame, 1)
+	eng := &shmPipeEngine{
+		pipeEngine: pipeEngine{frames: frames},
+		keyC:       make(chan string, 1),
+	}
+	st := shmState()
+	st.kittySHM = shm
+	defer st.closeKittySHM()
+	syncEngineKittyDecode(eng, &st)
+	s := &streamSession{eng: eng, st: &st, tty: out}
+	keys := make(chan keyEvent, 2)
+	loopDone := make(chan error, 1)
+	go func() { loopDone <- s.loop(nil, keys) }()
+
+	released := 0
+	img := solidImageSize(6, 4, color.RGBA{A: 0xff})
+	frames <- render.Frame{Img: img, EncodedPNG: encodedPNG(t, img), Release: func() { released++ }}
+	select {
+	case <-out.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("SHM frame write did not start")
+	}
+	keys <- keyEvent{apc: "i=1;OK"}
+	keys <- keyEvent{scroll: ScrollDown}
+	select {
+	case <-eng.keyC:
+		// The loop handles keys in channel order, so this proves the preceding
+		// acknowledgement cleared the SHM pacing state before the write failed.
+	case <-time.After(3 * time.Second):
+		t.Fatal("loop did not process the event after the SHM acknowledgement")
+	}
+	close(out.release)
+
+	select {
+	case err := <-loopDone:
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("loop returned %v, want %v", err, wantErr)
+		}
+		if got, want := err.Error(), "write Kitty shm frame: "+wantErr.Error(); got != want {
+			t.Fatalf("loop error = %q, want %q", got, want)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("loop did not return the delayed SHM write error")
+	}
+	if released != 1 {
+		t.Fatalf("delayed write failure released the SHM plane %d times, want 1", released)
+	}
+	if !st.kittySHMLive() || !eng.kittyDecode {
+		t.Fatal("delayed write failure changed SHM transport or engine decode state")
+	}
+	if shm.closed || st.kittySHM == nil {
+		t.Fatal("delayed write failure took SHM cleanup ownership from the stream owner")
+	}
+	assertNoKittyDirectTransmit(t, out.String())
+	st.closeKittySHM()
+	if !shm.closed || st.kittySHM != nil {
+		t.Fatal("stream-owner cleanup did not close the SHM writer")
+	}
+	assertKittySHMObjectsUnlinked(t, shm)
+}
+
+// TestStreamLoopKittySHMRejectionStopsWithoutDirect asserts an active terminal
+// rejection exits the loop, preserves SHM decode state, and leaves object
+// cleanup to the stream owner without emitting retained direct PNG.
+func TestStreamLoopKittySHMRejectionStopsWithoutDirect(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Kitty SHM cleanup test requires Linux /dev/shm")
+	}
+	out := &syncBuf{}
+	shm := newTestSHMWriter()
+	frames := make(chan render.Frame, 1)
+	eng := &shmPipeEngine{pipeEngine: pipeEngine{frames: frames}}
+	st := shmState()
+	st.kittySHM = shm
+	defer st.closeKittySHM()
+	syncEngineKittyDecode(eng, &st)
+	s := &streamSession{eng: eng, st: &st, tty: out}
+	keys := make(chan keyEvent, 1)
+	loopDone := make(chan error, 1)
+	go func() { loopDone <- s.loop(nil, keys) }()
+
+	released := 0
+	img := solidImageSize(6, 4, color.RGBA{A: 0xff})
+	frames <- render.Frame{Img: img, EncodedPNG: encodedPNG(t, img), Release: func() { released++ }}
+	if !waitFor(3*time.Second, func() bool { return strings.Contains(out.String(), "t=s") }) {
+		t.Fatalf("SHM transmit did not reach terminal: %q", out.String())
+	}
+	keys <- keyEvent{apc: "i=1;EBADF:could not open shared memory"}
+
+	select {
+	case err := <-loopDone:
+		if err == nil || !strings.Contains(err.Error(), "terminal rejected shm transmit") {
+			t.Fatalf("loop returned %v, want active SHM rejection", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("loop did not return the SHM rejection")
+	}
+	if released != 1 {
+		t.Fatalf("rejected plane released %d times, want 1", released)
+	}
+	if !st.kittySHMLive() || !eng.kittyDecode {
+		t.Fatal("terminal rejection changed SHM transport or engine decode state")
+	}
+	if shm.closed || st.kittySHM == nil {
+		t.Fatal("loop took SHM cleanup ownership from the stream owner")
+	}
+	assertNoKittyDirectTransmit(t, out.String())
+	st.closeKittySHM()
+	if !shm.closed || st.kittySHM != nil {
+		t.Fatal("stream-owner cleanup did not close the SHM writer")
+	}
+	assertKittySHMObjectsUnlinked(t, shm)
 }
 
 // TestStreamLoopDropsStaleFramesWithFPSArmed repeats the drop-policy burst with the

@@ -353,10 +353,17 @@ other slash. They size it once, map it shared and read-write, copy through the
 mapping, then unmap and close it. Darwin also guards its 31-byte name limit
 before the foreign call. The engine decodes the CDP PNG into pooled planes,
 the writer copies into the object and emits one escape of about 100 bytes; one
-frame is in flight, opened by the OK reply or a 40 ms deadline, and any failure
-demotes the stint to direct.
+frame is in flight, opened by the OK reply or a 40 ms deadline. The original
+runtime policy demoted any shm failure for the rest of the Kitty stint and
+re-armed shm when a later backend cycle returned to Kitty.
 Aquarium went from 12.7 to 24.4 fps (+92%) and `out_write` from 78.9 to
 0.0 ms. The trade: Nyala now pays the PNG decode, 96.9 ms, pipelined.
+
+**Fail-fast shm replaced runtime demotion.** Startup can still select direct
+PNG from its capability policy. Once it selects shm, per-frame object creation,
+mapping, close, transmit, terminal write, and active rejection errors stop the
+stream through normal shutdown. Nyala does not switch the stint to direct or
+re-arm a demotion on a later backend cycle.
 
 **JPEG q90 into shm, and 60 fps.** With shm active, capture switches to
 JPEG q90: content-stable decode, about 4x cheaper on real pages, 44% of the

@@ -7,54 +7,38 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/kitty"
 )
 
-// kittySHMWriter is the shared-memory writer seam encodeKittySHM drives. The
-// production value is *kitty.SHMWriter; a test stub forces create failures to
-// exercise the runtime demotion to the direct path.
+// kittySHMObject is the mapped-object seam returned by kittySHMWriter. The
+// production value is *kitty.SHMObject; tests can inject mapped-object close
+// failures without replacing the production SHM writer.
+type kittySHMObject interface {
+	Name() string
+	Data() []byte
+	Close() error
+}
+
+// kittySHMWriter is the shared-memory writer seam encodeKittySHM drives.
 type kittySHMWriter interface {
 	// Create makes a new size-byte object for the given double-buffer image
 	// id, mapped for writing, unlinking the unconsumed predecessor.
-	Create(id, size int) (*kitty.SHMObject, error)
+	Create(id, size int) (kittySHMObject, error)
 	// Close unlinks every tracked object the terminal never consumed.
 	Close() error
 }
 
+// liveKittySHMWriter adapts the concrete production writer to the viewer-local
+// object seam.
+type liveKittySHMWriter struct {
+	*kitty.SHMWriter
+}
+
+func (w *liveKittySHMWriter) Create(id, size int) (kittySHMObject, error) {
+	return w.SHMWriter.Create(id, size)
+}
+
 // kittySHMLive reports whether live Kitty frames should travel over shared
-// memory: the resolved transport is shm and the session has not demoted to
-// direct.
+// memory.
 func (s *State) kittySHMLive() bool {
-	return s.kittyTransport == KittyTransportSHM && !s.kittyShmDemoted
-}
-
-// demoteKittySHM records the runtime fallback from the shm transport to
-// direct PNG for the rest of the Kitty stint and closes the shm writer,
-// unlinking unconsumed objects. The first error wins; later calls are no-ops.
-// The stream session collects the recorded error with takeKittySHMDemotion.
-func (s *State) demoteKittySHM(err error) {
-	if s.kittyShmDemoted {
-		return
-	}
-	s.kittyShmDemoted = true
-	s.kittyShmDemoteErr = err
-	s.closeKittySHM()
-}
-
-// rearmKittySHM clears a runtime shm demotion so the next Kitty stint runs
-// the shm transport again. The stream session calls it when the cycle returns to
-// the Kitty backend: the startup probe proved the transport, so a demotion
-// lasts one stint rather than pinning the session on the parser-bound direct
-// path. A genuinely broken transport demotes again on its next shm failure.
-func (s *State) rearmKittySHM() {
-	s.kittyShmDemoted = false
-	s.kittyShmDemoteErr = nil
-}
-
-// takeKittySHMDemotion returns the error that demoted the shm transport, once,
-// and clears it, so the session logs the fallback a single time. It returns
-// nil when no demotion is pending.
-func (s *State) takeKittySHMDemotion() error {
-	err := s.kittyShmDemoteErr
-	s.kittyShmDemoteErr = nil
-	return err
+	return s.kittyTransport == KittyTransportSHM
 }
 
 // takeKittySHMWrote reports whether the frame just rendered went out as an shm
@@ -123,8 +107,8 @@ const kittySHMQuiet = 0
 // screen. The copy is the one ~15 MB memcpy the transport promotion budgeted;
 // the caller releases the frame's plane after this returns. Kitty unlinks the
 // object once it consumes it; the tracked writer unlinks the rest. A
-// zero-extent plane writes nothing. Any error is an shm transport failure the
-// caller answers with runtime demotion.
+// zero-extent plane writes nothing. The caller cleans up and returns any
+// synchronous encode error without changing the selected transport.
 func (s *State) encodeKittySHM(img *image.RGBA, w io.Writer, belowText bool) error {
 	b := img.Bounds()
 	width, height := b.Dx(), b.Dy()
@@ -136,7 +120,7 @@ func (s *State) encodeKittySHM(img *image.RGBA, w io.Writer, belowText bool) err
 		s.kittyEnc = &kitty.LiveEncoder{}
 	}
 	if s.kittySHM == nil {
-		s.kittySHM = kitty.NewSHMWriter()
+		s.kittySHM = &liveKittySHMWriter{SHMWriter: kitty.NewSHMWriter()}
 	}
 	obj, err := s.kittySHM.Create(next, 4*width*height)
 	if err != nil {

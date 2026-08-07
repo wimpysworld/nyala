@@ -227,11 +227,11 @@ func TestDecodeKittyPlaneErrorsExposeStableContext(t *testing.T) {
 	}
 }
 
-// TestKittyDemotionInFlightJPEGDrops proves the shm-to-direct demotion safety:
-// a JPEG frame still in flight after the format restarts to PNG fails direct
-// payload validation before any pixel decoder runs. The worker publishes no
-// frame and records one contextual decode drop without retaining the payload.
-func TestKittyDemotionInFlightJPEGDrops(t *testing.T) {
+// TestBackendSwitchInFlightJPEGDrops proves backend-switch safety: a JPEG
+// frame captured before a switch to direct Kitty fails payload validation
+// before any pixel decoder runs. The worker publishes no frame and records
+// one contextual decode drop without retaining the payload.
+func TestBackendSwitchInFlightJPEGDrops(t *testing.T) {
 	t.Parallel()
 	const payloadMarker = "WW190-private-payload"
 	payload := base64.StdEncoding.EncodeToString(append([]byte{0xff, 0xd8, 0xff, 0xdb, 0x00}, payloadMarker...))
@@ -239,14 +239,14 @@ func TestKittyDemotionInFlightJPEGDrops(t *testing.T) {
 	ingest := &ingestCounter{on: true, window: ingestWindow}
 	ingest.record(time.Now())
 	e := &ChromiumEngine{
-		backend: backendKitty,
+		backend: backendBlock,
 		ingest:  ingest,
 		decode: func(string) (*image.RGBA, error) {
 			decodeCalls.Add(1)
 			return seqImage(1), nil
 		},
 	}
-	e.SetKittyDecode(false)
+	e.SetBackend(backendKitty)
 	if e.directKittyPNG(payload) {
 		t.Fatal("JPEG payload passed the direct PNG validation")
 	}

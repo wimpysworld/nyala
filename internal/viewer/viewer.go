@@ -115,21 +115,10 @@ type State struct {
 
 	// kittySHM creates the shared-memory objects the Kitty t=s fast path
 	// transmits. It is lazily built on the first shm frame and driven from the
-	// single draw goroutine. resetKitty and demoteKittySHM close it, unlinking
-	// any objects the terminal never consumed. It stays nil on the direct path.
+	// single draw goroutine. Reset and synchronous encode failure close it,
+	// unlinking any objects the terminal never consumed. It stays nil on the
+	// direct path.
 	kittySHM kittySHMWriter
-
-	// kittyShmDemoted marks the runtime fallback from the shm transport to
-	// direct PNG. An shm create or write failure sets it for the rest of the
-	// Kitty stint, so a shared-memory failure cannot fail every frame; a cycle
-	// back to Kitty re-arms it via rearmKittySHM because the startup probe proved
-	// the transport.
-	kittyShmDemoted bool
-
-	// kittyShmDemoteErr holds the error that demoted the shm transport until
-	// the stream session collects it with takeKittySHMDemotion for its
-	// one-shot log and engine decode toggle.
-	kittyShmDemoteErr error
 
 	// kittyWroteSHM records that the frame just rendered went out as an shm
 	// transmit. The stream session reads and clears it per frame with
@@ -405,19 +394,15 @@ func (s *State) renderStreamFrame(frame render.Frame, w io.Writer, kittyBelowTex
 	}
 	if s.Backend == BackendKitty {
 		if plane, ok := frame.Img.(*image.RGBA); ok && s.kittySHMLive() {
-			err := s.encodeKittySHM(plane, w, kittyBelowText)
-			if err == nil {
-				return nil
+			if err := s.encodeKittySHM(plane, w, kittyBelowText); err != nil {
+				s.closeKittySHM()
+				return err
 			}
-			// Runtime demotion: the direct PNG path takes over for the rest
-			// of the Kitty stint. This frame still paints when it carries a
-			// retained payload; a plane-only frame is dropped and its plane
-			// released by the deferred hook.
-			s.demoteKittySHM(err)
+			return nil
 		}
-		// A retained-payload frame in shm mode (a mode-change race) and every
-		// demoted or direct-transport frame takes the direct encode. A plane
-		// frame with no payload after demotion falls out here and is dropped.
+		// A retained-payload frame with no shm plane to encode (a mode-change
+		// race) and every direct-transport frame takes the direct encode. A
+		// plane-only frame without the shm transport is dropped.
 		if frame.EncodedPNG == "" {
 			return nil
 		}
