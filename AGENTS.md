@@ -65,9 +65,9 @@ Never set `FENCE_SANDBOX` by hand.
 
 - Keep pixels in RGBA byte order throughout rendering and metrics code.
 - Block and Sixel use JPEG q90 screencast frames in production.
-  Kitty's direct fallback passes CDP PNG through as `t=d`; its shm fast path
-  captures JPEG q90, decodes it, and sends raw `f=32` RGBA over POSIX shared
-  memory. Diagnostics capture stays lossless PNG.
+  Kitty selects its transport once at startup by capability: direct passes CDP
+  PNG through as `t=d`; shm captures JPEG q90, decodes it, and sends raw `f=32`
+  RGBA over POSIX shared memory. Diagnostics capture stays lossless PNG.
 - Block diagnostics must use `viewer.State.ComposeBlockFrame`, the same compose
   result consumed by production terminal writing. Do not add a second compositor.
 - The crisp text overlay is first-writer-wins, fed front-to-back: the fold sorts
