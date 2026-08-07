@@ -120,19 +120,14 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 		// Live: a pool of decode workers feeds one collector that re-serialises them by
 		// arrival sequence and owns the compose, the held-frame re-emit, the scroll
 		// tracking, and the frame send. The decoded channel is buffered to the worker
-		// count so a finished worker never blocks handing off to the collector.
+		// count so a finished worker never blocks handing off to the collector. The
+		// pipeline completion joins both the collector and every worker.
 		decoded := make(chan decodedFrame, workers)
 		publisherDone := make(chan struct{})
 		e.mu.Lock()
 		e.framePublisherDone = publisherDone
 		e.mu.Unlock()
-		for range workers {
-			go e.runDecodeWorker(ctx, rawQ, decoded)
-		}
-		go func() {
-			defer close(publisherDone)
-			e.runDecodeCollector(ctx, decoded, frames, ts, scroll, reEmit)
-		}()
+		go e.runDecodePipeline(ctx, rawQ, decoded, frames, ts, scroll, reEmit, workers, publisherDone)
 	}
 
 	// Dispatch raw Page.navigate and wait only for its matching main-frame commit.
@@ -530,11 +525,10 @@ func (e *ChromiumEngine) pokeReflow() {
 // a live session it asks chromedp.Cancel to send Browser.close, bounded by
 // gracefulCloseTimeout. A close error, timeout, or dead session selects raw
 // cancellation, so browser or CDP failure cannot block exit or crash rebuild.
-// It then waits for the session's sole frame publisher and drains frames buffered
-// before cancellation won its selects.
-// This prevents an old-session frame surviving recovery. Decode workers need no join
-// because their decoded channel is session-local and only the joined collector can
-// reach frames. It clears the per-session fields so a stale context is never reused.
+// It then waits for the session's frame publisher and decode workers, then drains
+// frames buffered before cancellation won its selects. This prevents an old-session
+// frame surviving recovery and finalises decode-failure reporting before Close returns.
+// It clears the per-session fields so a stale context is never reused.
 func (e *ChromiumEngine) teardownSession() {
 	e.mu.Lock()
 	ctx := e.ctx

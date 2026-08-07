@@ -196,10 +196,10 @@ type ChromiumEngine struct {
 	// It is capacity-1 latest-wins and session-scoped, reset per session by
 	// teardownSession.
 	reEmit chan struct{}
-	// framePublisherDone closes when the session's sole frame publisher exits: the
-	// live decode collector. teardownSession waits for it
-	// before draining the shared frame channel, so a cancelled publisher cannot leave
-	// an old-session frame for recovery or race the supervisor's channel close.
+	// framePublisherDone closes when the live decode collector and all its workers
+	// exit. teardownSession waits for it before draining the shared frame channel, so
+	// a cancelled publisher cannot leave an old-session frame for recovery or race the
+	// supervisor's channel close, and no in-flight decode failure can miss the summary.
 	// Reset per session by teardownSession.
 	framePublisherDone chan struct{}
 	// snapshot is the per-iteration snapshot function runTextSync calls, defaulting
