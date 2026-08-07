@@ -41,13 +41,12 @@ func (s *State) kittySHMLive() bool {
 	return s.kittyTransport == KittyTransportSHM
 }
 
-// takeKittySHMWrote reports whether the frame just rendered went out as an shm
-// transmit and clears the flag, so the session's pacing gate arms once per shm
-// frame.
-func (s *State) takeKittySHMWrote() bool {
-	wrote := s.kittyWroteSHM
-	s.kittyWroteSHM = false
-	return wrote
+// takeKittySHMID returns the image id of the frame just rendered as an shm
+// transmit and clears it, so the session correlates one reply per frame.
+func (s *State) takeKittySHMID() int {
+	id := s.kittyWroteSHMID
+	s.kittyWroteSHMID = 0
+	return id
 }
 
 // closeKittySHM unlinks any shared-memory objects the terminal never consumed
@@ -145,7 +144,7 @@ func (s *State) encodeKittySHM(img *image.RGBA, w io.Writer, belowText bool) err
 		}
 	}
 	s.kittyID = next
-	s.kittyWroteSHM = true
+	s.kittyWroteSHMID = next
 	return nil
 }
 
