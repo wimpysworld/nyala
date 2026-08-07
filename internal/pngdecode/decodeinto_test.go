@@ -79,6 +79,15 @@ func writeChunk(b *bytes.Buffer, typ string, data []byte) {
 	b.Write(tail[:])
 }
 
+// insertChunkAfterIHDR returns raw with one complete chunk inserted after IHDR.
+func insertChunkAfterIHDR(raw []byte, typ string, data []byte) []byte {
+	var b bytes.Buffer
+	b.Write(raw[:33])
+	writeChunk(&b, typ, data)
+	b.Write(raw[33:])
+	return b.Bytes()
+}
+
 // interlacedPNG hand-builds a 1x1 Adam7-interlaced truecolour PNG, a shape the
 // stdlib encoder cannot produce.
 func interlacedPNG(t *testing.T) []byte {
@@ -152,30 +161,33 @@ func TestDecodeIntoMatchesStdlib(t *testing.T) {
 func TestDecodeIntoRejectsUnsupportedPNG(t *testing.T) {
 	t.Parallel()
 	rgb := encodePNG(t, rgbFixture(2, 2))
+	rgb16Image := image.NewRGBA64(image.Rect(0, 0, 2, 2))
+	red := [...]uint16{0, 0x1111}
+	green := [...]uint16{0, 0x2222}
+	for y := range 2 {
+		for x := range 2 {
+			rgb16Image.SetRGBA64(x, y, color.RGBA64{R: red[x], G: green[y], B: 0x3333, A: 0xFFFF})
+		}
+	}
+	rgb16 := encodePNG(t, rgb16Image)
+	if rgb16[24] != 16 {
+		t.Fatalf("16-bit fixture depth = %d, want 16", rgb16[24])
+	}
 	withIHDRByte := func(offset int, value byte) []byte {
 		raw := append([]byte(nil), rgb...)
 		raw[offset] = value
 		binary.BigEndian.PutUint32(raw[29:33], crc32.ChecksumIEEE(raw[12:29]))
 		return raw
 	}
-	withChunkAfterIHDR := func(typ string, data []byte) []byte {
-		var b bytes.Buffer
-		b.Write(rgb[:33])
-		writeChunk(&b, typ, data)
-		b.Write(rgb[33:])
-		return b.Bytes()
-	}
-
 	cases := map[string][]byte{
-		"bit depth":              withIHDRByte(24, 16),
+		"bit depth":              rgb16,
 		"greyscale colour type":  encodePNG(t, image.NewGray(image.Rect(0, 0, 2, 2))),
 		"palette colour type":    encodePNG(t, image.NewPaletted(image.Rect(0, 0, 2, 2), color.Palette{color.Black, color.White})),
 		"compression method":     withIHDRByte(26, 1),
 		"filter method":          withIHDRByte(27, 1),
 		"Adam7":                  interlacedPNG(t),
-		"tRNS":                   withChunkAfterIHDR("tRNS", []byte{0, 0, 0, 0, 0, 0}),
-		"IEND before IDAT":       withChunkAfterIHDR("IEND", nil),
-		"unknown critical chunk": withChunkAfterIHDR("ABCD", nil),
+		"tRNS":                   insertChunkAfterIHDR(rgb, "tRNS", []byte{0, 0, 0, 0, 0, 0}),
+		"unknown critical chunk": insertChunkAfterIHDR(rgb, "ABCD", nil),
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -192,10 +204,10 @@ func TestDecodeIntoRejectsUnsupportedPNG(t *testing.T) {
 	}
 }
 
-// TestDecodeIntoRejectsNonContiguousIDAT checks that the row decoder exposes
-// an unsupported chunk sequence instead of reporting malformed pixel data.
-func TestDecodeIntoRejectsNonContiguousIDAT(t *testing.T) {
-	t.Parallel()
+// nonContiguousIDATPNG returns a PNG whose compressed stream resumes after an
+// ancillary chunk.
+func nonContiguousIDATPNG(t *testing.T) []byte {
+	t.Helper()
 	var b bytes.Buffer
 	b.WriteString(pngHeader)
 	ihdr := make([]byte, 13)
@@ -217,25 +229,52 @@ func TestDecodeIntoRejectsNonContiguousIDAT(t *testing.T) {
 	writeChunk(&b, "tEXt", nil)
 	writeChunk(&b, "IDAT", compressed[2:])
 	writeChunk(&b, "IEND", nil)
-
-	if _, _, err := DecodeInto(bytes.NewReader(b.Bytes()), make([]byte, 4)); !errors.Is(err, ErrUnsupportedPNG) {
-		t.Fatalf("DecodeInto error = %v, want ErrUnsupportedPNG", err)
-	}
+	return b.Bytes()
 }
 
-// TestDecodeIntoMalformedIsNotUnsupported checks that invalid PNG data stays
-// separate from unsupported but valid input.
+// truncatedPixelPNG returns a PNG whose sole IDAT ends part-way through its
+// compressed pixel stream.
+func truncatedPixelPNG(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	length := int(binary.BigEndian.Uint32(raw[33:37]))
+	if string(raw[37:41]) != "IDAT" || length < 4 {
+		t.Fatal("fixture does not start with a usable IDAT chunk")
+	}
+	var b bytes.Buffer
+	b.Write(raw[:33])
+	writeChunk(&b, "IDAT", raw[41:41+length/2])
+	writeChunk(&b, "IEND", nil)
+	return b.Bytes()
+}
+
+// TestDecodeIntoMalformedIsNotUnsupported checks structural and pixel-stream
+// errors stay separate from unsupported but valid input.
 func TestDecodeIntoMalformedIsNotUnsupported(t *testing.T) {
 	t.Parallel()
-	raw := encodePNG(t, rgbFixture(2, 2))
-	raw[0] = 0
-	errDst := make([]byte, 16)
-	_, _, err := DecodeInto(bytes.NewReader(raw), errDst)
-	if err == nil {
-		t.Fatal("DecodeInto accepted malformed PNG data")
+	rgb := encodePNG(t, rgbFixture(2, 2))
+	badSignature := append([]byte(nil), rgb...)
+	badSignature[0] = 0
+	cases := map[string]struct {
+		raw []byte
+		dst []byte
+	}{
+		"bad signature":       {raw: badSignature, dst: make([]byte, 16)},
+		"duplicate IHDR":      {raw: insertChunkAfterIHDR(rgb, "IHDR", rgb[16:29]), dst: make([]byte, 16)},
+		"IEND before IDAT":    {raw: insertChunkAfterIHDR(rgb, "IEND", nil), dst: make([]byte, 16)},
+		"non-contiguous IDAT": {raw: nonContiguousIDATPNG(t), dst: make([]byte, 4)},
+		"truncated pixels":    {raw: truncatedPixelPNG(t, rgb), dst: make([]byte, 16)},
 	}
-	if errors.Is(err, ErrUnsupportedPNG) || errors.Is(err, ErrDstTooSmall) {
-		t.Fatalf("DecodeInto error = %v, want a distinct malformed-data error", err)
+	for name, test := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := DecodeInto(bytes.NewReader(test.raw), test.dst)
+			if !errors.Is(err, errFormat) {
+				t.Fatalf("DecodeInto error = %v, want errFormat", err)
+			}
+			if errors.Is(err, ErrUnsupportedPNG) || errors.Is(err, ErrDstTooSmall) {
+				t.Fatalf("DecodeInto error = %v, want a distinct malformed-data error", err)
+			}
+		})
 	}
 }
 
