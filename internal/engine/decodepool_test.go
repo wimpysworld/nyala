@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -481,11 +482,13 @@ func TestDecodeWorkerRejectsInvalidActiveDirectKittyBeforeDecode(t *testing.T) {
 func TestDecodeWorkerCountsEachDecoderFailureOnce(t *testing.T) {
 	corruptPNG := base64.StdEncoding.EncodeToString(append(append([]byte(nil), pngSignature...), "broken"...))
 	corruptJPEG := base64.StdEncoding.EncodeToString([]byte{0xff, 0xd8, 0xff, 0xdb, 0x00})
+	unsupportedPNG := unsupportedPNGPayload(t)
 	tests := []struct {
 		name       string
 		engine     func() *ChromiumEngine
 		data       string
 		wantPrefix string
+		wantReason string
 	}{
 		{
 			name: "override",
@@ -517,6 +520,15 @@ func TestDecodeWorkerCountsEachDecoderFailureOnce(t *testing.T) {
 			data:       base64.StdEncoding.EncodeToString([]byte("not-an-image")),
 			wantPrefix: errUnknownPlaneFormat.Error(),
 		},
+		{
+			name: "Kitty plane unsupported PNG",
+			engine: func() *ChromiumEngine {
+				return &ChromiumEngine{backend: backendKitty, kittyDecode: true}
+			},
+			data:       unsupportedPNG,
+			wantPrefix: "engine: kitty plane png decode:",
+			wantReason: "engine: kitty plane png decode: pngdecode: unsupported PNG",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -542,6 +554,12 @@ func TestDecodeWorkerCountsEachDecoderFailureOnce(t *testing.T) {
 			}
 			if !bytes.HasPrefix([]byte(stats.DecodeFirstError), []byte(test.wantPrefix)) {
 				t.Fatalf("first decode error = %q, want prefix %q", stats.DecodeFirstError, test.wantPrefix)
+			}
+			if test.wantReason != "" && stats.DecodeFirstError != test.wantReason {
+				t.Fatalf("first decode error = %q, want %q", stats.DecodeFirstError, test.wantReason)
+			}
+			if strings.Contains(stats.DecodeFirstError, test.data) {
+				t.Fatalf("first decode error retained payload: %q", stats.DecodeFirstError)
 			}
 			select {
 			case frame := <-out:
@@ -704,6 +722,22 @@ func pngPayload(t *testing.T) string {
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
 		t.Fatalf("encode png: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// unsupportedPNGPayload encodes a valid greyscale PNG. The standard decoder
+// accepts it, while the direct RGBA decoder rejects its unsupported colour type.
+func unsupportedPNGPayload(t *testing.T) string {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, 2, 2))
+	img.SetGray(0, 0, color.Gray{Y: 0x57})
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode unsupported PNG fixture: %v", err)
+	}
+	if _, err := png.Decode(bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatalf("standard decoder rejected unsupported PNG fixture: %v", err)
 	}
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }

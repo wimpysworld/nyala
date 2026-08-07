@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wimpysworld/nyala/internal/pngdecode"
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
@@ -140,6 +141,7 @@ func TestKittyShmDecodeJPEGPlane(t *testing.T) {
 func TestDecodeKittyPlaneErrorsExposeStableContext(t *testing.T) {
 	const payloadMarker = "WW19"
 	e := &ChromiumEngine{}
+	unsupportedPNG := unsupportedPNGPayload(t)
 	badBase64 := payloadMarker + "*"
 	_, _, base64Err := decodeBase64Pooled(badBase64)
 	if base64Err == nil {
@@ -175,6 +177,12 @@ func TestDecodeKittyPlaneErrorsExposeStableContext(t *testing.T) {
 			wantPrefix: "engine: kitty plane png decode:",
 		},
 		{
+			name:       "unsupported PNG",
+			data:       unsupportedPNG,
+			wantPrefix: "engine: kitty plane png decode:",
+			wantCause:  pngdecode.ErrUnsupportedPNG,
+		},
+		{
 			name:       "jpeg",
 			data:       base64.StdEncoding.EncodeToString(corruptJPEG),
 			wantPrefix: "engine: kitty plane jpeg decode:",
@@ -190,11 +198,21 @@ func TestDecodeKittyPlaneErrorsExposeStableContext(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			img, release, err := e.decodeKittyPlane(test.data)
+			if err == nil {
+				if release != nil {
+					release()
+				}
+				t.Fatalf("decodeKittyPlane returned %T, want error", img)
+			}
+			if img != nil {
+				if release != nil {
+					release()
+				}
+				t.Fatalf("decodeKittyPlane returned %T with an error, want no image", img)
+			}
 			if release != nil {
 				release()
-			}
-			if err == nil {
-				t.Fatalf("decodeKittyPlane returned %T, want error", img)
+				t.Fatal("decodeKittyPlane returned a release hook with an error")
 			}
 			if !strings.HasPrefix(err.Error(), test.wantPrefix) {
 				t.Fatalf("error = %q, want prefix %q", err, test.wantPrefix)
