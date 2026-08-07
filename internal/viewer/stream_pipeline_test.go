@@ -730,6 +730,11 @@ func TestStreamLoopKittySHMAssemblyErrorReleasesOnce(t *testing.T) {
 	if released != 1 {
 		t.Fatalf("failed assembled plane released %d times, want 1", released)
 	}
+	gotCleanup := exitTerminal(st.Rows, s.firstDrawn.Load(), false)
+	wantCleanup := exitTerminal(st.Rows, false, false)
+	if gotCleanup != wantCleanup {
+		t.Fatalf("failed first-frame teardown = %q, want pre-frame cleanup %q", gotCleanup, wantCleanup)
+	}
 	if !st.kittySHMLive() || !eng.kittyDecode {
 		t.Fatal("assembly failure changed SHM transport or engine decode state")
 	}

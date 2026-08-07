@@ -1385,7 +1385,6 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 		buf.WriteString(beginSyncUpdate)
 	}
 	buf.WriteString(prefix)
-	s.firstDrawn.Store(true)
 
 	timed := s.fps != nil
 	var encodeStart time.Time
@@ -1405,6 +1404,7 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	if rerr := s.st.renderStreamFrame(frame, buf, kittyBelowText); rerr != nil {
 		return 0, rerr
 	}
+	s.firstDrawn.Store(true)
 	if nonScrollingSixel {
 		buf.WriteString(endSixelDisplayMode)
 	}
