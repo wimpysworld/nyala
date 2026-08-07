@@ -458,7 +458,7 @@ func TestDecodeWorkerRejectsInvalidActiveDirectKittyBeforeDecode(t *testing.T) {
 		e.runDecodeWorker(ctx, q, out)
 	}()
 	q.put(seqRawFrame{seq: 1, data: "not-a-png"})
-	waitDecodeDrops(t, ingest, 1)
+	waitDecodeDrops(t, ingest)
 	cancel()
 	<-done
 
@@ -504,7 +504,7 @@ func TestDecodeWorkerCountsEachDecoderFailureOnce(t *testing.T) {
 			name:       "live PNG",
 			engine:     func() *ChromiumEngine { return &ChromiumEngine{backend: backendBlock} },
 			data:       corruptPNG,
-			wantPrefix: "engine: live frame decode: native image decode: png decode:",
+			wantPrefix: "engine: live frame decode: png decode:",
 		},
 		{
 			name:       "live JPEG",
@@ -544,7 +544,7 @@ func TestDecodeWorkerCountsEachDecoderFailureOnce(t *testing.T) {
 				e.runDecodeWorker(ctx, q, out)
 			}()
 			q.put(seqRawFrame{seq: 1, data: test.data})
-			waitDecodeDrops(t, e.ingest, 1)
+			waitDecodeDrops(t, e.ingest)
 			cancel()
 			<-done
 
@@ -623,19 +623,22 @@ func TestDecodePoolNonDecodeDropsDoNotChangeStats(t *testing.T) {
 	})
 }
 
-func waitDecodeDrops(t *testing.T, ingest *ingestCounter, want uint64) {
+func waitDecodeDrops(t *testing.T, ingest *ingestCounter, legacyWant ...uint64) {
 	t.Helper()
+	if len(legacyWant) > 1 || len(legacyWant) == 1 && legacyWant[0] != 1 {
+		t.Fatalf("waitDecodeDrops only supports one drop, got %v", legacyWant)
+	}
 	deadline := time.Now().Add(time.Second)
-	for ingest.decodeDrops.Load() != want {
+	for ingest.decodeDrops.Load() != 1 {
 		if time.Now().After(deadline) {
-			t.Fatalf("decode drops = %d, want %d", ingest.decodeDrops.Load(), want)
+			t.Fatalf("decode drops = %d, want 1", ingest.decodeDrops.Load())
 		}
 		time.Sleep(time.Millisecond)
 	}
 	// Give the worker time to expose an accidental second record for this frame.
 	time.Sleep(10 * time.Millisecond)
-	if got := ingest.decodeDrops.Load(); got != want {
-		t.Fatalf("decode drops = %d after settle, want %d", got, want)
+	if got := ingest.decodeDrops.Load(); got != 1 {
+		t.Fatalf("decode drops = %d after settle, want 1", got)
 	}
 }
 

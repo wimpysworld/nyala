@@ -3,13 +3,19 @@ package engine
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"image"
 	"image/png"
 	"io"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/gen2brain/jpegn"
+	woozypng "github.com/woozymasta/png"
+
+	"github.com/wimpysworld/nyala/internal/pngdecode"
 	renderkitty "github.com/wimpysworld/nyala/internal/render/kitty"
 )
 
@@ -90,85 +96,155 @@ func TestDecodePoolDecodesPNGForSixel(t *testing.T) {
 func TestFrameDecodeErrorsExposeStableContext(t *testing.T) {
 	const payloadMarker = "WW190_PAYLOAD_BYTES"
 	corruptPNG := append(append([]byte(nil), pngSignature...), payloadMarker...)
+	unsupportedPNG := unsupportedFramePNG(t)
 	corruptJPEG := append([]byte{0xff, 0xd8, 0xff, 0xdb, 0x00}, payloadMarker...)
+	unsupportedJPEG := unsupportedSequentialJPEG(t)
 	e := &ChromiumEngine{backend: backendSixel}
+	_, corruptPNGError := pngdecode.Decode(bytes.NewReader(corruptPNG))
+	_, unsupportedPNGError := pngdecode.Decode(bytes.NewReader(unsupportedPNG))
+	var pngUnsupported woozypng.UnsupportedError
+	if !errors.As(unsupportedPNGError, &pngUnsupported) {
+		t.Fatalf("unsupported PNG fixture error = %T %v, want UnsupportedError", unsupportedPNGError, unsupportedPNGError)
+	}
 
 	tests := []struct {
 		name       string
 		wantPrefix string
-		decode     func() error
+		wantCause  error
+		decode     func() (image.Image, error)
 	}{
 		{
 			name:       "frame png",
 			wantPrefix: "png decode:",
-			decode: func() error {
-				_, err := decodeFrameImage(corruptPNG)
-				return err
+			wantCause:  corruptPNGError,
+			decode: func() (image.Image, error) {
+				return decodeFrameImage(corruptPNG)
+			},
+		},
+		{
+			name:       "frame unsupported png",
+			wantPrefix: "png decode:",
+			wantCause:  unsupportedPNGError,
+			decode: func() (image.Image, error) {
+				return decodeFrameImage(unsupportedPNG)
 			},
 		},
 		{
 			name:       "frame jpeg",
-			wantPrefix: "jpeg decode:",
-			decode: func() error {
-				_, err := decodeFrameImage(corruptJPEG)
-				return err
-			},
-		},
-		{
-			name:       "fast png fallback",
-			wantPrefix: "native image decode: png decode:",
-			decode: func() error {
-				_, err := decodeJPEGFast(corruptPNG)
-				return err
-			},
-		},
-		{
-			name:       "fast jpeg fallback",
 			wantPrefix: "native image decode: jpeg decode:",
-			decode: func() error {
-				_, err := decodeJPEGFast(corruptJPEG)
-				return err
+			wantCause:  jpegn.ErrSyntax,
+			decode: func() (image.Image, error) {
+				return decodeFrameImage(corruptJPEG)
+			},
+		},
+		{
+			name:       "frame unsupported jpeg",
+			wantPrefix: "native image decode: jpeg decode:",
+			wantCause:  jpegn.ErrUnsupported,
+			decode: func() (image.Image, error) {
+				return decodeFrameImage(unsupportedJPEG)
+			},
+		},
+		{
+			name:       "fast jpeg",
+			wantPrefix: "native image decode: jpeg decode:",
+			wantCause:  jpegn.ErrSyntax,
+			decode: func() (image.Image, error) {
+				return decodeJPEGFast(corruptJPEG)
 			},
 		},
 		{
 			name:       "live base64",
 			wantPrefix: "engine: live frame base64 decode:",
-			decode: func() error {
-				_, err := e.decodeLiveFrame(payloadMarker + "*")
-				return err
+			decode: func() (image.Image, error) {
+				return e.decodeLiveFrame(payloadMarker + "*")
 			},
 		},
 		{
 			name:       "live png",
-			wantPrefix: "engine: live frame decode: native image decode: png decode:",
-			decode: func() error {
-				_, err := e.decodeLiveFrame(base64.StdEncoding.EncodeToString(corruptPNG))
-				return err
+			wantPrefix: "engine: live frame decode: png decode:",
+			wantCause:  corruptPNGError,
+			decode: func() (image.Image, error) {
+				return e.decodeLiveFrame(base64.StdEncoding.EncodeToString(corruptPNG))
+			},
+		},
+		{
+			name:       "live unsupported png",
+			wantPrefix: "engine: live frame decode: png decode:",
+			wantCause:  unsupportedPNGError,
+			decode: func() (image.Image, error) {
+				return e.decodeLiveFrame(base64.StdEncoding.EncodeToString(unsupportedPNG))
 			},
 		},
 		{
 			name:       "live jpeg",
 			wantPrefix: "engine: live frame decode: native image decode: jpeg decode:",
-			decode: func() error {
-				_, err := e.decodeLiveFrame(base64.StdEncoding.EncodeToString(corruptJPEG))
-				return err
+			wantCause:  jpegn.ErrSyntax,
+			decode: func() (image.Image, error) {
+				return e.decodeLiveFrame(base64.StdEncoding.EncodeToString(corruptJPEG))
+			},
+		},
+		{
+			name:       "live unsupported jpeg",
+			wantPrefix: "engine: live frame decode: native image decode: jpeg decode:",
+			wantCause:  jpegn.ErrUnsupported,
+			decode: func() (image.Image, error) {
+				return e.decodeLiveFrame(base64.StdEncoding.EncodeToString(unsupportedJPEG))
 			},
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := test.decode()
+			img, err := test.decode()
 			if err == nil {
 				t.Fatal("decode returned no error")
 			}
+			if img != nil {
+				t.Fatalf("decode returned fallback image %T with error %v", img, err)
+			}
 			if !strings.HasPrefix(err.Error(), test.wantPrefix) {
 				t.Fatalf("error = %q, want prefix %q", err, test.wantPrefix)
+			}
+			if test.wantCause != nil && !errors.Is(err, test.wantCause) {
+				t.Fatalf("error = %v, want wrapped cause %v", err, test.wantCause)
 			}
 			if strings.Contains(err.Error(), payloadMarker) {
 				t.Fatalf("error exposed payload bytes: %q", err)
 			}
 		})
+	}
+}
+
+// TestDecodePoolDropsUnsupportedJPEGWithoutFallbackFrame proves an unsupported
+// JPEG produces one reported drop and no frame, even though stdlib can decode
+// the same fixture.
+func TestDecodePoolDropsUnsupportedJPEGWithoutFallbackFrame(t *testing.T) {
+	e := &ChromiumEngine{
+		backend: backendSixel,
+		ingest:  &ingestCounter{on: true, window: ingestWindow},
+	}
+	rawQ, frames, stop := drivePool(t, e, 1)
+	defer stop()
+	payload := base64.StdEncoding.EncodeToString(unsupportedSequentialJPEG(t))
+	e.ingest.record(time.Unix(0, 0))
+	rawQ.put(seqRawFrame{seq: 1, data: payload})
+	waitDecodeDrops(t, e.ingest, 1)
+
+	stats := e.ingest.summary()
+	if stats.DecodeDrops != 1 {
+		t.Fatalf("decode drops = %d, want 1", stats.DecodeDrops)
+	}
+	if !strings.HasPrefix(stats.DecodeFirstError, "engine: live frame decode: native image decode: jpeg decode:") {
+		t.Fatalf("first decode error = %q, want authoritative jpegn context", stats.DecodeFirstError)
+	}
+	if strings.Contains(stats.DecodeFirstError, payload) {
+		t.Fatalf("first decode error exposed payload bytes: %q", stats.DecodeFirstError)
+	}
+	select {
+	case frame := <-frames:
+		t.Fatalf("decode pool emitted fallback frame: %+v", frame)
+	default:
 	}
 }
 

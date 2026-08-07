@@ -267,9 +267,15 @@ rebuild it rather than risk a duplicate ack.
 
 Delivery is latest-wins. A bounded `rawFrameQueue` drops the oldest undecoded
 frame when full, never the newest, and parallel decode workers publish only
-the newest completed sequence. Block and Sixel stream JPEG quality 90 in
-production; Kitty follows its transport (see Graphics backends); diagnostics
-capture stays lossless PNG.
+the newest completed sequence. After base64 decode, an 8-byte PNG signature
+routes a production pixel frame to `internal/pngdecode`; every other payload
+gets one authoritative `gen2brain/jpegn` attempt. Unsupported or corrupt JPEG
+is dropped. The bounded WW-190 ingest report counts these drops and retains
+only the first contextual error. Block and Sixel stream JPEG quality 90 in
+production. Direct Kitty validates and passes its PNG through without a pixel
+decode. Diagnostics capture stays lossless PNG and exercises the production
+PNG route; standard-library decoders remain independent diagnostic and test
+oracles, not production frame fallbacks.
 
 The decode pool (`decodepool.go`) exists because one JPEG decode worker (28
 to 31 ms per frame) capped Block output at 33 fps while ingest ran at 60.
@@ -281,17 +287,19 @@ one frame per worker: JPEG Huffman entropy decode is serial, so a single
 image cannot be split.
 
 Three decode libraries are pinned on the hot path, all pure Go. JPEG:
-`gen2brain/jpegn` (SIMD, native YCbCr output, stdlib fallback on
-ErrUnsupported), 1.85x to 2.45x over stdlib (a projected 56 down to 23 to
-30 ms at 7 MP); cgo libjpeg-turbo at 4.8x was rejected because
-`CGO_ENABLED=1` breaks the clean cross-build. Base64: `emmansun/base64`,
-because CDP wraps every frame in base64 JSON with no binary path, 7.6x
-over stdlib plus a further 4.06x from the pooled zero-copy decode; the
-Kitty payload encoder
-shares it (about 53x on encode). PNG: `woozymasta/png` (SIMD unfilter,
-byte-identical on 1011 of 1011 real PNGs, about 54% faster), dispatched by
-the 8-byte PNG magic rather than registration, because a second "png"
-registration would make `image.Decode` init-order-dependent.
+`gen2brain/jpegn` (SIMD with native YCbCr output), 1.85x to 2.45x over stdlib
+(a projected 56 down to 23 to 30 ms at 7 MP); native YCbCr lets Block compose
+cells without an RGBA conversion. cgo libjpeg-turbo at 4.8x was rejected
+because `CGO_ENABLED=1` breaks the clean cross-build. Base64:
+`emmansun/base64`, because CDP wraps every frame in base64 JSON with no binary
+path, 7.6x over stdlib plus a further 4.06x from the pooled zero-copy decode;
+the Kitty payload encoder shares it (about 53x on encode). PNG:
+`internal/pngdecode`, backed by `woozymasta/png` (SIMD unfilter, byte-identical
+on 1011 of 1011 real PNGs, about 54% faster). Its direct RGBA-plane decoder
+accepts Chromium's non-interlaced 8-bit truecolour forms and returns the
+authoritative `ErrUnsupportedPNG` for other valid PNG shapes; malformed input
+remains a distinct error. Explicit signature routing avoids a second "png"
+registration that would make `image.Decode` dispatch init-order-dependent.
 
 ### The text walk
 
