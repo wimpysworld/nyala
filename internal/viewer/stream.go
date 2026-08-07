@@ -2312,7 +2312,7 @@ func printStreamSummary(w io.Writer, fps *fpsMeter, ingest ingestReporter) {
 	if stats.DecodeDrops == 0 {
 		return
 	}
-	fmt.Fprintf(w, "nyala: warning: frame decode failures: dropped=%d first_error=%q\n", stats.DecodeDrops, stats.DecodeFirstError)
+	fmt.Fprintf(w, "nyala: warning: frame decode failures: dropped=%d latest_error=%q\n", stats.DecodeDrops, stats.DecodeLatestError)
 }
 
 // printSummary writes one compact fps summary line to w after the session ends. It
@@ -2322,7 +2322,7 @@ func printStreamSummary(w io.Writer, fps *fpsMeter, ingest ingestReporter) {
 // and in_max instantaneous fps (the slowest and fastest single frames), in_median,
 // and in_worst_gap_ms, plus the worker decode budget in_decode_mean_ms and
 // in_decode_max_ms (how close each frame sits to the ~16.6ms 60fps ceiling the decode
-// wall imposes), the decode-drop total, and the quoted first failure. Under the
+// wall imposes), the decode-drop total, and the quoted latest failure. Under the
 // decoupled receiver/worker model the arrival times are true
 // per-frame instants, so the In extremes are meaningful and mirror Out exactly
 // (in_min is 1/maxGap, and so on). The Out stream (paint) gets out_frames, wall
@@ -2346,7 +2346,7 @@ func (m *fpsMeter) printSummary(w io.Writer) {
 	}
 	if m.frames == 0 {
 		if in.DecodeDrops != 0 {
-			fmt.Fprintf(w, "nyala fps: warmup_ms=unavailable in_decode_drops=%d in_decode_first_error=%q\n", in.DecodeDrops, in.DecodeFirstError)
+			fmt.Fprintf(w, "nyala fps: warmup_ms=unavailable in_decode_drops=%d in_decode_latest_error=%q\n", in.DecodeDrops, in.DecodeLatestError)
 			return
 		}
 		fmt.Fprintln(w, "nyala fps: warmup_ms=unavailable")
@@ -2373,8 +2373,8 @@ func (m *fpsMeter) printSummary(w io.Writer) {
 		encodeMean = m.encodeSum / float64(m.paintFrames)
 		writeMean = m.writeSum / float64(m.paintFrames)
 	}
-	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f in_frames=%d in_mean=%.1f in_min=%.1f in_max=%.1f in_median=%.1f in_worst_gap_ms=%.1f in_decode_mean_ms=%.1f in_decode_max_ms=%.1f in_decode_drops=%d in_decode_first_error=%q out_frames=%d wall=%.2fs out_mean=%.1f out_median=%.1f out_min=%.1f out_max=%.1f out_worst_gap_ms=%.1f out_encode_mean_ms=%.1f out_encode_max_ms=%.1f out_write_mean_ms=%.1f out_write_max_ms=%.1f ack_rtt_mean_ms=%.1f ack_rtt_max_ms=%.1f\n",
-		warmupMS, in.Frames, in.MeanFPS, in.MinFPS, in.MaxFPS, in.MedianFPS, in.WorstGapMS, in.DecodeMeanMS, in.DecodeMaxMS, in.DecodeDrops, in.DecodeFirstError,
+	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f in_frames=%d in_mean=%.1f in_min=%.1f in_max=%.1f in_median=%.1f in_worst_gap_ms=%.1f in_decode_mean_ms=%.1f in_decode_max_ms=%.1f in_decode_drops=%d in_decode_latest_error=%q out_frames=%d wall=%.2fs out_mean=%.1f out_median=%.1f out_min=%.1f out_max=%.1f out_worst_gap_ms=%.1f out_encode_mean_ms=%.1f out_encode_max_ms=%.1f out_write_mean_ms=%.1f out_write_max_ms=%.1f ack_rtt_mean_ms=%.1f ack_rtt_max_ms=%.1f\n",
+		warmupMS, in.Frames, in.MeanFPS, in.MinFPS, in.MaxFPS, in.MedianFPS, in.WorstGapMS, in.DecodeMeanMS, in.DecodeMaxMS, in.DecodeDrops, in.DecodeLatestError,
 		m.frames, wall, mean, medianFPS(m.gaps), minInst, maxInst, worstGapMS,
 		encodeMean, m.encodeMax, writeMean, m.writeMax, in.AckRTTMeanMS, in.AckRTTMaxMS)
 }

@@ -235,11 +235,11 @@ func TestDecodePoolDropsUnsupportedJPEGWithoutFallbackFrame(t *testing.T) {
 	if stats.DecodeDrops != 1 {
 		t.Fatalf("decode drops = %d, want 1", stats.DecodeDrops)
 	}
-	if !strings.HasPrefix(stats.DecodeFirstError, "engine: live frame decode: native image decode: jpeg decode:") {
-		t.Fatalf("first decode error = %q, want authoritative jpegn context", stats.DecodeFirstError)
+	if !strings.HasPrefix(stats.DecodeLatestError, "engine: live frame decode: native image decode: jpeg decode:") {
+		t.Fatalf("latest decode error = %q, want authoritative jpegn context", stats.DecodeLatestError)
 	}
-	if strings.Contains(stats.DecodeFirstError, payload) {
-		t.Fatalf("first decode error exposed payload bytes: %q", stats.DecodeFirstError)
+	if strings.Contains(stats.DecodeLatestError, payload) {
+		t.Fatalf("latest decode error exposed payload bytes: %q", stats.DecodeLatestError)
 	}
 	select {
 	case frame := <-frames:
