@@ -44,6 +44,22 @@ func TestObjectLifecycle(t *testing.T) {
 	if err := obj.Close(); err != nil {
 		t.Fatalf("second Close() = %v", err)
 	}
+	fd, err := shmOpen(name, unix.O_RDONLY, 0)
+	if err != nil {
+		t.Fatalf("shmOpen(O_RDONLY) = %v", err)
+	}
+	reopened, mapErr := unix.Mmap(fd, 0, len(payload), unix.PROT_READ, unix.MAP_SHARED)
+	closeErr := unix.Close(fd)
+	if mapErr != nil {
+		t.Fatalf("Mmap(reopened) = %v", mapErr)
+	}
+	t.Cleanup(func() { _ = unix.Munmap(reopened) })
+	if closeErr != nil {
+		t.Fatalf("Close(reopened) = %v", closeErr)
+	}
+	if got := string(reopened); got != string(payload) {
+		t.Errorf("reopened payload = %q, want %q", got, payload)
+	}
 	if err := Unlink(name); err != nil {
 		t.Fatalf("Unlink() = %v", err)
 	}
