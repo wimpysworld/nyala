@@ -261,7 +261,7 @@ func TestKittySHMEncodedPNGFallsBackDirect(t *testing.T) {
 	if !hasOpt(cmds[0], "t=d") {
 		t.Fatalf("payload frame in shm mode %q did not take the direct path", cmds[0])
 	}
-	if s.takeKittySHMWrote() {
+	if id := s.takeKittySHMID(); id != 0 {
 		t.Fatal("direct fallback frame flagged as an shm transmit")
 	}
 	if !s.kittySHMLive() {
@@ -331,9 +331,16 @@ func TestDrainFramesReleasesStale(t *testing.T) {
 	}
 }
 
+// handoffKittySHM records one test transmit in the session's current reset
+// generation and runs the production handoff path.
+func handoffKittySHM(s *streamSession, id int) {
+	s.assembledSHM = kittySHMFrame{id: id, generation: s.kittySHMGeneration}
+	s.markKittySHMHandoff()
+}
+
 // TestKittySHMPacingGate asserts the one-in-flight gate arms on an shm
-// handoff, opens on any terminal response or its deadline, and returns a
-// failure response without changing the selected transport.
+// handoff, opens on its matching response or deadline, and returns a current
+// failure without changing the selected transport.
 func TestKittySHMPacingGate(t *testing.T) {
 	st := shmState()
 	s := &streamSession{st: &st, eng: &fakeEngine{}}
@@ -341,8 +348,7 @@ func TestKittySHMPacingGate(t *testing.T) {
 	if s.kittySHMGated() {
 		t.Fatal("gate armed before any shm handoff")
 	}
-	s.assembledSHM = true
-	s.markKittySHMHandoff()
+	handoffKittySHM(s, 1)
 	if !s.kittySHMGated() {
 		t.Fatal("gate not armed after an shm handoff")
 	}
@@ -353,16 +359,14 @@ func TestKittySHMPacingGate(t *testing.T) {
 		t.Fatal("gate still armed after the OK response")
 	}
 
-	s.assembledSHM = true
-	s.markKittySHMHandoff()
+	handoffKittySHM(s, 2)
 	s.kittyShmDeadline = time.Now().Add(-time.Millisecond)
 	if s.kittySHMGated() {
 		t.Fatal("gate held past its deadline")
 	}
 
-	s.assembledSHM = true
-	s.markKittySHMHandoff()
-	err := s.handleKittyResponse("i=2;EBADF:could not open shared memory")
+	handoffKittySHM(s, 1)
+	err := s.handleKittyResponse("i=1;EBADF:could not open shared memory")
 	if err == nil || !strings.Contains(err.Error(), "terminal rejected shm transmit") {
 		t.Fatalf("failure response error = %v, want active shm rejection", err)
 	}
@@ -371,6 +375,36 @@ func TestKittySHMPacingGate(t *testing.T) {
 	}
 	if !st.kittySHMLive() {
 		t.Fatal("failure response changed the selected shm transport")
+	}
+}
+
+// TestKittySHMLateProbeRepliesDoNotSettleCurrentGate asserts startup replies
+// delayed into the input loop are ignored, including failures, without opening
+// the gate for a live frame. An uncorrelated failure remains fatal.
+func TestKittySHMLateProbeRepliesDoNotSettleCurrentGate(t *testing.T) {
+	st := shmState()
+	s := &streamSession{st: &st, eng: &fakeEngine{}}
+	handoffKittySHM(s, 1)
+
+	for _, body := range []string{"i=31;EBADF:late direct probe", "i=32;OK"} {
+		if err := s.handleKittyResponse(body); err != nil {
+			t.Fatalf("probe response %q returned error: %v", body, err)
+		}
+		if !s.kittySHMGated() {
+			t.Fatalf("probe response %q opened the current frame gate", body)
+		}
+	}
+	if err := s.handleKittyResponse("i=99;EBADF:unknown transmit"); err == nil {
+		t.Fatal("unknown failure response returned success")
+	}
+	if !s.kittySHMGated() {
+		t.Fatal("unknown failure response opened the current frame gate")
+	}
+	if err := s.handleKittyResponse("i=1;OK"); err != nil {
+		t.Fatalf("current response returned error: %v", err)
+	}
+	if s.kittySHMGated() {
+		t.Fatal("matching current response left the gate armed")
 	}
 }
 
@@ -391,23 +425,13 @@ func TestKittySHMLateErrorAfterCycleAwayIsIgnored(t *testing.T) {
 	s := &streamSession{eng: eng, st: &st, tty: &bytes.Buffer{}, ctl: newControl(eng, done)}
 
 	// One shm transmit awaits its acknowledgement when the user cycles the backend.
-	s.assembledSHM = true
-	s.markKittySHMHandoff()
+	handoffKittySHM(s, 1)
 	s.handleKey(keyEvent{act: actionCycleBackend})
 	if st.Backend != BackendBlock {
 		t.Fatalf("backend after cycle = %v, want Block", st.Backend)
 	}
 	if s.kittyShmAwait {
 		t.Fatal("cycling away from Kitty left the stale shm pacing gate armed")
-	}
-
-	// The busy terminal processes the escape after the unlink and replies with
-	// a failure. The transport itself is healthy.
-	if err := s.handleKittyResponse("i=2;ENOENT:failed to open shared memory object"); err != nil {
-		t.Fatalf("late failure response after cycling away returned error: %v", err)
-	}
-	if !st.kittySHMLive() {
-		t.Fatal("late failure response after cycling away changed the selected transport")
 	}
 
 	s.handleKey(keyEvent{act: actionCycleBackend})
@@ -420,8 +444,24 @@ func TestKittySHMLateErrorAfterCycleAwayIsIgnored(t *testing.T) {
 	if !eng.kittyDecode {
 		t.Fatal("engine kitty-shm decode not re-enabled on return to Kitty")
 	}
+	handoffKittySHM(s, 1)
+	if !s.kittySHMGated() {
+		t.Fatal("new Kitty stint did not arm its first frame gate")
+	}
+
+	// The old and new stints both use id 1. The oldest ledger entry claims the
+	// stale failure, which must not open the new stint's gate.
+	if err := s.handleKittyResponse("i=1;ENOENT:failed to open shared memory object"); err != nil {
+		t.Fatalf("late failure response after cycling returned error: %v", err)
+	}
+	if !s.kittySHMGated() {
+		t.Fatal("stale cycle reply opened the new Kitty stint's gate")
+	}
+	if err := s.handleKittyResponse("i=1;OK"); err != nil {
+		t.Fatalf("new stint response returned error: %v", err)
+	}
 	if s.kittySHMGated() {
-		t.Fatal("stale pacing gate held the new Kitty stint's first frame")
+		t.Fatal("new stint response left its gate armed")
 	}
 }
 
@@ -434,8 +474,7 @@ func TestKittySHMResponseErrorPreservesTransportAndDecode(t *testing.T) {
 	syncEngineKittyDecode(eng, &st)
 	s := &streamSession{eng: eng, st: &st}
 
-	s.assembledSHM = true
-	s.markKittySHMHandoff()
+	handoffKittySHM(s, 1)
 	err := s.handleKittyResponse("i=1;EBADF:could not open shared memory")
 	if err == nil || !strings.Contains(err.Error(), "terminal rejected shm transmit") {
 		t.Fatalf("failure response error = %v, want active shm rejection", err)

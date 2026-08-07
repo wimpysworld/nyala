@@ -400,6 +400,49 @@ func TestEmitControlFlushesAssembledFirst(t *testing.T) {
 	}
 }
 
+// TestResizeResetInvalidatesAssembledKittySHMTransmit pins the resize control
+// order where reset unlinks an assembled frame's object before emitControl
+// flushes its t=s escape. The resulting terminal failure is correlated with
+// the invalidated frame and does not arm or settle another pacing gate.
+func TestResizeResetInvalidatesAssembledKittySHMTransmit(t *testing.T) {
+	tty := &slowWriter{}
+	w := newStreamWriter(tty)
+	st := shmState()
+	st.kittyID = 1
+	s := &streamSession{st: &st, writer: w, tty: tty}
+
+	assembled := &bytes.Buffer{}
+	assembled.WriteString("SHMFRAME")
+	s.assembled = assembled
+	s.assembledSHM = kittySHMFrame{id: 1, generation: s.kittySHMGeneration}
+
+	var ctl bytes.Buffer
+	if err := s.resetKitty(&ctl); err != nil {
+		t.Fatalf("resize Kitty reset: %v", err)
+	}
+	ctl.WriteString("RESIZE")
+	if err := s.emitControl(ctl.Bytes()); err != nil {
+		t.Fatalf("emit resize control: %v", err)
+	}
+	w.stop()
+
+	out := tty.String()
+	frameAt := strings.Index(out, "SHMFRAME")
+	resetAt := strings.Index(out, "a=d")
+	if frameAt < 0 || resetAt < 0 || frameAt >= resetAt {
+		t.Fatalf("resize output order = %q, want assembled SHM frame before reset", out)
+	}
+	if s.kittySHMGated() {
+		t.Fatal("resize-invalidated assembled transmit armed the pacing gate")
+	}
+	if err := s.handleKittyResponse("i=1;ENOENT:failed to open shared memory object"); err != nil {
+		t.Fatalf("resize-invalidated failure returned error: %v", err)
+	}
+	if s.kittySHMGated() {
+		t.Fatal("resize-invalidated reply changed the pacing gate")
+	}
+}
+
 // TestStreamLoopDropsStaleFramesUnderSlowWriter asserts the producer never blocks
 // its ingest on a slow writer: it keeps draining Frames() and holds only the newest,
 // so a burst of frames drops the stale ones (latest-wins) rather than queueing

@@ -496,9 +496,11 @@ type streamSession struct {
 	assembled         *bytes.Buffer
 	assembledEncodeMS float64
 	assembledTimed    bool // the assembled frame passed the FCP measurement gate
-	// assembledSHM marks the assembled frame as a Kitty shm transmit, so the
-	// handoff to the writer arms the one-in-flight pacing gate. Producer only.
-	assembledSHM bool
+	// assembledSHM identifies the assembled Kitty shm transmit and the reset
+	// generation that created its object. The handoff records it in the reply
+	// ledger and arms the one-in-flight pacing gate when it is still valid.
+	// Producer only.
+	assembledSHM kittySHMFrame
 	// assembledTmuxSixel marks the assembled frame as a tmux Sixel frame, so
 	// the handoff to the writer stamps the emit-rate pacing gate. Producer only.
 	assembledTmuxSixel bool
@@ -513,11 +515,15 @@ type streamSession struct {
 	// only; the zero value keeps the interval at the floor.
 	tmuxSixelWriteDur time.Duration
 	// kittyShmAwait is true while one shm transmit awaits the terminal's
-	// acknowledgement; kittyShmDeadline bounds the wait so a terminal that
-	// stays silent degrades to a conservative self-pace instead of stalling.
-	// Both are producer-goroutine only.
-	kittyShmAwait    bool
-	kittyShmDeadline time.Time
+	// acknowledgement; kittyShmAwaitSeq ties that gate to its reply-ledger
+	// entry. kittyShmDeadline bounds the wait so a silent terminal degrades to
+	// a conservative self-pace instead of stalling. The generation advances
+	// before Nyala unlinks objects on reset. All fields are producer-only.
+	kittyShmAwait      bool
+	kittyShmAwaitSeq   uint64
+	kittyShmDeadline   time.Time
+	kittySHMGeneration uint64
+	kittySHMLedger     kittySHMReplyLedger
 	// fps is the live fps counter, armed by NYALA_FPS_TIMING at startup or by
 	// the menu's fps command mid-session. When set, assemble stamps each frame
 	// and the meter accumulates; when nil the draw path pays only a nil check,
@@ -785,7 +791,7 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			readyC = w.ready
 			item = writeItem{
 				buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed,
-				tmuxSixel: s.assembledTmuxSixel, kittySHM: s.assembledSHM,
+				tmuxSixel: s.assembledTmuxSixel, kittySHM: s.assembledSHM.id != 0,
 			}
 		}
 
@@ -983,6 +989,80 @@ func drainFrames(frames <-chan render.Frame, latest render.Frame) (render.Frame,
 // cannot wedge the stream.
 const kittySHMAckTimeout = 40 * time.Millisecond
 
+// kittySHMReplyLedgerLimit bounds the number of handed-off shm transmits kept
+// for late reply correlation. Normal operation removes each entry on its reply;
+// the bound covers resets and silent terminals without growing session state.
+const kittySHMReplyLedgerLimit = 32
+
+// kittySHMFrame identifies an assembled shm escape before writer handoff. Its
+// generation records which reset lifetime owns the referenced object.
+type kittySHMFrame struct {
+	id         int
+	generation uint64
+}
+
+// kittySHMTransmit identifies one handed-off shm escape. Replies for a reused
+// image id consume the oldest matching entry, preserving terminal order across
+// resets. invalidated records an object Nyala unlinked before the terminal read
+// it, while sequence correlates the pacing gate with the exact live transmit.
+type kittySHMTransmit struct {
+	kittySHMFrame
+	sequence    uint64
+	invalidated bool
+}
+
+// kittySHMReplyLedger is the bounded ordered set of shm transmits which may
+// still receive a terminal reply.
+type kittySHMReplyLedger struct {
+	entries      [kittySHMReplyLedgerLimit]kittySHMTransmit
+	len          int
+	nextSequence uint64
+}
+
+// add records one handed-off transmit and returns its correlation data. The
+// oldest entry expires only after the fixed late-reply budget is exhausted.
+func (l *kittySHMReplyLedger) add(frame kittySHMFrame, currentGeneration uint64) kittySHMTransmit {
+	l.nextSequence++
+	tx := kittySHMTransmit{
+		kittySHMFrame: frame,
+		sequence:      l.nextSequence,
+		invalidated:   frame.generation != currentGeneration,
+	}
+	if l.len == len(l.entries) {
+		copy(l.entries[:], l.entries[1:])
+		l.len--
+	}
+	l.entries[l.len] = tx
+	l.len++
+	return tx
+}
+
+// invalidate marks every outstanding transmit from generation as unlinked by
+// Nyala. It leaves each entry in reply order so a stale reused-id response
+// cannot claim a later transmit.
+func (l *kittySHMReplyLedger) invalidate(generation uint64) {
+	for i := range l.len {
+		if l.entries[i].generation == generation {
+			l.entries[i].invalidated = true
+		}
+	}
+}
+
+// take removes and returns the oldest outstanding transmit for id.
+func (l *kittySHMReplyLedger) take(id int) (kittySHMTransmit, bool) {
+	for i := range l.len {
+		if l.entries[i].id != id {
+			continue
+		}
+		tx := l.entries[i]
+		copy(l.entries[i:], l.entries[i+1:l.len])
+		l.len--
+		l.entries[l.len] = kittySHMTransmit{}
+		return tx, true
+	}
+	return kittySHMTransmit{}, false
+}
+
 // kittySHMGated reports whether the shm one-in-flight pacing gate holds the
 // next frame back. The gate opens (and clears its state) once the transmit is
 // acknowledged, the deadline passes, the backend leaves Kitty, or the shm
@@ -993,6 +1073,7 @@ func (s *streamSession) kittySHMGated() bool {
 	}
 	if s.st.Backend != BackendKitty || !s.st.kittySHMLive() || !time.Now().Before(s.kittyShmDeadline) {
 		s.kittyShmAwait = false
+		s.kittyShmAwaitSeq = 0
 		return false
 	}
 	return true
@@ -1002,12 +1083,35 @@ func (s *streamSession) kittySHMGated() bool {
 // the writer was an shm transmit: the next shm frame waits for the terminal's
 // acknowledgement or the conservative deadline. Producer goroutine only.
 func (s *streamSession) markKittySHMHandoff() {
-	if !s.assembledSHM {
+	if s.assembledSHM.id == 0 {
 		return
 	}
-	s.assembledSHM = false
+	tx := s.kittySHMLedger.add(s.assembledSHM, s.kittySHMGeneration)
+	s.assembledSHM = kittySHMFrame{}
+	if tx.invalidated {
+		return
+	}
 	s.kittyShmAwait = true
+	s.kittyShmAwaitSeq = tx.sequence
 	s.kittyShmDeadline = time.Now().Add(kittySHMAckTimeout)
+}
+
+// invalidateKittySHMTransmits marks every object owned by the current reset
+// generation as unlinked, advances the generation for later frames, and drops
+// only the old generation's pacing gate.
+func (s *streamSession) invalidateKittySHMTransmits() {
+	s.kittySHMLedger.invalidate(s.kittySHMGeneration)
+	s.kittySHMGeneration++
+	s.kittyShmAwait = false
+	s.kittyShmAwaitSeq = 0
+}
+
+// resetKitty invalidates reply correlation before State unlinks any shm
+// objects. Both resize and backend cycling use this order before their control
+// bytes flush an assembled frame.
+func (s *streamSession) resetKitty(w io.Writer) error {
+	s.invalidateKittySHMTransmits()
+	return s.st.resetKitty(w)
 }
 
 // tmuxSixelMinInterval is the hard floor between Sixel frame handoffs under
@@ -1143,21 +1247,49 @@ func (s *streamSession) assembleSettle(buf *bytes.Buffer) error {
 }
 
 // handleKittyResponse consumes one Kitty graphics response from the input
-// stream. Any response settles the in-flight shm transmit, so the pacing gate
-// opens. A failure response (no ";OK") while the session is on the Kitty
-// backend with the shm transport live stops the stream. A failure that lands
-// after the backend cycled away is ignored: resetKitty has already unlinked
-// unconsumed objects, so a busy terminal that reads the switch-window escape
-// late reports a failure Nyala itself caused.
+// stream. Probe replies never affect live pacing. A frame reply consumes the
+// oldest ledger entry with that image id, so an invalidated reply for a reused
+// id cannot settle the current gate. Nyala ignores a failure only when it
+// invalidated that transmit; every current or unknown failure remains fatal.
 func (s *streamSession) handleKittyResponse(body string) error {
-	s.kittyShmAwait = false
-	if strings.Contains(body, ";OK") {
+	idText, hasID := kittyResponseImageID(body)
+	if hasID && (idText == kittyDirectID || idText == kittySHMID) {
 		return nil
 	}
-	if s.st.Backend != BackendKitty || !s.st.kittySHMLive() {
+	id, err := strconv.Atoi(idText)
+	if !hasID || err != nil {
+		if strings.Contains(body, ";OK") {
+			return nil
+		}
+		return fmt.Errorf("terminal rejected shm transmit: %s", body)
+	}
+	tx, found := s.kittySHMLedger.take(id)
+	if !found {
+		if strings.Contains(body, ";OK") {
+			return nil
+		}
+		return fmt.Errorf("terminal rejected shm transmit: %s", body)
+	}
+	if tx.sequence == s.kittyShmAwaitSeq {
+		s.kittyShmAwait = false
+		s.kittyShmAwaitSeq = 0
+	}
+	if strings.Contains(body, ";OK") || tx.invalidated {
 		return nil
 	}
 	return fmt.Errorf("terminal rejected shm transmit: %s", body)
+}
+
+// kittyResponseImageID returns the exact i= value from a Kitty graphics
+// response's comma-separated control data.
+func kittyResponseImageID(body string) (string, bool) {
+	control, _, _ := strings.Cut(body, ";")
+	for _, field := range strings.Split(control, ",") {
+		if id, ok := strings.CutPrefix(field, "i="); ok && id != "" {
+			return id, true
+		}
+	}
+	return "", false
 }
 
 // barSpinnerInterval paces the startup spinner in the bar's indicator slot:
@@ -1256,8 +1388,12 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	if timed {
 		encodeMS = msSince(encodeStart)
 	}
-	// Tag an shm transmit for the pacing gate.
-	s.assembledSHM = s.st.takeKittySHMWrote()
+	// Tag an shm transmit for reply correlation and the pacing gate.
+	if id := s.st.takeKittySHMID(); id != 0 {
+		s.assembledSHM = kittySHMFrame{id: id, generation: s.kittySHMGeneration}
+	} else {
+		s.assembledSHM = kittySHMFrame{}
+	}
 	s.assembledTmuxSixel = nonScrollingSixel && s.st.mux == muxTmux
 
 	if s.fps != nil {
@@ -1287,7 +1423,7 @@ func (s *streamSession) flushAssembled() {
 	}
 	s.writer.send(writeItem{
 		buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed,
-		tmuxSixel: s.assembledTmuxSixel, kittySHM: s.assembledSHM,
+		tmuxSixel: s.assembledTmuxSixel, kittySHM: s.assembledSHM.id != 0,
 	})
 	s.assembled = nil
 	s.markKittySHMHandoff()
@@ -1364,8 +1500,7 @@ func (s *streamSession) resize() error {
 		// seam: free both double-buffer ids so the next frame rebuilds from id 1,
 		// and drop the shm pacing gate so a stale in-flight wait cannot gate the
 		// first post-resize frame.
-		_ = s.st.resetKitty(&ctl)
-		s.kittyShmAwait = false
+		_ = s.resetKitty(&ctl)
 	}
 	ctl.WriteString(clearScreen)
 	s.appendBar(&ctl)
@@ -1759,11 +1894,7 @@ func (s *streamSession) cycleBackend(reverse bool) {
 	if wasKitty && s.st.Backend != BackendKitty {
 		// Free both double-buffer images when leaving kitty, so the terminal keeps
 		// no stale image and a later return rebuilds from id 1.
-		_ = s.st.resetKitty(&ctl)
-		// Drop the shm pacing gate with the stint, so a stale in-flight
-		// wait cannot gate the next stint's first frame against the old
-		// stream's deadline.
-		s.kittyShmAwait = false
+		_ = s.resetKitty(&ctl)
 	}
 	if s.st.Backend != previous {
 		// Every backend change erases the screen before the new backend's

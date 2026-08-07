@@ -120,10 +120,10 @@ type State struct {
 	// direct path.
 	kittySHM kittySHMWriter
 
-	// kittyWroteSHM records that the frame just rendered went out as an shm
+	// kittyWroteSHMID records the image id of the frame just rendered as an shm
 	// transmit. The stream session reads and clears it per frame with
-	// takeKittySHMWrote to drive the one-in-flight pacing gate.
-	kittyWroteSHM bool
+	// takeKittySHMID to correlate replies and drive the one-in-flight pacing gate.
+	kittyWroteSHMID int
 
 	// sixelEnc is the reused Sixel renderer. It retains encoder scratch across
 	// moving frames and switches its output through an internal writer proxy.
