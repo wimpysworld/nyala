@@ -270,8 +270,11 @@ frame when full, never the newest, and parallel decode workers publish only
 the newest completed sequence. After base64 decode, an 8-byte PNG signature
 routes a production pixel frame to `internal/pngdecode`; every other payload
 gets one authoritative `gen2brain/jpegn` attempt. Unsupported or corrupt JPEG
-is dropped. The bounded WW-190 ingest report counts these drops and retains
-only the first contextual error. Block and Sixel stream JPEG quality 90 in
+is dropped. The ingest report counts decode failures whether or not
+`NYALA_FPS_TIMING` is set and retains the latest contextual error. By default,
+a non-zero count emits one warning at session end. `NYALA_FPS_TIMING` instead
+emits one detailed FPS summary containing the same count and latest error,
+without a duplicate warning. Block and Sixel stream JPEG quality 90 in
 production. Direct Kitty validates and passes its PNG through without a pixel
 decode. Diagnostics capture stays lossless PNG and exercises the production
 PNG route; standard-library decoders remain independent diagnostic and test
@@ -1099,11 +1102,11 @@ is 20.5 MB of base64 per frame, about 13 fps, and no in-band pixel format
 escapes that arithmetic. Live direct PNG sat on that ceiling, with 78.9 ms
 terminal-side write stalls.
 
-A startup-detected POSIX shared-memory fast path sits above the direct PNG
-transport. It captures JPEG q90 instead, decodes it in Nyala, and sends raw
-`f=32` RGBA over POSIX shared memory (`f=32,t=s`). Terminal-side PNG decode
-dominates at full-grid sizes, so moving the decode into Nyala and handing the
-terminal raw pixels is the faster trade where shm works.
+At startup, capability policy may select a POSIX shared-memory transport
+instead. It captures JPEG q90, decodes it in Nyala, and sends raw `f=32` RGBA
+over POSIX shared memory (`f=32,t=s`). Terminal-side PNG decode dominates at
+full-grid sizes, so moving the decode into Nyala and handing the terminal raw
+pixels is the faster trade where shm works.
 
 A transport benchmark picked raw over shm (same frame, 30 repetitions):
 direct PNG 16.07 ms, shm PNG 16.14 ms (no gain, the terminal's PNG decode
@@ -1125,13 +1128,15 @@ Transport policy is common across the platforms. Seeds allow WezTerm on Linux
 (it supports `t=s` but never acks the probe) and deny WezTerm on macOS (it
 renders it wrongly). Each shm object carries one complete transmission,
 because chunked shm does not display on Ghostty. Pacing keeps one frame in
-flight, opened by the terminal's OK reply or a 40 ms deadline (the gate lives
-in `internal/viewer/stream.go`; the frame assembler arms it). Startup may
-select direct PNG when capability policy does not select shm. Once startup
-selects shm, a per-frame object creation, mapping, close, transmit, terminal
-write, or active rejection error stops the stream through its normal shutdown
-path. Nyala does not demote the Kitty stint to direct PNG or re-arm a demotion
-on a later backend cycle.
+flight, opened by the correlated current frame's OK reply or a 40 ms deadline
+(the gate lives in `internal/viewer/stream.go`; the frame assembler arms it).
+Startup selects direct PNG when capability policy does not select shm. Probe
+replies and correlated replies for invalidated or stale transmits do not affect
+live pacing, and their failures are ignored. Once startup selects shm, a
+per-frame object creation, mapping, close, transmit, or terminal write error
+stops the stream through its normal shutdown path, as does a rejection for a
+current or unknown transmit. Nyala does not demote the Kitty stint to direct
+PNG or re-arm a demotion on a later backend cycle.
 
 JPEG q90 is the shm capture format because PNG plane decode is
 content-scaled (96.9 ms on live pages) while JPEG q90 is content-stable
