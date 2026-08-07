@@ -142,7 +142,10 @@ func DecodeInto(r io.Reader, dst []byte) (w, h int, err error) {
 			}
 			return decodeTruecolourInto(st, r, dst, w, h, int(colour), length)
 		}
-		if typ == "tRNS" || typ == "IEND" || typ == "IHDR" {
+		if typ == "IEND" || typ == "IHDR" {
+			return 0, 0, errFormat
+		}
+		if typ == "tRNS" {
 			return 0, 0, ErrUnsupportedPNG
 		}
 		if typ == "PLTE" {
@@ -296,7 +299,7 @@ func (d *idatReader) Read(p []byte) (int, error) {
 			return 0, err
 		}
 		if string(d.tmp[8:12]) != "IDAT" {
-			return 0, ErrUnsupportedPNG
+			return 0, errFormat
 		}
 		d.remain = binary.BigEndian.Uint32(d.tmp[4:8])
 	}
