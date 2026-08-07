@@ -105,7 +105,7 @@ func TestKittyTerminalRoundTrip(t *testing.T) {
 // cleanup. The synthetic terminal side never unlinks, so the reset must.
 func testKittySHMTerminalRoundTrip(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("kitty shm transport is Linux-only")
+		t.Skip("kitty shm interop test requires Linux /dev/shm")
 	}
 	state := NewState(80, 25)
 	state.Backend = BackendKitty

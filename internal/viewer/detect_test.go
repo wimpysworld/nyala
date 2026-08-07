@@ -162,7 +162,7 @@ func TestKittyKeyboardQueryRidesTheHandshake(t *testing.T) {
 // consumed case (the terminal already unlinked it) is a silent no-op.
 func TestProbeSHMLifecycle(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("POSIX shm probe is Linux-only")
+		t.Skip("probe lifecycle test requires Linux /dev/shm")
 	}
 	for _, c := range []struct {
 		name     string

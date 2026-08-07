@@ -67,7 +67,7 @@ func renderKittySHMFrame(t *testing.T, s *State, img *image.RGBA, release func()
 // unconsumed /dev/shm objects on reset.
 func TestKittySHMTransmitAlternatesIDs(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("kitty shm transport is Linux-only")
+		t.Skip("kitty shm transport test requires Linux /dev/shm")
 	}
 	s := shmState()
 	first := solidImageSize(6, 4, color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})

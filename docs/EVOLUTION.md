@@ -345,11 +345,16 @@ memory (`t=s`), field-proven by mpv. The benchmark clocked direct PNG at
 decode dominates, not transport; the pre-agreed sub-2x gate on shm PNG
 fired, so raw-over-shm shipped.
 
-**The shm fast path.** An icat-style probe sends a real 1x1 payload in
-`/dev/shm` inside the DA1-fenced handshake. The engine decodes the CDP PNG
-into pooled planes, the writer copies into a per-frame shm object and emits
-one escape of about 100 bytes; one frame is in flight, opened by the OK
-reply or a 40 ms deadline, and any failure demotes the stint to direct.
+**The shm fast path.** An icat-style probe sends a real 1x1 payload inside the
+DA1-fenced handshake. Linux uses `/dev/shm`; Darwin calls libSystem's POSIX shm
+functions through purego, so the binary stays cgo-free. Both create a fresh,
+exclusive `0600` object for each frame, using a one-leading-slash name with no
+other slash. They size it once, map it shared and read-write, copy through the
+mapping, then unmap and close it. Darwin also guards its 31-byte name limit
+before the foreign call. The engine decodes the CDP PNG into pooled planes,
+the writer copies into the object and emits one escape of about 100 bytes; one
+frame is in flight, opened by the OK reply or a 40 ms deadline, and any failure
+demotes the stint to direct.
 Aquarium went from 12.7 to 24.4 fps (+92%) and `out_write` from 78.9 to
 0.0 ms. The trade: Nyala now pays the PNG decode, 96.9 ms, pipelined.
 
