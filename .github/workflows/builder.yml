@@ -295,6 +295,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - name: Vet Darwin packages
+        if: matrix.goos == 'darwin'
+        run: go vet ./...
       - name: Build Nyala
         run: go build -o "${RUNNER_TEMP}/nyala-${GOOS}-${GOARCH}" ./cmd/nyala
 
