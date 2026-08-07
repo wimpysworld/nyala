@@ -94,13 +94,6 @@ type decodedFrame struct {
 	pending pendingFrame
 }
 
-// directKittyPNG reports whether data can bypass the pixel decode and travel to a
-// live Kitty consumer unchanged. Invalid direct payloads return false.
-func (e *ChromiumEngine) directKittyPNG(data string) bool {
-	direct, err := e.directKittyPayload(data)
-	return direct && err == nil
-}
-
 // directKittyPayload separates the active direct transport from payload validity.
 // The worker uses this distinction to reject corrupt direct PNG data before any
 // override or live pixel decoder can accept it.

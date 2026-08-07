@@ -247,7 +247,9 @@ func TestBackendSwitchLatestErrorReplacesInFlightJPEGValidation(t *testing.T) {
 		},
 	}
 	e.SetBackend(backendKitty)
-	if e.directKittyPNG(payload) {
+	if direct, err := e.directKittyPayload(payload); !direct {
+		t.Fatal("active direct Kitty transport was not selected")
+	} else if err == nil {
 		t.Fatal("JPEG payload passed the direct PNG validation")
 	}
 	rawQ, frames, stop := drivePool(t, e, 1)

@@ -300,7 +300,9 @@ func BenchmarkDirectPNGKitty(b *testing.B) {
 	e := &ChromiumEngine{backend: backendKitty}
 	b.Run("direct", func(b *testing.B) {
 		enc := &renderkitty.LiveEncoder{}
-		if !e.directKittyPNG(data) {
+		if direct, err := e.directKittyPayload(data); err != nil {
+			b.Fatal(err)
+		} else if !direct {
 			b.Fatal("valid PNG rejected by direct Kitty selector")
 		}
 		if err := enc.EncodePNGID(data, 1, 0, 0, io.Discard); err != nil {
@@ -309,7 +311,9 @@ func BenchmarkDirectPNGKitty(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for range b.N {
-			if !e.directKittyPNG(data) {
+			if direct, err := e.directKittyPayload(data); err != nil {
+				b.Fatal(err)
+			} else if !direct {
 				b.Fatal("valid PNG rejected by direct Kitty selector")
 			}
 			if err := enc.EncodePNGID(data, 1, 0, 0, io.Discard); err != nil {

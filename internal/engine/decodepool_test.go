@@ -671,7 +671,7 @@ func TestDecodePoolSixelDecodesJPEG(t *testing.T) {
 	}
 }
 
-func TestDirectKittyPNGRejectsInvalidRawData(t *testing.T) {
+func TestDirectKittyPayloadSelection(t *testing.T) {
 	valid := pngPayload(t)
 	raw, err := base64.StdEncoding.DecodeString(valid)
 	if err != nil {
@@ -696,20 +696,38 @@ func TestDirectKittyPNGRejectsInvalidRawData(t *testing.T) {
 	}
 	e := &ChromiumEngine{backend: backendKitty}
 	for name, data := range cases {
-		t.Run(name, func(t *testing.T) {
-			if e.directKittyPNG(data) {
-				t.Fatal("invalid payload entered the direct Kitty path")
+		t.Run("direct invalid/"+name, func(t *testing.T) {
+			direct, err := e.directKittyPayload(data)
+			if !direct {
+				t.Fatal("active direct Kitty transport was not selected")
+			}
+			if !errors.Is(err, renderkitty.ErrInvalidPNGData) {
+				t.Fatalf("directKittyPayload() error = %v, want ErrInvalidPNGData", err)
 			}
 		})
 	}
-	e.backend = backendSixel
-	if e.directKittyPNG(valid) {
-		t.Fatal("pixel backend entered the direct Kitty path")
-	}
-	e.backend = backendKitty
-	if !e.directKittyPNG(valid) {
-		t.Fatal("valid Kitty PNG missed the direct path")
-	}
+	t.Run("pixel backend", func(t *testing.T) {
+		e.SetBackend(backendSixel)
+		direct, err := e.directKittyPayload(valid)
+		if direct || err != nil {
+			t.Fatalf("directKittyPayload() = (%t, %v), want (false, nil)", direct, err)
+		}
+	})
+	t.Run("Kitty plane", func(t *testing.T) {
+		e.SetBackend(backendKitty)
+		e.SetKittyDecode(true)
+		direct, err := e.directKittyPayload(valid)
+		if direct || err != nil {
+			t.Fatalf("directKittyPayload() = (%t, %v), want (false, nil)", direct, err)
+		}
+	})
+	t.Run("direct valid", func(t *testing.T) {
+		e.SetKittyDecode(false)
+		direct, err := e.directKittyPayload(valid)
+		if !direct || err != nil {
+			t.Fatalf("directKittyPayload() = (%t, %v), want (true, nil)", direct, err)
+		}
+	})
 }
 
 // pngPayload encodes a small gradient RGBA image to a base64 PNG, a stand-in for one
