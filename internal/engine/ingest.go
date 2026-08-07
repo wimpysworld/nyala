@@ -66,10 +66,10 @@ type ingestCounter struct {
 	decodeMax    float64
 
 	// decodeDrops counts failed worker decodes without contending with the timing
-	// mutex. decodeFirstError retains only the first failure's string, so a bad
-	// payload cannot grow session storage.
-	decodeDrops      atomic.Uint64
-	decodeFirstError atomic.Pointer[string]
+	// mutex. decodeLatestError replaces one string-only slot, so a bad payload
+	// cannot grow session storage.
+	decodeDrops       atomic.Uint64
+	decodeLatestError atomic.Pointer[string]
 
 	// ackFrames/ackTotal/ackMax accumulate the acknowledgement round-trip budget:
 	// the count and sum give the mean, ackMax the slowest single round trip. Fed by
@@ -142,20 +142,17 @@ func (c *ingestCounter) recordDecode(ms float64) {
 	c.mu.Unlock()
 }
 
-// recordDecodeDrop counts one failed worker decode and retains only the first
-// failure's text. It uses atomics because several decode workers can fail at
-// once, and a failure must never block frame ingest. Unlike the timing fields,
-// it records when NYALA_FPS_TIMING is unset. Nil errors and nil counters are
-// ignored.
+// recordDecodeDrop counts one failed worker decode and replaces the latest
+// failure text. It uses atomics because several decode workers can fail at once,
+// and a failure must never block frame ingest. Unlike the timing fields, it
+// records when NYALA_FPS_TIMING is unset. Nil errors and nil counters are ignored.
 func (c *ingestCounter) recordDecodeDrop(err error) {
 	if err == nil || c == nil {
 		return
 	}
 	c.decodeDrops.Add(1)
-	if c.decodeFirstError.Load() == nil {
-		reason := err.Error()
-		c.decodeFirstError.CompareAndSwap(nil, &reason)
-	}
+	reason := err.Error()
+	c.decodeLatestError.Store(&reason)
 }
 
 // recordAck adds one acknowledgement command round trip in milliseconds: the
@@ -216,8 +213,8 @@ func (c *ingestCounter) summary() render.IngestStats {
 		return render.IngestStats{}
 	}
 	stats := render.IngestStats{DecodeDrops: c.decodeDrops.Load()}
-	if reason := c.decodeFirstError.Load(); reason != nil {
-		stats.DecodeFirstError = *reason
+	if reason := c.decodeLatestError.Load(); reason != nil {
+		stats.DecodeLatestError = *reason
 	}
 	if !c.armed() {
 		return stats

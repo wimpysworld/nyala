@@ -90,7 +90,7 @@ func TestFPSMeterWarmupGate(t *testing.T) {
 	m.ingest = fakeIngest{stats: render.IngestStats{
 		Frames: 40, MeanFPS: 23.6, MinFPS: 6.8, MaxFPS: 59.4,
 		MedianFPS: 50.1, WorstGapMS: 147.4, DecodeMeanMS: 8.2, DecodeMaxMS: 21.0,
-		DecodeDrops: 3, DecodeFirstError: `jpeg decode: marker "bad"`,
+		DecodeDrops: 3, DecodeLatestError: `jpeg decode: marker "bad"`,
 		AckRTTMeanMS: 3.4, AckRTTMaxMS: 12.6,
 	}}
 	var b strings.Builder
@@ -100,7 +100,7 @@ func TestFPSMeterWarmupGate(t *testing.T) {
 		"warmup_ms=1800", "in_frames=40", "in_mean=23.6",
 		"in_min=6.8", "in_max=59.4", "in_median=50.1", "in_worst_gap_ms=147.4",
 		"in_decode_mean_ms=8.2", "in_decode_max_ms=21.0",
-		`in_decode_drops=3`, `in_decode_first_error="jpeg decode: marker \"bad\""`,
+		`in_decode_drops=3`, `in_decode_latest_error="jpeg decode: marker \"bad\""`,
 		"out_frames=4", "wall=0.30s", "out_worst_gap_ms=100.0", "out_median=10.0",
 		"ack_rtt_mean_ms=3.4", "ack_rtt_max_ms=12.6",
 	} {
@@ -108,7 +108,7 @@ func TestFPSMeterWarmupGate(t *testing.T) {
 			t.Fatalf("summary %q missing %q", out, want)
 		}
 	}
-	for _, field := range []string{"in_decode_drops=", "in_decode_first_error="} {
+	for _, field := range []string{"in_decode_drops=", "in_decode_latest_error="} {
 		if got := strings.Count(out, field); got != 1 {
 			t.Fatalf("summary contains %q %d times, want once: %q", field, got, out)
 		}
@@ -330,19 +330,19 @@ func TestFPSMeterSummaryReportsZeroDecodeDrops(t *testing.T) {
 	if strings.Count(out, "\n") != 1 {
 		t.Fatalf("summary wrote %d lines, want 1: %q", strings.Count(out, "\n"), out)
 	}
-	if !strings.Contains(out, `in_decode_drops=0 in_decode_first_error=""`) {
+	if !strings.Contains(out, `in_decode_drops=0 in_decode_latest_error=""`) {
 		t.Fatalf("zero-drop summary = %q", out)
 	}
 }
 
 func TestPrintStreamSummaryReportsDecodeDropsWithoutFPS(t *testing.T) {
 	ingest := fakeIngest{stats: render.IngestStats{
-		DecodeDrops: 2, DecodeFirstError: "jpeg decode: invalid marker",
+		DecodeDrops: 2, DecodeLatestError: "jpeg decode: invalid marker",
 	}}
 	var b strings.Builder
 	printStreamSummary(&b, nil, ingest)
 
-	want := "nyala: warning: frame decode failures: dropped=2 first_error=\"jpeg decode: invalid marker\"\n"
+	want := "nyala: warning: frame decode failures: dropped=2 latest_error=\"jpeg decode: invalid marker\"\n"
 	if got := b.String(); got != want {
 		t.Fatalf("default session summary = %q, want %q", got, want)
 	}
@@ -358,7 +358,7 @@ func TestPrintStreamSummarySilentWithoutDecodeDrops(t *testing.T) {
 
 func TestPrintStreamSummaryDoesNotDuplicateFPSDecodeDrops(t *testing.T) {
 	ingest := fakeIngest{stats: render.IngestStats{
-		DecodeDrops: 2, DecodeFirstError: "jpeg decode: invalid marker",
+		DecodeDrops: 2, DecodeLatestError: "jpeg decode: invalid marker",
 	}}
 	m := &fpsMeter{window: time.Second, ingest: ingest}
 	var b strings.Builder

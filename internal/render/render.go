@@ -119,7 +119,7 @@ type GlyphRun struct {
 // times, so under the decoupled receiver/worker model the gap-based extremes are
 // meaningful. The viewer reads it over the ingestReporter seam without importing the
 // engine, so it lives in the render seam. When the switch is off, every field
-// except DecodeDrops and DecodeFirstError is zero.
+// except DecodeDrops and DecodeLatestError is zero.
 type IngestStats struct {
 	// Frames is the count of delivered screencast frames over the session.
 	Frames int
@@ -139,8 +139,9 @@ type IngestStats struct {
 	DecodeMaxMS float64
 	// DecodeDrops is the count of frames dropped after a decode failure.
 	DecodeDrops uint64
-	// DecodeFirstError is the first decode failure's text, or empty when none failed.
-	DecodeFirstError string
+	// DecodeLatestError is the most recently recorded decode failure's text, or
+	// empty when none failed.
+	DecodeLatestError string
 	// AckRTTMeanMS is the mean screencast acknowledgement command round trip in
 	// milliseconds, measured on the ack pump.
 	AckRTTMeanMS float64

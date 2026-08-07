@@ -101,7 +101,7 @@ func TestIngestCounterDecodeBudget(t *testing.T) {
 }
 
 // TestIngestCounterDecodeDropsConcurrent checks that concurrent workers count
-// each non-nil failure once and retain one complete first-reason string.
+// each non-nil failure and that a later failure replaces the bounded reason slot.
 func TestIngestCounterDecodeDropsConcurrent(t *testing.T) {
 	t.Parallel()
 	c := &ingestCounter{on: true, window: time.Second}
@@ -120,14 +120,16 @@ func TestIngestCounterDecodeDropsConcurrent(t *testing.T) {
 	}
 	close(start)
 	wg.Wait()
+	const latestReason = "context: final worker: invalid JPEG"
+	c.recordDecodeDrop(errors.New(latestReason))
 	c.recordDecodeDrop(nil)
 
 	stats := c.summary()
-	if stats.DecodeDrops != workers {
-		t.Fatalf("decode drops = %d, want %d", stats.DecodeDrops, workers)
+	if stats.DecodeDrops != workers+1 {
+		t.Fatalf("decode drops = %d, want %d", stats.DecodeDrops, workers+1)
 	}
-	if stats.DecodeFirstError != "context: invalid image" {
-		t.Fatalf("first decode error = %q, want contextual reason", stats.DecodeFirstError)
+	if stats.DecodeLatestError != latestReason {
+		t.Fatalf("latest decode error = %q, want %q", stats.DecodeLatestError, latestReason)
 	}
 }
 
@@ -152,7 +154,7 @@ func TestIngestCounterDecodeDropDoesNotUseTimingMutex(t *testing.T) {
 	c.record(time.Unix(0, 0))
 
 	stats := c.summary()
-	if stats.DecodeDrops != 1 || stats.DecodeFirstError != "context: invalid JPEG" {
+	if stats.DecodeDrops != 1 || stats.DecodeLatestError != "context: invalid JPEG" {
 		t.Fatalf("decode-drop summary = %+v, want one contextual failure", stats)
 	}
 }
@@ -163,8 +165,8 @@ type mutableDecodeError struct {
 
 func (e *mutableDecodeError) Error() string { return e.text }
 
-// TestIngestCounterDecodeDropStoresText checks the bounded slot does not retain
-// the error object after it captures the first reason.
+// TestIngestCounterDecodeDropStoresText checks the bounded slot captures the
+// latest string without retaining either error object.
 func TestIngestCounterDecodeDropStoresText(t *testing.T) {
 	t.Parallel()
 	c := &ingestCounter{on: true, window: time.Second}
@@ -172,9 +174,12 @@ func TestIngestCounterDecodeDropStoresText(t *testing.T) {
 	err := &mutableDecodeError{text: "original reason"}
 	c.recordDecodeDrop(err)
 	err.text = "changed object"
+	latest := &mutableDecodeError{text: "latest reason"}
+	c.recordDecodeDrop(latest)
+	latest.text = "changed latest object"
 
-	if got := c.summary().DecodeFirstError; got != "original reason" {
-		t.Fatalf("first decode error = %q, want captured string", got)
+	if got := c.summary().DecodeLatestError; got != "latest reason" {
+		t.Fatalf("latest decode error = %q, want captured string", got)
 	}
 }
 
@@ -211,7 +216,7 @@ func TestIngestCounterTimingGatedOffKeepsDecodeDrops(t *testing.T) {
 	c.recordDecodeDrop(errors.New("disabled failure"))
 	c.recordAck(3)
 	stats := c.summary()
-	want := render.IngestStats{DecodeDrops: 1, DecodeFirstError: "disabled failure"}
+	want := render.IngestStats{DecodeDrops: 1, DecodeLatestError: "disabled failure"}
 	if stats != want {
 		t.Fatalf("disabled timing summary = %+v, want %+v", stats, want)
 	}

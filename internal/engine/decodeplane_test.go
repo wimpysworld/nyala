@@ -227,14 +227,14 @@ func TestDecodeKittyPlaneErrorsExposeStableContext(t *testing.T) {
 	}
 }
 
-// TestBackendSwitchInFlightJPEGDrops proves backend-switch safety: a JPEG
-// frame captured before a switch to direct Kitty fails payload validation
-// before any pixel decoder runs. The worker publishes no frame and records
-// one contextual decode drop without retaining the payload.
-func TestBackendSwitchInFlightJPEGDrops(t *testing.T) {
+// TestBackendSwitchLatestErrorReplacesInFlightJPEGValidation proves a JPEG
+// captured before a switch to direct Kitty records a transient validation drop,
+// then a real pixel decode failure after switching back replaces that reason.
+func TestBackendSwitchLatestErrorReplacesInFlightJPEGValidation(t *testing.T) {
 	t.Parallel()
 	const payloadMarker = "WW190-private-payload"
 	payload := base64.StdEncoding.EncodeToString(append([]byte{0xff, 0xd8, 0xff, 0xdb, 0x00}, payloadMarker...))
+	laterErr := errors.New("engine: live frame decode after backend switch: invalid JPEG marker")
 	decodeCalls := atomic.Uint64{}
 	ingest := &ingestCounter{on: true, window: ingestWindow}
 	ingest.record(time.Now())
@@ -243,7 +243,7 @@ func TestBackendSwitchInFlightJPEGDrops(t *testing.T) {
 		ingest:  ingest,
 		decode: func(string) (*image.RGBA, error) {
 			decodeCalls.Add(1)
-			return seqImage(1), nil
+			return nil, laterErr
 		},
 	}
 	e.SetBackend(backendKitty)
@@ -268,11 +268,34 @@ func TestBackendSwitchInFlightJPEGDrops(t *testing.T) {
 		t.Fatalf("decode drops = %d, want 1", stats.DecodeDrops)
 	}
 	const wantPrefix = "engine: direct Kitty PNG validation:"
-	if !strings.HasPrefix(stats.DecodeFirstError, wantPrefix) {
-		t.Fatalf("first decode error = %q, want prefix %q", stats.DecodeFirstError, wantPrefix)
+	if !strings.HasPrefix(stats.DecodeLatestError, wantPrefix) {
+		t.Fatalf("latest decode error = %q, want prefix %q", stats.DecodeLatestError, wantPrefix)
 	}
-	if strings.Contains(stats.DecodeFirstError, payloadMarker) || strings.Contains(stats.DecodeFirstError, payload) {
-		t.Fatalf("first decode error retained payload: %q", stats.DecodeFirstError)
+	if strings.Contains(stats.DecodeLatestError, payloadMarker) || strings.Contains(stats.DecodeLatestError, payload) {
+		t.Fatalf("latest decode error retained payload: %q", stats.DecodeLatestError)
+	}
+
+	const laterPayload = "later-private-payload"
+	e.SetBackend(backendBlock)
+	rawQ.put(seqRawFrame{seq: 2, data: laterPayload})
+	waitDecodeDrops(t, ingest, 2)
+	if got := decodeCalls.Load(); got != 1 {
+		t.Fatalf("pixel decoder calls = %d, want 1", got)
+	}
+	stats = ingest.summary()
+	if stats.DecodeDrops != 2 {
+		t.Fatalf("decode drops = %d, want 2", stats.DecodeDrops)
+	}
+	if stats.DecodeLatestError != laterErr.Error() {
+		t.Fatalf("latest decode error = %q, want %q", stats.DecodeLatestError, laterErr)
+	}
+	if strings.Contains(stats.DecodeLatestError, payload) || strings.Contains(stats.DecodeLatestError, laterPayload) {
+		t.Fatalf("latest decode error retained payload: %q", stats.DecodeLatestError)
+	}
+	select {
+	case got := <-frames:
+		t.Fatalf("failed decode emitted frame %+v", got)
+	default:
 	}
 }
 

@@ -458,7 +458,7 @@ func TestDecodeWorkerRejectsInvalidActiveDirectKittyBeforeDecode(t *testing.T) {
 		e.runDecodeWorker(ctx, q, out)
 	}()
 	q.put(seqRawFrame{seq: 1, data: "not-a-png"})
-	waitDecodeDrops(t, ingest)
+	waitDecodeDrops(t, ingest, 1)
 	cancel()
 	<-done
 
@@ -474,8 +474,8 @@ func TestDecodeWorkerRejectsInvalidActiveDirectKittyBeforeDecode(t *testing.T) {
 	if stats.DecodeDrops != 1 {
 		t.Fatalf("decode drops = %d, want 1", stats.DecodeDrops)
 	}
-	if stats.DecodeFirstError != "engine: direct Kitty PNG validation: kitty: invalid base64 PNG payload" {
-		t.Fatalf("first decode error = %q, want direct Kitty validation context", stats.DecodeFirstError)
+	if stats.DecodeLatestError != "engine: direct Kitty PNG validation: kitty: invalid base64 PNG payload" {
+		t.Fatalf("latest decode error = %q, want direct Kitty validation context", stats.DecodeLatestError)
 	}
 }
 
@@ -544,7 +544,7 @@ func TestDecodeWorkerCountsEachDecoderFailureOnce(t *testing.T) {
 				e.runDecodeWorker(ctx, q, out)
 			}()
 			q.put(seqRawFrame{seq: 1, data: test.data})
-			waitDecodeDrops(t, e.ingest)
+			waitDecodeDrops(t, e.ingest, 1)
 			cancel()
 			<-done
 
@@ -552,14 +552,14 @@ func TestDecodeWorkerCountsEachDecoderFailureOnce(t *testing.T) {
 			if stats.DecodeDrops != 1 {
 				t.Fatalf("decode drops = %d, want 1", stats.DecodeDrops)
 			}
-			if !bytes.HasPrefix([]byte(stats.DecodeFirstError), []byte(test.wantPrefix)) {
-				t.Fatalf("first decode error = %q, want prefix %q", stats.DecodeFirstError, test.wantPrefix)
+			if !bytes.HasPrefix([]byte(stats.DecodeLatestError), []byte(test.wantPrefix)) {
+				t.Fatalf("latest decode error = %q, want prefix %q", stats.DecodeLatestError, test.wantPrefix)
 			}
-			if test.wantReason != "" && stats.DecodeFirstError != test.wantReason {
-				t.Fatalf("first decode error = %q, want %q", stats.DecodeFirstError, test.wantReason)
+			if test.wantReason != "" && stats.DecodeLatestError != test.wantReason {
+				t.Fatalf("latest decode error = %q, want %q", stats.DecodeLatestError, test.wantReason)
 			}
-			if strings.Contains(stats.DecodeFirstError, test.data) {
-				t.Fatalf("first decode error retained payload: %q", stats.DecodeFirstError)
+			if strings.Contains(stats.DecodeLatestError, test.data) {
+				t.Fatalf("latest decode error retained payload: %q", stats.DecodeLatestError)
 			}
 			select {
 			case frame := <-out:
@@ -623,22 +623,22 @@ func TestDecodePoolNonDecodeDropsDoNotChangeStats(t *testing.T) {
 	})
 }
 
-func waitDecodeDrops(t *testing.T, ingest *ingestCounter, legacyWant ...uint64) {
+func waitDecodeDrops(t *testing.T, ingest *ingestCounter, want uint64) {
 	t.Helper()
-	if len(legacyWant) > 1 || len(legacyWant) == 1 && legacyWant[0] != 1 {
-		t.Fatalf("waitDecodeDrops only supports one drop, got %v", legacyWant)
+	if want == 0 {
+		t.Fatal("waitDecodeDrops requires a positive target")
 	}
 	deadline := time.Now().Add(time.Second)
-	for ingest.decodeDrops.Load() != 1 {
+	for ingest.decodeDrops.Load() < want {
 		if time.Now().After(deadline) {
-			t.Fatalf("decode drops = %d, want 1", ingest.decodeDrops.Load())
+			t.Fatalf("decode drops = %d, want %d", ingest.decodeDrops.Load(), want)
 		}
 		time.Sleep(time.Millisecond)
 	}
-	// Give the worker time to expose an accidental second record for this frame.
+	// Give the worker time to expose an accidental extra record for this frame.
 	time.Sleep(10 * time.Millisecond)
-	if got := ingest.decodeDrops.Load(); got != 1 {
-		t.Fatalf("decode drops = %d after settle, want 1", got)
+	if got := ingest.decodeDrops.Load(); got != want {
+		t.Fatalf("decode drops = %d after settle, want %d", got, want)
 	}
 }
 
