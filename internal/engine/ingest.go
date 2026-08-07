@@ -34,10 +34,11 @@ const ingestWindow = time.Second
 // goroutine records arrivals, the worker records decode times, the viewer draw
 // goroutine reads; one mutex guards all three, and a screencast frame arrives at only
 // ~10-60/s, so the lock cost is nil. It is armed once at engine construction from
-// NYALA_FPS_TIMING; off, record is a bool check and the reporters return zero. It
+// NYALA_FPS_TIMING; off, timing recorders are no-ops and timing reports are zero. It
 // persists across sessions, so a resize or backend switch keeps the engine-lifetime
 // ingest rate; the trailing window ages stale entries out on its own, so a session
-// change needs no explicit reset.
+// change needs no explicit reset. Decode failures are the exception to the timing
+// gate: they are always counted so the default session-end warning can report them.
 type ingestCounter struct {
 	on     bool
 	window time.Duration
@@ -78,9 +79,9 @@ type ingestCounter struct {
 	ackMax    float64
 }
 
-// newIngestCounter returns a counter armed when NYALA_FPS_TIMING is set, or a
-// disabled counter whose methods are no-ops otherwise. The env read happens once at
-// construction, so an off run does no per-frame work beyond the armed check.
+// newIngestCounter returns a timing counter armed when NYALA_FPS_TIMING is set.
+// The env read happens once at construction, so an off run does no timing work.
+// Decode failures remain active in either state.
 func newIngestCounter() *ingestCounter {
 	return &ingestCounter{on: os.Getenv(fpsTimingEnv) != "", window: ingestWindow}
 }
@@ -143,10 +144,11 @@ func (c *ingestCounter) recordDecode(ms float64) {
 
 // recordDecodeDrop counts one failed worker decode and retains only the first
 // failure's text. It uses atomics because several decode workers can fail at
-// once, and a failure must never block frame ingest. Nil errors and disabled
-// counters are ignored.
+// once, and a failure must never block frame ingest. Unlike the timing fields,
+// it records when NYALA_FPS_TIMING is unset. Nil errors and nil counters are
+// ignored.
 func (c *ingestCounter) recordDecodeDrop(err error) {
-	if err == nil || !c.armed() {
+	if err == nil || c == nil {
 		return
 	}
 	c.decodeDrops.Add(1)
@@ -205,25 +207,27 @@ func (c *ingestCounter) fps(now time.Time) float64 {
 // the ingest span (first to last frame), the min/max/median instantaneous fps and
 // the worst inter-arrival gap from the collected gaps, the worker decode mean and
 // max, and the acknowledgement round-trip mean and max. It is read once at quit on
-// the viewer draw goroutine. It sorts the gap slice
-// once here, off the hot path, for the median. A nil or disabled counter, or a
-// session with no frame, reports the zero value.
+// the viewer draw goroutine. It sorts the gap slice once here, off the hot path,
+// for the median. Decode failures are returned even when timing is disabled or no
+// frame decoded; every other field stays zero in those cases. A nil counter reports
+// the zero value.
 func (c *ingestCounter) summary() render.IngestStats {
-	if !c.armed() {
+	if c == nil {
 		return render.IngestStats{}
+	}
+	stats := render.IngestStats{DecodeDrops: c.decodeDrops.Load()}
+	if reason := c.decodeFirstError.Load(); reason != nil {
+		stats.DecodeFirstError = *reason
+	}
+	if !c.armed() {
+		return stats
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.frames == 0 {
-		return render.IngestStats{}
+		return stats
 	}
-	stats := render.IngestStats{
-		Frames:      c.frames,
-		DecodeDrops: c.decodeDrops.Load(),
-	}
-	if reason := c.decodeFirstError.Load(); reason != nil {
-		stats.DecodeFirstError = *reason
-	}
+	stats.Frames = c.frames
 	if span := c.last.Sub(c.first).Seconds(); span > 0 {
 		stats.MeanFPS = float64(c.frames-1) / span
 	}

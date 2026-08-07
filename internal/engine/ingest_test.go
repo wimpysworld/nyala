@@ -196,10 +196,10 @@ func TestIngestCounterAckRTT(t *testing.T) {
 	}
 }
 
-// TestIngestCounterGatedOffSilent checks a disabled counter records nothing (frames,
-// gaps, decode, and ack all no-op) and the summary is the zero value, so an off run
-// is silent on the hot path and the seam.
-func TestIngestCounterGatedOffSilent(t *testing.T) {
+// TestIngestCounterTimingGatedOffKeepsDecodeDrops checks a timing-disabled counter
+// leaves timing fields at zero but still reports decode failures for the default
+// session-end warning.
+func TestIngestCounterTimingGatedOffKeepsDecodeDrops(t *testing.T) {
 	t.Parallel()
 	c := &ingestCounter{window: time.Second} // on is false
 	if c.armed() {
@@ -211,8 +211,9 @@ func TestIngestCounterGatedOffSilent(t *testing.T) {
 	c.recordDecodeDrop(errors.New("disabled failure"))
 	c.recordAck(3)
 	stats := c.summary()
-	if stats != (render.IngestStats{}) {
-		t.Fatalf("disabled summary = %+v, want the zero value", stats)
+	want := render.IngestStats{DecodeDrops: 1, DecodeFirstError: "disabled failure"}
+	if stats != want {
+		t.Fatalf("disabled timing summary = %+v, want %+v", stats, want)
 	}
 	if got := c.fps(time.Unix(0, 0)); got != 0 {
 		t.Fatalf("disabled fps = %.3f, want 0", got)

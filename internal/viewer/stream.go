@@ -220,21 +220,20 @@ func handleFatalSignal(sig os.Signal, restore func(), closeEngine func() error, 
 func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kittyTransport, version string) (err error) {
 	scheme := resolveScheme(blocks, os.Environ())
 	// The live fps meter counts every drawn frame for the badge and the quit
-	// summary. Its printSummary defer is registered before setupViewer's restore
+	// summary. The session summary defer is registered before setupViewer's restore
 	// below, so LIFO runs it last: after raw mode and the full-screen escapes are
-	// undone, so the summary line lands readable on the normal screen. The meter is
-	// nil unless NYALA_FPS_TIMING is set, so an off run pays only nil checks.
+	// undone, so its line lands readable on the normal screen. The meter is nil
+	// unless NYALA_FPS_TIMING is set.
 	fps := newFPSMeter(os.Environ())
-	// Wire the engine's optional ingest reporter so the badge and summary can show
-	// the screencast ingest rate (In) beside the paint rate (Out). ChromiumEngine
-	// implements it; a fake engine that does not leaves ingest nil, shown Out-only.
-	// Only when the meter is armed, so an off run never type-asserts.
+	// Read the optional ingest reporter on every session so an off run can report
+	// decode failures at quit. When the meter is armed, the same reporter supplies
+	// its live In rate and detailed summary. ChromiumEngine implements it; a fake
+	// engine that does not leaves ingest nil.
+	ingest, _ := eng.(ingestReporter)
 	if fps != nil {
-		if r, ok := eng.(ingestReporter); ok {
-			fps.ingest = r
-		}
+		fps.ingest = ingest
 	}
-	defer fps.printSummary(os.Stdout)
+	defer printStreamSummary(os.Stdout, fps, ingest)
 	fd, st, restore, err := setupViewer(eng, tty, colourFlag, kittyTransport, scheme)
 	if err != nil {
 		return err
@@ -2081,15 +2080,16 @@ type fpsMeter struct {
 	ingest ingestReporter
 }
 
-// ingestReporter is the optional engine capability the fps meter reads to show the
-// screencast ingest rate beside the paint rate. ChromiumEngine implements it; a
-// fake engine that does not is shown as Out-only. The viewer type-asserts the
-// Engine against it, so the Engine seam and all fakes stay unchanged.
+// ingestReporter is the optional engine capability the viewer reads for the
+// session-end decode warning and, when armed, the fps meter's In rate and summary.
+// ChromiumEngine implements it; a fake engine that does not is shown as Out-only.
+// The viewer type-asserts the Engine against it, so the Engine seam and all fakes
+// stay unchanged.
 type ingestReporter interface {
 	// IngestFPS returns the rolling window ingest rate at now, for the live badge.
 	IngestFPS(now time.Time) float64
-	// IngestSummary returns the session ingest statistics (frame count, mean/min/max/
-	// median fps, worst gap, and the worker decode mean and max) for the quit summary.
+	// IngestSummary returns the session ingest statistics, including decode failures,
+	// for the quit summary or default warning.
 	IngestSummary() render.IngestStats
 }
 
@@ -2297,6 +2297,24 @@ func (m *fpsMeter) refresh(now time.Time) {
 	m.formatBarText(now)
 }
 
+// printStreamSummary writes the one session-end report. An armed fps meter owns
+// the output, including decode failures. Without one, a non-zero decode-drop count
+// produces one warning; a clean session stays silent.
+func printStreamSummary(w io.Writer, fps *fpsMeter, ingest ingestReporter) {
+	if fps != nil {
+		fps.printSummary(w)
+		return
+	}
+	if ingest == nil {
+		return
+	}
+	stats := ingest.IngestSummary()
+	if stats.DecodeDrops == 0 {
+		return
+	}
+	fmt.Fprintf(w, "nyala: warning: frame decode failures: dropped=%d first_error=%q\n", stats.DecodeDrops, stats.DecodeFirstError)
+}
+
 // printSummary writes one compact fps summary line to w after the session ends. It
 // reports warmup_ms (time to the first counted frame, so the "loads slowly" signal
 // stays visible), then the two rate streams. The In stream (screencast ingest) gets
@@ -2322,7 +2340,15 @@ func (m *fpsMeter) printSummary(w io.Writer) {
 	if m == nil {
 		return
 	}
+	var in render.IngestStats
+	if m.ingest != nil {
+		in = m.ingest.IngestSummary()
+	}
 	if m.frames == 0 {
+		if in.DecodeDrops != 0 {
+			fmt.Fprintf(w, "nyala fps: warmup_ms=unavailable in_decode_drops=%d in_decode_first_error=%q\n", in.DecodeDrops, in.DecodeFirstError)
+			return
+		}
 		fmt.Fprintln(w, "nyala fps: warmup_ms=unavailable")
 		return
 	}
@@ -2346,10 +2372,6 @@ func (m *fpsMeter) printSummary(w io.Writer) {
 	if m.paintFrames > 0 {
 		encodeMean = m.encodeSum / float64(m.paintFrames)
 		writeMean = m.writeSum / float64(m.paintFrames)
-	}
-	var in render.IngestStats
-	if m.ingest != nil {
-		in = m.ingest.IngestSummary()
 	}
 	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f in_frames=%d in_mean=%.1f in_min=%.1f in_max=%.1f in_median=%.1f in_worst_gap_ms=%.1f in_decode_mean_ms=%.1f in_decode_max_ms=%.1f in_decode_drops=%d in_decode_first_error=%q out_frames=%d wall=%.2fs out_mean=%.1f out_median=%.1f out_min=%.1f out_max=%.1f out_worst_gap_ms=%.1f out_encode_mean_ms=%.1f out_encode_max_ms=%.1f out_write_mean_ms=%.1f out_write_max_ms=%.1f ack_rtt_mean_ms=%.1f ack_rtt_max_ms=%.1f\n",
 		warmupMS, in.Frames, in.MeanFPS, in.MinFPS, in.MaxFPS, in.MedianFPS, in.WorstGapMS, in.DecodeMeanMS, in.DecodeMaxMS, in.DecodeDrops, in.DecodeFirstError,

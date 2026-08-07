@@ -334,3 +334,47 @@ func TestFPSMeterSummaryReportsZeroDecodeDrops(t *testing.T) {
 		t.Fatalf("zero-drop summary = %q", out)
 	}
 }
+
+func TestPrintStreamSummaryReportsDecodeDropsWithoutFPS(t *testing.T) {
+	ingest := fakeIngest{stats: render.IngestStats{
+		DecodeDrops: 2, DecodeFirstError: "jpeg decode: invalid marker",
+	}}
+	var b strings.Builder
+	printStreamSummary(&b, nil, ingest)
+
+	want := "nyala: warning: frame decode failures: dropped=2 first_error=\"jpeg decode: invalid marker\"\n"
+	if got := b.String(); got != want {
+		t.Fatalf("default session summary = %q, want %q", got, want)
+	}
+}
+
+func TestPrintStreamSummarySilentWithoutDecodeDrops(t *testing.T) {
+	var b strings.Builder
+	printStreamSummary(&b, nil, fakeIngest{})
+	if b.Len() != 0 {
+		t.Fatalf("clean default session wrote %q", b.String())
+	}
+}
+
+func TestPrintStreamSummaryDoesNotDuplicateFPSDecodeDrops(t *testing.T) {
+	ingest := fakeIngest{stats: render.IngestStats{
+		DecodeDrops: 2, DecodeFirstError: "jpeg decode: invalid marker",
+	}}
+	m := &fpsMeter{window: time.Second, ingest: ingest}
+	var b strings.Builder
+	printStreamSummary(&b, m, ingest)
+	out := b.String()
+
+	if strings.Count(out, "\n") != 1 {
+		t.Fatalf("timed session wrote %d lines, want 1: %q", strings.Count(out, "\n"), out)
+	}
+	if !strings.HasPrefix(out, "nyala fps: ") {
+		t.Fatalf("timed session summary = %q, want fps summary", out)
+	}
+	if got := strings.Count(out, "in_decode_drops=2"); got != 1 {
+		t.Fatalf("timed session reported decode drops %d times, want once: %q", got, out)
+	}
+	if strings.Contains(out, "nyala: warning:") {
+		t.Fatalf("timed session also wrote the default warning: %q", out)
+	}
+}
