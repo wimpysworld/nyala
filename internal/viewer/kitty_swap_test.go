@@ -295,6 +295,21 @@ func TestRetainedPNGFallsBackAfterBackendSwitch(t *testing.T) {
 	if _, ok := decoded.(*image.NRGBA); !ok {
 		t.Fatalf("decoded retained PNG = %T, want *image.NRGBA", decoded)
 	}
+	raw, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		t.Fatalf("decode retained PNG with stdlib: %v", err)
+	}
+	want, err := png.Decode(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("decode retained PNG oracle: %v", err)
+	}
+	gotPixels := image.NewNRGBA(decoded.Bounds())
+	draw.Draw(gotPixels, gotPixels.Bounds(), decoded, decoded.Bounds().Min, draw.Src)
+	wantPixels := image.NewNRGBA(want.Bounds())
+	draw.Draw(wantPixels, wantPixels.Bounds(), want, want.Bounds().Min, draw.Src)
+	if !bytes.Equal(gotPixels.Pix, wantPixels.Pix) {
+		t.Fatal("decoded retained PNG pixels differ from stdlib")
+	}
 	var out bytes.Buffer
 	if err := s.RenderStreamFrame(render.Frame{EncodedPNG: data}, &out); err != nil {
 		t.Fatalf("render retained PNG through Sixel: %v", err)
@@ -313,6 +328,27 @@ func TestRetainedPNGFallsBackAfterBackendSwitch(t *testing.T) {
 				t.Fatalf("decoded pixel (%d,%d) = %#v, want RGB(%d,%d,%d)", x, y, got, want.R, want.G, want.B)
 			}
 		}
+	}
+}
+
+func TestDecodeFramePNGRejectsMalformedBase64(t *testing.T) {
+	valid := encodedPNG(t, solidImageSize(8, 8, color.RGBA{R: 0xff, A: 0xff}))
+	cases := map[string]string{
+		"alphabet":          valid[:len(valid)/2] + "!" + valid[len(valid)/2+1:],
+		"padding":           valid[:16] + "=" + valid[17:],
+		"truncated quantum": valid[:len(valid)-1],
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := base64.StdEncoding.DecodeString(data); err == nil {
+				t.Fatal("stdlib accepted malformed Base64 test input")
+			}
+			if _, err := decodeFramePNG(data); err == nil {
+				t.Fatal("decodeFramePNG accepted malformed Base64")
+			} else if !strings.HasPrefix(err.Error(), "viewer: decode retained PNG base64: ") {
+				t.Fatalf("decodeFramePNG error = %q, want wrapped Base64 prefix", err)
+			}
+		})
 	}
 }
 

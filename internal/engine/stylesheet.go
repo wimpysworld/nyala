@@ -1,9 +1,10 @@
 package engine
 
 import (
-	"encoding/base64"
 	"fmt"
 	"strings"
+
+	emmb64 "github.com/emmansun/base64"
 )
 
 // fontFamily is the family name the injected @font-face declares and the forced
@@ -63,7 +64,7 @@ var forcingExclusions = []string{"img", "svg", "canvas", "video", "iframe", "emb
 // fixed element paints at, so a fixed nav lands on its painted row without forcing it
 // into flow.
 func buildStylesheetScriptWithPaint(fontBytes []byte, cellW, cellH float64, paintText bool) string {
-	dataURL := "data:font/ttf;base64," + base64.StdEncoding.EncodeToString(fontBytes)
+	dataURL := "data:font/ttf;base64," + emmb64.StdEncoding.EncodeToString(fontBytes)
 	seedPx := cellW / advanceRatio
 	textFill := "transparent"
 	if paintText {

@@ -88,6 +88,27 @@ func TestOSC52ClipboardEncodesPayload(t *testing.T) {
 	}
 }
 
+// TestOSC52ClipboardMatchesStandardEncoding checks the complete sequence
+// against the standard library oracle. The short cases pin both padding forms,
+// while the largest accepted payload pins the append path at the protocol
+// boundary.
+func TestOSC52ClipboardMatchesStandardEncoding(t *testing.T) {
+	for _, text := range []string{
+		"x",
+		"xy",
+		strings.Repeat("a", clipboardMaxBytes),
+	} {
+		want := []byte(osc52Prefix + base64.StdEncoding.EncodeToString([]byte(text)) + osc52Terminator)
+		got := osc52Clipboard(text)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("sequence for %d input bytes differs from the standard encoding", len(text))
+		}
+		if len(got) > 100000 {
+			t.Fatalf("sequence for %d input bytes is %d bytes, want at most the 100000-byte OSC 52 limit", len(text), len(got))
+		}
+	}
+}
+
 // TestOSC52ClipboardBound pins the write bound at its boundary: nothing to copy
 // and a selection exactly at clipboardMaxBytes are the two ends that must work,
 // and one byte over is refused rather than truncated, so no caller can emit a
