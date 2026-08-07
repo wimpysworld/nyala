@@ -9,7 +9,6 @@ import (
 	"image/color"
 	"image/png"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -59,18 +58,11 @@ func drivePool(t *testing.T, e *ChromiumEngine, workers int) (*rawFrameQueue, <-
 	rawQ := newRawFrameQueue(workers + 1)
 	frames := make(chan render.Frame, 256)
 	decoded := make(chan decodedFrame, workers)
-	var wg sync.WaitGroup
-	wg.Add(workers + 1)
-	for range workers {
-		go func() { defer wg.Done(); e.runDecodeWorker(ctx, rawQ, decoded) }()
-	}
-	go func() {
-		defer wg.Done()
-		e.runDecodeCollector(ctx, decoded, frames, &textSync{}, make(chan struct{}, 1), make(chan struct{}, 1))
-	}()
+	done := make(chan struct{})
+	go e.runDecodePipeline(ctx, rawQ, decoded, frames, &textSync{}, make(chan struct{}, 1), make(chan struct{}, 1), workers, done)
 	stop := func() {
 		cancel()
-		wg.Wait()
+		<-done
 	}
 	return rawQ, frames, stop
 }
@@ -284,6 +276,60 @@ func TestTeardownSessionDropsCancelledCollectorFrames(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("replacement frame was not available after teardown")
 		}
+	}
+}
+
+// TestTeardownSessionWaitsForInFlightDecodeFailure proves Close cannot read the
+// session summary until a decode already running at cancellation has reported its
+// failure and exited.
+func TestTeardownSessionWaitsForInFlightDecodeFailure(t *testing.T) {
+	decodeStarted := make(chan struct{})
+	releaseDecode := make(chan struct{})
+	ingest := &ingestCounter{window: ingestWindow}
+	e := &ChromiumEngine{
+		backend: backendBlock,
+		frames:  make(chan render.Frame, frameChannelBuffer),
+		ingest:  ingest,
+		decode: func(string) (*image.RGBA, error) {
+			close(decodeStarted)
+			<-releaseDecode
+			return nil, errors.New("in-flight decode failed")
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	e.ctx, e.cancel = ctx, cancel
+	rawQ := newRawFrameQueue(1)
+	decoded := make(chan decodedFrame, 1)
+	done := make(chan struct{})
+	e.framePublisherDone = done
+	go e.runDecodePipeline(ctx, rawQ, decoded, e.frames, &textSync{}, nil, nil, 1, done)
+	rawQ.put(seqRawFrame{seq: 1, data: "payload"})
+
+	select {
+	case <-decodeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("decode did not start")
+	}
+	teardownDone := make(chan struct{})
+	go func() {
+		e.teardownSession()
+		close(teardownDone)
+	}()
+	select {
+	case <-teardownDone:
+		t.Fatal("teardown returned while a decode failure was in flight")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(releaseDecode)
+	select {
+	case <-teardownDone:
+	case <-time.After(time.Second):
+		t.Fatal("teardown did not return after the decode worker exited")
+	}
+
+	stats := ingest.summary()
+	if stats.DecodeDrops != 1 || stats.DecodeLatestError != "in-flight decode failed" {
+		t.Fatalf("decode summary = %+v, want the in-flight failure", stats)
 	}
 }
 

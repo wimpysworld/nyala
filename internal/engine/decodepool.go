@@ -326,6 +326,23 @@ func (e *ChromiumEngine) runDecodeWorker(ctx context.Context, q *rawFrameQueue, 
 	}
 }
 
+// runDecodePipeline joins the collector and every decode worker before marking the
+// session pipeline done. This makes decode failures which finish during cancellation
+// visible before teardown returns and its caller reads the session summary.
+func (e *ChromiumEngine) runDecodePipeline(ctx context.Context, q *rawFrameQueue, decoded chan decodedFrame, frames chan render.Frame, ts *textSync, scroll chan<- struct{}, reEmit <-chan struct{}, workerCount int, done chan<- struct{}) {
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			e.runDecodeWorker(ctx, q, decoded)
+		}()
+	}
+	e.runDecodeCollector(ctx, decoded, frames, ts, scroll, reEmit)
+	workers.Wait()
+	close(done)
+}
+
 // captureGeom returns the capture geometry the engine currently expects: the
 // screencast cap for the held grid, cell pair, and backend, read under mu. The
 // collector tags its held re-emit bitmap with it, so a bitmap captured for an
