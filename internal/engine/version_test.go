@@ -1,6 +1,11 @@
 package engine
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+
+	"github.com/chromedp/cdproto/emulation"
+)
 
 // TestFormatBrowserVersion asserts the display normalisation of the raw
 // Browser.getVersion product: a leading Headless is stripped from the name and
@@ -32,6 +37,41 @@ func TestFormatBrowserUserAgent(t *testing.T) {
 	const want = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.7204.49 Safari/537.36"
 	if got := formatBrowserUserAgent(headlessUA); got != want {
 		t.Fatalf("formatBrowserUserAgent(%q) = %q, want %q", headlessUA, got, want)
+	}
+}
+
+func TestUserAgentOverridePreservesNativeMetadata(t *testing.T) {
+	metadata := &userAgentMetadata{
+		Brands: []*emulation.UserAgentBrandVersion{
+			{Brand: "Not/A)Brand", Version: "8"},
+			{Brand: "Chromium", Version: "138"},
+		},
+		FullVersionList: []*emulation.UserAgentBrandVersion{
+			{Brand: "Not/A)Brand", Version: "8.0.0.0"},
+			{Brand: "Chromium", Version: "138.0.7204.49"},
+		},
+		Platform:        "Linux",
+		PlatformVersion: "6.12.0",
+		Architecture:    "x86",
+		Bitness:         "64",
+		Model:           "",
+		Mobile:          false,
+		Wow64:           false,
+		FormFactors:     []string{"Desktop"},
+	}
+	override := userAgentOverride("native UA", metadata)
+	if override.UserAgent != "native UA" {
+		t.Fatalf("UserAgent = %q, want native UA", override.UserAgent)
+	}
+	if !reflect.DeepEqual(override.UserAgentMetadata, metadata) {
+		t.Fatalf("UserAgentMetadata = %#v, want %#v", override.UserAgentMetadata, metadata)
+	}
+}
+
+func TestUserAgentOverrideWithoutMetadata(t *testing.T) {
+	override := userAgentOverride("legacy UA", nil)
+	if override.UserAgentMetadata != nil {
+		t.Fatalf("UserAgentMetadata = %#v, want nil", override.UserAgentMetadata)
 	}
 }
 

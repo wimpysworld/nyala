@@ -51,8 +51,9 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	}
 	cx, cy := wheelCentre(e.cols, e.rows, e.cellW, e.cellH, e.layoutScale())
 	e.mu.Unlock()
-	// Cache the browser product and user agent once per engine; a rebuild reuses
-	// them, and a failure degrades to an empty version string and no UA override.
+	// Cache the browser product, user agent, and native client hints once per engine.
+	// A rebuild reuses them. A failure degrades to an empty version string and no
+	// user-agent override, while missing client hints keep the legacy override.
 	e.fetchBrowserVersion(ctx)
 	if err := e.applyUserAgentOverride(ctx); err != nil {
 		e.teardownSession()
