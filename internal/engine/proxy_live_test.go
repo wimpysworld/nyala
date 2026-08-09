@@ -31,6 +31,8 @@ const (
 // parses the proxy environment once. The engine must drive Chromium through the
 // proxy, answer the 407 over CDP, and emit a synced frame with a non-empty
 // bitmap and crisp text from the upstream page.
+// The final page request must also carry Sec-CH-UA, which proves that the
+// temporary client-hint target completed its own authenticated proxy request.
 //
 // The live build tag keeps it off the default build, `just test`, and CI. An
 // untagged `go test ./...` never compiles it and never launches a browser. Run
@@ -54,6 +56,7 @@ func TestLiveProxyAuthenticatedFrame(t *testing.T) {
 	// upstream means Chromium sends a forward GET, not a CONNECT, so plain
 	// forwarding is enough and no CONNECT handling is needed.
 	var sawAuth bool
+	mainDocument := make(chan http.Header, 1)
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !proxyCredentialsOK(r) {
 			w.Header().Set("Proxy-Authenticate", `Basic realm="nyala"`)
@@ -61,6 +64,12 @@ func TestLiveProxyAuthenticatedFrame(t *testing.T) {
 			return
 		}
 		sawAuth = true
+		if r.URL.String() == upstream.URL+"/" {
+			select {
+			case mainDocument <- r.Header.Clone():
+			default:
+			}
+		}
 
 		// Forward the absolute-URI GET upstream. Chromium addresses a forward
 		// proxy with the full target URL in the request line, so r.URL is
@@ -138,6 +147,14 @@ func TestLiveProxyAuthenticatedFrame(t *testing.T) {
 			}
 			if !sawAuth {
 				t.Fatal("proxy never saw an authenticated request; the page did not route through the proxy")
+			}
+			select {
+			case headers := <-mainDocument:
+				if got := headers.Get("Sec-CH-UA"); got == "" {
+					t.Fatal("proxied main document has an empty Sec-CH-UA header")
+				}
+			default:
+				t.Fatal("proxy did not capture the main document headers")
 			}
 			return
 		case <-deadline.C:

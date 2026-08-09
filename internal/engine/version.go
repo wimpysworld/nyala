@@ -81,7 +81,7 @@ func (e *ChromiumEngine) fetchBrowserVersion(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	metadata := fetchNativeUserAgentMetadata(ctx)
+	metadata := fetchNativeUserAgentMetadata(ctx, e.proxy)
 	e.mu.Lock()
 	e.browserProduct = product
 	e.browserUserAgent = userAgent
@@ -89,7 +89,7 @@ func (e *ChromiumEngine) fetchBrowserVersion(ctx context.Context) {
 	e.mu.Unlock()
 }
 
-func fetchNativeUserAgentMetadata(ctx context.Context) *userAgentMetadata {
+func fetchNativeUserAgentMetadata(ctx context.Context, proxy ProxyConfig) *userAgentMetadata {
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil
@@ -130,6 +130,9 @@ func fetchNativeUserAgentMetadata(ctx context.Context) *userAgentMetadata {
 	}
 	targetCtx, cancel := chromedp.NewContext(ctx, chromedp.WithTargetID(targetID))
 	defer cancel()
+	if err := enableProxyAuth(targetCtx, proxy); err != nil {
+		return nil
+	}
 	err = chromedp.Run(targetCtx, chromedp.Navigate(metadataURL))
 	var metadata *userAgentMetadata
 	if err == nil {
