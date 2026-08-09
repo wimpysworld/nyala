@@ -76,6 +76,11 @@ Never set `FENCE_SANDBOX` by hand.
   terminal writers emit nothing for that cell.
 - Find highlights paint transparent glyph ink on Block, where the overlay is the
   only text layer, and black ink elsewhere. Keep that split when changing either.
+- Use the SIMD `emmansun/base64` for every production base64 encode and
+  decode. On the frame hot path, decode through the pooled wrapper in
+  `internal/engine`. The standard library `encoding/base64` is acceptable
+  only in the test-support decoders (`internal/kittyinterop`,
+  `internal/renderdecode`).
 - Keep `internal/ocr` pure Go and cgo-free.
 - Use epsilon comparisons for floating-point image metrics. amd64 and arm64 can
   differ below 1e-12 because arm64 contracts operations to FMA.

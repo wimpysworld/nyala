@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"os"
@@ -10,8 +12,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/chromedp/cdproto/page"
+	emmb64 "github.com/emmansun/base64"
 
 	"github.com/wimpysworld/nyala/internal/render"
 	renderkitty "github.com/wimpysworld/nyala/internal/render/kitty"
@@ -94,9 +98,19 @@ type decodedFrame struct {
 	pending pendingFrame
 }
 
+// errStaleScreencastFormat reports a direct-transport payload that still carries
+// the previous screencast format. A backend cycle into direct Kitty restarts the
+// screencast as PNG, and the first frame or two after that restart can still
+// arrive as JPEG under the previous settings. Such a frame is expected, not
+// corrupt, so the worker drops it without counting a decode failure.
+var errStaleScreencastFormat = errors.New("engine: stale screencast frame after a format change")
+
 // directKittyPayload separates the active direct transport from payload validity.
 // The worker uses this distinction to reject corrupt direct PNG data before any
-// override or live pixel decoder can accept it.
+// override or live pixel decoder can accept it. A JPEG payload on this path is
+// the expected stale frame across a screencast format change, so it returns
+// errStaleScreencastFormat and the worker drops it silently. Every other invalid
+// payload still returns a wrapped renderkitty.ErrInvalidPNGData failure.
 func (e *ChromiumEngine) directKittyPayload(data string) (bool, error) {
 	e.mu.Lock()
 	direct := e.backend.UsesDirectPayload() && !e.kittyDecode
@@ -105,9 +119,33 @@ func (e *ChromiumEngine) directKittyPayload(data string) (bool, error) {
 		return false, nil
 	}
 	if !renderkitty.ValidDirectPNGData(data) {
+		if staleScreencastJPEG(data) {
+			return true, errStaleScreencastFormat
+		}
 		return true, fmt.Errorf("engine: direct Kitty PNG validation: %w", renderkitty.ErrInvalidPNGData)
 	}
 	return true, nil
+}
+
+// staleScreencastJPEG reports whether a base64 screencast payload decodes to the
+// JPEG start-of-image marker. The engine requests PNG for the direct transport,
+// so a JPEG there can only come from the previous screencast settings. It decodes
+// the first base64 quantum alone, and runs only after the PNG validation already
+// failed, so a healthy direct frame pays nothing for the check.
+func staleScreencastJPEG(data string) bool {
+	const quantum = 4 // one base64 group: four characters carry three bytes
+	if len(data) < quantum {
+		return false
+	}
+	// Read-only zero-copy view of the leading group, as decodeBase64Pooled takes
+	// of the whole payload: the decoder only reads src.
+	src := unsafe.Slice(unsafe.StringData(data), quantum)
+	var head [3]byte
+	n, err := emmb64.StdEncoding.Decode(head[:], src)
+	if err != nil {
+		return false
+	}
+	return bytes.HasPrefix(head[:n], jpegSOI)
 }
 
 // SetKittyDecode selects the kitty-shm decode mode. When on, frames that would
@@ -287,7 +325,12 @@ func (e *ChromiumEngine) runDecodeWorker(ctx context.Context, q *rawFrameQueue, 
 			} else {
 				direct, derr := e.directKittyPayload(raw.data)
 				if derr != nil {
-					e.ingest.recordDecodeDrop(derr)
+					// A stale frame from a screencast format change is expected,
+					// so drop it without a decode drop and without replacing the
+					// latest failure text. Every other failure still counts.
+					if !errors.Is(derr, errStaleScreencastFormat) {
+						e.ingest.recordDecodeDrop(derr)
+					}
 					continue
 				}
 				switch {

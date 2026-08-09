@@ -227,10 +227,11 @@ func TestDecodeKittyPlaneErrorsExposeStableContext(t *testing.T) {
 	}
 }
 
-// TestBackendSwitchLatestErrorReplacesInFlightJPEGValidation proves a JPEG
-// captured before a switch to direct Kitty records a transient validation drop,
-// then a real pixel decode failure after switching back replaces that reason.
-func TestBackendSwitchLatestErrorReplacesInFlightJPEGValidation(t *testing.T) {
+// TestBackendSwitchDropsStaleJPEGSilently proves a JPEG captured before a switch
+// to direct Kitty is an expected stale frame: it emits no frame, counts no decode
+// drop, and leaves the latest error empty. A real pixel decode failure after
+// switching back is still counted and still names its reason.
+func TestBackendSwitchDropsStaleJPEGSilently(t *testing.T) {
 	t.Parallel()
 	const payloadMarker = "WW190-private-payload"
 	payload := base64.StdEncoding.EncodeToString(append([]byte{0xff, 0xd8, 0xff, 0xdb, 0x00}, payloadMarker...))
@@ -249,44 +250,41 @@ func TestBackendSwitchLatestErrorReplacesInFlightJPEGValidation(t *testing.T) {
 	e.SetBackend(backendKitty)
 	if direct, err := e.directKittyPayload(payload); !direct {
 		t.Fatal("active direct Kitty transport was not selected")
-	} else if err == nil {
-		t.Fatal("JPEG payload passed the direct PNG validation")
+	} else if !errors.Is(err, errStaleScreencastFormat) {
+		t.Fatalf("directKittyPayload() error = %v, want errStaleScreencastFormat", err)
 	}
 	rawQ, frames, stop := drivePool(t, e, 1)
 	defer stop()
+	pngData := pngPayload(t)
 	rawQ.put(seqRawFrame{seq: 1, data: payload})
+	// The restarted screencast delivers PNG. One worker takes the queue in
+	// order, so this frame arriving proves the stale JPEG is already handled.
+	rawQ.put(seqRawFrame{seq: 2, data: pngData})
 
-	waitDecodeDrops(t, ingest, 1)
+	if got := recvFrame(t, frames); got.EncodedPNG != pngData {
+		t.Fatalf("first emitted frame = %+v, want the direct PNG payload", got)
+	}
 	if got := decodeCalls.Load(); got != 0 {
 		t.Fatalf("pixel decoder calls = %d, want 0", got)
 	}
-	select {
-	case got := <-frames:
-		t.Fatalf("invalid in-flight JPEG emitted frame %+v", got)
-	default:
-	}
 	stats := ingest.summary()
-	if stats.DecodeDrops != 1 {
-		t.Fatalf("decode drops = %d, want 1", stats.DecodeDrops)
+	if stats.DecodeDrops != 0 {
+		t.Fatalf("decode drops = %d, want 0 for a stale screencast frame", stats.DecodeDrops)
 	}
-	const wantPrefix = "engine: direct Kitty PNG validation:"
-	if !strings.HasPrefix(stats.DecodeLatestError, wantPrefix) {
-		t.Fatalf("latest decode error = %q, want prefix %q", stats.DecodeLatestError, wantPrefix)
-	}
-	if strings.Contains(stats.DecodeLatestError, payloadMarker) || strings.Contains(stats.DecodeLatestError, payload) {
-		t.Fatalf("latest decode error retained payload: %q", stats.DecodeLatestError)
+	if stats.DecodeLatestError != "" {
+		t.Fatalf("latest decode error = %q, want empty", stats.DecodeLatestError)
 	}
 
 	const laterPayload = "later-private-payload"
 	e.SetBackend(backendBlock)
-	rawQ.put(seqRawFrame{seq: 2, data: laterPayload})
-	waitDecodeDrops(t, ingest, 2)
+	rawQ.put(seqRawFrame{seq: 3, data: laterPayload})
+	waitDecodeDrop(t, ingest)
 	if got := decodeCalls.Load(); got != 1 {
 		t.Fatalf("pixel decoder calls = %d, want 1", got)
 	}
 	stats = ingest.summary()
-	if stats.DecodeDrops != 2 {
-		t.Fatalf("decode drops = %d, want 2", stats.DecodeDrops)
+	if stats.DecodeDrops != 1 {
+		t.Fatalf("decode drops = %d, want 1", stats.DecodeDrops)
 	}
 	if stats.DecodeLatestError != laterErr.Error() {
 		t.Fatalf("latest decode error = %q, want %q", stats.DecodeLatestError, laterErr)
@@ -298,6 +296,70 @@ func TestBackendSwitchLatestErrorReplacesInFlightJPEGValidation(t *testing.T) {
 	case got := <-frames:
 		t.Fatalf("failed decode emitted frame %+v", got)
 	default:
+	}
+}
+
+// TestDirectKittyCorruptPayloadCountsDecodeDrop proves the failure path survives
+// the stale-frame classification: a direct-mode payload that is neither a valid
+// PNG nor a JPEG still counts one decode drop, still names the validation
+// failure, and still emits no frame.
+func TestDirectKittyCorruptPayloadCountsDecodeDrop(t *testing.T) {
+	t.Parallel()
+	const payloadMarker = "corrupt-private-payload"
+	payload := base64.StdEncoding.EncodeToString([]byte(payloadMarker))
+	ingest := &ingestCounter{on: true, window: ingestWindow}
+	e := &ChromiumEngine{backend: backendKitty, ingest: ingest}
+	rawQ, frames, stop := drivePool(t, e, 1)
+	defer stop()
+	rawQ.put(seqRawFrame{seq: 1, data: payload})
+
+	waitDecodeDrop(t, ingest)
+	stats := ingest.summary()
+	const wantPrefix = "engine: direct Kitty PNG validation:"
+	if !strings.HasPrefix(stats.DecodeLatestError, wantPrefix) {
+		t.Fatalf("latest decode error = %q, want prefix %q", stats.DecodeLatestError, wantPrefix)
+	}
+	if strings.Contains(stats.DecodeLatestError, payloadMarker) || strings.Contains(stats.DecodeLatestError, payload) {
+		t.Fatalf("latest decode error retained payload: %q", stats.DecodeLatestError)
+	}
+	select {
+	case got := <-frames:
+		t.Fatalf("corrupt direct payload emitted frame %+v", got)
+	default:
+	}
+}
+
+// TestBackendCycleLeavesSessionSummaryClean proves a backend cycle into direct
+// Kitty ends with the clean session summary printStreamSummary keeps silent: the
+// stale JPEG frames Chromium sends after the format change leave the decode-drop
+// count at zero and the latest error empty.
+func TestBackendCycleLeavesSessionSummaryClean(t *testing.T) {
+	t.Parallel()
+	jpegData := encodeBase64JPEG(t)
+	pngData := pngPayload(t)
+	ingest := &ingestCounter{on: true, window: ingestWindow}
+	e := &ChromiumEngine{backend: backendBlock, ingest: ingest}
+	rawQ, frames, stop := drivePool(t, e, 1)
+	defer stop()
+	rawQ.put(seqRawFrame{seq: 1, data: jpegData})
+	if got := recvFrame(t, frames); got.Img == nil {
+		t.Fatal("Block JPEG frame before the cycle has no decoded pixels")
+	}
+
+	e.SetBackend(backendKitty)
+	// Chromium restarts the screencast as PNG, but these frames were captured
+	// under the previous JPEG settings.
+	rawQ.put(seqRawFrame{seq: 2, data: jpegData})
+	rawQ.put(seqRawFrame{seq: 3, data: jpegData})
+	rawQ.put(seqRawFrame{seq: 4, data: pngData})
+
+	if got := recvFrame(t, frames); got.EncodedPNG != pngData {
+		t.Fatalf("frame after the cycle = %+v, want the direct PNG payload", got)
+	}
+	stats := ingest.summary()
+	if stats.DecodeDrops != 0 || stats.DecodeLatestError != "" {
+		t.Fatalf("session summary after a clean cycle = drops %d latest_error %q, want 0 and empty",
+			stats.DecodeDrops, stats.DecodeLatestError)
 	}
 }
 

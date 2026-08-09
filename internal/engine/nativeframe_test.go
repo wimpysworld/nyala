@@ -229,7 +229,7 @@ func TestDecodePoolDropsUnsupportedJPEGWithoutFallbackFrame(t *testing.T) {
 	payload := base64.StdEncoding.EncodeToString(unsupportedSequentialJPEG(t))
 	e.ingest.record(time.Unix(0, 0))
 	rawQ.put(seqRawFrame{seq: 1, data: payload})
-	waitDecodeDrops(t, e.ingest, 1)
+	waitDecodeDrop(t, e.ingest)
 
 	stats := e.ingest.summary()
 	if stats.DecodeDrops != 1 {
