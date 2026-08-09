@@ -519,7 +519,11 @@ func proxyAuthDecision(ev any, answered map[fetch.RequestID]bool, cfg ProxyConfi
 // the set-once e.proxy and need no lock; the listener runs its CDP call in a
 // goroutine and never holds e.mu across chromedp.Run.
 func (e *ChromiumEngine) enableProxyAuth(ctx context.Context) error {
-	if !e.proxy.HasCredentials {
+	return enableProxyAuth(ctx, e.proxy)
+}
+
+func enableProxyAuth(ctx context.Context, cfg ProxyConfig) error {
+	if !cfg.HasCredentials {
 		return nil
 	}
 	// fetch.Enable with no RequestPattern set pauses every request, not just the
@@ -532,7 +536,6 @@ func (e *ChromiumEngine) enableProxyAuth(ctx context.Context) error {
 		return err
 	}
 	answered := make(map[fetch.RequestID]bool)
-	cfg := e.proxy
 	chromedp.ListenTarget(ctx, func(ev any) {
 		action := proxyAuthDecision(ev, answered, cfg)
 		switch action.Kind {
