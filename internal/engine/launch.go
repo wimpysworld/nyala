@@ -166,6 +166,9 @@ type allocatorConfig struct {
 // gesture, and Nyala has no input yet. The caller gates audio on a detected host
 // sink. disableFrameRateLimit appends Chromium's matching launch switch when
 // requested; false preserves the default allocator options.
+// It disables Blink's AutomationControlled feature and overrides chromedp's
+// default enable-automation flag, so pages do not see navigator.webdriver as
+// true. The false value emits no --enable-automation argument.
 // It always adds --disable-smooth-scrolling: Chromium animates a keyboard
 // scroll over about 150 ms, which a terminal pays for in frames, and the caret
 // keys read the page's settled scroll offset back in the same dispatch that
@@ -175,6 +178,8 @@ func newAllocator(parent context.Context, cfg allocatorConfig) (context.Context,
 		chromedp.ExecPath(cfg.execPath),
 		chromedp.WindowSize(cfg.surfaceWidth, cfg.surfaceHeight),
 		chromedp.Flag("force-device-scale-factor", strconv.FormatFloat(cfg.scale, 'g', -1, 64)),
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.Flag("enable-automation", false),
 		chromedp.Flag("disable-smooth-scrolling", true),
 	)
 	if cfg.profileDir != "" {

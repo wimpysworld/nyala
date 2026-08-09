@@ -379,6 +379,23 @@ func TestLaunchArgvCarriesGPUFlags(t *testing.T) {
 	}
 }
 
+func TestLaunchArgvHidesAutomationSignals(t *testing.T) {
+	argv := recordLaunchArgv(t, nil)
+	for _, want := range []string{
+		"--disable-blink-features=AutomationControlled",
+		"--remote-debugging-port=0",
+	} {
+		if !slices.Contains(argv, want) {
+			t.Errorf("launch argv %v is missing %s", argv, want)
+		}
+	}
+	for _, arg := range argv {
+		if arg == "--enable-automation" || strings.HasPrefix(arg, "--enable-automation=") {
+			t.Errorf("launch argv contains automation flag %q", arg)
+		}
+	}
+}
+
 func TestLaunchArgvCarriesPersistentProfile(t *testing.T) {
 	profileDir := filepath.Join(t.TempDir(), "profile")
 	argv := recordLaunchArgv(t, func(e *ChromiumEngine) {
