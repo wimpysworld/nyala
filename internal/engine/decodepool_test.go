@@ -504,7 +504,7 @@ func TestDecodeWorkerRejectsInvalidActiveDirectKittyBeforeDecode(t *testing.T) {
 		e.runDecodeWorker(ctx, q, out)
 	}()
 	q.put(seqRawFrame{seq: 1, data: "not-a-png"})
-	waitDecodeDrops(t, ingest, 1)
+	waitDecodeDrop(t, ingest)
 	cancel()
 	<-done
 
@@ -590,7 +590,7 @@ func TestDecodeWorkerCountsEachDecoderFailureOnce(t *testing.T) {
 				e.runDecodeWorker(ctx, q, out)
 			}()
 			q.put(seqRawFrame{seq: 1, data: test.data})
-			waitDecodeDrops(t, e.ingest, 1)
+			waitDecodeDrop(t, e.ingest)
 			cancel()
 			<-done
 
@@ -669,22 +669,21 @@ func TestDecodePoolNonDecodeDropsDoNotChangeStats(t *testing.T) {
 	})
 }
 
-func waitDecodeDrops(t *testing.T, ingest *ingestCounter, want uint64) {
+// waitDecodeDrop waits for the counter to record exactly one decode drop, then
+// settles to prove the frame recorded no second one.
+func waitDecodeDrop(t *testing.T, ingest *ingestCounter) {
 	t.Helper()
-	if want == 0 {
-		t.Fatal("waitDecodeDrops requires a positive target")
-	}
 	deadline := time.Now().Add(time.Second)
-	for ingest.decodeDrops.Load() < want {
+	for ingest.decodeDrops.Load() < 1 {
 		if time.Now().After(deadline) {
-			t.Fatalf("decode drops = %d, want %d", ingest.decodeDrops.Load(), want)
+			t.Fatalf("decode drops = %d, want 1", ingest.decodeDrops.Load())
 		}
 		time.Sleep(time.Millisecond)
 	}
 	// Give the worker time to expose an accidental extra record for this frame.
 	time.Sleep(10 * time.Millisecond)
-	if got := ingest.decodeDrops.Load(); got != want {
-		t.Fatalf("decode drops = %d after settle, want %d", got, want)
+	if got := ingest.decodeDrops.Load(); got != 1 {
+		t.Fatalf("decode drops = %d after settle, want 1", got)
 	}
 }
 
@@ -714,6 +713,34 @@ func TestDecodePoolSixelDecodesJPEG(t *testing.T) {
 	}
 	if pixel.R <= pixel.G || pixel.R <= pixel.B {
 		t.Fatalf("pixel (0,0) = %+v, R must dominate G and B (RGBA order, not BGRA)", pixel)
+	}
+}
+
+// TestDecodePoolBlockDecodesStalePNG pins the mirror case of the direct-Kitty
+// stale frame: a PNG captured before a cycle out of Kitty still arrives while
+// Block is active, and the worker's signature sniff decodes it into pixels
+// instead of dropping it, so the cycle costs no decode drop in this direction.
+func TestDecodePoolBlockDecodesStalePNG(t *testing.T) {
+	t.Parallel()
+	ingest := &ingestCounter{on: true, window: ingestWindow}
+	e := &ChromiumEngine{backend: backendBlock, ingest: ingest}
+	rawQ, frames, stop := drivePool(t, e, 1)
+	defer stop()
+	rawQ.put(seqRawFrame{seq: 1, data: pngPayload(t)})
+
+	got := recvFrame(t, frames)
+	if got.Img == nil {
+		t.Fatal("stale PNG frame on the Block route has no decoded pixels")
+	}
+	if got.EncodedPNG != "" {
+		t.Fatal("stale PNG frame on the Block route retained a direct payload")
+	}
+	// pngPayload writes R=x*8, G=y*8, B=x+y, A=255, and PNG is lossless.
+	if pixel := imageToRGBA(got.Img).RGBAAt(4, 2); pixel != (color.RGBA{R: 32, G: 16, B: 6, A: 255}) {
+		t.Fatalf("pixel (4,2) = %+v, want R=32 G=16 B=6 A=255 (RGBA order)", pixel)
+	}
+	if drops := ingest.decodeDrops.Load(); drops != 0 {
+		t.Fatalf("decode drops = %d, want 0", drops)
 	}
 }
 
