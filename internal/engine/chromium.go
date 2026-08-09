@@ -54,13 +54,13 @@ type ChromiumEngine struct {
 	// before the first commit, when CurrentURL falls back to the launch URL.
 	currentURL string
 
-	// browserProduct and browserUserAgent are the raw Browser.getVersion values,
-	// fetched once at session start and cached for the engine lifetime, so a
-	// crash rebuild does not refetch them. BrowserVersion normalises product for
-	// display, while the user agent feeds the wire override. Empty when the fetch
-	// has not run or failed.
-	browserProduct   string
-	browserUserAgent string
+	// browserProduct and browserUserAgent are the raw Browser.getVersion values.
+	// userAgentMetadata is the matching native navigator.userAgentData value.
+	// They are fetched before the first override and cached for the engine lifetime,
+	// so a crash rebuild can reapply the same wire identity without refetching.
+	browserProduct    string
+	browserUserAgent  string
+	userAgentMetadata *userAgentMetadata
 
 	// scrollYTarget is the raw intended vertical scroll offset in CSS pixels before
 	// whole-cell snapping. On the block backend dispatchWheel accumulates every raw
