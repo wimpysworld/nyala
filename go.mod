@@ -4,7 +4,7 @@ go 1.26
 
 require (
 	github.com/agnivade/levenshtein v1.2.1
-	github.com/alecthomas/kong v1.16.0
+	github.com/alecthomas/kong v1.16.1
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/term v0.2.2
@@ -15,8 +15,8 @@ require (
 	github.com/ebitengine/purego v0.10.2
 	github.com/emmansun/base64 v0.10.0
 	github.com/ericpauley/go-quantize v0.0.0-20200331213906-ae555eb2afa4
-	github.com/gen2brain/jpegn v0.4.4
-	github.com/klauspost/compress v1.19.1
+	github.com/gen2brain/jpegn v0.5.0
+	github.com/klauspost/compress v1.19.2
 	github.com/lucasb-eyer/go-colorful v1.4.1
 	github.com/mattn/go-runewidth v0.0.27
 	github.com/mattn/go-sixel v0.0.12
