@@ -121,6 +121,61 @@ func TestMaybeEmitPointerShapeBarReset(t *testing.T) {
 	}
 }
 
+// TestPointerShapeBarRowInBarMode verifies that buttonless motion onto the
+// bar row while a non-chrome bar mode is open still writes exactly one reset,
+// and that repeated bar-row motion writes nothing more.
+func TestPointerShapeBarRowInBarMode(t *testing.T) {
+	eng := &pointerEngine{cursor: "pointer"}
+	s, out := newPointerSession(eng, "pointer")
+	s.st.Rows, s.st.Cols = 24, 80
+
+	// Establish the page shape in chrome mode first.
+	s.maybeEmitPointerShape()
+	out.Reset()
+
+	s.barMode = barModeFind
+	s.editor = newURLEditor("")
+	move := MouseEvent{Action: MouseActionMove, Button: MouseButtonNone, Row: 23, Col: 5}
+	s.handleMouse(move)
+	if got := strings.Count(out.String(), pointerShapeReset); got != 1 {
+		t.Fatalf("bar-row motion in find mode wrote %d resets (%q), want 1", got, out.String())
+	}
+	if !s.pointerOnBar {
+		t.Fatal("bar-row motion in find mode did not mark pointerOnBar")
+	}
+
+	out.Reset()
+	s.handleMouse(move)
+	if out.Len() != 0 {
+		t.Fatalf("repeated bar-row motion wrote %q, want nothing", out.String())
+	}
+}
+
+// TestPointerShapeResetOnModeEntry verifies that opening a bar mode under a
+// still pointer writes exactly one reset without any motion report, and that
+// page-area motion after the mode closes restores the page's shape.
+func TestPointerShapeResetOnModeEntry(t *testing.T) {
+	eng := &pointerEngine{cursor: "pointer"}
+	s, out := newPointerSession(eng, "pointer")
+	s.st.Rows, s.st.Cols = 24, 80
+
+	// Establish the page shape in chrome mode first.
+	s.maybeEmitPointerShape()
+	out.Reset()
+
+	s.handleKey(keyEvent{act: actionOpenFind})
+	if got := strings.Count(out.String(), pointerShapeReset); got != 1 {
+		t.Fatalf("find-mode entry wrote %d resets (%q), want 1", got, out.String())
+	}
+
+	s.leaveFind()
+	out.Reset()
+	s.handleMouse(MouseEvent{Action: MouseActionMove, Button: MouseButtonNone, Row: 5, Col: 5})
+	if got, want := strings.Count(out.String(), pointerShapeSequence("pointer")), 1; got != want {
+		t.Fatalf("page motion after leaving find wrote %d page shapes (%q), want %d", got, out.String(), want)
+	}
+}
+
 // TestMaybeEmitPointerShapeBytes verifies the emitted sequence is OSC 22
 // terminated by ST, with no BEL anywhere in the write.
 func TestMaybeEmitPointerShapeBytes(t *testing.T) {
