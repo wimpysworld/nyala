@@ -505,17 +505,23 @@ func (e *ChromiumEngine) watchLifecycle(ctx context.Context, lifecycle *sessionL
 // replaces any stale id. An announce that fills a previously empty id also pokes
 // the reflow channel once, because a cycle from a graphics backend to Block on a
 // quiet page has no other trigger and would hold with no text. An announce that
-// only replaces a live id does not poke, because it is not a layout shift. A shift
+// only replaces a live id does not poke, because it is not a layout shift. An
+// announce is applied only while layoutShiftActive is set, so a callback that was
+// queued when disableLayoutShift or teardownSession ran cannot restore a dead
+// execution context id. A shift
 // pokes the reflow channel. It is the listener logic, factored out of
 // watchLifecycle so it is unit-tested without a browser.
 func (e *ChromiumEngine) handleLayoutShiftPayload(kind string, ctxID runtime.ExecutionContextID) {
 	switch kind {
 	case layoutShiftPayloadAnnounce:
 		e.mu.Lock()
+		active := e.layoutShiftActive
 		wasEmpty := e.layoutShiftCtxID == 0
-		e.layoutShiftCtxID = ctxID
+		if active {
+			e.layoutShiftCtxID = ctxID
+		}
 		e.mu.Unlock()
-		if wasEmpty && ctxID != 0 {
+		if active && wasEmpty && ctxID != 0 {
 			e.pokeReflow()
 		}
 	case layoutShiftPayloadShift:
@@ -617,6 +623,7 @@ func (e *ChromiumEngine) teardownSession() {
 	e.forcedCellW, e.forcedCellH = 0, 0
 	e.layoutShiftID = ""
 	e.layoutShiftCtxID = 0
+	e.layoutShiftActive = false
 	e.mu.Unlock()
 	acks.stop()
 	if closeTimeout <= 0 {

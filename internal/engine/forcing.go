@@ -206,7 +206,10 @@ func layoutShiftScriptParams(script string) *page.AddScriptToEvaluateOnNewDocume
 // registered first; the observer guard bails when the binding is absent, and
 // runImmediately runs the script at install time. runImmediately also covers the
 // already-loaded document, so no separate live evaluate is needed, and a page-world
-// evaluate would put the observer state back where the page can read it. A failed
+// evaluate would put the observer state back where the page can read it. It marks
+// the observer active before the binding registration, because runImmediately can
+// deliver the install announce before this call returns the observer script id, and
+// an announce is recorded only while that flag is set. A failed
 // binding registration skips the observer, since a binding-less observer never fires;
 // a successful binding then stores the observer script id so disableLayoutShift can
 // remove it on a backend switch. Any CDP error degrades the trigger (a layout shift
@@ -214,10 +217,16 @@ func layoutShiftScriptParams(script string) *page.AddScriptToEvaluateOnNewDocume
 // are dropped after the binding step. It rides the font-forcing enable path, so the
 // observer lives only while the block backend takes the overlay.
 func (e *ChromiumEngine) enableLayoutShift(ctx context.Context) {
+	e.mu.Lock()
+	e.layoutShiftActive = true
+	e.mu.Unlock()
 	if err := chromedp.Run(ctx,
 		runtime.Enable(),
 		layoutShiftBindingParams(),
 	); err != nil {
+		e.mu.Lock()
+		e.layoutShiftActive = false
+		e.mu.Unlock()
 		return
 	}
 	script := buildLayoutShiftScript()
@@ -264,10 +273,13 @@ func (e *ChromiumEngine) disableFontForcing(ctx context.Context) (enabled bool) 
 // failed remove leaves the id set and the state stays consistent. A missing script
 // id (the binding registered but the observer script did not) skips the script
 // remove and still disconnects the live observer and the binding. Errors are
+// It marks the observer inactive first, so a binding callback that is already
+// queued cannot restore the cleared execution context id. Errors are
 // dropped: an orphaned observer on a graphics-backend page is harmless (the snapshot
 // goroutine publishes nil there), so a failed cleanup degrades rather than fails.
 func (e *ChromiumEngine) disableLayoutShift(ctx context.Context) {
 	e.mu.Lock()
+	e.layoutShiftActive = false
 	id := e.layoutShiftID
 	ctxID := e.layoutShiftCtxID
 	e.mu.Unlock()

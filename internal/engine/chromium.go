@@ -144,6 +144,14 @@ type ChromiumEngine struct {
 	// It is reset per session by teardownSession alongside layoutShiftID.
 	layoutShiftCtxID runtime.ExecutionContextID
 
+	// layoutShiftActive reports whether the layout-shift observer is wanted, so a
+	// binding callback that was already queued when cleanup ran cannot restore a dead
+	// execution context id. enableLayoutShift sets it before the binding registration,
+	// because runImmediately can deliver the install announce before the observer
+	// script id comes back, and both disableLayoutShift and teardownSession clear it.
+	// An announce is recorded only while it is set. Guarded by mu.
+	layoutShiftActive bool
+
 	// windowID is the browser window id for the driven target, fetched once per
 	// session via browser.GetWindowForTarget and used to size the captured surface
 	// with Browser.SetContentsSize on launch and on every restart. It is reset per
