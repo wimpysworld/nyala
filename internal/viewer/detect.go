@@ -407,7 +407,10 @@ func parseBackgroundDark(buf []byte) (dark, ok bool) {
 // <flags>" ended by BEL or ST, where flags is a comma-separated list of "1"
 // and "0" values pairing with the query's names by position. Counted pairs are
 // parsed and extra flags are ignored, so a terminal that answers for more
-// names than Nyala asked about still parses. ok is false when the terminal
+// names than Nyala asked about still parses. Every flag in the reply must be
+// exactly "0" or "1"; any other token, or an empty body, invalidates the whole
+// reply, so malformed capability data degrades to no pointer-shape writes.
+// ok is false when the terminal
 // stayed silent or answered without a terminator, matching the
 // parseBackgroundDark polarity, and the caller then treats pointer shapes as
 // unsupported. The probe runs before the key reader goroutine exists, so the
@@ -426,7 +429,15 @@ func parsePointerShapes(buf []byte) (map[string]bool, bool) {
 	if body[end] == '\x1b' && (end+1 >= len(body) || body[end+1] != '\\') {
 		return nil, false
 	}
+	if end == 0 {
+		return nil, false
+	}
 	flags := bytes.Split(body[:end], []byte(","))
+	for _, f := range flags {
+		if !bytes.Equal(f, []byte("0")) && !bytes.Equal(f, []byte("1")) {
+			return nil, false
+		}
+	}
 	shapes := make(map[string]bool, len(pointerShapeNames))
 	for n, name := range pointerShapeNames {
 		if n >= len(flags) {

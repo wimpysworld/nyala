@@ -395,8 +395,9 @@ func pointerReply(flag byte, terminator string) string {
 
 // TestParsePointerShapes asserts the OSC 22 reply parser pairs flags with the
 // queried names by position, accepts both terminators, parses counted pairs
-// when the terminal answers for fewer names, and treats a missing or truncated
-// reply as no capability, matching the parseBackgroundDark polarity.
+// when the terminal answers for fewer names, and treats a missing, truncated,
+// or malformed reply as no capability, matching the parseBackgroundDark
+// polarity.
 func TestParsePointerShapes(t *testing.T) {
 	cases := []struct {
 		name string
@@ -441,6 +442,13 @@ func TestParsePointerShapes(t *testing.T) {
 		// its terminator, the parseBackgroundDark rule.
 		{name: "truncated before the DA1 reply", buf: "\x1b]22;1,1,1\x1b[?62;4c", wantOK: false},
 		{name: "no terminator at all", buf: "\x1b]22;1,1,1", wantOK: false},
+		// A malformed flag anywhere invalidates the whole reply, so bad
+		// capability data degrades to no pointer-shape writes.
+		{name: "malformed flag digit", buf: "\x1b]22;1,2,1\x07", wantOK: false},
+		{name: "malformed flag letter", buf: "\x1b]22;1,x,1\x07", wantOK: false},
+		{name: "empty flag element", buf: "\x1b]22;1,,1\x07", wantOK: false},
+		{name: "empty reply body", buf: "\x1b]22;\x07", wantOK: false},
+		{name: "only separators", buf: "\x1b]22;,,\x07", wantOK: false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
