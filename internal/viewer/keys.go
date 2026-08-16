@@ -721,7 +721,30 @@ func readAPCBody(br *bufio.Reader) ([]byte, bool) {
 		}
 		body = append(body, c, n)
 	}
-	return nil, false
+	// Over-long body: drain to the terminator without buffering, so the
+	// sequence's remaining bytes never leak as key events, then drop it.
+	return nil, drainToTerminator(br, false)
+}
+
+// drainToTerminator consumes bytes without buffering until the sequence's
+// terminator: the String Terminator (ESC backslash), and BEL too when
+// allowBEL is set (an OSC accepts both). It always returns false, so an
+// over-long sequence is dropped whole with bounded memory.
+func drainToTerminator(br *bufio.Reader, allowBEL bool) bool {
+	esc := false
+	for {
+		c, err := br.ReadByte()
+		if err != nil {
+			return false
+		}
+		if esc && c == '\\' {
+			return false
+		}
+		if allowBEL && c == '\x07' {
+			return false
+		}
+		esc = c == keyEsc
+	}
 }
 
 // readOSCBody reads an OSC body up to its BEL or String Terminator
@@ -751,5 +774,7 @@ func readOSCBody(br *bufio.Reader) ([]byte, bool) {
 		}
 		body = append(body, c, n)
 	}
-	return nil, false
+	// Over-long body: drain to the terminator without buffering, so the
+	// sequence's remaining bytes never leak as key events, then drop it.
+	return nil, drainToTerminator(br, true)
 }

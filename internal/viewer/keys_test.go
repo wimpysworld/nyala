@@ -642,17 +642,30 @@ func TestNextEventOSCAndDCSReplies(t *testing.T) {
 	}
 }
 
-// TestNextEventOSCBodyBounded asserts an OSC that never terminates within
-// maxAPCBody is dropped without an event, and the parser recovers on the
-// next escape sequence: garbage input cannot grow the buffer without limit
-// and cannot wedge the reader.
+// TestNextEventOSCBodyBounded asserts an OSC or DCS body longer than
+// maxAPCBody is consumed to its own terminator and dropped as one whole
+// event: no byte of the over-long reply arrives as a key event, the buffer
+// stays bounded, and the key after the terminator still arrives.
 func TestNextEventOSCBodyBounded(t *testing.T) {
-	events := collectEvents(t, "\x1b]"+strings.Repeat("a", maxAPCBody+1)+"\x1b[A")
-	if len(events) != 1 {
-		t.Fatalf("events = %d (%+v), want 1: only the Up arrow after recovery", len(events), events)
+	long := strings.Repeat("a", maxAPCBody+1)
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"osc bel", "\x1b]" + long + "\x07" + "\x1b[A"},
+		{"osc st", "\x1b]" + long + "\x1b\\" + "\x1b[A"},
+		{"dcs st", "\x1bP" + long + "\x1b\\" + "\x1b[A"},
 	}
-	if events[0].scroll != ScrollUp || events[0].osc != "" {
-		t.Fatalf("post-recovery event = %+v, want ScrollUp", events[0])
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			events := collectEvents(t, c.in)
+			if len(events) != 1 {
+				t.Fatalf("events = %d (%+v), want 1: only the Up arrow after the drop", len(events), events)
+			}
+			if events[0].scroll != ScrollUp || events[0].osc != "" || events[0].dcs != "" {
+				t.Fatalf("event after the drop = %+v, want ScrollUp", events[0])
+			}
+		})
 	}
 }
 
