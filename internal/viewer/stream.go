@@ -343,7 +343,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	diff := &block.GridDiff{}
 	st.SetDiff(diff)
 
-	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, outcomes: outcomes, ctl: ctl, diff: diff, fps: fps, launchURL: url, version: version}
+	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, outcomes: outcomes, ctl: ctl, diff: diff, fps: fps, launchURL: url, version: version, pointerWake: make(chan struct{}, 1)}
 	session = s
 	// Clear the screen and draw the bar immediately, with a blank page region
 	// and the launch URL: the first user feedback is the bar, not a text cue.
@@ -580,6 +580,11 @@ type streamSession struct {
 	// row, so maybeEmitPointerShape wants the default shape there rather
 	// than the page's cursor. Producer-goroutine only.
 	pointerOnBar bool
+	// pointerWake pokes the consumer loop after the input worker finishes a
+	// mouse dispatch, so an isolated hover's fresh cursor snapshot reaches
+	// maybeEmitPointerShape without waiting for another event or frame. Cap 1
+	// with a non-blocking send: coalesced pokes still trigger one re-read.
+	pointerWake chan struct{}
 	// launchURL is the URL Stream navigated to. The bar's URL segment shows
 	// it until the engine records a committed URL. Set once before the loops
 	// start and read-only after.
@@ -1018,9 +1023,11 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			}
 			pending = frame
 			havePending = true
-			// Each frame arrival re-reads the load state, so a milestone
-			// change during an active load reaches the terminal without a
-			// ticker. The steady cost is one struct compare.
+			// Each frame arrival re-reads the page title and the load state,
+			// so a title or milestone change during an active load reaches
+			// the terminal without a ticker. The steady cost is one string
+			// compare and one struct compare.
+			s.maybeEmitTitle()
 			s.maybeEmitProgress()
 			// The frame wake also re-reads the pointer cursor, so a hover
 			// whose read landed after the motion's own emit still reaches
@@ -1067,6 +1074,12 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			// The coalescing window closed: the newest move of the burst goes
 			// to the page.
 			s.flushMotionAt(time.Now())
+		case <-s.pointerWake:
+			// The input worker finished a mouse dispatch, so the engine's
+			// cursor snapshot is fresh: re-read it here, on the goroutine
+			// that owns lastShape, so an isolated hover onto a link changes
+			// the shape without a second mouse event or a new frame.
+			s.maybeEmitPointerShape()
 		case o := <-s.outcomes:
 			// A copy read the page's selection on the input worker, or a paste
 			// found no field there; the clipboard write and the bar signal
@@ -1871,9 +1884,10 @@ func (s *streamSession) flushMotionAt(now time.Time) {
 	s.motionWindow = now.Add(motionCoalesceInterval)
 	s.dispatchMouse(s.heldMotion)
 	// The dispatched hover refreshed nothing yet - the engine reads the
-	// cursor on its own goroutine - so this write reflects the previous
-	// hover's snapshot and the next flush or frame wake catches up. The 16 ms
-	// coalescing window bounds the rate.
+	// cursor on the input worker - so this write reflects the previous
+	// hover's snapshot. The worker pokes pointerWake once its dispatch
+	// returns, so an isolated hover catches up without another event. The
+	// 16 ms coalescing window bounds the rate.
 	s.maybeEmitPointerShape()
 }
 
@@ -1883,7 +1897,23 @@ func (s *streamSession) flushMotionAt(now time.Time) {
 // so the gesture reaches the page in order.
 func (s *streamSession) dispatchMouse(ev MouseEvent) {
 	if s.keySender != nil {
-		s.keySender.sendMouse(ev)
+		// Enqueue directly rather than through sendMouse, so the worker can
+		// poke pointerWake after the engine call returns: the engine reads
+		// the cursor inside SendMouse, so the poke tells the consumer loop
+		// that a fresh snapshot exists and an isolated hover's shape reaches
+		// the terminal without another event. The send never blocks, and a
+		// coalesced poke still triggers one re-read.
+		wake := s.pointerWake
+		s.keySender.enqueue(func(e Engine) {
+			e.SendMouse(ev)
+			if wake == nil {
+				return
+			}
+			select {
+			case wake <- struct{}{}:
+			default:
+			}
+		})
 		return
 	}
 	s.eng.SendMouse(ev)
