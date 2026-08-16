@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wimpysworld/nyala/internal/engine"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
@@ -89,6 +90,8 @@ func (e *pipeEngine) SendPaste(string) bool       { return false }
 func (e *pipeEngine) SendNav(NavAction)           {}
 func (e *pipeEngine) CurrentURL() string          { return "" }
 func (e *pipeEngine) CurrentTitle() string        { return "" }
+
+func (e *pipeEngine) LoadState() engine.LoadState { return engine.LoadState{} }
 func (e *pipeEngine) OpenURL(string)              {}
 func (e *pipeEngine) BrowserVersion() string      { return "" }
 func (e *pipeEngine) Find(string)                 {}

@@ -1,6 +1,9 @@
 package viewer
 
-import "github.com/wimpysworld/nyala/internal/render"
+import (
+	"github.com/wimpysworld/nyala/internal/engine"
+	"github.com/wimpysworld/nyala/internal/render"
+)
 
 type fakeEngine struct {
 	frames chan render.Frame
@@ -17,6 +20,8 @@ func (e *fakeEngine) SendPaste(string) bool       { return false }
 func (e *fakeEngine) SendNav(NavAction)           {}
 func (e *fakeEngine) CurrentURL() string          { return "" }
 func (e *fakeEngine) CurrentTitle() string        { return "" }
+
+func (e *fakeEngine) LoadState() engine.LoadState { return engine.LoadState{} }
 func (e *fakeEngine) OpenURL(string)              {}
 func (e *fakeEngine) BrowserVersion() string      { return "" }
 func (e *fakeEngine) Find(string)                 {}

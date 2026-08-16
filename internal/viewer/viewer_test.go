@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/wimpysworld/nyala/internal/cellraster"
+	"github.com/wimpysworld/nyala/internal/engine"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 	"github.com/wimpysworld/nyala/internal/renderdecode"
@@ -70,7 +71,7 @@ func TestCycleBackendBlockOnly(t *testing.T) {
 // restore auto-wrap, and reveal the cursor. An exit before the first frame
 // restores terminal modes in place, without scrolling unrelated content.
 func TestExitTerminal(t *testing.T) {
-	const want = "\x1b[0m\x1b[24;1H\r\n\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?80l\x1b[?7h\x1b[?25h\x1b[23;0t"
+	const want = "\x1b[0m\x1b[24;1H\r\n\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?80l\x1b[?7h\x1b[?25h\x1b[23;0t\x1b]9;4;0;0\x1b\\"
 	for _, backend := range []Backend{BackendBlock, BackendKitty, BackendSixel} {
 		t.Run(backend.String(), func(t *testing.T) {
 			if got := exitTerminal(24, true, false); got != want {
@@ -79,7 +80,7 @@ func TestExitTerminal(t *testing.T) {
 		})
 	}
 
-	const restoreInPlace = "\x1b[0m\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?80l\x1b[?7h\x1b[?25h\x1b[23;0t"
+	const restoreInPlace = "\x1b[0m\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?80l\x1b[?7h\x1b[?25h\x1b[23;0t\x1b]9;4;0;0\x1b\\"
 	if got := exitTerminal(24, false, false); got != restoreInPlace {
 		t.Fatalf("startup exit = %q, want %q", got, restoreInPlace)
 	}
@@ -90,7 +91,7 @@ func TestExitTerminal(t *testing.T) {
 	// A session that pushed the kitty keyboard protocol pops exactly one entry,
 	// between the paste reset and the Sixel reset, and a session that did not
 	// push emits no pop, so an outer application's entry survives.
-	const pushed = "\x1b[0m\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[<u\x1b[?80l\x1b[?7h\x1b[?25h\x1b[23;0t"
+	const pushed = "\x1b[0m\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[<u\x1b[?80l\x1b[?7h\x1b[?25h\x1b[23;0t\x1b]9;4;0;0\x1b\\"
 	if got := exitTerminal(0, false, true); got != pushed {
 		t.Fatalf("kitty-keyboard exit = %q, want %q", got, pushed)
 	}
@@ -701,6 +702,8 @@ func (e streamTestEngine) SendNav(a NavAction) {
 func (e streamTestEngine) CurrentURL() string { return e.currentURL }
 
 func (e streamTestEngine) CurrentTitle() string { return e.currentTitle }
+
+func (e streamTestEngine) LoadState() engine.LoadState { return engine.LoadState{} }
 
 func (e streamTestEngine) OpenURL(url string) {
 	if e.openURL != nil {

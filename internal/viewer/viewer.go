@@ -695,6 +695,18 @@ func setTitle(title string) string {
 	return "\x1b]0;" + title + "\x1b\\"
 }
 
+// progressSequence returns the OSC 9;4 sequence that reports page-load
+// progress to the terminal. Both fields are always present, because some
+// terminals treat a missing percent field oddly. The terminator is ST, never
+// BEL, matching setTitle.
+func progressSequence(state, percent int) string {
+	return "\x1b]9;4;" + strconv.Itoa(state) + ";" + strconv.Itoa(percent) + "\x1b\\"
+}
+
+// progressClear is the OSC 9;4 clear sequence the teardown writes
+// unconditionally, so no exit path leaves a progress indicator behind.
+const progressClear = "\x1b]9;4;0;0\x1b\\"
+
 // enterTerminalModes returns the mode-enable sequence Stream writes once after
 // the startup handshake: the full-screen escapes, mouse reporting, bracketed
 // paste, and the kitty keyboard protocol when this terminal answered the
@@ -730,7 +742,9 @@ func exitTerminal(rows int, drawn, kittyKeyboard bool) string {
 	if kittyKeyboard {
 		restore += disableKittyKeyboard
 	}
-	restore += endSixelDisplayMode + "\x1b[?7h\x1b[?25h" + popTitle
+	// Clear any OSC 9;4 progress indicator unconditionally, like the mouse
+	// reporting disable, so every exit path including a fatal signal clears it.
+	restore += endSixelDisplayMode + "\x1b[?7h\x1b[?25h" + popTitle + progressClear
 	if !drawn || rows <= 0 {
 		return reset + restore
 	}
