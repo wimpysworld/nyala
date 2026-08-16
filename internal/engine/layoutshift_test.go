@@ -40,6 +40,65 @@ func TestLayoutShiftScriptShape(t *testing.T) {
 	}
 }
 
+// TestLayoutShiftScriptAnnouncesContext proves the observer script calls the
+// binding once at install with the literal 'announce' payload, that the call is
+// guarded to the top frame, and that the call sits after the binding guard. The
+// announce call is the only route by which the engine learns the isolated world's
+// execution context id, so a drift that drops it, renames the payload, or hoists it
+// above the typeof guard would leave the held context id at zero and wedge every
+// later text walk. The top-frame test matters too: the script installs in every
+// frame, so an unguarded announce would let an iframe's world overwrite the id and
+// send the text walk into a subframe document. The try/catch matters as well: a
+// throwing binding at install time must not abort the observer setup that follows.
+func TestLayoutShiftScriptAnnouncesContext(t *testing.T) {
+	script := buildLayoutShiftScript()
+	const announce = "try{if(window.top===window)fn('announce');}catch(err){}"
+	if !strings.Contains(script, announce) {
+		t.Errorf("layout-shift script missing the guarded announce call %q\nscript: %s", announce, script)
+	}
+	guard := strings.Index(script, "if(typeof fn!=='function')return;")
+	call := strings.Index(script, announce)
+	if guard < 0 {
+		t.Fatalf("layout-shift script missing the binding guard\nscript: %s", script)
+	}
+	if call < guard {
+		t.Errorf("announce must follow the binding guard; guard=%d announce=%d", guard, call)
+	}
+	// The observer install must come after the announce, so the context id is
+	// known before any shift can be reported against it.
+	if observe := strings.Index(script, "o.observe("); observe < 0 || observe < call {
+		t.Errorf("announce must precede the observer install; announce=%d observe=%d", call, observe)
+	}
+}
+
+// TestLayoutShiftScriptEncodesShiftPayload proves a qualifying shift is encoded as
+// shift:<cumulative>:<generation>, the three-field form parseLayoutShiftPayload
+// splits on. The generation is read from the isolated world's own window property
+// in the same expression as the cumulative score, so the pair the engine receives
+// describes one layout.
+func TestLayoutShiftScriptEncodesShiftPayload(t *testing.T) {
+	script := buildLayoutShiftScript()
+	want := "fn('shift:'+String(cumulative)+':'+String(window." + layoutGenProperty + "))"
+	if !strings.Contains(script, want) {
+		t.Errorf("layout-shift script missing the shift payload %q\nscript: %s", want, script)
+	}
+	// The announce payload carries no colon, so the parser can never read it as a
+	// shift; pin that the two payload forms stay distinguishable.
+	if strings.Contains(script, "'announce:") {
+		t.Errorf("announce payload must not take the shift colon form\nscript: %s", script)
+	}
+}
+
+// TestLayoutShiftWorldName pins the isolated world name shared by the binding
+// registration, the on-new-document script, and Page.createIsolatedWorld. The
+// three routes address one world per frame only while they agree on this string,
+// so it is asserted once rather than repeated as a literal in each caller's test.
+func TestLayoutShiftWorldName(t *testing.T) {
+	if layoutShiftWorld != "__nyala_world" {
+		t.Errorf("layoutShiftWorld = %q, want %q", layoutShiftWorld, "__nyala_world")
+	}
+}
+
 // TestLayoutShiftRemovalScriptDisconnects proves the removal script reads the stored
 // observer, disconnects it, and clears the handle, so a Tab from block to a graphics
 // backend stops the observer.

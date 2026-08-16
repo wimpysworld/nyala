@@ -23,17 +23,18 @@ const layoutShiftObserverHandle = "__nyalaLayoutShiftObserver"
 // read the current generation in the same sequence as its DOMSnapshot and tag the
 // decoded runs with it. composeFrame then pairs a run set to a bitmap only when
 // their generations agree, so the overlay never composes over a reflowed bitmap of
-// a different generation. It is read via layoutGenExpr; a document without the
-// observer (a graphics backend, or the observer failing to install) leaves it
-// undefined, which the read coerces to 0.
+// a different generation. A document without the observer (a graphics backend, or
+// the observer failing to install) leaves it undefined, which every read coerces
+// to 0.
 const layoutGenProperty = "__nyalaLayoutGen"
 
-// layoutGenExpr is the JavaScript expression that reads the current layout
-// generation, coercing an undefined counter (no observer installed) to 0. The
-// snapshot goroutine evaluates it in the same chromedp.Run sequence as the
-// DOMSnapshot so the returned generation and the snapshot boxes share one layout
-// generation.
-const layoutGenExpr = "(window." + layoutGenProperty + "||0)"
+// layoutShiftWorld is the name of the isolated world the layout-shift observer
+// script installs into. The observer, its binding reference, and the generation
+// counter live on that world's window, so the page cannot see or tamper with
+// them. Page.addScriptToEvaluateOnNewDocument takes the name as
+// worldName and Page.createIsolatedWorld reuses it, so both routes address one
+// world per frame.
+const layoutShiftWorld = "__nyala_world"
 
 // layoutShiftEpsilon is the pending layout-shift score the observer must exceed
 // before it pokes the binding, so animation jitter and sub-pixel reflow noise do
@@ -56,9 +57,17 @@ const layoutShiftEpsilon = 0.01
 // PerformanceObserver lacks it. The generation counter bumps on every qualifying
 // entry, independent of the epsilon threshold that gates the binding poke, so a
 // sub-epsilon reflow that moves boxes without re-snapshotting still advances the
-// generation and the compose pairing can tell the layouts apart. The binding is
-// called with a single string argument, the running cumulative score, since Runtime
-// bindings take exactly one string argument. It stores the observer on
+// generation and the compose pairing can tell the layouts apart. Runtime bindings
+// take exactly one string argument, so the script encodes its payload: it calls the
+// binding once at install with the literal 'announce', which tells the engine the
+// isolated execution context id the script runs in, and calls it on each qualifying
+// shift with 'shift:<cumulative>:<generation>'. The announce call sits after the
+// binding guard, because a world without the binding must return before it. The
+// script runs in every frame, so the announce is guarded by a top-frame test: an
+// iframe's isolated world must not overwrite the recorded context id and send the
+// text walk into a subframe document. The observer install stays unconditional, so
+// a shift in a subframe still reports. It
+// stores the observer on
 // window.<observerHandle> so the removal script can disconnect it, and initialises
 // window.<layoutGenProperty> to 0 so the generation read returns a number from the
 // first document.
@@ -76,6 +85,7 @@ func buildLayoutShiftScript() string {
 	b.WriteString("var fn=window[")
 	b.WriteString(jsStringLiteral(layoutShiftBinding))
 	b.WriteString("];if(typeof fn!=='function')return;")
+	b.WriteString("try{if(window.top===window)fn('announce');}catch(err){}")
 	b.WriteString("var cumulative=0,pending=0;")
 	b.WriteString("var o=new PerformanceObserver(function(list){")
 	b.WriteString("var entries=list.getEntries();")
@@ -86,7 +96,7 @@ func buildLayoutShiftScript() string {
 	b.WriteString(layoutGenProperty)
 	b.WriteString("++;")
 	b.WriteString("cumulative+=e.value;pending+=e.value;}")
-	fmt.Fprintf(&b, "if(pending>%g){pending=0;try{fn(String(cumulative));}catch(err){}}", layoutShiftEpsilon)
+	fmt.Fprintf(&b, "if(pending>%[2]g){pending=0;try{fn('shift:'+String(cumulative)+':'+String(window.%[1]s));}catch(err){}}", layoutGenProperty, layoutShiftEpsilon)
 	b.WriteString("});")
 	b.WriteString("window.")
 	b.WriteString(layoutShiftObserverHandle)

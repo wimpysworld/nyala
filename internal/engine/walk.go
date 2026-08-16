@@ -171,21 +171,34 @@ func buildTextWalkScriptFromConfig(config textWalkConfig) string {
 // walk result. It runs on the snapshot goroutine and holds no lock across the
 // evaluate.
 func (e *ChromiumEngine) textWalk(ctx context.Context, cellW, cellH float64) (walkResult, error) {
+	e.mu.Lock()
+	ctxID := e.layoutShiftCtxID
+	e.mu.Unlock()
 	runCtx, cancel := context.WithTimeout(ctx, snapshotReadTimeout)
 	defer cancel()
-	return evaluateWalk(runCtx, buildTextWalkScript(cellW, cellH))
+	return evaluateWalk(runCtx, buildTextWalkScript(cellW, cellH), ctxID)
 }
 
 // evaluateWalkJSON runs the in-page text-walk expression against ctx and returns
 // the page's JSON verbatim, so a caller reading a field that walkResult does not
-// model decodes the string itself rather than widening the shared type. A non-nil
-// ExceptionDetails is an error even when the transport call succeeds, so a thrown
-// walk surfaces as an error the caller holds against rather than a false empty
-// result.
-func evaluateWalkJSON(ctx context.Context, expr string) (string, error) {
+// model decodes the string itself rather than widening the shared type. ctxID is
+// the execution context of the layoutShiftWorld isolated world, where the layout
+// generation lives, and the walk must run there because it reads that generation
+// in the same evaluate as the runs. A zero ctxID is an error rather than a
+// page-world evaluate: the page world holds no generation, so the walk would pair
+// runs to an undefined generation and break the generation pairing rule. A stale
+// id fails the same way, because Chromium answers "Cannot find context" and that
+// evaluate error comes straight back. Both degrade through the snapshot error
+// hold. A non-nil ExceptionDetails is an error even when the transport call
+// succeeds, so a thrown walk surfaces as an error the caller holds against rather
+// than a false empty result.
+func evaluateWalkJSON(ctx context.Context, expr string, ctxID runtime.ExecutionContextID) (string, error) {
+	if ctxID == 0 {
+		return "", fmt.Errorf("engine: text walk has no layout-shift execution context")
+	}
 	var raw string
 	err := chromedp.Run(ctx, chromedp.ActionFunc(func(c context.Context) error {
-		res, exc, evalErr := runtime.Evaluate(expr).WithReturnByValue(true).Do(c)
+		res, exc, evalErr := runtime.Evaluate(expr).WithReturnByValue(true).WithContextID(ctxID).Do(c)
 		if evalErr != nil {
 			return evalErr
 		}
@@ -210,9 +223,10 @@ func evaluateWalkJSON(ctx context.Context, expr string) (string, error) {
 
 // evaluateWalk runs the in-page text-walk expression against ctx and decodes the
 // JSON result to a walkResult. The script returns a JSON string, so the evaluate
-// returns it by value and this unmarshals it.
-func evaluateWalk(ctx context.Context, expr string) (walkResult, error) {
-	raw, err := evaluateWalkJSON(ctx, expr)
+// returns it by value and this unmarshals it. ctxID names the layoutShiftWorld
+// execution context the walk must run in, under the rules evaluateWalkJSON states.
+func evaluateWalk(ctx context.Context, expr string, ctxID runtime.ExecutionContextID) (walkResult, error) {
+	raw, err := evaluateWalkJSON(ctx, expr, ctxID)
 	if err != nil {
 		return walkResult{}, err
 	}

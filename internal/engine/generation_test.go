@@ -2,7 +2,6 @@ package engine
 
 import (
 	"image"
-	"strings"
 	"testing"
 
 	"github.com/chromedp/cdproto/page"
@@ -20,18 +19,6 @@ func TestInferFrameGen(t *testing.T) {
 	}
 	if gen, ok := inferFrameGen(7, true); !ok || gen != 7 {
 		t.Errorf("after publish: got (gen %d, ok %v), want (7, true)", gen, ok)
-	}
-}
-
-// TestLayoutGenExprCoercesUndefined proves the generation read expression coerces an
-// undefined counter (no observer installed) to 0, so a graphics backend or a failed
-// observer install never fails the snapshot read.
-func TestLayoutGenExprCoercesUndefined(t *testing.T) {
-	if !strings.Contains(layoutGenExpr, "||0") {
-		t.Errorf("layoutGenExpr must coerce undefined to 0, got %q", layoutGenExpr)
-	}
-	if !strings.Contains(layoutGenExpr, layoutGenProperty) {
-		t.Errorf("layoutGenExpr must read the generation property, got %q", layoutGenExpr)
 	}
 }
 

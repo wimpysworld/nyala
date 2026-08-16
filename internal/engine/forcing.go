@@ -178,10 +178,14 @@ func (e *ChromiumEngine) refreshFontForcing(ctx context.Context, cellW, cellH fl
 	return true
 }
 
-// enableLayoutShift registers the Runtime binding the layout-shift observer calls,
-// registers the observer on-new-document script for later documents, and evaluates
-// it against the live document so the current page is observed at once. The binding
-// must exist before the observer script runs, so it is registered first. A failed
+// enableLayoutShift registers the Runtime binding the layout-shift observer calls
+// and registers the observer on-new-document script, both scoped to the
+// layoutShiftWorld isolated world, so the page can never enumerate the observer
+// state. The binding must exist before the observer script runs, so it is
+// registered first; the observer guard bails when the binding is absent, and
+// runImmediately runs the script at install time. runImmediately also covers the
+// already-loaded document, so no separate live evaluate is needed, and a page-world
+// evaluate would put the observer state back where the page can read it. A failed
 // binding registration skips the observer, since a binding-less observer never fires;
 // a successful binding then stores the observer script id so disableLayoutShift can
 // remove it on a backend switch. Any CDP error degrades the trigger (a layout shift
@@ -191,7 +195,7 @@ func (e *ChromiumEngine) refreshFontForcing(ctx context.Context, cellW, cellH fl
 func (e *ChromiumEngine) enableLayoutShift(ctx context.Context) {
 	if err := chromedp.Run(ctx,
 		runtime.Enable(),
-		runtime.AddBinding(layoutShiftBinding),
+		runtime.AddBinding(layoutShiftBinding).WithExecutionContextName(layoutShiftWorld),
 	); err != nil {
 		return
 	}
@@ -199,16 +203,16 @@ func (e *ChromiumEngine) enableLayoutShift(ctx context.Context) {
 	var id page.ScriptIdentifier
 	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {
 		var runErr error
-		id, runErr = page.AddScriptToEvaluateOnNewDocument(script).Do(runCtx)
+		id, runErr = page.AddScriptToEvaluateOnNewDocument(script).
+			WithWorldName(layoutShiftWorld).
+			WithRunImmediately(true).
+			Do(runCtx)
 		return runErr
 	})); err == nil {
 		e.mu.Lock()
 		e.layoutShiftID = id
 		e.mu.Unlock()
 	}
-	// Observe the live document too: the on-new-document script only fires for later
-	// documents, so evaluate the same script now to observe the current page.
-	_ = evaluateVoid(ctx, "live layout-shift observer", script, false)
 }
 
 // disableFontForcing removes the font-forcing on-new-document script by its id and
@@ -235,16 +239,19 @@ func (e *ChromiumEngine) disableFontForcing(ctx context.Context) (enabled bool) 
 
 // disableLayoutShift removes the layout-shift observer on-new-document script,
 // disconnects the live observer, and unsubscribes from the binding, so a cycle from
-// the block backend to a graphics backend stops the layout-shift trigger. It clears
-// layoutShiftID only after the remove succeeds, so a failed remove leaves the id set
-// and the state stays consistent. A missing id (the binding registered but the
-// observer script did not) skips the script remove and still disconnects the live
-// observer and the binding. Errors are dropped: an orphaned observer on a
-// graphics-backend page is harmless (the snapshot goroutine publishes nil there), so
-// a failed cleanup degrades rather than fails.
+// the block backend to a graphics backend stops the layout-shift trigger. The live
+// observer lives in the layoutShiftWorld isolated world, so the removal script runs
+// against the held execution context id; a zero id (no observer announced itself)
+// skips that step. It clears layoutShiftID only after the remove succeeds, so a
+// failed remove leaves the id set and the state stays consistent. A missing script
+// id (the binding registered but the observer script did not) skips the script
+// remove and still disconnects the live observer and the binding. Errors are
+// dropped: an orphaned observer on a graphics-backend page is harmless (the snapshot
+// goroutine publishes nil there), so a failed cleanup degrades rather than fails.
 func (e *ChromiumEngine) disableLayoutShift(ctx context.Context) {
 	e.mu.Lock()
 	id := e.layoutShiftID
+	ctxID := e.layoutShiftCtxID
 	e.mu.Unlock()
 	if id != "" {
 		if err := chromedp.Run(ctx, page.RemoveScriptToEvaluateOnNewDocument(id)); err == nil {
@@ -253,6 +260,16 @@ func (e *ChromiumEngine) disableLayoutShift(ctx context.Context) {
 			e.mu.Unlock()
 		}
 	}
-	_ = evaluateVoid(ctx, "live layout-shift removal", buildLayoutShiftRemovalScript(), false)
+	if ctxID != 0 {
+		_ = chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {
+			_, _, err := runtime.Evaluate(buildLayoutShiftRemovalScript()).
+				WithContextID(ctxID).
+				Do(runCtx)
+			return err
+		}))
+	}
 	_ = chromedp.Run(ctx, runtime.RemoveBinding(layoutShiftBinding))
+	e.mu.Lock()
+	e.layoutShiftCtxID = 0
+	e.mu.Unlock()
 }
