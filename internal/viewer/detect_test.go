@@ -382,3 +382,109 @@ func TestBackgroundReplyKeepsTheOtherParsesIntact(t *testing.T) {
 		t.Fatalf("parseBackgroundDark = (%v, %v), want a dark background", dark, bgOK)
 	}
 }
+
+// pointerReply builds an OSC 22 reply carrying one flag per queried name, all
+// set to flag, ended by terminator.
+func pointerReply(flag byte, terminator string) string {
+	flags := make([]string, len(pointerShapeNames))
+	for i := range flags {
+		flags[i] = string(flag)
+	}
+	return "\x1b]22;" + strings.Join(flags, ",") + terminator
+}
+
+// TestParsePointerShapes asserts the OSC 22 reply parser pairs flags with the
+// queried names by position, accepts both terminators, parses counted pairs
+// when the terminal answers for fewer names, and treats a missing or truncated
+// reply as no capability, matching the parseBackgroundDark polarity.
+func TestParsePointerShapes(t *testing.T) {
+	cases := []struct {
+		name string
+		buf  string
+		// wantShapes is the expected map, nil when wantOK is false.
+		wantShapes map[string]bool
+		wantOK     bool
+	}{
+		{
+			name: "full reply st",
+			buf:  pointerReply('1', "\x1b\\") + "\x1b[?62;4c",
+			wantShapes: func() map[string]bool {
+				m := make(map[string]bool, len(pointerShapeNames))
+				for _, n := range pointerShapeNames {
+					m[n] = true
+				}
+				return m
+			}(),
+			wantOK: true,
+		},
+		{
+			name: "full reply bel",
+			buf:  pointerReply('0', "\x07") + "\x1b[?62;4c",
+			wantShapes: func() map[string]bool {
+				m := make(map[string]bool, len(pointerShapeNames))
+				for _, n := range pointerShapeNames {
+					m[n] = false
+				}
+				return m
+			}(),
+			wantOK: true,
+		},
+		{
+			name:       "fewer flags than names",
+			buf:        "\x1b]22;1,0,1\x07",
+			wantShapes: map[string]bool{"alias": true, "cell": false, "copy": true},
+			wantOK:     true,
+		},
+		{name: "no reply", buf: "\x1b[?62;4c", wantOK: false},
+		{name: "empty buffer", buf: "", wantOK: false},
+		// A truncated reply must not borrow the next reply's escape byte as
+		// its terminator, the parseBackgroundDark rule.
+		{name: "truncated before the DA1 reply", buf: "\x1b]22;1,1,1\x1b[?62;4c", wantOK: false},
+		{name: "no terminator at all", buf: "\x1b]22;1,1,1", wantOK: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			shapes, ok := parsePointerShapes([]byte(c.buf))
+			if ok != c.wantOK {
+				t.Fatalf("parsePointerShapes(%q) ok = %v, want %v", c.buf, ok, c.wantOK)
+			}
+			if !c.wantOK {
+				return
+			}
+			if len(shapes) != len(c.wantShapes) {
+				t.Fatalf("parsePointerShapes(%q) = %v, want %v", c.buf, shapes, c.wantShapes)
+			}
+			for n, want := range c.wantShapes {
+				if got, present := shapes[n]; !present || got != want {
+					t.Fatalf("parsePointerShapes(%q)[%q] = %v (present %v), want %v", c.buf, n, got, present, want)
+				}
+			}
+		})
+	}
+}
+
+// TestPointerShapeQueryRidesTheHandshake asserts the OSC 22 capability query
+// travels in the one startup batch, ahead of the DA1 fence that bounds the
+// read, and that the reduced multiplexer handshake omits it, matching the
+// OSC 11 policy.
+func TestPointerShapeQueryRidesTheHandshake(t *testing.T) {
+	full := string(queryBytes(""))
+	query := pointerShapeQuery()
+	at := strings.Index(full, query)
+	if at < 0 {
+		t.Fatalf("full handshake %q omits the pointer-shape query", full)
+	}
+	da1 := strings.Index(full, "\x1b[c")
+	if da1 < 0 {
+		t.Fatalf("full handshake %q has no DA1 fence", full)
+	}
+	if at > da1 {
+		t.Fatal("the pointer-shape query trails the DA1 fence, so its reply could arrive after the read ends")
+	}
+	if !strings.Contains(query, "alias") || !strings.Contains(query, "zoom-out") {
+		t.Fatalf("pointer-shape query %q omits queried names", query)
+	}
+	if reduced := string(reducedQueryBytes()); strings.Contains(reduced, osc22Prefix) {
+		t.Fatalf("reduced handshake %q carries the pointer-shape query", reduced)
+	}
+}

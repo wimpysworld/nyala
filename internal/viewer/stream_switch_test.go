@@ -63,6 +63,7 @@ func (e *switchOpEngine) SendPaste(string) bool       { return false }
 func (e *switchOpEngine) SendNav(NavAction)           {}
 func (e *switchOpEngine) CurrentURL() string          { return "" }
 func (e *switchOpEngine) CurrentTitle() string        { return "" }
+func (e *switchOpEngine) PointerCursor() string       { return "" }
 
 func (e *switchOpEngine) LoadState() engine.LoadState { return engine.LoadState{} }
 func (e *switchOpEngine) OpenURL(string)              {}

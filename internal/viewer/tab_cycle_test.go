@@ -56,6 +56,7 @@ func (e *tabCycleEngine) SendPaste(string) bool       { return false }
 func (e *tabCycleEngine) SendNav(NavAction)           {}
 func (e *tabCycleEngine) CurrentURL() string          { return "" }
 func (e *tabCycleEngine) CurrentTitle() string        { return "" }
+func (e *tabCycleEngine) PointerCursor() string       { return "" }
 
 func (e *tabCycleEngine) LoadState() engine.LoadState { return engine.LoadState{} }
 func (e *tabCycleEngine) OpenURL(string)              {}

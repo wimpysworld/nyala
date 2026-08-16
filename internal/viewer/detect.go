@@ -34,6 +34,27 @@ type probeResult struct {
 	// cellPxOK records that a handshake reply resolved cellPx. False means the
 	// embedded pair is the seeded 8x16 fallback, not real terminal geometry.
 	cellPxOK bool
+
+	// PointerShapeOK records that the terminal answered the OSC 22 capability
+	// query with a flag list this package could parse. False means the
+	// terminal carries no pointer-shape support Nyala can rely on.
+	PointerShapeOK bool
+
+	// PointerShapes maps each queried pointer-shape name to whether the
+	// terminal supports it. It is meaningful only when PointerShapeOK is true.
+	PointerShapes map[string]bool
+}
+
+// pointerShapeNames is the full kitty pointer-shape list Nyala maps, in the
+// order the OSC 22 capability query sends the names. The reply's flags pair
+// with these names by position, so the query and the parser must share one
+// ordering, and the mapping code references this slice for the same reason.
+var pointerShapeNames = []string{
+	"alias", "cell", "copy", "crosshair", "default", "e-resize", "ew-resize",
+	"grab", "grabbing", "help", "move", "n-resize", "ne-resize", "nesw-resize",
+	"no-drop", "not-allowed", "ns-resize", "nw-resize", "nwse-resize",
+	"pointer", "progress", "s-resize", "se-resize", "sw-resize", "text",
+	"vertical-text", "w-resize", "wait", "zoom-in", "zoom-out",
 }
 
 // kittyDirectID and kittySHMID are the image ids of the two kitty graphics
@@ -57,6 +78,27 @@ const (
 // "\x1b[?", so it can never trip the DA1 fence early, and no other handshake
 // parser scans for an OSC introducer.
 const osc11Prefix = "\x1b]11;"
+
+// osc22Prefix introduces the OSC 22 pointer-shape reply. Like OSC 11 it
+// carries no "\x1b[?", so it can never trip the DA1 fence early.
+const osc22Prefix = "\x1b]22;"
+
+// pointerShapeQuery builds the OSC 22 capability query: "?" then the
+// comma-separated pointer-shape names, ended by ST. The terminal answers with
+// one flag per queried name, paired by position.
+func pointerShapeQuery() string {
+	var b bytes.Buffer
+	b.WriteString(osc22Prefix)
+	b.WriteByte('?')
+	for i, name := range pointerShapeNames {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(name)
+	}
+	b.WriteString("\x1b\\")
+	return b.String()
+}
 
 // probeTimeout caps the whole handshake. A bare TTY never answers DA1, so the
 // read stops here with no graphics support detected.
@@ -91,6 +133,11 @@ func queryBytes(shmName string) []byte {
 	b.WriteString("\x1b[>0q")
 	b.WriteString(queryKittyKeyboard)
 	b.WriteString(ansi.RequestBackgroundColor)
+	// The OSC 22 pointer-shape capability query rides ahead of the DA1 fence
+	// for the same reason as OSC 11: the handshake runs before the key reader
+	// goroutine exists, so the reply drains in readUntilDA1 rather than
+	// reaching the page as typed text.
+	b.WriteString(pointerShapeQuery())
 	b.WriteString(ansi.RequestPrimaryDeviceAttributes)
 	return b.Bytes()
 }
@@ -102,7 +149,10 @@ func queryBytes(shmName string) []byte {
 // undetected there. zellij never answers XTVERSION, which is harmless because
 // the DA1 fence still bounds the read. It carries no OSC 11 query either:
 // tmux answers from a cache read once at attach, so the reply describes the
-// terminal as it was rather than as it is.
+// terminal as it was rather than as it is. It carries no OSC 22 pointer-shape
+// query either, matching the OSC 11 policy: a multiplexer sits between Nyala
+// and the terminal, so multiplexer sessions never send OSC 22 and pointer
+// shapes stay undetected there.
 func reducedQueryBytes() []byte {
 	var b bytes.Buffer
 	b.WriteString("\x1b[16t")
@@ -165,6 +215,7 @@ func probeTerminal(tty *os.File, cols, rows int) probeResult {
 	res.Sixel = parseDA1Sixel(buf)
 	res.TermID = parseXTVersion(buf)
 	res.BackgroundDark, res.BackgroundOK = parseBackgroundDark(buf)
+	res.PointerShapes, res.PointerShapeOK = parsePointerShapes(buf)
 	if px, ok := parseCellPixels(buf, cols, rows); ok {
 		res.cellPx = px
 		res.cellPxOK = true
@@ -349,6 +400,41 @@ func parseBackgroundDark(buf []byte) (dark, ok bool) {
 		hi = max(hi, c)
 	}
 	return (lo+hi)/2 < 0.5, true
+}
+
+// parsePointerShapes parses the OSC 22 capability reply into a map from
+// queried pointer-shape name to supported flag. The reply is "OSC 22 ;
+// <flags>" ended by BEL or ST, where flags is a comma-separated list of "1"
+// and "0" values pairing with the query's names by position. Counted pairs are
+// parsed and extra flags are ignored, so a terminal that answers for more
+// names than Nyala asked about still parses. ok is false when the terminal
+// stayed silent or answered without a terminator, matching the
+// parseBackgroundDark polarity, and the caller then treats pointer shapes as
+// unsupported. The probe runs before the key reader goroutine exists, so the
+// reply drains in readUntilDA1; the WW-86 osc arm is the safety net for a
+// reply arriving after the fence.
+func parsePointerShapes(buf []byte) (map[string]bool, bool) {
+	i := bytes.Index(buf, []byte(osc22Prefix))
+	if i < 0 {
+		return nil, false
+	}
+	body := buf[i+len(osc22Prefix):]
+	end := bytes.IndexAny(body, "\x07\x1b")
+	if end < 0 {
+		return nil, false
+	}
+	if body[end] == '\x1b' && (end+1 >= len(body) || body[end+1] != '\\') {
+		return nil, false
+	}
+	flags := bytes.Split(body[:end], []byte(","))
+	shapes := make(map[string]bool, len(pointerShapeNames))
+	for n, name := range pointerShapeNames {
+		if n >= len(flags) {
+			break
+		}
+		shapes[name] = bytes.Equal(flags[n], []byte("1"))
+	}
+	return shapes, true
 }
 
 // parseXColour parses an XParseColor specification into red, green, and blue
