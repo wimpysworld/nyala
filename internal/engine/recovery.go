@@ -105,6 +105,7 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	e.timing = timer
 	e.screencastFmt = screencastFmt{}
 	e.screencastStarted = false
+	e.sessionActive = true
 	e.mu.Unlock()
 
 	// Every listener, queue, worker, collector, and acknowledgement path is live
@@ -590,10 +591,16 @@ func (e *ChromiumEngine) LoadState() render.LoadState {
 }
 
 // applyLoadEvent advances the held load state through transitionLoadState
-// under the state lock.
+// under the state lock. An event is applied only while sessionActive is set,
+// so a lifecycle or navigation callback that was queued when teardownSession
+// ran cannot repopulate the cleared state with a dead session's indicator.
+// The startup navigation error is exempt, because startSession records it
+// after teardown so the viewer sees the error state.
 func (e *ChromiumEngine) applyLoadEvent(ev loadEvent) {
 	e.mu.Lock()
-	e.loadState = transitionLoadState(e.loadState, ev)
+	if e.sessionActive || ev == loadEventNavError {
+		e.loadState = transitionLoadState(e.loadState, ev)
+	}
 	e.mu.Unlock()
 }
 
@@ -796,6 +803,7 @@ func (e *ChromiumEngine) teardownSession() {
 	e.layoutShiftID = ""
 	e.layoutShiftCtxID = 0
 	e.layoutShiftActive = false
+	e.sessionActive = false
 	e.loadState = transitionLoadState(e.loadState, loadEventTeardown)
 	e.mu.Unlock()
 	acks.stop()
