@@ -72,6 +72,10 @@ type Engine interface {
 	// the launch URL before the first commit. The engine keeps it fresh
 	// across SPA and fragment navigation; the viewer reads it on repaint.
 	CurrentURL() string
+	// CurrentTitle returns the last recorded page title. It is empty before
+	// the first title read and when the page has no title; the viewer owns
+	// the host fallback, so the engine never substitutes one.
+	CurrentTitle() string
 	// OpenURL navigates to url as a normal navigation, pushing a history
 	// entry. The engine resets its held scroll offset and never rewrites the
 	// launch URL NavHome returns to.
@@ -250,7 +254,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	restoreTerminal := func() {
 		restoreOnce.Do(func() {
 			drawn := session != nil && session.firstDrawn.Load()
-			_, _ = io.WriteString(tty, exitTerminal(st.Rows, drawn, st.kittyKeyboard))
+			_, _ = io.WriteString(tty, exitTerminalWithTitle(st.Rows, drawn, st.kittyKeyboard, st.compat.titlePopIgnored))
 			restore()
 		})
 	}
@@ -335,6 +339,10 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	if werr := s.emitControl(startup.Bytes()); werr != nil {
 		return werr
 	}
+	// Set the terminal title once at startup, before any page title exists:
+	// the engine title is empty here, so the sanitiser's fallback shows the
+	// launch URL host while the page loads.
+	s.maybeEmitTitle()
 	// A caught signal restores the terminal before bounded browser teardown can
 	// wait, or raw mode and mouse reporting could remain active during that wait.
 	// The watcher shares restoreTerminal's Once with the deferred teardown, so the
@@ -539,6 +547,10 @@ type streamSession struct {
 	// that never shows the badge starts no ticker.
 	fpsTicker *time.Ticker
 	fpsBeat   <-chan time.Time
+	// lastTitle is the last terminal title maybeEmitTitle wrote, so a
+	// repeated title costs one string compare and no terminal write.
+	// Producer-goroutine only.
+	lastTitle string
 	// launchURL is the URL Stream navigated to. The bar's URL segment shows
 	// it until the engine records a committed URL. Set once before the loops
 	// start and read-only after.
@@ -708,6 +720,21 @@ func (s *streamSession) barBytes() []byte {
 	return buf.Bytes()
 }
 
+// maybeEmitTitle reads the engine's page title, sanitises it against the
+// current URL, and writes the OSC 0 sequence through the ordered control
+// path when it differs from the last title written, so a title write never
+// lands inside a frame's sync bracket. An unchanged title costs one string
+// compare and no terminal write. It runs only on the producer goroutine,
+// which owns lastTitle.
+func (s *streamSession) maybeEmitTitle() {
+	title := sanitiseTitle(s.eng.CurrentTitle(), s.currentURL())
+	if title == s.lastTitle {
+		return
+	}
+	s.lastTitle = title
+	_ = s.emitControl([]byte(setTitle(title)))
+}
+
 // loop runs the push consumer until the frames or keys channel closes, a quit
 // key arrives, or an I/O error occurs. It draws each pushed frame, restarts the
 // stream on SIGWINCH at the recomputed grid, and forwards keys. It caches the
@@ -863,6 +890,10 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 				return err
 			}
 		case now := <-s.fpsBeat:
+			// Refresh the terminal title on the once-per-second beat, so a
+			// title the page set after load reaches the terminal without a
+			// per-frame read. An unchanged title costs one string compare.
+			s.maybeEmitTitle()
 			// Refresh the fps text and repaint the bar. The repaint routes
 			// through the writer so it never races an in-flight frame write. A
 			// hidden badge needs neither, so the beat costs a flag check.
@@ -1893,9 +1924,13 @@ func (s *streamSession) forwardPaste(text string) {
 func (s *streamSession) forwardNav(a NavAction) {
 	if s.keySender != nil {
 		s.keySender.sendNav(a)
-		return
+	} else {
+		s.eng.SendNav(a)
 	}
-	s.eng.SendNav(a)
+	// Refresh the terminal title alongside the navigation's bar repaint. The
+	// queued dispatch runs the navigation later, so this write can still
+	// carry the old page's title; the once-per-second beat catches up.
+	s.maybeEmitTitle()
 }
 
 // cycleBackend steps the backend cycle (Alt+R forwards, Alt+Shift+R

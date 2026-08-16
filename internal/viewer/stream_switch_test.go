@@ -61,6 +61,7 @@ func (e *switchOpEngine) SendText(string)             {}
 func (e *switchOpEngine) SendPaste(string) bool       { return false }
 func (e *switchOpEngine) SendNav(NavAction)           {}
 func (e *switchOpEngine) CurrentURL() string          { return "" }
+func (e *switchOpEngine) CurrentTitle() string        { return "" }
 func (e *switchOpEngine) OpenURL(string)              {}
 func (e *switchOpEngine) BrowserVersion() string      { return "" }
 func (e *switchOpEngine) Find(string)                 {}

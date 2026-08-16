@@ -55,6 +55,13 @@ type ChromiumEngine struct {
 	// before the first commit, when CurrentURL falls back to the launch URL.
 	currentURL string
 
+	// currentTitle is the last recorded page title, read by watchLifecycle
+	// through a bounded document.title evaluate in the isolated world on
+	// main-frame navigation and kept fresh by Target.targetInfoChanged for SPA
+	// title changes. It is display state only. Empty when the page has no
+	// title; the viewer owns the host fallback.
+	currentTitle string
+
 	// browserProduct and browserUserAgent are the raw Browser.getVersion values.
 	// userAgentMetadata is the matching native navigator.userAgentData value.
 	// They are fetched before the first override and cached for the engine lifetime,

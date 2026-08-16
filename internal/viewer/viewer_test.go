@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/render"
@@ -69,7 +70,7 @@ func TestCycleBackendBlockOnly(t *testing.T) {
 // restore auto-wrap, and reveal the cursor. An exit before the first frame
 // restores terminal modes in place, without scrolling unrelated content.
 func TestExitTerminal(t *testing.T) {
-	const want = "\x1b[0m\x1b[24;1H\r\n\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?80l\x1b[?7h\x1b[?25h"
+	const want = "\x1b[0m\x1b[24;1H\r\n\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?80l\x1b[?7h\x1b[?25h\x1b[23;0t"
 	for _, backend := range []Backend{BackendBlock, BackendKitty, BackendSixel} {
 		t.Run(backend.String(), func(t *testing.T) {
 			if got := exitTerminal(24, true, false); got != want {
@@ -78,7 +79,7 @@ func TestExitTerminal(t *testing.T) {
 		})
 	}
 
-	const restoreInPlace = "\x1b[0m\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?80l\x1b[?7h\x1b[?25h"
+	const restoreInPlace = "\x1b[0m\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?80l\x1b[?7h\x1b[?25h\x1b[23;0t"
 	if got := exitTerminal(24, false, false); got != restoreInPlace {
 		t.Fatalf("startup exit = %q, want %q", got, restoreInPlace)
 	}
@@ -89,7 +90,7 @@ func TestExitTerminal(t *testing.T) {
 	// A session that pushed the kitty keyboard protocol pops exactly one entry,
 	// between the paste reset and the Sixel reset, and a session that did not
 	// push emits no pop, so an outer application's entry survives.
-	const pushed = "\x1b[0m\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[<u\x1b[?80l\x1b[?7h\x1b[?25h"
+	const pushed = "\x1b[0m\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[<u\x1b[?80l\x1b[?7h\x1b[?25h\x1b[23;0t"
 	if got := exitTerminal(0, false, true); got != pushed {
 		t.Fatalf("kitty-keyboard exit = %q, want %q", got, pushed)
 	}
@@ -110,6 +111,7 @@ func TestTerminalModesPairEnableWithTeardown(t *testing.T) {
 	pairs := []struct{ enable, disable string }{
 		{enableMouseReporting, disableMouseReporting},
 		{enableBracketedPaste, disableBracketedPaste},
+		{pushTitle, popTitle},
 	}
 	for _, kitty := range []bool{false, true} {
 		modes := enterTerminalModes(kitty)
@@ -128,6 +130,64 @@ func TestTerminalModesPairEnableWithTeardown(t *testing.T) {
 		if got := strings.Contains(teardown, disableKittyKeyboard); got != kitty {
 			t.Fatalf("exitTerminal with kitty=%t pops the protocol = %v, want %v", kitty, got, kitty)
 		}
+	}
+}
+
+// TestExitTerminalWithTitle asserts the teardown for a terminal that ignores
+// the title pop follows the pop with a fixed neutral title, and that a normal
+// terminal gets the plain teardown with no OSC write.
+func TestExitTerminalWithTitle(t *testing.T) {
+	plain := exitTerminal(24, true, false)
+	if got := exitTerminalWithTitle(24, true, false, false); got != plain {
+		t.Fatalf("exitTerminalWithTitle without the flag = %q, want %q", got, plain)
+	}
+	want := plain + setTitle("terminal")
+	if got := exitTerminalWithTitle(24, true, false, true); got != want {
+		t.Fatalf("exitTerminalWithTitle with the flag = %q, want %q", got, want)
+	}
+}
+
+// TestSanitiseTitle covers the hostile-title paths: C0 and C1 stripping, the
+// byte cap cut on a rune boundary, the host fallback for an empty title, and
+// the raw-URL fallback when the URL does not parse to a host.
+func TestSanitiseTitle(t *testing.T) {
+	cases := []struct {
+		name   string
+		title  string
+		rawURL string
+		want   string
+	}{
+		{"hostile OSC and BEL", "\x1b]0;pwned\x07", "https://example.com/", "]0;pwned"},
+		{"C0 stripped", "a\x00b\x1fc\rd", "https://example.com/", "abcd"},
+		{"DEL and C1 stripped", "a\x7fb\u0085c\u009bd", "https://example.com/", "abcd"},
+		{"cap on rune boundary", strings.Repeat("a", 126) + "éé", "https://example.com/", strings.Repeat("a", 126) + "é"},
+		{"empty falls back to host", "", "https://example.com/path", "example.com"},
+		{"controls-only falls back to host", "\x1b\x07", "https://example.com/", "example.com"},
+		{"unparsable falls back to raw URL", "", "://not-a-url", "://not-a-url"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitiseTitle(tc.title, tc.rawURL)
+			if got != tc.want {
+				t.Fatalf("sanitiseTitle(%q, %q) = %q, want %q", tc.title, tc.rawURL, got, tc.want)
+			}
+			if len(got) > maxTitleBytes {
+				t.Fatalf("sanitised title is %d bytes, cap is %d", len(got), maxTitleBytes)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("sanitised title %q is not valid UTF-8", got)
+			}
+			if emitted := setTitle(got); strings.ContainsRune(emitted, '\x07') {
+				t.Fatalf("setTitle(%q) contains BEL", got)
+			}
+		})
+	}
+}
+
+// TestSetTitleUsesSTTerminator pins the OSC 0 terminator as ST, never BEL.
+func TestSetTitleUsesSTTerminator(t *testing.T) {
+	if got := setTitle("Nyala"); got != "\x1b]0;Nyala\x1b\\" {
+		t.Fatalf("setTitle(\"Nyala\") = %q, want %q", got, "\x1b]0;Nyala\x1b\\")
 	}
 }
 
@@ -586,6 +646,7 @@ type streamTestEngine struct {
 	sendMouse      func(MouseEvent)
 	openURL        func(string)
 	currentURL     string
+	currentTitle   string
 	browserVersion string
 	find           func(string)
 	findNext       func()
@@ -638,6 +699,8 @@ func (e streamTestEngine) SendNav(a NavAction) {
 }
 
 func (e streamTestEngine) CurrentURL() string { return e.currentURL }
+
+func (e streamTestEngine) CurrentTitle() string { return e.currentTitle }
 
 func (e streamTestEngine) OpenURL(url string) {
 	if e.openURL != nil {

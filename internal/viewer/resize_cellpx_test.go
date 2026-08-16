@@ -62,6 +62,7 @@ func (e *resizeOpEngine) SendText(string)             {}
 func (e *resizeOpEngine) SendPaste(string) bool       { return false }
 func (e *resizeOpEngine) SendNav(NavAction)           {}
 func (e *resizeOpEngine) CurrentURL() string          { return "" }
+func (e *resizeOpEngine) CurrentTitle() string        { return "" }
 func (e *resizeOpEngine) OpenURL(string)              {}
 func (e *resizeOpEngine) BrowserVersion() string      { return "" }
 func (e *resizeOpEngine) Find(string)                 {}

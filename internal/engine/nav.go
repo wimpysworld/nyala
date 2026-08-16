@@ -129,6 +129,24 @@ func (e *ChromiumEngine) recordCurrentURL(url string) {
 	e.mu.Unlock()
 }
 
+// CurrentTitle returns the last recorded page title. It is empty before the
+// first title read and when the page has no title; the viewer owns the host
+// fallback, so the engine never substitutes one.
+func (e *ChromiumEngine) CurrentTitle() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.currentTitle
+}
+
+// recordCurrentTitle stores the page title CurrentTitle reports. An empty
+// title is recorded as empty, because a page with no title must not keep a
+// stale one on screen; the viewer supplies the host fallback.
+func (e *ChromiumEngine) recordCurrentTitle(title string) {
+	e.mu.Lock()
+	e.currentTitle = title
+	e.mu.Unlock()
+}
+
 // navDispatchAction builds the chromedp action one non-home NavAction runs: a
 // raw Page.reload, or a history step through Page.getNavigationHistory and
 // Page.navigateToHistoryEntry. Neither waits for the page to load, matching
