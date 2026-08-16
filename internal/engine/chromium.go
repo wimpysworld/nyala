@@ -166,6 +166,15 @@ type ChromiumEngine struct {
 	// An announce is recorded only while it is set. Guarded by mu.
 	layoutShiftActive bool
 
+	// sessionActive reports whether a live session owns the load state, so a
+	// lifecycle or navigation callback that was already queued when teardown ran
+	// cannot repopulate the dead session's load indicator. startSession sets it
+	// before the lifecycle listeners register, and teardownSession clears it
+	// before it clears the load state, in the layoutShiftActive pattern. A load
+	// event is applied only while it is set, except the startup navigation
+	// error, which is recorded after teardown by design. Guarded by mu.
+	sessionActive bool
+
 	// pointerCursor is the raw computed CSS cursor value read at the pointer on
 	// the last hover move, empty before any read succeeds. A hover dispatch
 	// evaluates the read in the layoutShiftWorld isolated world; a zero context

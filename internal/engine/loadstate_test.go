@@ -51,7 +51,7 @@ func TestTransitionLoadState(t *testing.T) {
 // state and that the LoadState getter returns it without waiting.
 func TestEngineLoadStateSnapshot(t *testing.T) {
 	t.Parallel()
-	e := &ChromiumEngine{}
+	e := &ChromiumEngine{sessionActive: true}
 	if got := e.LoadState(); got != (render.LoadState{}) {
 		t.Fatalf("initial state: got %+v, want clear", got)
 	}
@@ -60,5 +60,35 @@ func TestEngineLoadStateSnapshot(t *testing.T) {
 	want := render.LoadState{State: render.LoadPercentage, Percent: 50}
 	if got := e.LoadState(); got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+// TestApplyLoadEventSessionGate verifies that a lifecycle event queued past
+// teardown leaves the cleared state alone, that a live session still applies
+// events, and that the startup navigation error records after teardown.
+func TestApplyLoadEventSessionGate(t *testing.T) {
+	t.Parallel()
+	fifty := render.LoadState{State: render.LoadPercentage, Percent: 50}
+	cases := []struct {
+		name   string
+		active bool
+		events []loadEvent
+		want   render.LoadState
+	}{
+		{"late lifecycle event after teardown keeps clear", false, []loadEvent{loadEventCommit, loadEventFCP}, render.LoadState{}},
+		{"live session applies events", true, []loadEvent{loadEventCommit, loadEventFCP}, fifty},
+		{"nav error applies after teardown", false, []loadEvent{loadEventNavError}, render.LoadState{State: render.LoadError}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e := &ChromiumEngine{sessionActive: tc.active}
+			for _, ev := range tc.events {
+				e.applyLoadEvent(ev)
+			}
+			if got := e.LoadState(); got != tc.want {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }
