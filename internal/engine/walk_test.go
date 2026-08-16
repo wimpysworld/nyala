@@ -112,6 +112,31 @@ func TestWalkDecodeCarriesLinkFields(t *testing.T) {
 	}
 }
 
+// TestWalkDecodePassesOverCapHref proves the decode copies an href over the
+// 2083-byte hyperlink cap through untouched. The walk script drops over-cap
+// links at source, and the block layer's hyperlink sanitiser owns rejection,
+// so the decode adds no second guard.
+func TestWalkDecodePassesOverCapHref(t *testing.T) {
+	href := "https://example.org/" + strings.Repeat("x", 2100)
+	raw := `{"gen":1,"sx":0,"sy":0,"runs":[` +
+		`{"t":"long","c":0,"r":0,"x":0,"y":0,"w":32,"h":16,` +
+		`"fg":{"r":0,"g":0,"b":0,"a":255},"bg":{"r":0,"g":0,"b":0,"a":0},"z":0,"f":false,` +
+		`"hr":"` + href + `","li":"g1-a1"}` +
+		`],"fixed":[]}`
+	res, err := decodeWalkResult(raw)
+	if err != nil {
+		t.Fatalf("decodeWalkResult: %v", err)
+	}
+	runs := decodeWalkRuns(res, 8, 80)
+	if len(runs) != 1 {
+		t.Fatalf("decoded %d runs, want 1", len(runs))
+	}
+	if runs[0].Href != href || runs[0].LinkID != "g1-a1" {
+		t.Errorf("run = Href length %d LinkID %q, want the canned values untouched",
+			len(runs[0].Href), runs[0].LinkID)
+	}
+}
+
 // TestTextWalkScriptCarriesLinkResolution pins the in-page walk's link plumbing:
 // the anchor climb, the emission of both run fields, and the per-anchor counter
 // that keys the stable id on DOM identity.
@@ -122,7 +147,8 @@ func TestTextWalkScriptCarriesLinkResolution(t *testing.T) {
 		"run.hr=lk.hr;run.li=lk.li;",              // both field emissions
 		"linkIds.set(a,id)",                       // the per-anchor counter map
 		"'g'+gen+'-a'+(++linkN)",                  // the generation-prefixed id
-		"v={hr:a.href,li:id};",                    // one a.href read per anchor
+		"v={hr:h,li:id};",                         // one a.href read per anchor
+		"if(h.length>2083){v=null;break;}",        // the over-cap link drop
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("walk script lacks %q", want)

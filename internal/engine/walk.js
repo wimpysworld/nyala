@@ -98,9 +98,17 @@ for(var a=el;a;a=a.parentElement){
 if(linkCache.has(a)){v=linkCache.get(a);break;}
 chain.push(a);
 if(a.tagName==='A'&&a.hasAttribute('href')){
+// The block layer drops any URI over 2083 bytes, so serialising a longer
+// href buys nothing, and a data: URL is unbounded. Drop the link here to
+// keep the walk JSON small. The UTF-16 length is a lower bound on the
+// UTF-8 byte length, so nothing under the cap is ever dropped, and an
+// over-cap multi-byte href the length check misses is still dropped
+// downstream by the block sanitiser.
+var h=a.href;
+if(h.length>2083){v=null;break;}
 var id=linkIds.get(a);
 if(id===undefined){id='g'+gen+'-a'+(++linkN);linkIds.set(a,id);}
-v={hr:a.href,li:id};
+v={hr:h,li:id};
 break;
 }
 }
