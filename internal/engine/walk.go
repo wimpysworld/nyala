@@ -19,10 +19,11 @@ import (
 const textWalkConfigPlaceholder = "__NYALA_TEXT_WALK_CONFIG__"
 
 // walkFixedBoxCap mirrors the walk script's own FIXED_CAP and bounds the boxes
-// the decode admits. The script runs in the page's main world and returns a
-// string from its own JSON.stringify, so the page controls the result and the
-// in-page cap is advice rather than a limit: overriding Array.prototype.push
-// alone appends past it. Every box is re-tested against every run on the
+// the decode admits. The script runs in the layoutShiftWorld isolated world, so
+// the page cannot redefine the JSON.stringify or the Array.prototype the walk
+// uses, but it still owns the DOM the walk counts boxes over. The client cap is
+// therefore the limit and the in-page cap is only the early exit. Every box is
+// re-tested against every run on the
 // frame-emit goroutine, a scan no context can interrupt, so an unbounded box
 // count makes each frame of a scroll quadratic. TestBuildTextWalkScriptContents
 // asserts the script's cap against this constant, so the two cannot drift apart.
@@ -179,6 +180,15 @@ func (e *ChromiumEngine) textWalk(ctx context.Context, cellW, cellH float64) (wa
 	return evaluateWalk(runCtx, buildTextWalkScript(cellW, cellH), ctxID)
 }
 
+// walkEvaluateParams builds the Runtime.evaluate command the text walk sends: the
+// walk expression, the result returned by value, and the layoutShiftWorld
+// execution context id the walk must run in. It is a named builder rather than an
+// inline chain so the parameter test drives the production call and a dropped
+// contextId cannot pass unseen.
+func walkEvaluateParams(expr string, ctxID runtime.ExecutionContextID) *runtime.EvaluateParams {
+	return runtime.Evaluate(expr).WithReturnByValue(true).WithContextID(ctxID)
+}
+
 // evaluateWalkJSON runs the in-page text-walk expression against ctx and returns
 // the page's JSON verbatim, so a caller reading a field that walkResult does not
 // model decodes the string itself rather than widening the shared type. ctxID is
@@ -198,7 +208,7 @@ func evaluateWalkJSON(ctx context.Context, expr string, ctxID runtime.ExecutionC
 	}
 	var raw string
 	err := chromedp.Run(ctx, chromedp.ActionFunc(func(c context.Context) error {
-		res, exc, evalErr := runtime.Evaluate(expr).WithReturnByValue(true).WithContextID(ctxID).Do(c)
+		res, exc, evalErr := walkEvaluateParams(expr, ctxID).Do(c)
 		if evalErr != nil {
 			return evalErr
 		}

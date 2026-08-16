@@ -69,6 +69,23 @@ func TestLayoutShiftScriptAnnouncesContext(t *testing.T) {
 	if observe := strings.Index(script, "o.observe("); observe < 0 || observe < call {
 		t.Errorf("announce must precede the observer install; announce=%d observe=%d", call, observe)
 	}
+	// The PerformanceObserver capability guards must come after the announce too.
+	// Both return early on a browser that lacks the observer or the layout-shift
+	// entry type, so an announce behind them would leave the held context id at
+	// zero and the text walk would then reject every read, removing the overlay
+	// entirely rather than the layout-shift trigger alone.
+	for _, guardExpr := range []string{
+		"if(typeof PerformanceObserver!=='function')return;",
+		"if(supported&&supported.indexOf('layout-shift')===-1)return;",
+	} {
+		at := strings.Index(script, guardExpr)
+		if at < 0 {
+			t.Fatalf("layout-shift script missing the capability guard %q\nscript: %s", guardExpr, script)
+		}
+		if at < call {
+			t.Errorf("announce must precede the capability guard %q; announce=%d guard=%d", guardExpr, call, at)
+		}
+	}
 }
 
 // TestLayoutShiftScriptEncodesShiftPayload proves a qualifying shift is encoded as

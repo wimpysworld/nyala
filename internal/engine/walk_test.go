@@ -56,16 +56,17 @@ func TestLayoutShiftWalkNonZeroContextIDPassesGuard(t *testing.T) {
 
 // TestLayoutShiftWalkEvaluateCarriesContextID proves the evaluate the walk builds
 // puts the held isolated-world id on the wire as contextId, so Chromium runs the
-// walk in the world that holds the generation counter. It replays the production
-// builder chain against a recording executor, because chromedp.Run needs a real
-// browser context. contextId is an omitzero field, so this also pins that a
-// non-zero id survives marshalling.
+// walk in the world that holds the generation counter. It runs the production
+// builder, walkEvaluateParams, against a recording executor, because chromedp.Run
+// needs a real browser context; a dropped WithContextID therefore fails here.
+// contextId is an omitzero field, so this also pins that a non-zero id survives
+// marshalling.
 func TestLayoutShiftWalkEvaluateCarriesContextID(t *testing.T) {
 	const id runtime.ExecutionContextID = 7
 	rec := &cdpCapture{}
 	ctx := cdp.WithExecutor(context.Background(), rec)
 	expr := buildTextWalkScript(8, 16)
-	if _, _, err := runtime.Evaluate(expr).WithReturnByValue(true).WithContextID(id).Do(ctx); err != nil {
+	if _, _, err := walkEvaluateParams(expr, id).Do(ctx); err != nil {
 		t.Fatalf("Runtime.evaluate: %v", err)
 	}
 	if rec.method != "Runtime.evaluate" {

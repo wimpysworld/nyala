@@ -6,8 +6,6 @@ import (
 	"testing"
 
 	"github.com/chromedp/cdproto/cdp"
-	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/cdproto/runtime"
 )
 
 // TestReconcileForcingAction pins the pure font-forcing reconcile decision,
@@ -101,13 +99,12 @@ func (c *cdpCapture) Execute(_ context.Context, method string, params, _ any) er
 // registration carries the isolated world as its execution context name, so the
 // binding is exposed only on that world's global and the page can never call or
 // enumerate it. A dropped executionContextName would put the binding back on the
-// page's own window, which is the exposure WW-223 removes.
+// page's own window, which is the exposure WW-223 removes. It runs the production
+// builder enableLayoutShift itself uses, so the drop fails here.
 func TestLayoutShiftBindingScopesToIsolatedWorld(t *testing.T) {
 	rec := &cdpCapture{}
 	ctx := cdp.WithExecutor(context.Background(), rec)
-	if err := runtime.AddBinding(layoutShiftBinding).
-		WithExecutionContextName(layoutShiftWorld).
-		Do(ctx); err != nil {
+	if err := layoutShiftBindingParams().Do(ctx); err != nil {
 		t.Fatalf("Runtime.addBinding: %v", err)
 	}
 	if rec.method != "Runtime.addBinding" {
@@ -126,15 +123,13 @@ func TestLayoutShiftBindingScopesToIsolatedWorld(t *testing.T) {
 // world name keeps the observer, its binding reference, and the generation counter
 // off the page's window; runImmediately covers the already-loaded document, which
 // is what replaced the old page-world live evaluate, so dropping it would leave the
-// current page without an observer until the next navigation.
+// current page without an observer until the next navigation. It runs the
+// production builder enableLayoutShift itself uses, so either drop fails here.
 func TestLayoutShiftScriptInstallsIntoIsolatedWorld(t *testing.T) {
 	rec := &cdpCapture{}
 	ctx := cdp.WithExecutor(context.Background(), rec)
 	script := buildLayoutShiftScript()
-	if _, err := page.AddScriptToEvaluateOnNewDocument(script).
-		WithWorldName(layoutShiftWorld).
-		WithRunImmediately(true).
-		Do(ctx); err != nil {
+	if _, err := layoutShiftScriptParams(script).Do(ctx); err != nil {
 		t.Fatalf("Page.addScriptToEvaluateOnNewDocument: %v", err)
 	}
 	if rec.method != "Page.addScriptToEvaluateOnNewDocument" {
