@@ -978,10 +978,12 @@ a separate question from the terminal's background polarity, which the
 handshake does ask for over OSC 11 under Capability detection. A present `COLORTERM` of
 `kmscon`, `truecolor`, or `24bit` is a trusted positive that short-circuits to
 truecolour before `Detect` runs. The round trip was dropped because its answer
-could change nothing a reader sees: Nyala paints every cell, so the terminal's
-default colours are never visible on the page area. The bar row is the one
-exception, the row drawn in the terminal's own colours, and its handling is
-tracked as WW-38. The round trip also failed on three measured platforms,
+could change nothing a reader sees: the coloured modes paint every page cell,
+so the terminal's default colours are not visible on the page area, and
+ColourMono uses the terminal's own colours by design, so the answer changes
+nothing there either. The bar row is the one
+exception under the coloured modes, the row drawn in the terminal's own
+colours, and its handling is tracked as WW-38. The round trip also failed on three measured platforms,
 which corroborated the drop: DECRQSS is a no-op on KMSCON's libtsm, zellij
 leaks the reply into stdin, and herdr stops answering after a child sets the
 background. Under tmux,
@@ -1021,7 +1023,8 @@ the writer stays literal.
 One write batches the whole probe (`queryBytes`): the Kitty graphics query
 (`a=q`), an optional Kitty shared-memory transport query, the three cell-size
 queries, the XTVERSION identity query, the Kitty keyboard-protocol flags query,
-the OSC 11 background-colour query, then DA1:
+the OSC 11 background-colour query, the OSC 22 pointer-shape capability query,
+then DA1:
 
 ```
 CSI 16t   cell size in pixels
@@ -1030,6 +1033,7 @@ CSI 18t   text area in cells
 CSI > 0 q XTVERSION
 CSI ? u   Kitty keyboard-protocol flags
 OSC 11 ?  terminal background colour
+OSC 22 ?  pointer-shape capability
 CSI c     DA1
 ```
 
@@ -1885,9 +1889,10 @@ decode-every-frame consumer streams JPEG q90.
   Engines).
 - Bubble Tea v2 dropped: PTY-ownership complexity; the viewer already owns
   the terminal.
-- The DCS colour-depth round-trip dropped: Nyala paints every cell, so the
-  terminal's default colours never show on the page area; the bar row is the
-  exception, tracked as WW-38 (details under Colour). The OSC 11 background
+- The DCS colour-depth round-trip dropped: the coloured modes paint every page
+  cell, so the terminal's default colours do not show on the page area, and
+  ColourMono uses the terminal's own colours by design; the bar row is the
+  exception under the coloured modes, tracked as WW-38 (details under Colour). The OSC 11 background
   query is a separate decision:
   it rides the startup handshake, and the bar reads its answer (details under
   Capability detection).

@@ -112,7 +112,8 @@ const probePollTimeout = 120 * time.Millisecond
 // query, the kitty shm transport query when shmName names a prepared POSIX
 // shared-memory object holding a 1x1 f=24 pixel, the three cell-size queries,
 // the XTVERSION identity query, the kitty keyboard-protocol flags query, the
-// OSC 11 background-colour query, then the DA1 fence. The kitty queries store
+// OSC 11 background-colour query, the OSC 22 pointer-shape capability query,
+// then the DA1 fence. The kitty queries store
 // nothing (a=q); DA1 is last so its reply marks the end of the batch.
 // Terminals that ignore a query stay silent, and the DA1 fence still bounds
 // the read.
