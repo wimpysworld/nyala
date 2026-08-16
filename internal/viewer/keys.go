@@ -526,8 +526,19 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 	if br.Buffered() == 0 {
 		return keyEvent{b: b}, true
 	}
-	next, err := br.ReadByte()
+	peeked, err := br.Peek(1)
 	if err != nil {
+		return keyEvent{b: b}, true
+	}
+	next := peeked[0]
+	if (next == ']' || next == 'P') && !replyBodyFollows(br, next == 'P') {
+		// ESC ] or ESC P with no reply body behind it is a typed Alt chord
+		// (Alt+] arrives as ESC ]). Emit the Escape byte and leave the
+		// introducer buffered, so the next loop iteration delivers it as
+		// text: the pre-reply-consumption behaviour.
+		return keyEvent{b: b}, true
+	}
+	if _, err := br.ReadByte(); err != nil {
 		return keyEvent{b: b}, true
 	}
 	if next == '_' {
@@ -538,10 +549,11 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 		return keyEvent{apc: string(body[1:])}, true
 	}
 	if next == ']' {
-		// An OSC reply from the terminal (colour, title). Consume it so its
-		// bytes do not leak as keys, and carry the body for a future handler.
-		// Truncation at a read boundary needs no handling here: ReadByte
-		// blocks until the rest of the reply arrives.
+		// An OSC reply from the terminal (colour, title, clipboard): its body
+		// starts with a digit, checked by replyBodyFollows above. Consume it
+		// so its bytes do not leak as keys, and carry the body for a future
+		// handler. Truncation at a read boundary needs no handling here:
+		// ReadByte blocks until the rest of the reply arrives.
 		body, ok := readOSCBody(br)
 		if !ok || len(body) == 0 {
 			return keyEvent{}, false
@@ -549,10 +561,12 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 		return keyEvent{osc: string(body)}, true
 	}
 	if next == 'P' {
-		// A DCS reply from the terminal. A DCS ends on ST only, so the APC
-		// reader is exact. Consume it and carry the body for a future
-		// handler. Truncation at a read boundary needs no handling here:
-		// ReadByte blocks until the rest of the reply arrives.
+		// A DCS reply from the terminal: its body starts with a digit
+		// (DECRPSS "1$r"/"0$r") or '>' (XTVERSION ">|"), checked by
+		// replyBodyFollows above. A DCS ends on ST only, so the APC reader is
+		// exact. Consume it and carry the body for a future handler.
+		// Truncation at a read boundary needs no handling here: ReadByte
+		// blocks until the rest of the reply arrives.
 		body, ok := readAPCBody(br)
 		if !ok || len(body) == 0 {
 			return keyEvent{}, false
@@ -605,6 +619,27 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 		return kittyKeyEvent(act, mod), true
 	}
 	return keyEvent{}, false
+}
+
+// replyBodyFollows reports whether a still-buffered ESC ] or ESC P introducer
+// has a terminal reply body behind it. A reply body starts with a digit (OSC
+// "0;", "11;", "22;", "52;"; DCS "1$r", "0$r") or, for a DCS, '>' (XTVERSION
+// ">|"). Anything else, including no buffered byte at all (a reply arrives in
+// one write burst, so its body sits buffered behind the introducer), is a
+// typed Alt chord and keeps the legacy passthrough. The check is a heuristic:
+// an unsolicited reply with a non-numeric body falls to the legacy path, the
+// pre-existing behaviour, which never hangs the reader. It peeks without
+// consuming, so both outcomes see the bytes again.
+func replyBodyFollows(br *bufio.Reader, dcs bool) bool {
+	if br.Buffered() < 2 {
+		return false
+	}
+	p, err := br.Peek(2)
+	if err != nil || len(p) < 2 {
+		return false
+	}
+	c := p[1]
+	return (c >= '0' && c <= '9') || (dcs && c == '>')
 }
 
 // assembleUTF8 assembles one multi-byte UTF-8 rune from its leading byte and
