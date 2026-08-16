@@ -460,6 +460,8 @@ type keyEvent struct {
 	act    keyAction   // the decoded escape-sequence command, or actionNone
 	mod    int         // CDP modifier bits a kitty key report carried; 0 on the legacy path
 	apc    string      // Kitty graphics response body after ESC _ G, e.g. "i=1;OK"; "" otherwise
+	osc    string      // consumed OSC reply body, carried for a future handler; "" means unset
+	dcs    string      // consumed DCS reply body, carried for a future handler; "" means unset
 	paste  string      // bracketed-paste payload delivered as one unit; "" otherwise
 	mouse  *MouseEvent // decoded SGR mouse report; nil otherwise
 }
@@ -534,6 +536,28 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 			return keyEvent{}, false
 		}
 		return keyEvent{apc: string(body[1:])}, true
+	}
+	if next == ']' {
+		// An OSC reply from the terminal (colour, title). Consume it so its
+		// bytes do not leak as keys, and carry the body for a future handler.
+		// Truncation at a read boundary needs no handling here: ReadByte
+		// blocks until the rest of the reply arrives.
+		body, ok := readOSCBody(br)
+		if !ok || len(body) == 0 {
+			return keyEvent{}, false
+		}
+		return keyEvent{osc: string(body)}, true
+	}
+	if next == 'P' {
+		// A DCS reply from the terminal. A DCS ends on ST only, so the APC
+		// reader is exact. Consume it and carry the body for a future
+		// handler. Truncation at a read boundary needs no handling here:
+		// ReadByte blocks until the rest of the reply arrives.
+		body, ok := readAPCBody(br)
+		if !ok || len(body) == 0 {
+			return keyEvent{}, false
+		}
+		return keyEvent{dcs: string(body)}, true
 	}
 	if next != '[' {
 		if act, ok := altKeyAction(next); ok {
@@ -668,9 +692,10 @@ func readPasteBody(br *bufio.Reader) (string, bool) {
 // a few dozen bytes.
 const maxCSIBody = 256
 
-// maxAPCBody bounds an APC body read, so garbage input that opens an APC but
-// never terminates it cannot grow the buffer without limit. A Kitty graphics
-// response is a few dozen bytes.
+// maxAPCBody bounds the APC, OSC, and DCS body reads, so garbage input that
+// opens one of these sequences but never terminates it cannot grow the buffer
+// without limit. 4096 is ample: the largest expected reply, a Kitty graphics
+// response, fits, and colour and title replies are under 100 bytes.
 const maxAPCBody = 4096
 
 // readAPCBody reads an APC body up to its String Terminator (ESC backslash)
@@ -682,6 +707,36 @@ func readAPCBody(br *bufio.Reader) ([]byte, bool) {
 		c, err := br.ReadByte()
 		if err != nil {
 			return nil, false
+		}
+		if c != keyEsc {
+			body = append(body, c)
+			continue
+		}
+		n, err := br.ReadByte()
+		if err != nil {
+			return nil, false
+		}
+		if n == '\\' {
+			return body, true
+		}
+		body = append(body, c, n)
+	}
+	return nil, false
+}
+
+// readOSCBody reads an OSC body up to its BEL or String Terminator
+// (ESC backslash) and returns the bytes between the introducer and the
+// terminator. ok is false on a read error or an over-long body, and the
+// event is dropped.
+func readOSCBody(br *bufio.Reader) ([]byte, bool) {
+	var body []byte
+	for len(body) <= maxAPCBody {
+		c, err := br.ReadByte()
+		if err != nil {
+			return nil, false
+		}
+		if c == '\x07' {
+			return body, true
 		}
 		if c != keyEsc {
 			body = append(body, c)

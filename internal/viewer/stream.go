@@ -925,6 +925,11 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 				}
 				continue
 			}
+			// An OSC or DCS terminal reply is consumed here so it never
+			// types into the page. A future handler (WW-88) reads it here.
+			if ev.osc != "" || ev.dcs != "" {
+				continue
+			}
 			if ev.mouse != nil {
 				if s.handleMouse(*ev.mouse) {
 					return nil

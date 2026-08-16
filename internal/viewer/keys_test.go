@@ -2,6 +2,7 @@ package viewer
 
 import (
 	"bufio"
+	"io"
 	"strings"
 	"testing"
 )
@@ -602,6 +603,102 @@ func TestNextEventLegacyKeepsEscapeAndAltChords(t *testing.T) {
 	}
 	if !printableByte(bytes[2].b) || !printableByte(bytes[3].b) {
 		t.Errorf("legacy printables = %+v, want page text", bytes[2:])
+	}
+}
+
+// TestNextEventOSCAndDCSReplies asserts the reader consumes a terminal OSC
+// reply (both its BEL and ST terminators) and a DCS reply (ST only) as one
+// typed event each, carrying the body in the osc or dcs field, so the reply
+// bytes never leak as rune or byte key events. A trailing key after each
+// reply pins that the parse consumes exactly the sequence.
+func TestNextEventOSCAndDCSReplies(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		wantOSC string
+		wantDCS string
+	}{
+		{"osc bel", "\x1b]11;rgb:1c1c/1c1c/1c1c\x07", "11;rgb:1c1c/1c1c/1c1c", ""},
+		{"osc st", "\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\", "11;rgb:1c1c/1c1c/1c1c", ""},
+		{"dcs st", "\x1bP1$r0m\x1b\\", "", "1$r0m"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			events := collectEvents(t, c.in+"q")
+			if len(events) != 2 {
+				t.Fatalf("events = %d (%+v), want 2: the reply and the key", len(events), events)
+			}
+			ev := events[0]
+			if ev.osc != c.wantOSC || ev.dcs != c.wantDCS {
+				t.Fatalf("reply = %+v, want osc %q dcs %q", ev, c.wantOSC, c.wantDCS)
+			}
+			if ev.b != 0 || ev.r != 0 || ev.act != actionNone || ev.scroll != ScrollNone {
+				t.Fatalf("reply leaked as a key: %+v", ev)
+			}
+			if events[1].b != 'q' || events[1].osc != "" || events[1].dcs != "" {
+				t.Fatalf("trailing key = %+v, want the plain key 'q'", events[1])
+			}
+		})
+	}
+}
+
+// TestNextEventOSCBodyBounded asserts an OSC that never terminates within
+// maxAPCBody is dropped without an event, and the parser recovers on the
+// next escape sequence: garbage input cannot grow the buffer without limit
+// and cannot wedge the reader.
+func TestNextEventOSCBodyBounded(t *testing.T) {
+	events := collectEvents(t, "\x1b]"+strings.Repeat("a", maxAPCBody+1)+"\x1b[A")
+	if len(events) != 1 {
+		t.Fatalf("events = %d (%+v), want 1: only the Up arrow after recovery", len(events), events)
+	}
+	if events[0].scroll != ScrollUp || events[0].osc != "" {
+		t.Fatalf("post-recovery event = %+v, want ScrollUp", events[0])
+	}
+}
+
+// TestNextEventOSCKeepsEscBehaviour asserts the OSC and DCS arms do not
+// disturb the ESC paths that share the introducer byte: a bare Esc press
+// stays an ESC byte event and ESC r stays the Alt+R chord.
+func TestNextEventOSCKeepsEscBehaviour(t *testing.T) {
+	bare := collectEvents(t, "\x1b")
+	if len(bare) != 1 || bare[0].b != keyEsc || bare[0].osc != "" || bare[0].dcs != "" {
+		t.Fatalf("bare Esc = %+v, want one ESC byte event", bare)
+	}
+	chord := collectEvents(t, "\x1br")
+	if len(chord) != 1 || chord[0].act != actionCycleBackend {
+		t.Fatalf("ESC r = %+v, want the Alt+R chord", chord)
+	}
+}
+
+// TestReadKeysOSCSplitWrite asserts a reply cut at a write boundary is still
+// one event with no loss: the terminal delivers the terminator in a second
+// write, the reader blocks on it, and the reply plus the following key arrive
+// as exactly two events.
+func TestReadKeysOSCSplitWrite(t *testing.T) {
+	pr, pw := io.Pipe()
+	done := make(chan struct{})
+	defer close(done)
+	keys := readKeys(pr, done)
+	go func() {
+		defer pw.Close()
+		if _, err := pw.Write([]byte("\x1b]11;rgb:1c1c/1c1c")); err != nil {
+			return
+		}
+		if _, err := pw.Write([]byte("/1c1c\x07q")); err != nil {
+			return
+		}
+	}()
+
+	first, ok := <-keys
+	if !ok || first.osc != "11;rgb:1c1c/1c1c/1c1c" {
+		t.Fatalf("split reply = %+v (ok %v), want the whole OSC body", first, ok)
+	}
+	if first.b != 0 || first.r != 0 {
+		t.Fatalf("split reply leaked as a key: %+v", first)
+	}
+	second, ok := <-keys
+	if !ok || second.b != 'q' {
+		t.Fatalf("key after the split reply = %+v (ok %v), want 'q'", second, ok)
 	}
 }
 

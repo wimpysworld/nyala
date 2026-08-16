@@ -101,6 +101,55 @@ func TestHandleKeyForwardsPageText(t *testing.T) {
 	}
 }
 
+// TestHandleKeyDropsTerminalReplies pins the terminal-reply consumption at
+// both ends of the seam. The Run loop in stream.go consumes an osc or dcs
+// event before handleKey and is not reachable from this harness, so the test
+// asserts the two halves the loop composes: the parser turns the raw reply
+// bytes into one typed event that is not a key, and the dispatcher lets a
+// reply event reach neither the text seam nor the key seam. On the reverted
+// tree the raw bytes become an Escape event plus text, so the parse
+// assertion fails there.
+func TestHandleKeyDropsTerminalReplies(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"osc bel", "\x1b]11;rgb:1c1c/1c1c/1c1c\x07"},
+		{"osc st", "\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\"},
+		{"dcs st", "\x1bP1$r0m\x1b\\"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			events := collectEvents(t, c.in)
+			if len(events) != 1 {
+				t.Fatalf("events = %d (%+v), want one consumed reply", len(events), events)
+			}
+			ev := events[0]
+			if ev.osc == "" && ev.dcs == "" {
+				t.Fatalf("reply = %+v, want the body in osc or dcs", ev)
+			}
+			if ev.b != 0 || ev.r != 0 {
+				t.Fatalf("reply parsed as a key: %+v", ev)
+			}
+
+			st := NewState(80, 24)
+			var text, sent []string
+			s := dispatchSession(streamTestEngine{
+				sendText: func(t string) { text = append(text, t) },
+				sendKey:  func(code string) { sent = append(sent, code) },
+			}, &st)
+			for _, forward := range []keyEvent{ev, {osc: "11;test"}, {dcs: "1$r0m"}} {
+				if quit := s.handleKey(forward); quit {
+					t.Fatalf("%+v requested quit", forward)
+				}
+			}
+			if len(text) != 0 || len(sent) != 0 {
+				t.Fatalf("a terminal reply reached the engine: text %q, keys %v", text, sent)
+			}
+		})
+	}
+}
+
 // TestHandleKeyForwardsEditKeys pins the field-editing keys: both Backspace
 // encodings (0x08 and DEL), Delete, and Esc forward as key codes for the engine
 // to dispatch as full strokes, and none reaches the text seam.
