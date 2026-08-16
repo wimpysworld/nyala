@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"testing"
 
 	"github.com/chromedp/cdproto/runtime"
@@ -80,7 +81,7 @@ func TestLayoutShiftPayloadReflowPokes(t *testing.T) {
 // draws text without waiting for an unrelated trigger, and proves a later announce
 // replaces the stale id without a second poke, because it is not a layout shift.
 func TestAnnounceRecordsContextID(t *testing.T) {
-	e := &ChromiumEngine{reflow: make(chan struct{}, 1)}
+	e := &ChromiumEngine{reflow: make(chan struct{}, 1), layoutShiftActive: true}
 	dispatchLayoutShiftPayload(e, "announce", 7)
 	if e.layoutShiftCtxID != 7 {
 		t.Errorf("layoutShiftCtxID = %d after first announce, want 7", e.layoutShiftCtxID)
@@ -94,6 +95,53 @@ func TestAnnounceRecordsContextID(t *testing.T) {
 	}
 	if drainReflow(e) {
 		t.Error("second announce poked reflow, want no poke")
+	}
+}
+
+// TestLateAnnounceAfterCleanup proves an announce that arrives after a cleanup path
+// ran is dropped, and that an announce with no cleanup is still recorded. The
+// Runtime.bindingCalled listener stays live during cleanup, so a callback can block
+// on the engine lock and write afterwards; a recorded id would then send every walk
+// to a dead execution context.
+func TestLateAnnounceAfterCleanup(t *testing.T) {
+	tests := []struct {
+		name      string
+		cleanup   func(e *ChromiumEngine)
+		wantCtxID runtime.ExecutionContextID
+		wantPoke  bool
+	}{
+		{name: "no cleanup", wantCtxID: 5, wantPoke: true},
+		{
+			name:    "after disable",
+			cleanup: func(e *ChromiumEngine) { e.disableLayoutShift(context.Background()) },
+		},
+		{
+			name:    "after teardown",
+			cleanup: func(e *ChromiumEngine) { e.teardownSession() },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := &ChromiumEngine{reflow: make(chan struct{}, 1), layoutShiftActive: true}
+			reflow := e.reflow
+			if tt.cleanup != nil {
+				tt.cleanup(e)
+			}
+			dispatchLayoutShiftPayload(e, "announce", 5)
+			if e.layoutShiftCtxID != tt.wantCtxID {
+				t.Errorf("layoutShiftCtxID = %d after announce, want %d",
+					e.layoutShiftCtxID, tt.wantCtxID)
+			}
+			poked := false
+			select {
+			case <-reflow:
+				poked = true
+			default:
+			}
+			if poked != tt.wantPoke {
+				t.Errorf("announce poked reflow = %v, want %v", poked, tt.wantPoke)
+			}
+		})
 	}
 }
 
