@@ -50,6 +50,30 @@ func TestMaybeEmitTitleChangeGated(t *testing.T) {
 	}
 }
 
+// TestMaybeEmitTitleFrameArrival verifies the frame-arrival gating: repeated
+// per-frame calls with an unchanged title write once, and a later title change
+// writes again, so the frame path alone suffices without the fps beat.
+func TestMaybeEmitTitleFrameArrival(t *testing.T) {
+	eng := &titleEngine{title: "Loading page", url: "https://example.org/a"}
+	s, out := newTitleSession(eng)
+
+	// Simulate a burst of frame arrivals with an unchanged title.
+	for range 5 {
+		s.maybeEmitTitle()
+	}
+	if got, want := out.String(), setTitle("Loading page"); got != want {
+		t.Fatalf("frame burst wrote %q, want a single %q", got, want)
+	}
+
+	// A title change after load emits on the next frame arrival.
+	out.Reset()
+	eng.title = "Loaded page"
+	s.maybeEmitTitle()
+	if got, want := out.String(), setTitle("Loaded page"); got != want {
+		t.Fatalf("post-change emit = %q, want %q", got, want)
+	}
+}
+
 // TestMaybeEmitTitleBytes verifies the emitted sequence is OSC 0 terminated
 // by ST, with no BEL anywhere in the write.
 func TestMaybeEmitTitleBytes(t *testing.T) {

@@ -3,7 +3,9 @@ package viewer
 import (
 	"bytes"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // pointerEngine is a fakeEngine whose computed cursor is settable, so a test
@@ -173,6 +175,63 @@ func TestPointerShapeResetOnModeEntry(t *testing.T) {
 	s.handleMouse(MouseEvent{Action: MouseActionMove, Button: MouseButtonNone, Row: 5, Col: 5})
 	if got, want := strings.Count(out.String(), pointerShapeSequence("pointer")), 1; got != want {
 		t.Fatalf("page motion after leaving find wrote %d page shapes (%q), want %d", got, out.String(), want)
+	}
+}
+
+// hoverEngine is a fakeEngine whose SendMouse installs a new cursor, the way
+// the real engine reads the cursor inside the hover dispatch, so a test can
+// tell a stale snapshot read from a fresh one. The mutex covers the cursor:
+// the input worker writes it while the consumer goroutine reads it, the same
+// pairing the real engine synchronises internally.
+type hoverEngine struct {
+	fakeEngine
+	mu     sync.Mutex
+	cursor string
+	next   string
+}
+
+func (e *hoverEngine) PointerCursor() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cursor
+}
+
+func (e *hoverEngine) SendMouse(ev MouseEvent) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.cursor = e.next
+}
+
+// TestPointerShapeWakeAfterIsolatedHover verifies that one isolated hover
+// dispatched through the input worker pokes pointerWake once the engine call
+// returns, and that the poked re-read emits the fresh shape without a second
+// mouse event.
+func TestPointerShapeWakeAfterIsolatedHover(t *testing.T) {
+	eng := &hoverEngine{cursor: "text", next: "pointer"}
+	var out bytes.Buffer
+	st := &State{pointerShapeOK: true, pointerShapes: map[string]bool{"pointer": true, "text": true}}
+	s := &streamSession{eng: eng, st: st, tty: &out, pointerWake: make(chan struct{}, 1), keySender: newKeySender(eng)}
+	defer s.keySender.close()
+
+	// Establish the pre-hover shape, then hover: the immediate emit inside
+	// flushMotionAt still reads the old snapshot, so it writes nothing.
+	s.maybeEmitPointerShape()
+	out.Reset()
+	s.forwardMouseAt(MouseEvent{Action: MouseActionMove, Button: MouseButtonNone, Row: 5, Col: 5}, time.Now())
+	if out.Len() != 0 {
+		t.Fatalf("pre-wake emit wrote %q, want nothing", out.String())
+	}
+
+	// The worker's poke arrives after SendMouse returned, so the re-read it
+	// triggers sees the fresh cursor.
+	select {
+	case <-s.pointerWake:
+	case <-time.After(time.Second):
+		t.Fatal("no pointerWake poke after hover dispatch")
+	}
+	s.maybeEmitPointerShape()
+	if got, want := out.String(), pointerShapeSequence("pointer"); got != want {
+		t.Fatalf("post-wake emit = %q, want %q", got, want)
 	}
 }
 
