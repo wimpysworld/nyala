@@ -61,8 +61,12 @@ const layoutShiftEpsilon = 0.01
 // take exactly one string argument, so the script encodes its payload: it calls the
 // binding once at install with the literal 'announce', which tells the engine the
 // isolated execution context id the script runs in, and calls it on each qualifying
-// shift with 'shift:<cumulative>:<generation>'. The announce call sits after the
-// binding guard, because a world without the binding must return before it. The
+// shift with 'shift:<cumulative>:<generation>'. The announce call sits directly
+// after the binding guard, because a world without the binding must return before
+// it, and before the PerformanceObserver capability guards, because the text walk
+// needs the context id even where the observer cannot install. A browser without
+// the observer therefore loses the layout-shift trigger alone and keeps the text
+// overlay. The
 // script runs in every frame, so the announce is guarded by a top-frame test: an
 // iframe's isolated world must not overwrite the recorded context id and send the
 // text walk into a subframe document. The observer install stays unconditional, so
@@ -79,13 +83,13 @@ func buildLayoutShiftScript() string {
 	b.WriteString("===undefined)window.")
 	b.WriteString(layoutGenProperty)
 	b.WriteString("=0;")
-	b.WriteString("if(typeof PerformanceObserver!=='function')return;")
-	b.WriteString("var supported=PerformanceObserver.supportedEntryTypes;")
-	b.WriteString("if(supported&&supported.indexOf('layout-shift')===-1)return;")
 	b.WriteString("var fn=window[")
 	b.WriteString(jsStringLiteral(layoutShiftBinding))
 	b.WriteString("];if(typeof fn!=='function')return;")
 	b.WriteString("try{if(window.top===window)fn('announce');}catch(err){}")
+	b.WriteString("if(typeof PerformanceObserver!=='function')return;")
+	b.WriteString("var supported=PerformanceObserver.supportedEntryTypes;")
+	b.WriteString("if(supported&&supported.indexOf('layout-shift')===-1)return;")
 	b.WriteString("var cumulative=0,pending=0;")
 	b.WriteString("var o=new PerformanceObserver(function(list){")
 	b.WriteString("var entries=list.getEntries();")

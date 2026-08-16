@@ -178,6 +178,27 @@ func (e *ChromiumEngine) refreshFontForcing(ctx context.Context, cellW, cellH fl
 	return true
 }
 
+// layoutShiftBindingParams builds the Runtime.addBinding command that exposes the
+// layout-shift binding on the layoutShiftWorld isolated world alone, so the page
+// can never call or enumerate it.
+func layoutShiftBindingParams() *runtime.AddBindingParams {
+	return runtime.AddBinding(layoutShiftBinding).WithExecutionContextName(layoutShiftWorld)
+}
+
+// layoutShiftScriptParams builds the Page.addScriptToEvaluateOnNewDocument command
+// that installs the observer script into the layoutShiftWorld isolated world and
+// runs it immediately, so the already-loaded document gets an observer without a
+// page-world evaluate.
+//
+// Both builders are named rather than inline chains so the parameter tests drive
+// the production registration and a dropped world name or runImmediately cannot
+// pass unseen.
+func layoutShiftScriptParams(script string) *page.AddScriptToEvaluateOnNewDocumentParams {
+	return page.AddScriptToEvaluateOnNewDocument(script).
+		WithWorldName(layoutShiftWorld).
+		WithRunImmediately(true)
+}
+
 // enableLayoutShift registers the Runtime binding the layout-shift observer calls
 // and registers the observer on-new-document script, both scoped to the
 // layoutShiftWorld isolated world, so the page can never enumerate the observer
@@ -195,7 +216,7 @@ func (e *ChromiumEngine) refreshFontForcing(ctx context.Context, cellW, cellH fl
 func (e *ChromiumEngine) enableLayoutShift(ctx context.Context) {
 	if err := chromedp.Run(ctx,
 		runtime.Enable(),
-		runtime.AddBinding(layoutShiftBinding).WithExecutionContextName(layoutShiftWorld),
+		layoutShiftBindingParams(),
 	); err != nil {
 		return
 	}
@@ -203,10 +224,7 @@ func (e *ChromiumEngine) enableLayoutShift(ctx context.Context) {
 	var id page.ScriptIdentifier
 	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(runCtx context.Context) error {
 		var runErr error
-		id, runErr = page.AddScriptToEvaluateOnNewDocument(script).
-			WithWorldName(layoutShiftWorld).
-			WithRunImmediately(true).
-			Do(runCtx)
+		id, runErr = layoutShiftScriptParams(script).Do(runCtx)
 		return runErr
 	})); err == nil {
 		e.mu.Lock()

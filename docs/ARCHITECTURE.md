@@ -406,9 +406,11 @@ text containers is not one this approximation helps. Every skip here, the
 negative `z-index`, the degenerate rect and the cap, drops a box and never a
 tag, so it costs the cull a cover and lets text bleed through rather than letting
 anchored text drift. The client re-applies
-that cap when it decodes the walk JSON, because the walk evaluates in the page's
-main world and returns a string the page's own `JSON.stringify` produced, so the
-in-page cap is advice rather than a limit. Every box is re-tested against every
+that cap when it decodes the walk JSON. The walk evaluates in the `__nyala_world`
+isolated world, so the page cannot redefine the `JSON.stringify` or the
+`Array.prototype` the walk uses, but it still owns the DOM the walk counts boxes
+over, so the client cap is the limit and the in-page cap is the early exit. Every
+box is re-tested against every
 run on the frame-emit goroutine, a scan no context cancellation interrupts, so
 an unbounded box count would make each frame of a scroll quadratic. The decode
 truncates rather than errors: the in-page cap already drops the excess, and

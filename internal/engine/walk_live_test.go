@@ -92,11 +92,14 @@ func liveWalkPage(t *testing.T, page string) (context.Context, runtime.Execution
 
 	e.mu.Lock()
 	ctx := e.ctx
-	ctxID := e.layoutShiftCtxID
 	e.mu.Unlock()
 	if ctx == nil {
 		t.Fatal("engine context is nil after navigate")
 	}
+	// The announce arrives on its own bindingCalled event, so the first synced
+	// frame does not imply the id is held yet. Poll for it, or the walk fails on
+	// the missing-context guard whenever the event lands second.
+	ctxID := awaitProductionLayoutShiftContext(t, e)
 
 	styleScript := buildStylesheetScript(font.FiraCodeTTF(), cellW, cellH)
 	if err := evaluateVoid(ctx, "inject forcing", styleScript, false); err != nil {
@@ -187,11 +190,14 @@ func TestLiveScreenReaderOnlyTextDropped(t *testing.T) {
 
 	e.mu.Lock()
 	ctx := e.ctx
-	ctxID := e.layoutShiftCtxID
 	e.mu.Unlock()
 	if ctx == nil {
 		t.Fatal("engine context is nil after navigate")
 	}
+	// The announce arrives on its own bindingCalled event, so the first synced
+	// frame does not imply the id is held yet. Poll for it, or the walk fails on
+	// the missing-context guard whenever the event lands second.
+	ctxID := awaitProductionLayoutShiftContext(t, e)
 
 	// Inject the production forcing stylesheet and wait for the embedded font, so the
 	// walk reads the forced monospace layout exactly as production does.
@@ -303,11 +309,14 @@ func TestLiveOccludedTextDropped(t *testing.T) {
 
 	e.mu.Lock()
 	ctx := e.ctx
-	ctxID := e.layoutShiftCtxID
 	e.mu.Unlock()
 	if ctx == nil {
 		t.Fatal("engine context is nil after navigate")
 	}
+	// The announce arrives on its own bindingCalled event, so the first synced
+	// frame does not imply the id is held yet. Poll for it, or the walk fails on
+	// the missing-context guard whenever the event lands second.
+	ctxID := awaitProductionLayoutShiftContext(t, e)
 
 	// Inject the production forcing stylesheet and wait for the embedded font, so the
 	// walk reads the forced monospace layout exactly as production does.
