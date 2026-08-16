@@ -1,9 +1,14 @@
 package engine
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/chromedp/cdproto/input"
+	"github.com/chromedp/cdproto/runtime"
+	"github.com/chromedp/chromedp"
 )
 
 // MouseAction classifies a forwarded mouse event: a button press, a button
@@ -188,6 +193,62 @@ func wheelParams(x, y float64, dx, dy, mod int) *input.DispatchMouseEventParams 
 		WithModifiers(input.Modifier(mod))
 }
 
+// hoverReadsCursor reports whether a mouse dispatch also reads the computed
+// cursor at the pointer: only a hover move, a move with no held button, does.
+// A press, release, wheel, or drag never evaluates, so the input path stays a
+// pure event send for every gesture that changes page state.
+func hoverReadsCursor(action MouseAction, button MouseButton) bool {
+	return action == MouseActionMove && button == MouseButtonNone
+}
+
+// pointerCursorExpr builds the one-expression computed-cursor read at the CSS
+// position x, y. It reads only the cursor property, never the full style, and
+// the arrow-function guard answers the empty string when elementFromPoint
+// finds no element, because getComputedStyle(null) would throw.
+func pointerCursorExpr(x, y float64) string {
+	return fmt.Sprintf(
+		"(el => el ? getComputedStyle(el).cursor ?? '' : '')(document.elementFromPoint(%g, %g))",
+		x, y)
+}
+
+// pointerCursorReadAction returns the chromedp action a hover dispatch appends:
+// it evaluates pointerCursorExpr in the layoutShiftWorld isolated world through
+// walkEvaluateParams, so the page cannot observe the read, and records the
+// value PointerCursor reports. Every failure - an evaluate error, a thrown
+// expression, a missing value, or a decode error - returns nil and leaves the
+// stored value unchanged, so a flaky read never counts as an input failure.
+func (e *ChromiumEngine) pointerCursorReadAction(ctxID runtime.ExecutionContextID, x, y float64) chromedp.Action {
+	return chromedp.ActionFunc(func(c context.Context) error {
+		res, exc, err := walkEvaluateParams(pointerCursorExpr(x, y), ctxID).Do(c)
+		if err != nil || exc != nil || res == nil || len(res.Value) == 0 {
+			return nil
+		}
+		var cursor string
+		if json.Unmarshal(res.Value, &cursor) != nil {
+			return nil
+		}
+		e.recordPointerCursor(cursor)
+		return nil
+	})
+}
+
+// recordPointerCursor stores the raw computed cursor value PointerCursor
+// reports.
+func (e *ChromiumEngine) recordPointerCursor(cursor string) {
+	e.mu.Lock()
+	e.pointerCursor = cursor
+	e.mu.Unlock()
+}
+
+// PointerCursor returns the raw computed cursor value of the last successful
+// hover read. It is a snapshot getter beside CurrentTitle and LoadState: it
+// never waits on the browser, and it is empty before the first read.
+func (e *ChromiumEngine) PointerCursor() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.pointerCursor
+}
+
 // SendMouse forwards one mouse event to the page. A wheel step scrolls
 // through the one wheel transport at the pointer cell, so Block's whole-cell
 // vertical quantisation and the crash-recovery scroll offset keep working. A
@@ -197,6 +258,8 @@ func wheelParams(x, y float64, dx, dy, mod int) *input.DispatchMouseEventParams 
 // instead of parking the caller. A move carrying a held button reads as a drag
 // and one carrying MouseButtonNone as a hover. Either way it leaves the click
 // chain untouched, so moving between two presses cannot break a double click.
+// A hover additionally reads the computed cursor at the point for
+// PointerCursor, in the same bounded dispatch.
 func (e *ChromiumEngine) SendMouse(ev MouseEvent) {
 	if ev.Action == MouseActionWheel {
 		// Both axes take the same fixed step: an SGR report carries a direction,
@@ -206,6 +269,7 @@ func (e *ChromiumEngine) SendMouse(ev MouseEvent) {
 	}
 	e.mu.Lock()
 	ctx := e.ctx
+	ctxID := e.layoutShiftCtxID
 	cellW, cellH := e.snapshotCellPx()
 	x, y := cellCentreCSS(ev.Col, ev.Row, e.cols, e.rows, cellW, cellH)
 	var count int
@@ -219,5 +283,12 @@ func (e *ChromiumEngine) SendMouse(ev MouseEvent) {
 	if ctx == nil {
 		return
 	}
-	e.dispatchInput(ctx, mouseParams(ev.Action, ev.Button, ev.Mod, count, x, y))
+	action := chromedp.Action(mouseParams(ev.Action, ev.Button, ev.Mod, count, x, y))
+	if hoverReadsCursor(ev.Action, ev.Button) && ctxID != 0 {
+		// The cursor read rides the same bounded dispatch as the move, so it adds
+		// no goroutine and a wedged browser drops the pair together. A zero
+		// context id skips the read and leaves the stored value unchanged.
+		action = chromedp.Tasks{action, e.pointerCursorReadAction(ctxID, x, y)}
+	}
+	e.dispatchInput(ctx, action)
 }

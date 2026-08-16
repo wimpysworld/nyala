@@ -77,6 +77,11 @@ type Engine interface {
 	// the first title read and when the page has no title; the viewer owns
 	// the host fallback, so the engine never substitutes one.
 	CurrentTitle() string
+	// PointerCursor returns the computed CSS cursor value under the last
+	// hover the engine dispatched, or an empty string before the first
+	// successful read. It is a snapshot getter and never waits on the
+	// browser.
+	PointerCursor() string
 	// LoadState returns the page-load progress snapshot for the terminal's
 	// OSC 9;4 indicator. The zero value is the cleared state, so the viewer
 	// writes nothing before the first change.
@@ -561,6 +566,15 @@ type streamSession struct {
 	// unchanged state costs one struct compare and no terminal write. Its
 	// zero value is the cleared state, matching the terminal at startup.
 	lastLoad engine.LoadState
+	// lastShape is the last pointer-shape name maybeEmitPointerShape wrote,
+	// where the empty string names the terminal's default shape and is the
+	// zero value, matching the terminal at startup: a session that never
+	// wrote a shape needs no reset. Producer-goroutine only.
+	lastShape string
+	// pointerOnBar records that the last buttonless motion sat on the bar
+	// row, so maybeEmitPointerShape wants the default shape there rather
+	// than the page's cursor. Producer-goroutine only.
+	pointerOnBar bool
 	// launchURL is the URL Stream navigated to. The bar's URL segment shows
 	// it until the engine records a committed URL. Set once before the loops
 	// start and read-only after.
@@ -757,6 +771,41 @@ func (s *streamSession) maybeEmitProgress() {
 	}
 	s.lastLoad = load
 	_ = s.emitControl([]byte(progressSequence(load.State, load.Percent)))
+}
+
+// maybeEmitPointerShape reads the engine's computed cursor snapshot, maps it
+// onto a kitty pointer-shape name against the terminal's supported set, and
+// writes the OSC 22 sequence through the ordered control path when the shape
+// differs from the last one written. It returns at once when the handshake
+// found no OSC 22 support, so an unsupporting terminal costs one flag check
+// and sees zero pointer-shape bytes. Over the bar row the wanted shape is the
+// terminal default, written as the reset sequence. A cursor that maps to a
+// shape the terminal does not support emits nothing and leaves the last
+// shape standing, never a substitute. A page that changes its cursor under a
+// still pointer waits for the next motion: the engine snapshot refreshes on
+// hover dispatch only, and that limit is a recorded non-goal. It runs only on
+// the producer goroutine, which owns lastShape.
+func (s *streamSession) maybeEmitPointerShape() {
+	if !s.st.pointerShapeOK {
+		return
+	}
+	shape := ""
+	if !s.pointerOnBar {
+		name, ok := mapCursorToShape(s.eng.PointerCursor(), s.st.pointerShapes)
+		if !ok {
+			return
+		}
+		shape = name
+	}
+	if shape == s.lastShape {
+		return
+	}
+	s.lastShape = shape
+	seq := pointerShapeReset
+	if shape != "" {
+		seq = pointerShapeSequence(shape)
+	}
+	_ = s.emitControl([]byte(seq))
 }
 
 // loop runs the push consumer until the frames or keys channel closes, a quit
@@ -965,6 +1014,10 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			// change during an active load reaches the terminal without a
 			// ticker. The steady cost is one struct compare.
 			s.maybeEmitProgress()
+			// The frame wake also re-reads the pointer cursor, so a hover
+			// whose read landed after the motion's own emit still reaches
+			// the terminal on the next frame.
+			s.maybeEmitPointerShape()
 		case fi := <-w.free:
 			// A drained buffer came back: record its paint split on this goroutine
 			// (the meter is single-goroutine) and return the buffer to the free set.
@@ -1711,10 +1764,14 @@ func (s *streamSession) handleMouse(ev MouseEvent) (quit bool) {
 			return false
 		case onBar:
 			// The bar row sits outside the engine grid and holds no page, so
-			// there is nothing there to hover.
+			// there is nothing there to hover; the terminal's own pointer
+			// shape comes back over it.
+			s.pointerOnBar = true
+			s.maybeEmitPointerShape()
 			return false
 		}
 		// Buttonless motion off the bar row is a hover.
+		s.pointerOnBar = false
 		s.forwardMouse(ev)
 		return false
 	case MouseActionRelease:
@@ -1793,6 +1850,11 @@ func (s *streamSession) flushMotionAt(now time.Time) {
 	s.motionHeld = false
 	s.motionWindow = now.Add(motionCoalesceInterval)
 	s.dispatchMouse(s.heldMotion)
+	// The dispatched hover refreshed nothing yet - the engine reads the
+	// cursor on its own goroutine - so this write reflects the previous
+	// hover's snapshot and the next flush or frame wake catches up. The 16 ms
+	// coalescing window bounds the rate.
+	s.maybeEmitPointerShape()
 }
 
 // dispatchMouse forwards one mouse event to the engine off the input loop

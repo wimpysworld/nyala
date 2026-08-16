@@ -166,6 +166,12 @@ type ChromiumEngine struct {
 	// An announce is recorded only while it is set. Guarded by mu.
 	layoutShiftActive bool
 
+	// pointerCursor is the raw computed CSS cursor value read at the pointer on
+	// the last hover move, empty before any read succeeds. A hover dispatch
+	// evaluates the read in the layoutShiftWorld isolated world; a zero context
+	// id or an evaluate error leaves the stored value unchanged. Guarded by mu.
+	pointerCursor string
+
 	// windowID is the browser window id for the driven target, fetched once per
 	// session via browser.GetWindowForTarget and used to size the captured surface
 	// with Browser.SetContentsSize on launch and on every restart. It is reset per

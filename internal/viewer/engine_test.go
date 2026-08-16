@@ -20,6 +20,7 @@ func (e *fakeEngine) SendPaste(string) bool       { return false }
 func (e *fakeEngine) SendNav(NavAction)           {}
 func (e *fakeEngine) CurrentURL() string          { return "" }
 func (e *fakeEngine) CurrentTitle() string        { return "" }
+func (e *fakeEngine) PointerCursor() string       { return "" }
 
 func (e *fakeEngine) LoadState() engine.LoadState { return engine.LoadState{} }
 func (e *fakeEngine) OpenURL(string)              {}

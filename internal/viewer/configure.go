@@ -124,6 +124,11 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 	st.setTerminalCompatibility(res.TermID, environ)
 	st.Colour = resolveCompatibleColour(colourFlag, environ, detected, st.compat)
 	st.barSGR = resolveBarStyle(res.BackgroundDark, res.BackgroundOK, st.Colour)
+	// The pointer-shape capability rides the full handshake only, like the
+	// keyboard protocol above: the reduced handshake sends no OSC 22 query,
+	// so multiplexer sessions keep the terminal's own pointer.
+	st.pointerShapeOK = res.PointerShapeOK
+	st.pointerShapes = res.PointerShapes
 
 	st.SetEnabled(enabledBackends(res, st.compat))
 	return nil

@@ -148,6 +148,17 @@ type State struct {
 	// keep the legacy parser.
 	kittyKeyboard bool
 
+	// pointerShapeOK records that the startup handshake confirmed OSC 22
+	// pointer-shape support, resolved once by configureBackends. It stays
+	// false under a multiplexer, whose reduced handshake sends no OSC 22
+	// query, so those sessions never write a pointer-shape sequence.
+	pointerShapeOK bool
+
+	// pointerShapes maps each queried pointer-shape name to whether the
+	// terminal supports it. It is meaningful only when pointerShapeOK is
+	// true; mapCursorToShape drops a shape absent from it.
+	pointerShapes map[string]bool
+
 	// barSGR is the SGR opener the bottom bar row writes, resolved once by
 	// configureBackends from the OSC 11 background reply. Empty is the
 	// pre-detection value, which barStyle reads as reverse video, so a State

@@ -703,6 +703,8 @@ func (e streamTestEngine) CurrentURL() string { return e.currentURL }
 
 func (e streamTestEngine) CurrentTitle() string { return e.currentTitle }
 
+func (e streamTestEngine) PointerCursor() string { return "" }
+
 func (e streamTestEngine) LoadState() engine.LoadState { return engine.LoadState{} }
 
 func (e streamTestEngine) OpenURL(url string) {
