@@ -108,6 +108,15 @@ type GlyphRun struct {
 	// compose-time scroll shift is the only reader; the overlay fold ignores it, so
 	// it stays out of the harness .runs golden format.
 	ViewportAnchored bool
+	// Href is the resolved absolute URL of the nearest ancestor anchor with an
+	// href, carried through the decode untouched. The block layer sanitises it
+	// before any terminal write, so this field is raw page data. Empty means the
+	// run sits in no link.
+	Href string
+	// LinkID is the page's stable id for the run's anchor element, derived from
+	// DOM identity (the layout generation plus a per-anchor counter), so partial
+	// repaints keep one link across the runs of one anchor. Empty means no link.
+	LinkID string
 }
 
 // IngestStats is the session ingest summary the viewer reads at quit. With

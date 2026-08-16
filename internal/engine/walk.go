@@ -75,6 +75,12 @@ type walkRun struct {
 	BG        walkColour `json:"bg"`
 	StackRank int        `json:"z"`
 	Anchored  bool       `json:"f"`
+	// Href is the resolved absolute URL of the nearest ancestor anchor with an
+	// href, and LinkID is the page's stable id for that anchor element, the layout
+	// generation plus a per-anchor counter. Both are empty when the run sits in no
+	// link.
+	Href   string `json:"hr"`
+	LinkID string `json:"li"`
 }
 
 // walkFixedBox is one viewport-anchored position: fixed box the in-page walk
@@ -315,6 +321,8 @@ func decodeWalkRuns(res walkResult, cellW float64, cols int) []render.GlyphRun {
 			DisplayCells:     render.DisplayWidth(clipped),
 			StackRank:        r.StackRank,
 			ViewportAnchored: r.Anchored,
+			Href:             r.Href,
+			LinkID:           r.LinkID,
 		})
 	}
 	return runs

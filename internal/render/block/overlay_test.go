@@ -1,8 +1,10 @@
 package block
 
 import (
+	"bytes"
 	"image"
 	"image/color"
+	"strings"
 	"testing"
 
 	"github.com/wimpysworld/nyala/internal/render"
@@ -667,5 +669,119 @@ func TestComposeRunOutOfBoundsClipped(t *testing.T) {
 		if g.Cells[i].Text != "" {
 			t.Fatalf("cell %d carries Text %q from a clipped run", i, g.Cells[i].Text)
 		}
+	}
+}
+
+// TestComposeStampsSharedLinkOnRunCells pins the cell stamp: every cell of one
+// linked run, including a wide lead and its trailing cell, shares one
+// *Hyperlink pointer, and an untouched cell carries nil.
+func TestComposeStampsSharedLinkOnRunCells(t *testing.T) {
+	img := overlaySrc(4, 1, color.RGBA{R: 20, G: 30, B: 40, A: 0xff})
+	br := &Renderer{Cols: 4, Rows: 1}
+	f := render.Frame{Img: img, Text: []render.GlyphRun{{
+		Col: 0, Row: 0, Text: "世X", FG: color.RGBA{A: 0xff},
+		Href: "https://example.org/a", LinkID: "l1",
+	}}}
+	g := br.Compose(f)
+	lead := g.At(0, 0)
+	if lead.Link == nil || lead.Link.ID != "l1" || lead.Link.URI != "https://example.org/a" {
+		t.Fatalf("lead Link = %+v, want id l1 and the run's URI", lead.Link)
+	}
+	if trail := g.At(1, 0); trail.Link != lead.Link {
+		t.Fatalf("wide trailing Link = %p, want the lead's shared pointer %p", trail.Link, lead.Link)
+	}
+	if narrow := g.At(2, 0); narrow.Link != lead.Link {
+		t.Fatalf("narrow cell Link = %p, want the lead's shared pointer %p", narrow.Link, lead.Link)
+	}
+	if untouched := g.At(3, 0); untouched.Link != nil {
+		t.Fatalf("untouched cell Link = %+v, want nil", untouched.Link)
+	}
+}
+
+// TestComposeRightEdgeSpaceCarriesLink pins the right-edge case: the background
+// space written for a wide glyph clipped at the last column still carries the
+// run's link, so the clickable area does not stop one cell short.
+func TestComposeRightEdgeSpaceCarriesLink(t *testing.T) {
+	img := overlaySrc(2, 1, color.RGBA{R: 10, G: 20, B: 30, A: 0xff})
+	br := &Renderer{Cols: 2, Rows: 1}
+	f := render.Frame{Img: img, Text: []render.GlyphRun{{
+		Col: 1, Row: 0, Text: "世", FG: color.RGBA{A: 0xff},
+		Href: "https://example.org/a", LinkID: "l1",
+	}}}
+	g := br.Compose(f)
+	cell := g.At(1, 0)
+	if cell.Text != " " {
+		t.Fatalf("right-edge cell Text = %q, want a space", cell.Text)
+	}
+	if cell.Link == nil || cell.Link.ID != "l1" {
+		t.Fatalf("right-edge space Link = %+v, want the run's link", cell.Link)
+	}
+}
+
+// TestComposeBoundaryRecomposeCarriesNoLink pins that the background-only
+// boundary recompose never stamps the run's link: the neighbour cell holds no
+// text of the anchor, so a link there would widen the clickable area wrongly.
+func TestComposeBoundaryRecomposeCarriesNoLink(t *testing.T) {
+	left := color.RGBA{R: 200, G: 100, B: 40, A: 0xff}
+	right := color.RGBA{R: 40, G: 60, B: 220, A: 0xff}
+	fill := color.RGBA{R: 10, G: 10, B: 10, A: 0xff}
+	img := twoColumnQuadrantAt(4, 2, left, right, fill)
+	br := &Renderer{Cols: 4, Rows: 1}
+	run := render.GlyphRun{
+		Col: 1, Row: 0, Text: "A", X: 10, W: 15, CellW: 10, FG: color.RGBA{A: 0xff},
+		Href: "https://example.org/a", LinkID: "l1",
+	}
+	g := br.Compose(render.Frame{Img: img, Text: []render.GlyphRun{run}})
+	if own := g.At(1, 0); own.Link == nil {
+		t.Fatal("the run's own cell lost its link")
+	}
+	if boundary := g.At(2, 0); boundary.Link != nil {
+		t.Fatalf("boundary recompose Link = %+v, want nil", boundary.Link)
+	}
+}
+
+// TestRenderLinkedFrameBalancedAndClosedPerRow drives the full-frame writer:
+// one linked run renders with one open carrying the run's id, opens and closes
+// balance, and the row's close lands before its SGR reset and CRLF terminator.
+func TestRenderLinkedFrameBalancedAndClosedPerRow(t *testing.T) {
+	img := overlaySrc(3, 1, color.RGBA{R: 20, G: 30, B: 40, A: 0xff})
+	br := &Renderer{Cols: 3, Rows: 1}
+	f := render.Frame{Img: img, Text: []render.GlyphRun{{
+		Col: 0, Row: 0, Text: "ab", FG: color.RGBA{A: 0xff},
+		Href: "https://example.org/a", LinkID: "l1",
+	}}}
+	var out bytes.Buffer
+	if err := br.Render(f, &out); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if n := strings.Count(got, "\x1b]8;id="); n != 1 {
+		t.Fatalf("want one link open for the run, got %d: %q", n, got)
+	}
+	if !strings.Contains(got, "\x1b]8;id=l1;https://example.org/a\x1b\\") {
+		t.Fatalf("missing the open with the run's id: %q", got)
+	}
+	closeAt := strings.Index(got, "\x1b]8;;\x1b\\")
+	resetAt := strings.Index(got, "\x1b[0m\r\n")
+	if closeAt < 0 || resetAt < 0 || closeAt > resetAt {
+		t.Fatalf("link close must land before the row terminator: close at %d, reset at %d: %q", closeAt, resetAt, got)
+	}
+	if strings.Count(got, "\x1b]8;id=") != strings.Count(got, "\x1b]8;;\x1b\\") {
+		t.Fatalf("unbalanced links in rendered frame: %q", got)
+	}
+}
+
+// TestRenderLinkFreeFrameByteFixture pins the revert proof for the full-frame
+// writer: a link-free frame renders exactly the pre-hyperlink byte stream. The
+// fixture is the captured expected output for a 1x1 nil-image frame.
+func TestRenderLinkFreeFrameByteFixture(t *testing.T) {
+	br := &Renderer{Cols: 1, Rows: 1}
+	var out bytes.Buffer
+	if err := br.Render(render.Frame{}, &out); err != nil {
+		t.Fatal(err)
+	}
+	const want = "\x1b[38;2;0;0;0m\x1b[48;2;0;0;0m█\x1b[0m\r\n"
+	if got := out.String(); got != want {
+		t.Fatalf("link-free render = %q, want the pre-hyperlink bytes %q", got, want)
 	}
 }
