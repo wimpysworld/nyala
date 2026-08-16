@@ -49,6 +49,11 @@ func containsControl(s string) bool {
 			continue
 		}
 		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			// An invalid byte, such as a raw C1 like 0x9C, can act as a
+			// control when the terminal is not strict UTF-8, so reject it.
+			return true
+		}
 		if r >= 0x80 && r <= 0x9F {
 			return true
 		}
