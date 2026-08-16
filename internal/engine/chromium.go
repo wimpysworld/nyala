@@ -88,7 +88,7 @@ type ChromiumEngine struct {
 	// main-frame CDP events through the pure transitionLoadState, a navigation
 	// failure sets the error state, and teardownSession clears it so a crash
 	// rebuild never carries a stale state.
-	loadState LoadState
+	loadState render.LoadState
 
 	// click is the press-chain state SendMouse's clickCount synthesis carries
 	// between presses (double within clickChainWindow on the same cell). It

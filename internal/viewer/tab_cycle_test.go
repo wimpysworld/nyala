@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wimpysworld/nyala/internal/engine"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
@@ -58,7 +57,7 @@ func (e *tabCycleEngine) CurrentURL() string          { return "" }
 func (e *tabCycleEngine) CurrentTitle() string        { return "" }
 func (e *tabCycleEngine) PointerCursor() string       { return "" }
 
-func (e *tabCycleEngine) LoadState() engine.LoadState { return engine.LoadState{} }
+func (e *tabCycleEngine) LoadState() render.LoadState { return render.LoadState{} }
 func (e *tabCycleEngine) OpenURL(string)              {}
 func (e *tabCycleEngine) BrowserVersion() string      { return "" }
 func (e *tabCycleEngine) Find(string)                 {}

@@ -1,7 +1,6 @@
 package viewer
 
 import (
-	"github.com/wimpysworld/nyala/internal/engine"
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
@@ -22,7 +21,7 @@ func (e *fakeEngine) CurrentURL() string          { return "" }
 func (e *fakeEngine) CurrentTitle() string        { return "" }
 func (e *fakeEngine) PointerCursor() string       { return "" }
 
-func (e *fakeEngine) LoadState() engine.LoadState { return engine.LoadState{} }
+func (e *fakeEngine) LoadState() render.LoadState { return render.LoadState{} }
 func (e *fakeEngine) OpenURL(string)              {}
 func (e *fakeEngine) BrowserVersion() string      { return "" }
 func (e *fakeEngine) Find(string)                 {}
