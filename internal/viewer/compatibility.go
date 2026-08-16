@@ -12,6 +12,7 @@ import (
 type terminalCompatibility struct {
 	rio04                    bool
 	sixelSyncUpdatesDisabled bool
+	titlePopIgnored          bool
 }
 
 // resolveTerminalCompatibility derives the compatibility policy for one
@@ -21,6 +22,7 @@ type terminalCompatibility struct {
 func resolveTerminalCompatibility(termID string, environ []string) terminalCompatibility {
 	compat := terminalCompatibility{
 		sixelSyncUpdatesDisabled: disableSixelSyncUpdates(termID),
+		titlePopIgnored:          titlePopIgnoredTerminal(termID),
 	}
 	if strings.TrimSpace(termID) != "" {
 		compat.rio04 = rio04XTVERSION(termID)
@@ -38,6 +40,16 @@ func resolveTerminalCompatibility(termID string, environ []string) terminalCompa
 func disableSixelSyncUpdates(termID string) bool {
 	name := terminalNameToken(termID)
 	return name == "foot" || strings.HasPrefix(name, "foot(")
+}
+
+// titlePopIgnoredTerminal reports whether the terminal parses the XTWINOPS
+// title push and pop but does not restore the saved title on pop. WezTerm and
+// Konsole both accept the two sequences without restoring, so teardown must
+// follow the pop with an explicit neutral title. The match reads only the
+// XTVERSION identity name token; TERM is never consulted.
+func titlePopIgnoredTerminal(termID string) bool {
+	name := terminalNameToken(termID)
+	return name == "wezterm" || name == "konsole"
 }
 
 // setTerminalCompatibility applies terminal-specific compatibility decisions

@@ -190,3 +190,32 @@ func TestRioKittyTimingUsesBarLikeAnyTerminal(t *testing.T) {
 		t.Fatalf("Rio timing summary = %q, want retained final summary", summary.String())
 	}
 }
+
+// TestTitlePopIgnoredCompatibility pins the title-pop compatibility policy:
+// WezTerm and Konsole parse the XTWINOPS title push and pop but do not
+// restore the saved title, so teardown must follow the pop with an explicit
+// neutral title. The match reads only the XTVERSION identity; TERM never
+// gates the policy.
+func TestTitlePopIgnoredCompatibility(t *testing.T) {
+	cases := []struct {
+		name    string
+		termID  string
+		environ []string
+		want    bool
+	}{
+		{"wezterm", "WezTerm 20240203-110809-5046fc22", nil, true},
+		{"konsole", "Konsole 23.08.5", nil, true},
+		{"kitty", "kitty(0.32.2)", nil, false},
+		{"foot", "foot(1.16.2)", nil, false},
+		{"no identity", "", nil, false},
+		{"TERM never gates", "", []string{"TERM=wezterm", "TERM_PROGRAM=WezTerm"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveTerminalCompatibility(tc.termID, tc.environ)
+			if got.titlePopIgnored != tc.want {
+				t.Fatalf("resolveTerminalCompatibility(%q).titlePopIgnored = %v, want %v", tc.termID, got.titlePopIgnored, tc.want)
+			}
+		})
+	}
+}

@@ -88,6 +88,7 @@ func (e *pipeEngine) SendText(string)             {}
 func (e *pipeEngine) SendPaste(string) bool       { return false }
 func (e *pipeEngine) SendNav(NavAction)           {}
 func (e *pipeEngine) CurrentURL() string          { return "" }
+func (e *pipeEngine) CurrentTitle() string        { return "" }
 func (e *pipeEngine) OpenURL(string)              {}
 func (e *pipeEngine) BrowserVersion() string      { return "" }
 func (e *pipeEngine) Find(string)                 {}

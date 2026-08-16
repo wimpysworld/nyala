@@ -16,7 +16,9 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"net/url"
 	"strconv"
+	"unicode/utf8"
 
 	emmb64 "github.com/emmansun/base64"
 	"github.com/wimpysworld/nyala/internal/cellraster"
@@ -678,6 +680,21 @@ const (
 // physical line per grid row.
 const enterFullScreen = "\x1b[?7l\x1b[?25l"
 
+// pushTitle and popTitle are XTWINOPS title-stack operations. Push saves the
+// terminal's window title on entry and pop restores the saved title on exit,
+// so the page title Nyala sets while running never outlives the session.
+const (
+	pushTitle = "\x1b[22;0t"
+	popTitle  = "\x1b[23;0t"
+)
+
+// setTitle returns the OSC 0 sequence that sets the window and icon title.
+// The terminator is ST, never BEL, so the payload can never be confused with
+// a BEL a hostile page smuggled into the title text.
+func setTitle(title string) string {
+	return "\x1b]0;" + title + "\x1b\\"
+}
+
 // enterTerminalModes returns the mode-enable sequence Stream writes once after
 // the startup handshake: the full-screen escapes, mouse reporting, bracketed
 // paste, and the kitty keyboard protocol when this terminal answered the
@@ -685,7 +702,7 @@ const enterFullScreen = "\x1b[?7l\x1b[?25l"
 // on normal exit, on every signal in fatalSignals, and on an error return, so
 // the pairing is one function either side.
 func enterTerminalModes(kittyKeyboard bool) string {
-	modes := enterFullScreen + enableMouseReporting + enableBracketedPaste
+	modes := enterFullScreen + enableMouseReporting + enableBracketedPaste + pushTitle
 	if kittyKeyboard {
 		modes += enableKittyKeyboard
 	}
@@ -713,9 +730,55 @@ func exitTerminal(rows int, drawn, kittyKeyboard bool) string {
 	if kittyKeyboard {
 		restore += disableKittyKeyboard
 	}
-	restore += endSixelDisplayMode + "\x1b[?7h\x1b[?25h"
+	restore += endSixelDisplayMode + "\x1b[?7h\x1b[?25h" + popTitle
 	if !drawn || rows <= 0 {
 		return reset + restore
 	}
 	return reset + "\x1b[" + strconv.Itoa(rows) + ";1H\r\n" + restore
+}
+
+// exitTerminalWithTitle wraps exitTerminal for the teardown write. When the
+// compatibility policy records that this terminal ignores the title pop, it
+// follows the pop with an explicit neutral title. The payload is a fixed
+// non-empty string because an empty OSC 0 payload resets to the terminal
+// default title, not the title saved by the push.
+func exitTerminalWithTitle(rows int, drawn, kittyKeyboard, titlePopIgnored bool) string {
+	out := exitTerminal(rows, drawn, kittyKeyboard)
+	if titlePopIgnored {
+		out += setTitle("terminal")
+	}
+	return out
+}
+
+// maxTitleBytes caps a sanitised title. The bound limits a smuggled payload,
+// and a longer title is unreadable in a tab or window list anyway.
+const maxTitleBytes = 128
+
+// sanitiseTitle prepares a page title for the OSC 0 write. It strips every C0
+// control, DEL, and C1 control through stripControls, caps the result at
+// maxTitleBytes cut on a rune boundary, and on an empty result falls back to
+// the URL host, or to the raw URL when parsing fails or yields no host.
+func sanitiseTitle(title, rawURL string) string {
+	clean := truncateTitle(stripControls(title))
+	if clean != "" {
+		return clean
+	}
+	fallback := rawURL
+	if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
+		fallback = u.Host
+	}
+	return truncateTitle(stripControls(fallback))
+}
+
+// truncateTitle cuts s at maxTitleBytes on a rune boundary, so the cap never
+// splits a multi-byte rune into an invalid tail byte.
+func truncateTitle(s string) string {
+	if len(s) <= maxTitleBytes {
+		return s
+	}
+	cut := maxTitleBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

@@ -16,6 +16,7 @@ func (e *fakeEngine) SendText(string)             {}
 func (e *fakeEngine) SendPaste(string) bool       { return false }
 func (e *fakeEngine) SendNav(NavAction)           {}
 func (e *fakeEngine) CurrentURL() string          { return "" }
+func (e *fakeEngine) CurrentTitle() string        { return "" }
 func (e *fakeEngine) OpenURL(string)              {}
 func (e *fakeEngine) BrowserVersion() string      { return "" }
 func (e *fakeEngine) Find(string)                 {}

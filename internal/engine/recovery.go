@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -472,11 +473,15 @@ func (e *ChromiumEngine) watchLifecycle(ctx context.Context, lifecycle *sessionL
 				// The new document carries neither the search highlights nor
 				// the page-side search state, so the held counts go with it.
 				e.resetFind()
+				e.refreshTitle()
 			}
 		case *page.EventNavigatedWithinDocument:
 			if lifecycle.isMainFrame(t.FrameID) {
 				e.recordCurrentURL(t.URL)
+				e.refreshTitle()
 			}
+		case *target.EventTargetInfoChanged:
+			e.handleTargetInfoChanged(ctx, t.TargetInfo)
 		case *page.EventLifecycleEvent:
 			switch t.Name {
 			case "DOMContentLoaded":
@@ -527,6 +532,77 @@ func (e *ChromiumEngine) handleLayoutShiftPayload(kind string, ctxID runtime.Exe
 	case layoutShiftPayloadShift:
 		e.pokeReflow()
 	}
+}
+
+// refreshTitle reads document.title asynchronously for CurrentTitle after a
+// main-frame navigation. It evaluates in the held layout-shift isolated world
+// through walkEvaluateParams, so the page cannot observe the read, and runs on
+// its own goroutine bounded by inputDispatchTimeout, so a wedged browser drops
+// the read instead of parking the event thread. A zero context id or an
+// evaluate error records nothing; Target.targetInfoChanged covers the title
+// once the world announces or the page sets it later.
+func (e *ChromiumEngine) refreshTitle() {
+	e.mu.Lock()
+	ctx := e.ctx
+	ctxID := e.layoutShiftCtxID
+	e.mu.Unlock()
+	if ctx == nil || ctxID == 0 {
+		return
+	}
+	go func() {
+		runCtx, cancel := context.WithTimeout(ctx, inputDispatchTimeout)
+		defer cancel()
+		var title string
+		err := chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
+			res, exc, evalErr := walkEvaluateParams("document.title", ctxID).Do(c)
+			if evalErr != nil {
+				return evalErr
+			}
+			if exc != nil {
+				return fmt.Errorf("engine: title read threw: %s", exc.Text)
+			}
+			if res == nil || len(res.Value) == 0 {
+				return fmt.Errorf("engine: title read returned no value")
+			}
+			return json.Unmarshal(res.Value, &title)
+		}))
+		if err != nil {
+			return
+		}
+		e.recordCurrentTitle(title)
+	}()
+}
+
+// handleTargetInfoChanged records a title change reported by
+// Target.targetInfoChanged for the engine's own page target, which covers SPA
+// title changes without a navigation. It resolves the engine's target id from
+// the chromedp context lazily, because the target attaches after the listener
+// registers, then applies the pure decision in titleFromTargetInfo. It records
+// only when the title differs from the held one.
+func (e *ChromiumEngine) handleTargetInfoChanged(ctx context.Context, info *target.Info) {
+	c := chromedp.FromContext(ctx)
+	if c == nil || c.Target == nil {
+		return
+	}
+	title, ok := titleFromTargetInfo(info, c.Target.TargetID, e.CurrentTitle())
+	if ok {
+		e.recordCurrentTitle(title)
+	}
+}
+
+// titleFromTargetInfo decides whether a Target.targetInfoChanged event carries
+// a new title for the engine's own target. ok is false for a nil info, a
+// different target, or a title equal to current, so an unchanged title is not
+// re-recorded. It is the pure decision the listener applies, factored out so
+// it is unit-tested without a browser.
+func titleFromTargetInfo(info *target.Info, own target.ID, current string) (title string, ok bool) {
+	if info == nil || info.TargetID != own {
+		return "", false
+	}
+	if info.Title == current {
+		return "", false
+	}
+	return info.Title, true
 }
 
 // isLayoutShiftBinding reports whether a Runtime.bindingCalled name is the
@@ -598,7 +674,9 @@ func (e *ChromiumEngine) pokeReflow() {
 // It then waits for the session's frame publisher and decode workers, then drains
 // frames buffered before cancellation won its selects. This prevents an old-session
 // frame surviving recovery and finalises decode-failure reporting before Close returns.
-// It clears the per-session fields so a stale context is never reused.
+// It clears the per-session fields so a stale context is never reused. It
+// deliberately keeps currentTitle, so a crash rebuild never blanks the
+// terminal title.
 func (e *ChromiumEngine) teardownSession() {
 	e.mu.Lock()
 	ctx := e.ctx

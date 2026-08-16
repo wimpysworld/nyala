@@ -54,6 +54,7 @@ func (e *tabCycleEngine) SendText(string)             {}
 func (e *tabCycleEngine) SendPaste(string) bool       { return false }
 func (e *tabCycleEngine) SendNav(NavAction)           {}
 func (e *tabCycleEngine) CurrentURL() string          { return "" }
+func (e *tabCycleEngine) CurrentTitle() string        { return "" }
 func (e *tabCycleEngine) OpenURL(string)              {}
 func (e *tabCycleEngine) BrowserVersion() string      { return "" }
 func (e *tabCycleEngine) Find(string)                 {}
