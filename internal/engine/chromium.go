@@ -13,6 +13,7 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
@@ -133,6 +134,15 @@ type ChromiumEngine struct {
 	// both when it does not, so a layout shift on the live page re-decodes the text.
 	// It is reset per session by teardownSession alongside fontForcingID.
 	layoutShiftID page.ScriptIdentifier
+
+	// layoutShiftCtxID is the Runtime execution context id of the layoutShiftWorld
+	// isolated world on the main frame, 0 when no observer announced itself. The
+	// observer script calls the binding once at install with the 'announce' payload
+	// and the engine records the context id the call arrives on, so the snapshot
+	// goroutine reads the generation counter in the same world the observer writes
+	// it in. A navigation builds a fresh world, so the next announce replaces it.
+	// It is reset per session by teardownSession alongside layoutShiftID.
+	layoutShiftCtxID runtime.ExecutionContextID
 
 	// windowID is the browser window id for the driven target, fetched once per
 	// session via browser.GetWindowForTarget and used to size the captured surface

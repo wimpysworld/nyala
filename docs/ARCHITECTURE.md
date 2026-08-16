@@ -309,7 +309,12 @@ registration that would make `image.Decode` dispatch init-order-dependent.
 One in-page walk (`walk.js`, driven by `walk.go`) runs as a single
 `Runtime.evaluate` returning the per-line glyph runs, the DOM scroll offset it
 read at, and a layout generation in one round trip, so the three stay
-internally consistent. It runs on its own goroutine (`runTextSync`), so
+internally consistent. The evaluate targets the execution context of the
+`__nyala_world` isolated world, where the generation counter lives, so one
+context still answers all three and the round trip is unchanged. A zero context
+id, meaning no observer has announced itself yet, is an error rather than a
+page-world evaluate, because the page world holds no generation; the snapshot
+error hold absorbs it. It runs on its own goroutine (`runTextSync`), so
 snapshot latency never withholds acks or stalls frame emission. The first
 snapshot fires off the `firstContentfulPaint` latch, not off a screencast
 frame; without the latch, text waited on `networkAlmostIdle` plus the
@@ -325,6 +330,31 @@ plus a 250 ms trailing debounce, so the overlay tracks a sustained scroll and
 one final snapshot lands on settle. Published runs are sticky: when text
 publishes with no new frame pending, the engine re-emits the held bitmap
 recomposed with the latest text, so a static page keeps its overlay.
+
+A `PerformanceObserver` supplies the generation counter and pokes that reflow
+trigger. The Block backend registers the `__nyalaLayoutShift` binding with
+`Runtime.addBinding` scoped by execution context name, then installs the
+observer through `Page.addScriptToEvaluateOnNewDocument` with the same name as
+`worldName` and `runImmediately` set, so the observer, its handle, and the
+counter live on the `__nyala_world` isolated world rather than on the page. A
+page-world install put all three window properties where any script could
+enumerate `__nyalaLayoutShift`, `__nyalaLayoutShiftObserver`, and
+`__nyalaLayoutGen` and use them to identify or block Nyala. The isolated world
+removes that surface and costs nothing on the read path, because the walk runs
+in the same world. A binding takes one string argument, so the script encodes
+its payload: `announce` once at install, and `shift:<cumulative>:<generation>`
+on each qualifying shift. Only the top frame announces, so an iframe's world
+cannot redirect the walk into a subframe document; the observer install stays
+unconditional, so a subframe shift still reports. The engine holds the
+announced execution context id, pokes reflow once when that id first arrives,
+runs the disconnect script against it on a backend switch, and clears it on
+teardown.
+
+`Runtime.enable` is retained, and it is a known detection signal through its
+stack getter. A name-scoped binding never reaches the isolated world without it
+on Chrome 151, measured directly, so dropping the call would cost the
+layout-shift trigger and the generation pairing outright. The observer state
+moving out of the page world is a net reduction in what a page can see.
 
 The walk takes one client rect per visual line from `Range.getClientRects()`,
 snaps the row with `round(top/cellH)` (the forced line-height makes the

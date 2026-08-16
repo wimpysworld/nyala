@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/runtime"
+
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/font"
 )
@@ -59,8 +61,9 @@ func TestLiveSameRowMultiColumnTextKeepsFragmentsSeparate(t *testing.T) {
 // so the page has laid out, injects the production forcing stylesheet, and waits
 // for the embedded font. It returns the evaluate context and the forced CSS cell,
 // so every live walk test reads the same forced monospace layout production does.
+// It also returns the layoutShiftWorld execution context id the walk must run in.
 // It skips the test when no Chromium resolves.
-func liveWalkPage(t *testing.T, page string) (context.Context, float64, float64) {
+func liveWalkPage(t *testing.T, page string) (context.Context, runtime.ExecutionContextID, float64, float64) {
 	t.Helper()
 	if _, err := resolveExecutable(""); err != nil {
 		t.Skipf("no Chromium for the live test: %v", err)
@@ -89,6 +92,7 @@ func liveWalkPage(t *testing.T, page string) (context.Context, float64, float64)
 
 	e.mu.Lock()
 	ctx := e.ctx
+	ctxID := e.layoutShiftCtxID
 	e.mu.Unlock()
 	if ctx == nil {
 		t.Fatal("engine context is nil after navigate")
@@ -101,13 +105,13 @@ func liveWalkPage(t *testing.T, page string) (context.Context, float64, float64)
 	if err := evaluateVoid(ctx, "fonts ready", "document.fonts.ready", true); err != nil {
 		t.Fatalf("await fonts ready: %v", err)
 	}
-	return ctx, cellW, cellH
+	return ctx, ctxID, cellW, cellH
 }
 
 func liveTextWalk(t *testing.T, page string) walkResult {
 	t.Helper()
-	ctx, cellW, cellH := liveWalkPage(t, page)
-	res, err := evaluateWalk(ctx, buildTextWalkScript(cellW, cellH))
+	ctx, ctxID, cellW, cellH := liveWalkPage(t, page)
+	res, err := evaluateWalk(ctx, buildTextWalkScript(cellW, cellH), ctxID)
 	if err != nil {
 		t.Fatalf("text walk: %v", err)
 	}
@@ -183,6 +187,7 @@ func TestLiveScreenReaderOnlyTextDropped(t *testing.T) {
 
 	e.mu.Lock()
 	ctx := e.ctx
+	ctxID := e.layoutShiftCtxID
 	e.mu.Unlock()
 	if ctx == nil {
 		t.Fatal("engine context is nil after navigate")
@@ -198,7 +203,7 @@ func TestLiveScreenReaderOnlyTextDropped(t *testing.T) {
 		t.Fatalf("await fonts ready: %v", err)
 	}
 
-	res, err := evaluateWalk(ctx, buildTextWalkScript(cellW, cellH))
+	res, err := evaluateWalk(ctx, buildTextWalkScript(cellW, cellH), ctxID)
 	if err != nil {
 		t.Fatalf("text walk: %v", err)
 	}
@@ -298,6 +303,7 @@ func TestLiveOccludedTextDropped(t *testing.T) {
 
 	e.mu.Lock()
 	ctx := e.ctx
+	ctxID := e.layoutShiftCtxID
 	e.mu.Unlock()
 	if ctx == nil {
 		t.Fatal("engine context is nil after navigate")
@@ -313,7 +319,7 @@ func TestLiveOccludedTextDropped(t *testing.T) {
 		t.Fatalf("await fonts ready: %v", err)
 	}
 
-	res, err := evaluateWalk(ctx, buildTextWalkScript(cellW, cellH))
+	res, err := evaluateWalk(ctx, buildTextWalkScript(cellW, cellH), ctxID)
 	if err != nil {
 		t.Fatalf("text walk: %v", err)
 	}
@@ -576,8 +582,8 @@ type stackWalk struct {
 // holds. The runs come back too, so a test can assert over the whole rank set.
 func liveStackRanks(t *testing.T, page string) ([]stackRun, map[string]int) {
 	t.Helper()
-	ctx, cellW, cellH := liveWalkPage(t, page)
-	raw, err := evaluateWalkJSON(ctx, buildTextWalkScript(cellW, cellH))
+	ctx, ctxID, cellW, cellH := liveWalkPage(t, page)
+	raw, err := evaluateWalkJSON(ctx, buildTextWalkScript(cellW, cellH), ctxID)
 	if err != nil {
 		t.Fatalf("text walk: %v", err)
 	}

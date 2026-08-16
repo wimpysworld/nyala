@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -488,10 +490,37 @@ func (e *ChromiumEngine) watchLifecycle(ctx context.Context, lifecycle *sessionL
 			}
 		case *runtime.EventBindingCalled:
 			if isLayoutShiftBinding(t.Name) {
-				e.pokeReflow()
+				kind, ok := parseLayoutShiftPayload(t.Payload)
+				if ok {
+					e.handleLayoutShiftPayload(kind, t.ExecutionContextID)
+				}
 			}
 		}
 	})
+}
+
+// handleLayoutShiftPayload applies one decoded layout-shift binding payload. An
+// announce names the isolated world the observer runs in, so it records the
+// execution context id; a navigation builds a fresh world, so the newest announce
+// replaces any stale id. An announce that fills a previously empty id also pokes
+// the reflow channel once, because a cycle from a graphics backend to Block on a
+// quiet page has no other trigger and would hold with no text. An announce that
+// only replaces a live id does not poke, because it is not a layout shift. A shift
+// pokes the reflow channel. It is the listener logic, factored out of
+// watchLifecycle so it is unit-tested without a browser.
+func (e *ChromiumEngine) handleLayoutShiftPayload(kind string, ctxID runtime.ExecutionContextID) {
+	switch kind {
+	case layoutShiftPayloadAnnounce:
+		e.mu.Lock()
+		wasEmpty := e.layoutShiftCtxID == 0
+		e.layoutShiftCtxID = ctxID
+		e.mu.Unlock()
+		if wasEmpty && ctxID != 0 {
+			e.pokeReflow()
+		}
+	case layoutShiftPayloadShift:
+		e.pokeReflow()
+	}
 }
 
 // isLayoutShiftBinding reports whether a Runtime.bindingCalled name is the
@@ -500,6 +529,40 @@ func (e *ChromiumEngine) watchLifecycle(ctx context.Context, lifecycle *sessionL
 // match the listener runs, factored out so it is unit-tested without a browser.
 func isLayoutShiftBinding(name string) bool {
 	return name == layoutShiftBinding
+}
+
+// layoutShiftPayloadAnnounce is the payload the observer script sends once at
+// install, so the engine learns the isolated execution context id it runs in.
+const layoutShiftPayloadAnnounce = "announce"
+
+// layoutShiftPayloadShift is the payload prefix the observer script sends on each
+// qualifying layout shift, as 'shift:<cumulative>:<generation>'.
+const layoutShiftPayloadShift = "shift"
+
+// parseLayoutShiftPayload decodes a layout-shift binding payload into its kind. A
+// Runtime binding takes exactly one string argument, so the script encodes both
+// messages into one field: the literal 'announce' and
+// 'shift:<cumulative>:<generation>'. The shift score and generation are validated
+// but not returned, because the reflow trigger acts on the kind alone; the
+// generation the overlay pairs on is read from the page in the snapshot sequence.
+// ok is false for any other payload, including a malformed shift, so the caller
+// ignores it rather than acting on a half-read message. It is the pure decode the
+// listener runs, factored out so it is unit-tested without a browser.
+func parseLayoutShiftPayload(payload string) (kind string, ok bool) {
+	if payload == layoutShiftPayloadAnnounce {
+		return layoutShiftPayloadAnnounce, true
+	}
+	parts := strings.Split(payload, ":")
+	if len(parts) != 3 || parts[0] != layoutShiftPayloadShift {
+		return "", false
+	}
+	if _, err := strconv.ParseFloat(parts[1], 64); err != nil {
+		return "", false
+	}
+	if _, err := strconv.ParseInt(parts[2], 10, 64); err != nil {
+		return "", false
+	}
+	return layoutShiftPayloadShift, true
 }
 
 // pokeReflow signals the snapshot goroutine for a debounced late re-snapshot. The
@@ -553,6 +616,7 @@ func (e *ChromiumEngine) teardownSession() {
 	e.fontForcingID = ""
 	e.forcedCellW, e.forcedCellH = 0, 0
 	e.layoutShiftID = ""
+	e.layoutShiftCtxID = 0
 	e.mu.Unlock()
 	acks.stop()
 	if closeTimeout <= 0 {
