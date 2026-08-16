@@ -788,14 +788,17 @@ func (s *streamSession) maybeEmitProgress() {
 // shape the terminal does not support emits nothing and leaves the last
 // shape standing, never a substitute. A page that changes its cursor under a
 // still pointer waits for the next motion: the engine snapshot refreshes on
-// hover dispatch only, and that limit is a recorded non-goal. It runs only on
-// the producer goroutine, which owns lastShape.
+// hover dispatch only, and that limit is a recorded non-goal. While a
+// non-chrome bar mode is open the wanted shape is also the default: the mode
+// owns input, no hover reaches the page, so the page's cursor snapshot is
+// stale until the mode closes and motion resumes. It runs only on the
+// producer goroutine, which owns lastShape.
 func (s *streamSession) maybeEmitPointerShape() {
 	if !s.st.pointerShapeOK {
 		return
 	}
 	shape := ""
-	if !s.pointerOnBar {
+	if !s.pointerOnBar && s.barMode == barModeChrome {
 		name, ok := mapCursorToShape(s.eng.PointerCursor(), s.st.pointerShapes)
 		if !ok {
 			return
@@ -1714,6 +1717,14 @@ func (s *streamSession) handleMouse(ev MouseEvent) (quit bool) {
 		// otherwise clear it. Without this, a page press, a Ctrl+L, and a
 		// release would leave the capture armed for the rest of the session.
 		s.dragOnPage = false
+		// Buttonless motion still tracks the bar row while the mode is open,
+		// so the pointer shape stays right the moment the mode closes, and
+		// the emit here keeps the terminal on the default shape whatever the
+		// mode-specific handling below does with the event.
+		if ev.Action == MouseActionMove && ev.Button == MouseButtonNone {
+			s.pointerOnBar = onBar
+			s.maybeEmitPointerShape()
+		}
 	}
 	switch s.barMode {
 	case barModeEdit:
@@ -1798,6 +1809,10 @@ func (s *streamSession) handleMouse(ev MouseEvent) (quit bool) {
 	}
 	if onBar {
 		s.handleBarMouse(ev)
+		// A bar press can open the editor or the menu, and the new mode wants
+		// the default shape; the change gate makes this free when nothing
+		// opened, because the pointer already sat on the bar.
+		s.maybeEmitPointerShape()
 		return false
 	}
 	s.forwardMouse(ev)
@@ -1930,10 +1945,16 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		return true
 	case actionEditURL:
 		s.enterEdit()
+		// A bar mode opening under a still pointer gets no motion report, so
+		// the reset to the default shape is written here at entry; the next
+		// page-area motion after the mode closes restores the page's shape.
+		s.maybeEmitPointerShape()
 	case actionOpenFind:
 		s.enterFind()
+		s.maybeEmitPointerShape()
 	case actionOpenMenu:
 		s.enterMenu()
+		s.maybeEmitPointerShape()
 	case actionCopySelection:
 		s.copySelection()
 	case actionSelectAll:
