@@ -802,6 +802,7 @@ func (e *ChromiumEngine) teardownSession() {
 	e.forcedCellW, e.forcedCellH = 0, 0
 	e.layoutShiftID = ""
 	e.layoutShiftCtxID = 0
+	e.cursorCtxID = 0
 	e.layoutShiftActive = false
 	e.sessionActive = false
 	e.loadState = transitionLoadState(e.loadState, loadEventTeardown)

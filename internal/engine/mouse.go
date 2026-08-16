@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
@@ -211,15 +214,100 @@ func pointerCursorExpr(x, y float64) string {
 		x, y)
 }
 
+// cursorCtxSource picks the execution context source for one hover cursor
+// read: the held layout-shift context wins because it already exists, the
+// cached cursor fallback comes next, and a zero pair asks the read to create
+// a fresh isolated world. It is pure, so the test drives every combination.
+func cursorCtxSource(held, cached runtime.ExecutionContextID) (ctxID runtime.ExecutionContextID, create bool) {
+	if held != 0 {
+		return held, false
+	}
+	if cached != 0 {
+		return cached, false
+	}
+	return 0, true
+}
+
+// isContextLostErr reports whether an evaluate error names a destroyed
+// execution context, the "Cannot find context" answer Chromium gives after a
+// navigation invalidates isolated worlds.
+func isContextLostErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "Cannot find context")
+}
+
+// mainFrameID returns the committed main frame id of the live session, empty
+// before the first commit or when no session is live.
+func (e *ChromiumEngine) mainFrameID() cdp.FrameID {
+	e.mu.Lock()
+	lc := e.lifecycle
+	e.mu.Unlock()
+	if lc == nil {
+		return ""
+	}
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	return lc.mainFrame
+}
+
+// cursorReadContext resolves the execution context one hover cursor read
+// evaluates in, per cursorCtxSource. When neither the held layout-shift
+// context nor the cached fallback exists, it creates an isolated world on the
+// main frame under the layoutShiftWorld name, so a document carries at most
+// one extra world, and caches the id for later hovers. A missing main frame
+// or a create failure answers 0, which skips the read.
+func (e *ChromiumEngine) cursorReadContext(c context.Context, held runtime.ExecutionContextID) runtime.ExecutionContextID {
+	e.mu.Lock()
+	cached := e.cursorCtxID
+	e.mu.Unlock()
+	ctxID, create := cursorCtxSource(held, cached)
+	if !create {
+		return ctxID
+	}
+	frameID := e.mainFrameID()
+	if frameID == "" {
+		return 0
+	}
+	created, err := page.CreateIsolatedWorld(frameID).WithWorldName(layoutShiftWorld).Do(c)
+	if err != nil {
+		return 0
+	}
+	e.mu.Lock()
+	e.cursorCtxID = created
+	e.mu.Unlock()
+	return created
+}
+
+// clearCursorCtx drops the cached cursor context when it still matches ctxID,
+// so the next hover recreates the world, and never clobbers a newer id.
+func (e *ChromiumEngine) clearCursorCtx(ctxID runtime.ExecutionContextID) {
+	e.mu.Lock()
+	if e.cursorCtxID == ctxID {
+		e.cursorCtxID = 0
+	}
+	e.mu.Unlock()
+}
+
 // pointerCursorReadAction returns the chromedp action a hover dispatch appends:
-// it evaluates pointerCursorExpr in the layoutShiftWorld isolated world through
+// it evaluates pointerCursorExpr in an isolated world through
 // walkEvaluateParams, so the page cannot observe the read, and records the
-// value PointerCursor reports. Every failure - an evaluate error, a thrown
-// expression, a missing value, or a decode error - returns nil and leaves the
-// stored value unchanged, so a flaky read never counts as an input failure.
-func (e *ChromiumEngine) pointerCursorReadAction(ctxID runtime.ExecutionContextID, x, y float64) chromedp.Action {
+// value PointerCursor reports. heldCtxID is the layout-shift context the Block
+// backend holds, 0 elsewhere; cursorReadContext then falls back to the cached
+// cursor world or creates one. Every failure - a missing context, an evaluate
+// error, a thrown expression, a missing value, or a decode error - returns nil
+// and leaves the stored value unchanged, so a flaky read never counts as an
+// input failure. A context-lost error additionally drops the cached fallback,
+// so the next hover recreates the world the navigation destroyed.
+func (e *ChromiumEngine) pointerCursorReadAction(heldCtxID runtime.ExecutionContextID, x, y float64) chromedp.Action {
 	return chromedp.ActionFunc(func(c context.Context) error {
+		ctxID := e.cursorReadContext(c, heldCtxID)
+		if ctxID == 0 {
+			return nil
+		}
 		res, exc, err := walkEvaluateParams(pointerCursorExpr(x, y), ctxID).Do(c)
+		if isContextLostErr(err) {
+			e.clearCursorCtx(ctxID)
+			return nil
+		}
 		if err != nil || exc != nil || res == nil || len(res.Value) == 0 {
 			return nil
 		}
@@ -284,10 +372,10 @@ func (e *ChromiumEngine) SendMouse(ev MouseEvent) {
 		return
 	}
 	action := chromedp.Action(mouseParams(ev.Action, ev.Button, ev.Mod, count, x, y))
-	if hoverReadsCursor(ev.Action, ev.Button) && ctxID != 0 {
+	if hoverReadsCursor(ev.Action, ev.Button) {
 		// The cursor read rides the same bounded dispatch as the move, so it adds
-		// no goroutine and a wedged browser drops the pair together. A zero
-		// context id skips the read and leaves the stored value unchanged.
+		// no goroutine and a wedged browser drops the pair together. A zero held
+		// context id falls back to the cursor read's own isolated world.
 		action = chromedp.Tasks{action, e.pointerCursorReadAction(ctxID, x, y)}
 	}
 	e.dispatchInput(ctx, action)
