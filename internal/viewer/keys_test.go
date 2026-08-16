@@ -647,7 +647,8 @@ func TestNextEventOSCAndDCSReplies(t *testing.T) {
 // event: no byte of the over-long reply arrives as a key event, the buffer
 // stays bounded, and the key after the terminator still arrives.
 func TestNextEventOSCBodyBounded(t *testing.T) {
-	long := strings.Repeat("a", maxAPCBody+1)
+	// The body leads with a digit so the reply classifier takes the reply arm.
+	long := "1" + strings.Repeat("a", maxAPCBody+1)
 	cases := []struct {
 		name string
 		in   string
@@ -680,6 +681,32 @@ func TestNextEventOSCKeepsEscBehaviour(t *testing.T) {
 	chord := collectEvents(t, "\x1br")
 	if len(chord) != 1 || chord[0].act != actionCycleBackend {
 		t.Fatalf("ESC r = %+v, want the Alt+R chord", chord)
+	}
+}
+
+// TestNextEventAltChordIntroducersStayLegacy asserts ESC ] and ESC P followed
+// by a non-reply byte keep the pre-reply-consumption behaviour: an Escape byte
+// event plus the following bytes as text, with no blocking reply read. Alt+]
+// arrives as ESC ], so a hung reader here would eat the user's typing.
+func TestNextEventAltChordIntroducersStayLegacy(t *testing.T) {
+	for _, in := range []string{"\x1b]x", "\x1bPx"} {
+		events := collectEvents(t, in)
+		if len(events) != 3 {
+			t.Fatalf("%q = %d events (%+v), want 3: Escape and two text bytes", in, len(events), events)
+		}
+		if events[0].b != keyEsc || events[0].osc != "" || events[0].dcs != "" {
+			t.Fatalf("%q first event = %+v, want the ESC byte", in, events[0])
+		}
+		if events[1].b != in[1] || events[2].b != 'x' {
+			t.Fatalf("%q text events = %+v, want %q then 'x'", in, events[1:], in[1])
+		}
+	}
+	// The introducer alone, with nothing buffered behind it, must not block.
+	for _, in := range []string{"\x1b]", "\x1bP"} {
+		events := collectEvents(t, in)
+		if len(events) != 2 || events[0].b != keyEsc || events[1].b != in[1] {
+			t.Fatalf("%q = %+v, want the ESC byte then %q", in, events, in[1])
+		}
 	}
 }
 
