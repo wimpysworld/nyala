@@ -977,9 +977,14 @@ hermetic and injectable, with no DCS round-trip. This is colour depth alone,
 a separate question from the terminal's background polarity, which the
 handshake does ask for over OSC 11 under Capability detection. A present `COLORTERM` of
 `kmscon`, `truecolor`, or `24bit` is a trusted positive that short-circuits to
-truecolour before `Detect` runs. The round-trip was dropped for three measured
-failures: DECRQSS is a no-op on KMSCON's libtsm, zellij leaks the reply into
-stdin, and herdr stops answering after a child sets the background. Under tmux,
+truecolour before `Detect` runs. The round trip was dropped because its answer
+could change nothing a reader sees: Nyala paints every cell, so the terminal's
+default colours are never visible on the page area. The bar row is the one
+exception, the row drawn in the terminal's own colours, and its handling is
+tracked as WW-38. The round trip also failed on three measured platforms,
+which corroborated the drop: DECRQSS is a no-op on KMSCON's libtsm, zellij
+leaks the reply into stdin, and herdr stops answering after a child sets the
+background. Under tmux,
 detection accepts one `tmux info` exec at startup, the only reliable way to
 honour tmux's truecolour override. GNU screen never sets `COLORTERM` and lacks
 a Tc/RGB terminfo cap, so truecolour there is a user opt-in via `.screenrc`.
@@ -1112,6 +1117,111 @@ Nerd Font lacks U+1FB00..3B coverage and it does not matter. Identity matching
 prefers terminal-specific markers (`KITTY_*`, `WEZTERM_*`, and peers) over
 `TERM`, because tmux rewrites `TERM` but leaves the outer terminal's own vars
 untouched.
+
+## Terminal integration
+
+Nyala tells the terminal what the page is doing with five OSC sequences:
+OSC 52 writes the clipboard (under Clipboard above), OSC 0 sets the window
+title, OSC 9;4 reports load progress, OSC 22 sets the pointer shape, and
+OSC 8 marks hyperlinks in the Block output. Each viewer-emitted sequence goes
+out through the one ordered writer path, exactly like a bar repaint, so it
+never lands inside a frame's sync bracket; the OSC 8 bytes are part of the
+Block frame itself. ST terminates every sequence except OSC 52, which keeps
+BEL to match tmux's `Ms` and the ecosystem copy tools (under Clipboard). ST
+is the safer terminator for page-fed payloads: a BEL is one smuggleable byte,
+where ST cannot appear inside a sanitised body at all.
+
+Every payload a page can influence is sanitised before it reaches the
+terminal parser. The title strips every C0 control, DEL, and C1 control and
+is capped at 128 bytes cut on a rune boundary; an empty result falls back to
+the URL host, or the raw URL when parsing yields no host. A hyperlink id or
+URI containing any of the same control bytes is rejected whole, as is a URI
+over 2,083 bytes or an id over 250 bytes, the VTE and iTerm2 limits. Nothing
+is ever truncated to fit: a shortened URI is a different, wrong target, so an
+oversized link is dropped and the run renders as plain text.
+
+### Reply consumption
+
+The key parser consumes terminal replies as well as keys. Its `ESC ]` arm
+reads an OSC body to BEL or ST, and its `ESC P` arm reads a DCS body to ST,
+both bounded at 4096 bytes, so a reply arriving mid-session is consumed and
+dropped rather than typed into the page as text. The handshake drains its own
+replies before the key reader goroutine exists; these arms are the safety net
+for a late one. The one reply Nyala solicits beyond the handshake set above
+is the OSC 22 capability reply, which rides the DA1-fenced probe batch: the
+query sends `?` plus the thirty kitty pointer-shape names, and the terminal
+answers one flag per name, paired by position. Silence, a missing terminator,
+or an unparseable body all read as no support, and like OSC 11 the reply
+carries no `CSI ?`, so it can never end the DA1 read early.
+
+### The terminal title
+
+The title is OSC 0, set once at startup (the sanitiser's fallback shows the
+launch URL host while the page loads), then refreshed on each navigation
+and, when the bar's fps heartbeat runs, on its once-per-second beat; an
+unchanged title costs one string compare and no write. Entry pushes the terminal's own title with the XTWINOPS
+stack (`CSI 22;0t`) and teardown pops it (`CSI 23;0t`), so the page title
+never outlives the session. WezTerm and Konsole parse the push and pop but do
+not restore on pop, so on those terminals, matched by XTVERSION identity,
+teardown follows the pop with an explicit neutral title; an empty payload
+would reset to the terminal default rather than the saved title, so the
+fallback payload is a fixed non-empty string. Nyala never sends the `CSI 21 t`
+title query: terminals ship it disabled because a reported title lands on the
+input line as if typed, the CVE-2003-0070 vector, so the push-and-pop stack is
+the only reliable restore.
+
+### Load progress
+
+OSC 9;4 carries the load state, fed by the CDP lifecycle events: a commit
+sets indeterminate, firstContentfulPaint raises determinate 50%,
+DOMContentLoaded raises 75%, the load event clears, and a navigation failure
+sets the error state. Progress is monotonic per navigation, so an out-of-order
+lifecycle event can never move the indicator backwards. The viewer re-reads
+the snapshot on every frame arrival, on navigation, and on the same
+once-per-second beat as the title, writing only on change. Both fields are always present
+in the sequence, because some terminals treat a missing percent field oddly.
+
+### Pointer shapes
+
+OSC 22 sets the pointer shape from the page's computed CSS cursor, mapped by
+identity onto the kitty shape names; `auto`, `none`, and any unmapped value
+fall back to `default`. The write is gated on the handshake's capability
+reply: a terminal that never answered sees zero pointer-shape bytes, and a
+cursor mapping to a shape the terminal's flag list refused emits nothing and
+leaves the last shape standing, never a substitute. The reduced multiplexer
+handshake sends no OSC 22 query, so multiplexer sessions keep the terminal's
+own pointer. Over the bar row the viewer writes the empty-payload reset, so
+the terminal's default shape comes back where no page sits. The engine
+refreshes its cursor snapshot on hover dispatch only, so a page that changes
+its cursor under a still pointer waits for the next motion; that limit is a
+recorded non-goal.
+
+### Hyperlinks
+
+OSC 8 hyperlinks ride the crisp text overlay: each glyph run carries its
+nearest ancestor anchor's resolved absolute URL, and the sanitised link
+becomes a cell attribute shared by every cell of the run, wide trailing cells
+included. Both Block grid writers emit it, the full-frame writer and the cell
+diff; the diff treats the link as global terminal state like SGR, opens and
+closes it only on transitions, compares it by value in the cell-unchanged
+test because the compose path rebuilds link pointers each frame, and closes
+any open link before the frame ends so none leaks into the surrounding
+stream. The id groups the cells of one anchor across partial repaints and is
+DOM-derived, the layout generation plus a per-anchor counter, so a repaint
+keeps one anchor as one link. OSC 8 is the one sequence with no capability gate,
+because none exists to ask: there is no query form, and a terminal without
+support ignores the sequence and paints the cells as plain text, a harmless
+failure.
+
+### Teardown
+
+Teardown membership is deliberate per sequence. The title pop and the OSC 9;4
+clear join the unconditional restore string, beside the mouse-reporting
+disable, so every exit path including a fatal signal restores the title and
+removes the progress indicator. OSC 22 is exempt: the terminal keeps the
+pointer shape per screen, so leaving the alternate screen on exit discards
+every shape Nyala set without a write. OSC 8 needs no teardown at all,
+because the writers close any open link at the end of every frame.
 
 ## Graphics backends
 
@@ -1775,8 +1885,10 @@ decode-every-frame consumer streams JPEG q90.
   Engines).
 - Bubble Tea v2 dropped: PTY-ownership complexity; the viewer already owns
   the terminal.
-- The DCS colour-depth round-trip dropped: it fails on three target platforms
-  (details under Colour). The OSC 11 background query is a separate decision:
+- The DCS colour-depth round-trip dropped: Nyala paints every cell, so the
+  terminal's default colours never show on the page area; the bar row is the
+  exception, tracked as WW-38 (details under Colour). The OSC 11 background
+  query is a separate decision:
   it rides the startup handshake, and the bar reads its answer (details under
   Capability detection).
 - A theming library rejected for the bar: bubbletint and Lipgloss both pin
