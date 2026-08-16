@@ -64,7 +64,9 @@ func historyTarget(current int64, urls []string, delta int) (int, bool) {
 // document starts at the top. Reload and the history steps keep the held
 // offset: Chromium restores the scroll position for those itself, and the
 // held offset only feeds crash recovery, which tolerates the same edge
-// clamping a scroll at a document boundary already causes.
+// clamping a scroll at a document boundary already causes. A dispatch failure
+// records the error load state through recordNavDispatchError, so the viewer
+// shows the failure instead of an indicator stuck at indeterminate.
 func (e *ChromiumEngine) SendNav(a NavAction) {
 	e.mu.Lock()
 	ctx := e.ctx
@@ -79,10 +81,14 @@ func (e *ChromiumEngine) SendNav(a NavAction) {
 	if a == NavHome {
 		runCtx, cancel := context.WithTimeout(ctx, inputDispatchTimeout)
 		defer cancel()
-		_, _, _, _ = e.runNavigate(runCtx, url)
+		if _, _, _, err := e.runNavigate(runCtx, url); err != nil {
+			e.recordNavDispatchError()
+		}
 		return
 	}
-	e.dispatchInput(ctx, navDispatchAction(a))
+	if err := e.runInput(ctx, navDispatchAction(a)); err != nil {
+		e.recordNavDispatchError()
+	}
 }
 
 // OpenURL navigates the page to url as a normal navigation, pushing a history
@@ -90,7 +96,8 @@ func (e *ChromiumEngine) SendNav(a NavAction) {
 // NavHome uses, so a wedged browser drops the request instead of parking the
 // caller. It resets the held scroll offset because the new document starts at
 // the top. It never rewrites the held launch URL: NavHome permanently returns
-// to the page Nyala was launched with.
+// to the page Nyala was launched with. A dispatch failure records the error
+// load state through recordNavDispatchError.
 func (e *ChromiumEngine) OpenURL(url string) {
 	e.mu.Lock()
 	ctx := e.ctx
@@ -101,7 +108,9 @@ func (e *ChromiumEngine) OpenURL(url string) {
 	}
 	runCtx, cancel := context.WithTimeout(ctx, inputDispatchTimeout)
 	defer cancel()
-	_, _, _, _ = e.runNavigate(runCtx, url)
+	if _, _, _, err := e.runNavigate(runCtx, url); err != nil {
+		e.recordNavDispatchError()
+	}
 }
 
 // CurrentURL returns the last committed main-frame URL, falling back to the
