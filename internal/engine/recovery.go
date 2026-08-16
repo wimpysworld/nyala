@@ -147,7 +147,10 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	err = e.navigateAndStartCapture(ctx, navCtx, lifecycle, url)
 	stopGuard()
 	if err != nil {
+		// Teardown clears the load state, so record the failure after it, or
+		// the viewer would never see the error state.
 		e.teardownSession()
+		e.applyLoadEvent(loadEventNavError)
 		return nil, err
 	}
 	timer.mark(labelScreencastStarted)
@@ -469,6 +472,7 @@ func (e *ChromiumEngine) watchLifecycle(ctx context.Context, lifecycle *sessionL
 		case *page.EventFrameNavigated:
 			lifecycle.recordCommit(t.Frame)
 			if t.Frame != nil && t.Frame.ParentID == "" {
+				e.applyLoadEvent(loadEventCommit)
 				e.recordCurrentURL(t.Frame.URL)
 				// The new document carries neither the search highlights nor
 				// the page-side search state, so the held counts go with it.
@@ -485,10 +489,17 @@ func (e *ChromiumEngine) watchLifecycle(ctx context.Context, lifecycle *sessionL
 		case *page.EventLifecycleEvent:
 			switch t.Name {
 			case "DOMContentLoaded":
-				lifecycle.recordDOMContentLoaded(t.FrameID, t.LoaderID)
+				if lifecycle.recordDOMContentLoaded(t.FrameID, t.LoaderID) {
+					e.applyLoadEvent(loadEventDOMReady)
+				}
 			case "firstContentfulPaint":
 				if lifecycle.recordFCP(t.FrameID, t.LoaderID) {
+					e.applyLoadEvent(loadEventFCP)
 					e.pokeReflow()
+				}
+			case "load":
+				if lifecycle.isMainFrame(t.FrameID) {
+					e.applyLoadEvent(loadEventLoad)
 				}
 			case "networkAlmostIdle":
 				e.pokeReflow()
@@ -502,6 +513,115 @@ func (e *ChromiumEngine) watchLifecycle(ctx context.Context, lifecycle *sessionL
 			}
 		}
 	})
+}
+
+// Load states the engine reports, numbered to match the OSC 9;4 state field
+// the viewer writes, so the snapshot passes through without translation.
+const (
+	// LoadClear reports no load activity: the page finished loading or no
+	// session is live.
+	LoadClear = iota
+	// LoadPercentage reports determinate progress; LoadState.Percent carries
+	// the value.
+	LoadPercentage
+	// LoadError reports a navigation failure. The next main-frame commit or a
+	// session teardown replaces it, so the state never sticks.
+	LoadError
+	// LoadIndeterminate reports a committed navigation with no measurable
+	// progress yet.
+	LoadIndeterminate
+)
+
+// LoadState is the page-load progress snapshot the viewer renders, for
+// example as OSC 9;4 terminal progress. Percent is meaningful only in the
+// LoadPercentage state.
+type LoadState struct {
+	// State is the current load state: LoadClear, LoadPercentage, LoadError,
+	// or LoadIndeterminate.
+	State int
+	// Percent is the determinate progress value, 0 to 100, valid only when
+	// State is LoadPercentage.
+	Percent int
+}
+
+// loadEvent is one input to the load-state machine.
+type loadEvent int
+
+const (
+	// loadEventCommit is a main-frame Page.frameNavigated commit.
+	loadEventCommit loadEvent = iota
+	// loadEventFCP is the main frame's firstContentfulPaint lifecycle event.
+	loadEventFCP
+	// loadEventDOMReady is the main frame's DOMContentLoaded lifecycle event.
+	loadEventDOMReady
+	// loadEventLoad is the main frame's load lifecycle event.
+	loadEventLoad
+	// loadEventNavError is a navigation failure on the startup path.
+	loadEventNavError
+	// loadEventTeardown is a session teardown.
+	loadEventTeardown
+)
+
+// transitionLoadState applies one load event to a load state and returns the
+// next state. Progress is monotonic per navigation, so an out-of-order CDP
+// event never regresses it: a commit resets to indeterminate, first
+// contentful paint sets 50 per cent (first pixels, the perceptual midpoint),
+// DOMContentLoaded sets 75 per cent (DOM complete, subresources pending),
+// and load clears. A percentage milestone applies only after a commit and
+// only when it raises the held percentage, so FCP after DOMContentLoaded
+// keeps 75 and a milestone after load keeps clear. An error holds until the
+// next commit or a teardown. It is the pure decision watchLifecycle applies,
+// factored out so it is unit-tested without a browser.
+func transitionLoadState(s LoadState, ev loadEvent) LoadState {
+	switch ev {
+	case loadEventCommit:
+		return LoadState{State: LoadIndeterminate}
+	case loadEventFCP:
+		return raiseLoadPercent(s, 50)
+	case loadEventDOMReady:
+		return raiseLoadPercent(s, 75)
+	case loadEventLoad:
+		if s.State == LoadError {
+			return s
+		}
+		return LoadState{}
+	case loadEventNavError:
+		return LoadState{State: LoadError}
+	case loadEventTeardown:
+		return LoadState{}
+	}
+	return s
+}
+
+// raiseLoadPercent applies a determinate milestone monotonically: it moves an
+// indeterminate state to the percentage, raises a lower percentage, and leaves
+// every other state (clear, error, a higher percentage) unchanged.
+func raiseLoadPercent(s LoadState, pct int) LoadState {
+	switch s.State {
+	case LoadIndeterminate:
+		return LoadState{State: LoadPercentage, Percent: pct}
+	case LoadPercentage:
+		if pct > s.Percent {
+			return LoadState{State: LoadPercentage, Percent: pct}
+		}
+	}
+	return s
+}
+
+// LoadState returns the current load-progress snapshot. It takes only the
+// state lock and never waits on the browser, in the FindState pattern.
+func (e *ChromiumEngine) LoadState() LoadState {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.loadState
+}
+
+// applyLoadEvent advances the held load state through transitionLoadState
+// under the state lock.
+func (e *ChromiumEngine) applyLoadEvent(ev loadEvent) {
+	e.mu.Lock()
+	e.loadState = transitionLoadState(e.loadState, ev)
+	e.mu.Unlock()
 }
 
 // handleLayoutShiftPayload applies one decoded layout-shift binding payload. An
@@ -676,7 +796,8 @@ func (e *ChromiumEngine) pokeReflow() {
 // frame surviving recovery and finalises decode-failure reporting before Close returns.
 // It clears the per-session fields so a stale context is never reused. It
 // deliberately keeps currentTitle, so a crash rebuild never blanks the
-// terminal title.
+// terminal title. It clears the load state, so a crash rebuild or a failed
+// navigation never carries a stale progress state.
 func (e *ChromiumEngine) teardownSession() {
 	e.mu.Lock()
 	ctx := e.ctx
@@ -702,6 +823,7 @@ func (e *ChromiumEngine) teardownSession() {
 	e.layoutShiftID = ""
 	e.layoutShiftCtxID = 0
 	e.layoutShiftActive = false
+	e.loadState = transitionLoadState(e.loadState, loadEventTeardown)
 	e.mu.Unlock()
 	acks.stop()
 	if closeTimeout <= 0 {

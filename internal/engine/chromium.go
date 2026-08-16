@@ -83,6 +83,13 @@ type ChromiumEngine struct {
 	// main-frame commit because the new document carries no highlights.
 	find FindState
 
+	// loadState is the page-load progress snapshot LoadState reports. It sits
+	// beside the scroll state under mu. watchLifecycle advances it from
+	// main-frame CDP events through the pure transitionLoadState, a navigation
+	// failure sets the error state, and teardownSession clears it so a crash
+	// rebuild never carries a stale state.
+	loadState LoadState
+
 	// click is the press-chain state SendMouse's clickCount synthesis carries
 	// between presses (double within clickChainWindow on the same cell). It
 	// sits beside the scroll state under mu; a stale chain after a rebuild is
