@@ -15,10 +15,11 @@ import emmb64 "github.com/emmansun/base64"
 // clipboard contents through the viewer.
 //
 // It goes to the terminal unwrapped, under a multiplexer as well as outside one.
-// tmux handles an application's OSC 52 itself with `set-clipboard on`, which both
-// sets the outer terminal's clipboard through its own Ms capability and creates a
-// tmux paste buffer, so a copy is pastable inside the session too; the default
-// `external` ignores it. Wrapping the sequence in tmux's DCS passthrough instead
+// tmux's default `set-clipboard external` forbids an application from setting
+// the clipboard, so a stock tmux drops the copy silently. `set-clipboard on`
+// makes tmux handle the sequence itself, which both sets the outer terminal's
+// clipboard through its own Ms capability and creates a tmux paste buffer, so
+// a copy is pastable inside the session too. Wrapping the sequence in tmux's DCS passthrough instead
 // would need `allow-passthrough on`, bypass tmux's own buffer, and assume the
 // outer terminal takes raw OSC 52, so the plain form is the better of two paths
 // that both need one line of user configuration. zellij and GNU screen handle or
