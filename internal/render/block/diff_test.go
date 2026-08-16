@@ -504,3 +504,131 @@ func TestGridDiffSameColourRun(t *testing.T) {
 		t.Fatalf("want one CUP for the run, got %d: %q", n, got)
 	}
 }
+
+// linkOpens counts OSC 8 open sequences in an emitted stream. The differ always
+// writes the id= parameter, so the close sequence never matches this prefix.
+func linkOpens(s string) int { return strings.Count(s, "\x1b]8;id=") }
+
+// linkCloses counts OSC 8 close sequences in an emitted stream.
+func linkCloses(s string) int { return strings.Count(s, "\x1b]8;;\x1b\\") }
+
+// linkedGrid builds a cols x 1 grid whose every cell carries text "x" and the
+// same shared hyperlink pointer, the shape the overlay fold stamps for one run.
+func linkedGrid(cols int, l *Hyperlink) Grid {
+	g := gridOf(cols, 1, Cell{Text: "x", Link: l})
+	return g
+}
+
+// TestGridDiffLinkedRunOneOpenBalanced pins the run bracket: a run of cells
+// sharing one hyperlink emits exactly one open, with the shared id, and one
+// close, so every emitted frame is open/close balanced.
+func TestGridDiffLinkedRunOneOpenBalanced(t *testing.T) {
+	l := &Hyperlink{ID: "l1", URI: "https://example.org/a"}
+	var d GridDiff
+	var out bytes.Buffer
+	if err := d.Emit(&out, linkedGrid(3, l), fixedFG, fixedBG); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if n := linkOpens(got); n != 1 {
+		t.Fatalf("want one link open for the shared run, got %d: %q", n, got)
+	}
+	if !strings.Contains(got, "\x1b]8;id=l1;https://example.org/a\x1b\\") {
+		t.Fatalf("missing the open with the shared id: %q", got)
+	}
+	if linkOpens(got) != linkCloses(got) {
+		t.Fatalf("unbalanced links: %d opens, %d closes: %q", linkOpens(got), linkCloses(got), got)
+	}
+}
+
+// TestGridDiffTwoLinksDistinctIDs pins that two different links on one row emit
+// two opens with distinct ids, and the frame stays balanced.
+func TestGridDiffTwoLinksDistinctIDs(t *testing.T) {
+	a := &Hyperlink{ID: "a1", URI: "https://example.org/a"}
+	b := &Hyperlink{ID: "b2", URI: "https://example.org/b"}
+	g := gridOf(4, 1, Cell{Text: "x"})
+	g.At(0, 0).Link = a
+	g.At(1, 0).Link = a
+	g.At(2, 0).Link = b
+	g.At(3, 0).Link = b
+	var d GridDiff
+	var out bytes.Buffer
+	if err := d.Emit(&out, g, fixedFG, fixedBG); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "\x1b]8;id=a1;") || !strings.Contains(got, "\x1b]8;id=b2;") {
+		t.Fatalf("missing one of the two distinct link ids: %q", got)
+	}
+	if linkOpens(got) != 2 || linkOpens(got) != linkCloses(got) {
+		t.Fatalf("want two balanced opens, got %d opens, %d closes: %q", linkOpens(got), linkCloses(got), got)
+	}
+}
+
+// TestGridDiffPartialLinkedRunRewriteReopens pins the diff path: a later frame
+// that rewrites part of a linked run must re-open the link with the same id
+// around the rewritten cell and close it, so the terminal never paints the cell
+// link-free.
+func TestGridDiffPartialLinkedRunRewriteReopens(t *testing.T) {
+	l := &Hyperlink{ID: "l1", URI: "https://example.org/a"}
+	g := linkedGrid(3, l)
+	var d GridDiff
+	if err := d.Emit(&bytes.Buffer{}, g, fixedFG, fixedBG); err != nil {
+		t.Fatal(err)
+	}
+	next := cloneDiffGrid(g)
+	next.At(1, 0).Text = "y"
+	var out bytes.Buffer
+	if err := d.Emit(&out, next, fixedFG, fixedBG); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "\x1b]8;id=l1;") {
+		t.Fatalf("rewritten linked cell missing a re-open with the run's id: %q", got)
+	}
+	if linkOpens(got) != 1 || linkCloses(got) != 1 {
+		t.Fatalf("want one open and one close, got %d and %d: %q", linkOpens(got), linkCloses(got), got)
+	}
+}
+
+// TestGridDiffLinkChangeRepaints pins cellUnchanged: a cell identical in glyph,
+// colours, and text but with a changed link must repaint, or the terminal keeps
+// the stale target.
+func TestGridDiffLinkChangeRepaints(t *testing.T) {
+	g := linkedGrid(2, &Hyperlink{ID: "l1", URI: "https://example.org/a"})
+	var d GridDiff
+	if err := d.Emit(&bytes.Buffer{}, g, fixedFG, fixedBG); err != nil {
+		t.Fatal(err)
+	}
+	next := cloneDiffGrid(g)
+	changed := &Hyperlink{ID: "l1", URI: "https://example.org/b"}
+	next.At(0, 0).Link = changed
+	next.At(1, 0).Link = changed
+	var out bytes.Buffer
+	if err := d.Emit(&out, next, fixedFG, fixedBG); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "https://example.org/b") {
+		t.Fatalf("link-only change did not repaint with the new target: %q", got)
+	}
+	if linkOpens(got) != linkCloses(got) {
+		t.Fatalf("unbalanced links: %q", got)
+	}
+}
+
+// TestGridDiffLinkFreeFrameByteFixture pins the revert proof: a frame with no
+// links emits exactly the byte stream the pre-hyperlink differ emitted. The
+// fixture is the captured expected stream for this grid, not a re-derivation.
+func TestGridDiffLinkFreeFrameByteFixture(t *testing.T) {
+	g := gridOf(2, 1, Cell{Glyph: 'a', FG: color.RGBA{R: 1}, BG: color.RGBA{B: 2}})
+	var d GridDiff
+	var out bytes.Buffer
+	if err := d.Emit(&out, g, fixedFG, fixedBG); err != nil {
+		t.Fatal(err)
+	}
+	const want = "\x1b[1;1H<f1><b2>aa"
+	if got := out.String(); got != want {
+		t.Fatalf("link-free frame = %q, want the pre-hyperlink bytes %q", got, want)
+	}
+}

@@ -91,6 +91,9 @@ func applyOverlayFrom(g *Grid, f render.Frame, scheme Scheme, src pixelSource) {
 			continue
 		}
 		cellCSSW := runCellCSSWidth(run)
+		// One sanitised hyperlink per run, shared by pointer across the run's
+		// cells; nil when the run carries no link or the pair is unsafe.
+		link := SanitiseHyperlink(run.LinkID, run.Href)
 		col := run.Col
 		off := 0 // display-cell offset of col within the run
 		gr := uniseg.NewGraphemes(run.Text)
@@ -112,7 +115,7 @@ func applyOverlayFrom(g *Grid, f render.Frame, scheme Scheme, src pixelSource) {
 					// write a background space instead of half-emitting it.
 					if !claimed(cell) {
 						bg := cellBGAverageFrom(src, col, row, scheme, run, off, cellCSSW)
-						*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: " "}
+						*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: " ", Link: link}
 					}
 					col++
 					off++
@@ -125,8 +128,8 @@ func applyOverlayFrom(g *Grid, f render.Frame, scheme Scheme, src pixelSource) {
 					continue
 				}
 				bg := cellBGAverageFrom(src, col, row, scheme, run, off, cellCSSW)
-				*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: cluster}
-				*trailing = Cell{Glyph: trailing.Glyph, FG: run.FG, BG: bg, Wide: true}
+				*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: cluster, Link: link}
+				*trailing = Cell{Glyph: trailing.Glyph, FG: run.FG, BG: bg, Wide: true, Link: link}
 				col += 2
 				off += 2
 				continue
@@ -137,7 +140,7 @@ func applyOverlayFrom(g *Grid, f render.Frame, scheme Scheme, src pixelSource) {
 				continue
 			}
 			bg := cellBGAverageFrom(src, col, row, scheme, run, off, cellCSSW)
-			*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: cluster}
+			*cell = Cell{Glyph: cell.Glyph, FG: run.FG, BG: bg, Text: cluster, Link: link}
 			col++
 			off++
 		}

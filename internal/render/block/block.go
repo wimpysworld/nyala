@@ -65,6 +65,11 @@ type Cell struct {
 	BG    color.RGBA // background colour
 	Text  string     // overlay grapheme; "" means a bitmap cell
 	Wide  bool       // trailing cell of a wide (width-2) overlay glyph
+	// Link is the OSC 8 hyperlink this cell sits inside, nil when the cell
+	// carries no link. Every cell of one run shares the same pointer, so the
+	// link is a cell attribute like FG, and the writers bracket runs of equal
+	// links with one open and one close.
+	Link *Hyperlink
 }
 
 // Grid is the Block backend's owned cols x rows array of cells, stored
@@ -160,12 +165,39 @@ func (br *Renderer) Render(f render.Frame, w io.Writer) error {
 // compose pass.
 func (br *Renderer) renderGrid(grid Grid, w io.Writer) error {
 	bw := bufio.NewWriter(w)
+	// curLink is the hyperlink the terminal currently has open. OSC 8 is
+	// global terminal state like SGR, so one open brackets a whole run of
+	// equal-link cells and a state compare decides each transition.
+	var curLink *Hyperlink
+	var linkBuf []byte
 	for row := range grid.Rows {
 		for col := range grid.Cols {
 			c := grid.At(col, row)
+			// A Wide trailing cell emits nothing, so it never changes link state.
+			if !c.Wide && !sameHyperlink(curLink, c.Link) {
+				linkBuf = linkBuf[:0]
+				if curLink != nil {
+					linkBuf = appendLinkClose(linkBuf)
+				}
+				if c.Link != nil {
+					linkBuf = appendLinkOpen(linkBuf, c.Link)
+				}
+				if _, err := bw.Write(linkBuf); err != nil {
+					return err
+				}
+				curLink = c.Link
+			}
 			if err := WriteCell(bw, c, TrueColorFG(c.FG), TrueColorBG(c.BG)); err != nil {
 				return err
 			}
+		}
+		// Close an open link before the row terminator, so no link ever spans
+		// the SGR reset and CRLF.
+		if curLink != nil {
+			if _, err := bw.Write(appendLinkClose(linkBuf[:0])); err != nil {
+				return err
+			}
+			curLink = nil
 		}
 		if _, err := bw.WriteString("\x1b[0m\r\n"); err != nil {
 			return err

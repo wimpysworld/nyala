@@ -29,6 +29,7 @@ type GridDiff struct {
 	bgSet   bool       // truecolour background RGB state is seeded this frame
 	sgrBuf  []byte     // reused scratch for building an SGR before its compare
 	runeBuf []byte     // reused scratch for encoding a bitmap glyph rune
+	linkBuf []byte     // reused scratch for building OSC 8 open and close sequences
 	cupBuf  [16]byte   // reused scratch for building a CUP cursor move
 }
 
@@ -80,6 +81,10 @@ func (d *GridDiff) emit(w io.Writer, grid Grid, fg, bg SGRFunc, trueColour bool)
 	d.fgCol, d.bgCol = color.RGBA{}, color.RGBA{}
 	d.fgSet, d.bgSet = false, false
 	curRow, curCol := -1, -1
+	// curLink tracks the hyperlink the terminal currently has open. OSC 8 is
+	// global terminal state like SGR, so it survives a CUP jump and resets only
+	// at frame start, matching the colour cache discipline.
+	var curLink *Hyperlink
 
 	for row := range grid.Rows {
 		for col := range grid.Cols {
@@ -108,6 +113,12 @@ func (d *GridDiff) emit(w io.Writer, grid Grid, fg, bg SGRFunc, trueColour bool)
 			if err != nil {
 				return err
 			}
+			if !sameHyperlink(curLink, c.Link) {
+				if err := d.writeLinkTransition(w, curLink, c.Link); err != nil {
+					return err
+				}
+				curLink = c.Link
+			}
 			if err := d.writeCellGlyph(w, c); err != nil {
 				return err
 			}
@@ -123,8 +134,32 @@ func (d *GridDiff) emit(w io.Writer, grid Grid, fg, bg SGRFunc, trueColour bool)
 		}
 	}
 
+	// Close an open link before the frame ends, so no link leaks into the next
+	// frame or the surrounding stream.
+	if curLink != nil {
+		if err := d.writeLinkTransition(w, curLink, nil); err != nil {
+			return err
+		}
+	}
+
 	d.retainPrev(grid)
 	return nil
+}
+
+// writeLinkTransition writes the OSC 8 bytes that move the terminal's link
+// state from cur to next: a close when cur is open, then an open when next is
+// non-nil. The caller compares first with sameHyperlink, so a call always
+// writes something.
+func (d *GridDiff) writeLinkTransition(w io.Writer, cur, next *Hyperlink) error {
+	d.linkBuf = d.linkBuf[:0]
+	if cur != nil {
+		d.linkBuf = appendLinkClose(d.linkBuf)
+	}
+	if next != nil {
+		d.linkBuf = appendLinkOpen(d.linkBuf, next)
+	}
+	_, err := w.Write(d.linkBuf)
+	return err
 }
 
 func sameRGB(a, b color.RGBA) bool {
@@ -245,12 +280,15 @@ func overlayWidthUntrusted(c *Cell, advance int) bool {
 }
 
 // cellUnchanged reports whether two cells draw the same bytes: matching Text,
-// Wide, Glyph, foreground, and background. A match lets Emit skip the cell. Glyph
-// must participate because a bitmap cell whose block glyph changes while its
-// colours hold still draws differently; omitting Glyph would leave stale output.
+// Wide, Glyph, foreground, background, and hyperlink. A match lets Emit skip the
+// cell. Glyph must participate because a bitmap cell whose block glyph changes
+// while its colours hold still draws differently; omitting Glyph would leave
+// stale output. The link compares by value through sameHyperlink, because the
+// compose path rebuilds Hyperlink pointers each frame; omitting the link would
+// leave a changed target unpainted on otherwise identical cells.
 func cellUnchanged(a, b *Cell) bool {
 	return a.Text == b.Text && a.Wide == b.Wide && a.Glyph == b.Glyph &&
-		a.FG == b.FG && a.BG == b.BG
+		a.FG == b.FG && a.BG == b.BG && sameHyperlink(a.Link, b.Link)
 }
 
 // writeCUP moves the cursor to a 0-based (col, row), emitting the 1-based CUP

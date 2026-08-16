@@ -79,6 +79,34 @@ return{r:Math.round(or/cov),g:Math.round(og/cov),b:Math.round(ob/cov),a:Math.rou
 var FIXED_CAP=32;
 var fixed=[];
 var anchorCache=new Map();
+var gen=(window[config.generationProperty]||0);
+
+// linkCache maps an element to the nearest ancestor <a href> answer, so the climb
+// runs once per element, like anchorCache does for the fixed hold. linkIds gives
+// each anchor element one stable id per walk, an incrementing counter prefixed
+// with the layout generation, so a partial repaint keeps one link per anchor.
+// The a.href read happens once per anchor, when the anchor's own cache entry is
+// built, and the resolved absolute URL travels in the entry.
+var linkCache=new Map();
+var linkIds=new Map();
+var linkN=0;
+
+function linkOf(el){
+if(linkCache.has(el))return linkCache.get(el);
+var chain=[],v=null;
+for(var a=el;a;a=a.parentElement){
+if(linkCache.has(a)){v=linkCache.get(a);break;}
+chain.push(a);
+if(a.tagName==='A'&&a.hasAttribute('href')){
+var id=linkIds.get(a);
+if(id===undefined){id='g'+gen+'-a'+(++linkN);linkIds.set(a,id);}
+v={hr:a.href,li:id};
+break;
+}
+}
+for(var i=0;i<chain.length;i++){linkCache.set(chain[i],v);}
+return v;
+}
 
 // A 'fixed' ancestor holds its screen rect while the page scrolls, so the text
 // inside it must not move when the compose-time shift tracks the bitmap. Descent
@@ -258,6 +286,7 @@ var el=node.parentElement;if(!el)continue;
 if(!node.nodeValue||!node.nodeValue.trim())continue;
 if(hiddenStyle(el))continue;
 var fx=fixedAncestor(el);
+var lk=linkOf(el);
 var fg=rgba(el);var bg=bgOf(el);var sv=stackVector(el);
 var text=node.nodeValue;var lines=[];
 var rng=document.createRange();rng.selectNodeContents(node);
@@ -335,7 +364,9 @@ var t=ln.chars.join('').replace(/\s+/g,' ').replace(/^ | $/g,'');if(!t)continue;
 var h=ln.bottom-ln.top;
 if(h<ch/4)continue;
 if(occluded(el,ln.left,ln.top,ln.right,ln.bottom))continue;
-runs.push({t:t,c:Math.round(ln.left/cw),r:Math.round(ln.top/ch),x:ln.left,y:ln.top,w:ln.right-ln.left,h:h,fg:fg,bg:bg,z:sv,f:fx});
+var run={t:t,c:Math.round(ln.left/cw),r:Math.round(ln.top/ch),x:ln.left,y:ln.top,w:ln.right-ln.left,h:h,fg:fg,bg:bg,z:sv,f:fx};
+if(lk){run.hr=lk.hr;run.li=lk.li;}
+runs.push(run);
 }
 }
 
@@ -345,7 +376,6 @@ var order=runs.map(function(_,i){return i;});
 order.sort(function(i,j){var c=cmpVec(runs[i].z,runs[j].z);return c!==0?c:i-j;});
 for(var oi=0;oi<order.length;oi++){runs[order[oi]].z=oi;}
 
-var gen=(window[config.generationProperty]||0);
 var de=document.documentElement||{};
 var sx=(window.pageXOffset||de.scrollLeft||0);
 var sy=(window.pageYOffset||de.scrollTop||0);
