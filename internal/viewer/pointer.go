@@ -57,7 +57,7 @@ var kittyPointerShapes = map[string]bool{
 // and "default" follows the same rule.
 func mapCursorToShape(css string, supported map[string]bool) (string, bool) {
 	shape := "default"
-	for part := range strings.SplitSeq(css, ",") {
+	for _, part := range splitCursorList(css) {
 		keyword := strings.ToLower(strings.TrimSpace(part))
 		if kittyPointerShapes[keyword] {
 			shape = keyword
@@ -68,4 +68,45 @@ func mapCursorToShape(css string, supported map[string]bool) (string, bool) {
 		return "", false
 	}
 	return shape, true
+}
+
+// splitCursorList splits a computed CSS cursor list on top-level commas only.
+// A comma inside parentheses or inside a single- or double-quoted string, such
+// as one within a url(...) value, stays inside its token, and a backslash
+// escape inside a quoted string never ends the string.
+func splitCursorList(css string) []string {
+	var (
+		tokens []string
+		start  int
+		depth  int
+		quote  byte
+	)
+	for i := 0; i < len(css); i++ {
+		c := css[i]
+		if quote != 0 {
+			switch c {
+			case '\\':
+				i++
+			case quote:
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			quote = c
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				tokens = append(tokens, css[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(tokens, css[start:])
 }
