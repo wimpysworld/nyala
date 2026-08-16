@@ -3,6 +3,7 @@ package engine
 import (
 	"testing"
 
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 )
 
@@ -65,5 +66,42 @@ func TestTitleFromTargetInfoRecordFlow(t *testing.T) {
 	}
 	if _, ok := titleFromTargetInfo(info, own, e.CurrentTitle()); ok {
 		t.Fatal("unchanged title reported ok, want skip")
+	}
+}
+
+// TestRecordTitleForContext verifies the stale-read guard: a title read that
+// carries the live session's context id records, while a read from a torn-down
+// session or a superseded isolated world is discarded.
+func TestRecordTitleForContext(t *testing.T) {
+	e := &ChromiumEngine{}
+	e.sessionActive = true
+	e.layoutShiftCtxID = runtime.ExecutionContextID(7)
+
+	e.recordTitleForContext(7, "Live")
+	if got := e.CurrentTitle(); got != "Live" {
+		t.Fatalf("title after current-token record = %q, want %q", got, "Live")
+	}
+
+	// A read from a superseded world must not record.
+	e.recordTitleForContext(3, "Stale World")
+	if got := e.CurrentTitle(); got != "Live" {
+		t.Fatalf("title after stale-world record = %q, want %q", got, "Live")
+	}
+
+	// A read that completes after teardown must not record, even when a rebuilt
+	// session reuses the same context id.
+	e.sessionActive = false
+	e.layoutShiftCtxID = 0
+	e.recordTitleForContext(7, "Dead Session")
+	if got := e.CurrentTitle(); got != "Live" {
+		t.Fatalf("title after dead-session record = %q, want %q", got, "Live")
+	}
+
+	// A rebuilt session with a fresh world records again.
+	e.sessionActive = true
+	e.layoutShiftCtxID = runtime.ExecutionContextID(9)
+	e.recordTitleForContext(9, "Rebuilt")
+	if got := e.CurrentTitle(); got != "Rebuilt" {
+		t.Fatalf("title after rebuilt record = %q, want %q", got, "Rebuilt")
 	}
 }

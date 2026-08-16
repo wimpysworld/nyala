@@ -1,8 +1,11 @@
 package engine
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
@@ -60,6 +63,37 @@ func TestEngineLoadStateSnapshot(t *testing.T) {
 	want := render.LoadState{State: render.LoadPercentage, Percent: 50}
 	if got := e.LoadState(); got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+// TestOpenURLDispatchErrorRecordsLoadError verifies that a failed navigation
+// dispatch records the error load state, that a following commit resets it to
+// indeterminate, and that a dispatch failure after teardown leaves the cleared
+// state alone.
+func TestOpenURLDispatchErrorRecordsLoadError(t *testing.T) {
+	t.Parallel()
+	e := &ChromiumEngine{
+		ctx:           context.Background(),
+		sessionActive: true,
+		navigateOp: func(context.Context, string) (cdp.FrameID, cdp.LoaderID, bool, error) {
+			return "", "", false, errors.New("boom")
+		},
+	}
+	e.OpenURL("https://example.org")
+	if got := e.LoadState(); got != (render.LoadState{State: render.LoadError}) {
+		t.Fatalf("after dispatch error: got %+v, want error", got)
+	}
+	e.applyLoadEvent(loadEventCommit)
+	if got := e.LoadState(); got != (render.LoadState{State: render.LoadIndeterminate}) {
+		t.Fatalf("after commit: got %+v, want indeterminate", got)
+	}
+	e.mu.Lock()
+	e.sessionActive = false
+	e.loadState = render.LoadState{}
+	e.mu.Unlock()
+	e.OpenURL("https://example.org")
+	if got := e.LoadState(); got != (render.LoadState{}) {
+		t.Fatalf("after teardown: got %+v, want clear", got)
 	}
 }
 

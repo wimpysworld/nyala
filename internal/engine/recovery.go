@@ -604,6 +604,21 @@ func (e *ChromiumEngine) applyLoadEvent(ev loadEvent) {
 	e.mu.Unlock()
 }
 
+// recordNavDispatchError records a failed navigation dispatch from OpenURL or
+// SendNav as the error load state, so a navigation that never starts does not
+// leave the indicator stuck at indeterminate. Unlike the startup navigation
+// error, it applies only while sessionActive is set: the session stays live
+// around a mid-session dispatch failure, and a dispatch that loses a race with
+// teardown must not repopulate the cleared state. The next successful commit
+// resets the state to indeterminate, so the error is bounded.
+func (e *ChromiumEngine) recordNavDispatchError() {
+	e.mu.Lock()
+	if e.sessionActive {
+		e.loadState = transitionLoadState(e.loadState, loadEventNavError)
+	}
+	e.mu.Unlock()
+}
+
 // handleLayoutShiftPayload applies one decoded layout-shift binding payload. An
 // announce names the isolated world the observer runs in, so it records the
 // execution context id; a navigation builds a fresh world, so the newest announce
@@ -669,8 +684,22 @@ func (e *ChromiumEngine) refreshTitle() {
 		if err != nil {
 			return
 		}
-		e.recordCurrentTitle(title)
+		e.recordTitleForContext(ctxID, title)
 	}()
+}
+
+// recordTitleForContext records a title read that evaluated in the isolated
+// world ctxID, and only while that world is still the held one in a live
+// session. A read that started in a dying session can complete after teardown
+// and a rebuild; without this check under mu it would overwrite the new
+// session's title with the dead session's. This mirrors the sessionActive
+// discipline applyLoadEvent and handleLayoutShiftPayload use.
+func (e *ChromiumEngine) recordTitleForContext(ctxID runtime.ExecutionContextID, title string) {
+	e.mu.Lock()
+	if e.sessionActive && e.layoutShiftCtxID == ctxID {
+		e.currentTitle = title
+	}
+	e.mu.Unlock()
 }
 
 // handleTargetInfoChanged records a title change reported by
@@ -678,16 +707,23 @@ func (e *ChromiumEngine) refreshTitle() {
 // title changes without a navigation. It resolves the engine's target id from
 // the chromedp context lazily, because the target attaches after the listener
 // registers, then applies the pure decision in titleFromTargetInfo. It records
-// only when the title differs from the held one.
+// only when the title differs from the held one, and only while ctx is still
+// the live session's context, so an event delivered as a dying session tears
+// down cannot overwrite the rebuilt session's title.
 func (e *ChromiumEngine) handleTargetInfoChanged(ctx context.Context, info *target.Info) {
 	c := chromedp.FromContext(ctx)
 	if c == nil || c.Target == nil {
 		return
 	}
 	title, ok := titleFromTargetInfo(info, c.Target.TargetID, e.CurrentTitle())
-	if ok {
-		e.recordCurrentTitle(title)
+	if !ok {
+		return
 	}
+	e.mu.Lock()
+	if e.sessionActive && e.ctx == ctx {
+		e.currentTitle = title
+	}
+	e.mu.Unlock()
 }
 
 // titleFromTargetInfo decides whether a Target.targetInfoChanged event carries
