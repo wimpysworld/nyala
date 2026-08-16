@@ -246,7 +246,7 @@ func TestStreamWriterDrainsFrameBeforeTerminalExit(t *testing.T) {
 	w.send(writeItem{buf: frame})
 	w.stop()
 
-	cleanup := exitTerminal(24, true, false)
+	cleanup := exitTerminal(24, true, false, true)
 	if _, err := tty.Write([]byte(cleanup)); err != nil {
 		t.Fatalf("write terminal cleanup: %v", err)
 	}
@@ -734,8 +734,8 @@ func TestStreamLoopKittySHMAssemblyErrorReleasesOnce(t *testing.T) {
 	if released != 1 {
 		t.Fatalf("failed assembled plane released %d times, want 1", released)
 	}
-	gotCleanup := exitTerminal(st.Rows, s.firstDrawn.Load(), false)
-	wantCleanup := exitTerminal(st.Rows, false, false)
+	gotCleanup := exitTerminal(st.Rows, s.firstDrawn.Load(), false, true)
+	wantCleanup := exitTerminal(st.Rows, false, false, true)
 	if gotCleanup != wantCleanup {
 		t.Fatalf("failed first-frame teardown = %q, want pre-frame cleanup %q", gotCleanup, wantCleanup)
 	}

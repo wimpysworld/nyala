@@ -746,16 +746,25 @@ func enterTerminalModes(kittyKeyboard bool) string {
 // single-line scroll leaves the complete browser area above a clean row for an
 // FPS summary or the shell prompt, independent of the cursor position left by
 // Block, Sixel, or Kitty. Before the first frame it preserves the cursor
-// position, so a startup failure does not displace terminal content.
-func exitTerminal(rows int, drawn, kittyKeyboard bool) string {
+// position, so a startup failure does not displace terminal content. The title
+// pop is emitted only when titlePushed records that enterTerminalModes wrote
+// the matching push, because the title stack is shared: an unmatched pop would
+// discard the entry an outer application, such as tmux, saved.
+func exitTerminal(rows int, drawn, kittyKeyboard, titlePushed bool) string {
 	const reset = "\x1b[0m"
 	restore := disableMouseReporting + disableBracketedPaste
 	if kittyKeyboard {
 		restore += disableKittyKeyboard
 	}
+	restore += endSixelDisplayMode + "\x1b[?7h\x1b[?25h"
+	if titlePushed {
+		restore += popTitle
+	}
 	// Clear any OSC 9;4 progress indicator unconditionally, like the mouse
-	// reporting disable, so every exit path including a fatal signal clears it.
-	restore += endSixelDisplayMode + "\x1b[?7h\x1b[?25h" + popTitle + progressClear
+	// reporting disable: the indicator is not stack-based, so clearing one that
+	// was never set is harmless, and every exit path including a fatal signal
+	// must clear it.
+	restore += progressClear
 	if !drawn || rows <= 0 {
 		return reset + restore
 	}
@@ -766,10 +775,11 @@ func exitTerminal(rows int, drawn, kittyKeyboard bool) string {
 // compatibility policy records that this terminal ignores the title pop, it
 // follows the pop with an explicit neutral title. The payload is a fixed
 // non-empty string because an empty OSC 0 payload resets to the terminal
-// default title, not the title saved by the push.
-func exitTerminalWithTitle(rows int, drawn, kittyKeyboard, titlePopIgnored bool) string {
-	out := exitTerminal(rows, drawn, kittyKeyboard)
-	if titlePopIgnored {
+// default title, not the title saved by the push. The fallback is tied to the
+// pop: when no push was written, there is no pop and no neutral title either.
+func exitTerminalWithTitle(rows int, drawn, kittyKeyboard, titlePushed, titlePopIgnored bool) string {
+	out := exitTerminal(rows, drawn, kittyKeyboard, titlePushed)
+	if titlePushed && titlePopIgnored {
 		out += setTitle("terminal")
 	}
 	return out

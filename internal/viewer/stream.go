@@ -260,10 +260,15 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	// never races the producer's write.
 	var restoreOnce sync.Once
 	var session *streamSession
+	// titlePushed records that the enterTerminalModes write below reached the
+	// terminal, so the teardown pops the title stack only after a matching
+	// push. It is an atomic because the fatal-signal watcher goroutine reads
+	// it through restoreTerminal.
+	var titlePushed atomic.Bool
 	restoreTerminal := func() {
 		restoreOnce.Do(func() {
 			drawn := session != nil && session.firstDrawn.Load()
-			_, _ = io.WriteString(tty, exitTerminalWithTitle(st.Rows, drawn, st.kittyKeyboard, st.compat.titlePopIgnored))
+			_, _ = io.WriteString(tty, exitTerminalWithTitle(st.Rows, drawn, st.kittyKeyboard, titlePushed.Load(), st.compat.titlePopIgnored))
 			restore()
 		})
 	}
@@ -302,6 +307,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	if _, err := io.WriteString(tty, enterTerminalModes(st.kittyKeyboard)); err != nil {
 		return err
 	}
+	titlePushed.Store(true)
 
 	// Close the engine on exit so the browser process and the frame loop tear
 	// down with the terminal.
