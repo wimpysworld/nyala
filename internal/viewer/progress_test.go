@@ -40,7 +40,7 @@ func TestProgressSequenceFormat(t *testing.T) {
 func TestExitTerminalClearsProgress(t *testing.T) {
 	for _, kitty := range []bool{false, true} {
 		for _, drawn := range []bool{false, true} {
-			teardown := exitTerminal(24, drawn, kitty)
+			teardown := exitTerminal(24, drawn, kitty, true)
 			if !strings.Contains(teardown, progressClear) {
 				t.Fatalf("exitTerminal(24, %t, %t) = %q, missing %q", drawn, kitty, teardown, progressClear)
 			}

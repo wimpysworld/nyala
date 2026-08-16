@@ -498,7 +498,7 @@ func TestBracketedPasteIsSessionWide(t *testing.T) {
 	}
 	for _, drawn := range []bool{true, false} {
 		for _, rows := range []int{24, 1, 0} {
-			if got := exitTerminal(rows, drawn, false); !strings.Contains(got, disableBracketedPaste) {
+			if got := exitTerminal(rows, drawn, false, true); !strings.Contains(got, disableBracketedPaste) {
 				t.Fatalf("exitTerminal(%d, %t) = %q, want it to contain %q",
 					rows, drawn, got, disableBracketedPaste)
 			}

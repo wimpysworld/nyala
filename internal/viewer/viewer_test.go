@@ -73,17 +73,17 @@ func TestExitTerminal(t *testing.T) {
 	const want = "\x1b[0m\x1b[24;1H\r\n\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?80l\x1b[?7h\x1b[?25h\x1b[23;0t\x1b]9;4;0;0\x1b\\"
 	for _, backend := range []Backend{BackendBlock, BackendKitty, BackendSixel} {
 		t.Run(backend.String(), func(t *testing.T) {
-			if got := exitTerminal(24, true, false); got != want {
-				t.Fatalf("exitTerminal(24, true, false) = %q, want %q", got, want)
+			if got := exitTerminal(24, true, false, true); got != want {
+				t.Fatalf("exitTerminal(24, true, false, true) = %q, want %q", got, want)
 			}
 		})
 	}
 
 	const restoreInPlace = "\x1b[0m\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?80l\x1b[?7h\x1b[?25h\x1b[23;0t\x1b]9;4;0;0\x1b\\"
-	if got := exitTerminal(24, false, false); got != restoreInPlace {
+	if got := exitTerminal(24, false, false, true); got != restoreInPlace {
 		t.Fatalf("startup exit = %q, want %q", got, restoreInPlace)
 	}
-	if got := exitTerminal(0, true, false); got != restoreInPlace {
+	if got := exitTerminal(0, true, false, true); got != restoreInPlace {
 		t.Fatalf("invalid-row exit = %q, want %q", got, restoreInPlace)
 	}
 
@@ -91,7 +91,7 @@ func TestExitTerminal(t *testing.T) {
 	// between the paste reset and the Sixel reset, and a session that did not
 	// push emits no pop, so an outer application's entry survives.
 	const pushed = "\x1b[0m\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[<u\x1b[?80l\x1b[?7h\x1b[?25h\x1b[23;0t\x1b]9;4;0;0\x1b\\"
-	if got := exitTerminal(0, false, true); got != pushed {
+	if got := exitTerminal(0, false, true, true); got != pushed {
 		t.Fatalf("kitty-keyboard exit = %q, want %q", got, pushed)
 	}
 	if strings.Count(pushed, disableKittyKeyboard) != 1 {
@@ -115,7 +115,7 @@ func TestTerminalModesPairEnableWithTeardown(t *testing.T) {
 	}
 	for _, kitty := range []bool{false, true} {
 		modes := enterTerminalModes(kitty)
-		teardown := exitTerminal(24, true, kitty)
+		teardown := exitTerminal(24, true, kitty, true)
 		for _, p := range pairs {
 			if !strings.Contains(modes, p.enable) {
 				t.Fatalf("enterTerminalModes(%t) = %q, missing %q", kitty, modes, p.enable)
@@ -137,13 +137,31 @@ func TestTerminalModesPairEnableWithTeardown(t *testing.T) {
 // the title pop follows the pop with a fixed neutral title, and that a normal
 // terminal gets the plain teardown with no OSC write.
 func TestExitTerminalWithTitle(t *testing.T) {
-	plain := exitTerminal(24, true, false)
-	if got := exitTerminalWithTitle(24, true, false, false); got != plain {
+	plain := exitTerminal(24, true, false, true)
+	if got := exitTerminalWithTitle(24, true, false, true, false); got != plain {
 		t.Fatalf("exitTerminalWithTitle without the flag = %q, want %q", got, plain)
 	}
 	want := plain + setTitle("terminal")
-	if got := exitTerminalWithTitle(24, true, false, true); got != want {
+	if got := exitTerminalWithTitle(24, true, false, true, true); got != want {
 		t.Fatalf("exitTerminalWithTitle with the flag = %q, want %q", got, want)
+	}
+}
+
+// TestExitTerminalWithoutTitlePush asserts a teardown that runs before
+// enterTerminalModes wrote the title push emits no title pop and no neutral
+// fallback title, so an unmatched pop can never discard the entry an outer
+// application saved on the shared title stack. The unconditional progress
+// clear stays, because the indicator is not stack-based.
+func TestExitTerminalWithoutTitlePush(t *testing.T) {
+	teardown := exitTerminalWithTitle(24, true, false, false, true)
+	if strings.Contains(teardown, popTitle) {
+		t.Fatalf("teardown without a push = %q, must not contain %q", teardown, popTitle)
+	}
+	if strings.Contains(teardown, setTitle("terminal")) {
+		t.Fatalf("teardown without a push = %q, must not contain the neutral title", teardown)
+	}
+	if !strings.Contains(teardown, progressClear) {
+		t.Fatalf("teardown without a push = %q, missing %q", teardown, progressClear)
 	}
 }
 
