@@ -16,7 +16,6 @@ import (
 
 	cterm "github.com/charmbracelet/x/term"
 
-	"github.com/wimpysworld/nyala/internal/engine"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
@@ -85,7 +84,7 @@ type Engine interface {
 	// LoadState returns the page-load progress snapshot for the terminal's
 	// OSC 9;4 indicator. The zero value is the cleared state, so the viewer
 	// writes nothing before the first change.
-	LoadState() engine.LoadState
+	LoadState() render.LoadState
 	// OpenURL navigates to url as a normal navigation, pushing a history
 	// entry. The engine resets its held scroll offset and never rewrites the
 	// launch URL NavHome returns to.
@@ -565,7 +564,7 @@ type streamSession struct {
 	// lastLoad is the last load state maybeEmitProgress wrote, so an
 	// unchanged state costs one struct compare and no terminal write. Its
 	// zero value is the cleared state, matching the terminal at startup.
-	lastLoad engine.LoadState
+	lastLoad render.LoadState
 	// lastShape is the last pointer-shape name maybeEmitPointerShape wrote,
 	// where the empty string names the terminal's default shape and is the
 	// zero value, matching the terminal at startup: a session that never

@@ -18,6 +18,8 @@ import (
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+
+	"github.com/wimpysworld/nyala/internal/render"
 )
 
 // gracefulCloseTimeout gives healthy local Chromium time to flush state while
@@ -515,35 +517,6 @@ func (e *ChromiumEngine) watchLifecycle(ctx context.Context, lifecycle *sessionL
 	})
 }
 
-// Load states the engine reports, numbered to match the OSC 9;4 state field
-// the viewer writes, so the snapshot passes through without translation.
-const (
-	// LoadClear reports no load activity: the page finished loading or no
-	// session is live.
-	LoadClear = iota
-	// LoadPercentage reports determinate progress; LoadState.Percent carries
-	// the value.
-	LoadPercentage
-	// LoadError reports a navigation failure. The next main-frame commit or a
-	// session teardown replaces it, so the state never sticks.
-	LoadError
-	// LoadIndeterminate reports a committed navigation with no measurable
-	// progress yet.
-	LoadIndeterminate
-)
-
-// LoadState is the page-load progress snapshot the viewer renders, for
-// example as OSC 9;4 terminal progress. Percent is meaningful only in the
-// LoadPercentage state.
-type LoadState struct {
-	// State is the current load state: LoadClear, LoadPercentage, LoadError,
-	// or LoadIndeterminate.
-	State int
-	// Percent is the determinate progress value, 0 to 100, valid only when
-	// State is LoadPercentage.
-	Percent int
-}
-
 // loadEvent is one input to the load-state machine.
 type loadEvent int
 
@@ -572,23 +545,23 @@ const (
 // keeps 75 and a milestone after load keeps clear. An error holds until the
 // next commit or a teardown. It is the pure decision watchLifecycle applies,
 // factored out so it is unit-tested without a browser.
-func transitionLoadState(s LoadState, ev loadEvent) LoadState {
+func transitionLoadState(s render.LoadState, ev loadEvent) render.LoadState {
 	switch ev {
 	case loadEventCommit:
-		return LoadState{State: LoadIndeterminate}
+		return render.LoadState{State: render.LoadIndeterminate}
 	case loadEventFCP:
 		return raiseLoadPercent(s, 50)
 	case loadEventDOMReady:
 		return raiseLoadPercent(s, 75)
 	case loadEventLoad:
-		if s.State == LoadError {
+		if s.State == render.LoadError {
 			return s
 		}
-		return LoadState{}
+		return render.LoadState{}
 	case loadEventNavError:
-		return LoadState{State: LoadError}
+		return render.LoadState{State: render.LoadError}
 	case loadEventTeardown:
-		return LoadState{}
+		return render.LoadState{}
 	}
 	return s
 }
@@ -596,13 +569,13 @@ func transitionLoadState(s LoadState, ev loadEvent) LoadState {
 // raiseLoadPercent applies a determinate milestone monotonically: it moves an
 // indeterminate state to the percentage, raises a lower percentage, and leaves
 // every other state (clear, error, a higher percentage) unchanged.
-func raiseLoadPercent(s LoadState, pct int) LoadState {
+func raiseLoadPercent(s render.LoadState, pct int) render.LoadState {
 	switch s.State {
-	case LoadIndeterminate:
-		return LoadState{State: LoadPercentage, Percent: pct}
-	case LoadPercentage:
+	case render.LoadIndeterminate:
+		return render.LoadState{State: render.LoadPercentage, Percent: pct}
+	case render.LoadPercentage:
 		if pct > s.Percent {
-			return LoadState{State: LoadPercentage, Percent: pct}
+			return render.LoadState{State: render.LoadPercentage, Percent: pct}
 		}
 	}
 	return s
@@ -610,7 +583,7 @@ func raiseLoadPercent(s LoadState, pct int) LoadState {
 
 // LoadState returns the current load-progress snapshot. It takes only the
 // state lock and never waits on the browser, in the FindState pattern.
-func (e *ChromiumEngine) LoadState() LoadState {
+func (e *ChromiumEngine) LoadState() render.LoadState {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.loadState

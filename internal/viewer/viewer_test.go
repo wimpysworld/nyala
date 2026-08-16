@@ -14,7 +14,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/wimpysworld/nyala/internal/cellraster"
-	"github.com/wimpysworld/nyala/internal/engine"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 	"github.com/wimpysworld/nyala/internal/renderdecode"
@@ -705,7 +704,7 @@ func (e streamTestEngine) CurrentTitle() string { return e.currentTitle }
 
 func (e streamTestEngine) PointerCursor() string { return "" }
 
-func (e streamTestEngine) LoadState() engine.LoadState { return engine.LoadState{} }
+func (e streamTestEngine) LoadState() render.LoadState { return render.LoadState{} }
 
 func (e streamTestEngine) OpenURL(url string) {
 	if e.openURL != nil {

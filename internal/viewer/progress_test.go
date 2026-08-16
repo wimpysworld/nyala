@@ -5,17 +5,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wimpysworld/nyala/internal/engine"
+	"github.com/wimpysworld/nyala/internal/render"
 )
 
 // progressEngine is a fakeEngine whose load state is settable, so a test can
 // drive maybeEmitProgress through repeated and changed states.
 type progressEngine struct {
 	fakeEngine
-	load engine.LoadState
+	load render.LoadState
 }
 
-func (e *progressEngine) LoadState() engine.LoadState { return e.load }
+func (e *progressEngine) LoadState() render.LoadState { return e.load }
 
 // TestProgressSequenceFormat verifies the OSC 9;4 sequence always carries
 // both fields and terminates with ST, never BEL.
@@ -51,12 +51,12 @@ func TestExitTerminalClearsProgress(t *testing.T) {
 // TestMaybeEmitProgressChangeGated verifies that a changed load state writes
 // once, a repeated state writes nothing, and a further change writes again.
 func TestMaybeEmitProgressChangeGated(t *testing.T) {
-	eng := &progressEngine{load: engine.LoadState{State: engine.LoadPercentage, Percent: 30}}
+	eng := &progressEngine{load: render.LoadState{State: render.LoadPercentage, Percent: 30}}
 	var out bytes.Buffer
 	s := &streamSession{eng: eng, st: &State{}, tty: &out}
 
 	s.maybeEmitProgress()
-	first := progressSequence(engine.LoadPercentage, 30)
+	first := progressSequence(render.LoadPercentage, 30)
 	if got := out.String(); got != first {
 		t.Fatalf("first change wrote %q, want %q", got, first)
 	}
@@ -66,7 +66,7 @@ func TestMaybeEmitProgressChangeGated(t *testing.T) {
 		t.Fatalf("repeated state wrote %q, want %q", got, first)
 	}
 
-	eng.load = engine.LoadState{State: engine.LoadClear}
+	eng.load = render.LoadState{State: render.LoadClear}
 	s.maybeEmitProgress()
 	want := first + progressClear
 	if got := out.String(); got != want {

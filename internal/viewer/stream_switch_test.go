@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wimpysworld/nyala/internal/engine"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
@@ -65,7 +64,7 @@ func (e *switchOpEngine) CurrentURL() string          { return "" }
 func (e *switchOpEngine) CurrentTitle() string        { return "" }
 func (e *switchOpEngine) PointerCursor() string       { return "" }
 
-func (e *switchOpEngine) LoadState() engine.LoadState { return engine.LoadState{} }
+func (e *switchOpEngine) LoadState() render.LoadState { return render.LoadState{} }
 func (e *switchOpEngine) OpenURL(string)              {}
 func (e *switchOpEngine) BrowserVersion() string      { return "" }
 func (e *switchOpEngine) Find(string)                 {}

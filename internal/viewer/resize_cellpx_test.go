@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/wimpysworld/nyala/internal/engine"
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
@@ -66,7 +65,7 @@ func (e *resizeOpEngine) CurrentURL() string          { return "" }
 func (e *resizeOpEngine) CurrentTitle() string        { return "" }
 func (e *resizeOpEngine) PointerCursor() string       { return "" }
 
-func (e *resizeOpEngine) LoadState() engine.LoadState { return engine.LoadState{} }
+func (e *resizeOpEngine) LoadState() render.LoadState { return render.LoadState{} }
 func (e *resizeOpEngine) OpenURL(string)              {}
 func (e *resizeOpEngine) BrowserVersion() string      { return "" }
 func (e *resizeOpEngine) Find(string)                 {}

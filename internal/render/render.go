@@ -234,3 +234,32 @@ type Renderer interface {
 	Render(f Frame, w io.Writer) error // emit one frame
 	Name() string
 }
+
+// Load states the engine reports, numbered to match the OSC 9;4 state field
+// the viewer writes, so the snapshot passes through without translation.
+const (
+	// LoadClear reports no load activity: the page finished loading or no
+	// session is live.
+	LoadClear = iota
+	// LoadPercentage reports determinate progress; LoadState.Percent carries
+	// the value.
+	LoadPercentage
+	// LoadError reports a navigation failure. The next main-frame commit or a
+	// session teardown replaces it, so the state never sticks.
+	LoadError
+	// LoadIndeterminate reports a committed navigation with no measurable
+	// progress yet.
+	LoadIndeterminate
+)
+
+// LoadState is the page-load progress snapshot the viewer renders, for
+// example as OSC 9;4 terminal progress. Percent is meaningful only in the
+// LoadPercentage state.
+type LoadState struct {
+	// State is the current load state: LoadClear, LoadPercentage, LoadError,
+	// or LoadIndeterminate.
+	State int
+	// Percent is the determinate progress value, 0 to 100, valid only when
+	// State is LoadPercentage.
+	Percent int
+}
