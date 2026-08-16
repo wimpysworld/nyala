@@ -175,6 +175,17 @@ type ChromiumEngine struct {
 	// error, which is recorded after teardown by design. Guarded by mu.
 	sessionActive bool
 
+	// cursorCtxID is the Runtime execution context id of the isolated world the
+	// hover cursor read creates for itself, 0 until a hover creates it. It is
+	// the fallback the read uses when layoutShiftCtxID is zero, which is every
+	// hover on the Kitty and Sixel backends, where Block layout-shift forcing
+	// never runs. The world reuses the layoutShiftWorld name, so a document
+	// carries at most one extra world. A "Cannot find context" evaluate error
+	// clears it, because a navigation invalidates isolated worlds, and the next
+	// hover recreates it. It is reset per session by teardownSession alongside
+	// layoutShiftCtxID. Guarded by mu.
+	cursorCtxID runtime.ExecutionContextID
+
 	// pointerCursor is the raw computed CSS cursor value read at the pointer on
 	// the last hover move, empty before any read succeeds. A hover dispatch
 	// evaluates the read in the layoutShiftWorld isolated world; a zero context
