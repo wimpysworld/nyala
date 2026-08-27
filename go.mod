@@ -1,12 +1,12 @@
 module github.com/wimpysworld/nyala
 
-go 1.26
+go 1.26.4
 
 require (
 	github.com/agnivade/levenshtein v1.2.1
 	github.com/alecthomas/kong v1.16.1
 	github.com/charmbracelet/colorprofile v0.4.3
-	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/charmbracelet/x/vt v0.0.0-20260615092313-b57e5e6d29bb
 	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
@@ -15,17 +15,17 @@ require (
 	github.com/ebitengine/purego v0.10.2
 	github.com/emmansun/base64 v0.10.0
 	github.com/ericpauley/go-quantize v0.0.0-20200331213906-ae555eb2afa4
-	github.com/gen2brain/jpegn v0.5.0
+	github.com/gen2brain/jpegn v0.6.1
 	github.com/klauspost/compress v1.19.2
 	github.com/lucasb-eyer/go-colorful v1.4.1
-	github.com/mattn/go-runewidth v0.0.27
+	github.com/mattn/go-runewidth v0.0.28
 	github.com/mattn/go-sixel v0.0.12
 	github.com/raf555/pixelmatch v1.0.1
 	github.com/rivo/uniseg v0.4.7
 	github.com/soniakeys/quant v1.0.0
 	github.com/woozymasta/png v1.2.0
 	golang.org/x/sys v0.47.0
-	golang.org/x/tools v0.48.0
+	golang.org/x/tools v0.49.0
 	gonum.org/v1/plot v0.17.0
 )
 
@@ -35,7 +35,7 @@ require (
 	codeberg.org/go-pdf/fpdf v0.11.1 // indirect
 	git.sr.ht/~sbinet/gg v0.7.0 // indirect
 	github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b // indirect
-	github.com/bits-and-blooms/bitset v1.24.4 // indirect
+	github.com/bits-and-blooms/bitset v1.24.6 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260525132238-948f4557a654 // indirect
 	github.com/charmbracelet/x/exp/ordered v0.1.0 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
@@ -55,6 +55,6 @@ require (
 )
 
 require (
-	golang.org/x/image v0.44.0
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/image v0.45.0
+	golang.org/x/text v0.41.0 // indirect
 )
