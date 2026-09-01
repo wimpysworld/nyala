@@ -158,7 +158,7 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
       - name: Enable FlakeHub Cache
-        uses: DeterminateSystems/flakehub-cache-action@v3.21.8
+        uses: DeterminateSystems/flakehub-cache-action@v3.22.2
         continue-on-error: true
       - name: Check flake
         run: nix flake check
@@ -333,7 +333,7 @@ jobs:
       # private repo lacks. Skip while private; re-enables when public.
       - name: Upload SARIF
         if: ${{ always() && github.event.repository.visibility == 'public' }}
-        uses: github/codeql-action/upload-sarif@v4.37.3
+        uses: github/codeql-action/upload-sarif@v4.37.9
         with:
           sarif_file: govulncheck.sarif
           category: govulncheck
@@ -392,7 +392,7 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
       - name: Enable FlakeHub Cache
-        uses: DeterminateSystems/flakehub-cache-action@v3.21.8
+        uses: DeterminateSystems/flakehub-cache-action@v3.22.2
         continue-on-error: true
       - name: Install GoReleaser
         run: go install "github.com/goreleaser/goreleaser/v2@${GORELEASER_VERSION}"
@@ -435,7 +435,7 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
       - name: Enable FlakeHub Cache
-        uses: DeterminateSystems/flakehub-cache-action@v3.21.8
+        uses: DeterminateSystems/flakehub-cache-action@v3.22.2
         continue-on-error: true
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.2
