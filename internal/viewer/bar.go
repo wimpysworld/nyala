@@ -26,16 +26,16 @@ func engineRows(rows int) int {
 }
 
 // Bar glyphs, all Basic Multilingual Plane with no emoji-presentation
-// lookalikes, and never followed by U+FE0F. The Block indicator glyphs echo
-// their scheme's subcell shape with rising fill density.
+// lookalikes, and never followed by U+FE0F. The Block indicator glyphs are
+// die faces whose pip counts match their scheme's samples per cell.
 const (
 	barGlyphBack          = "←" // ← U+2190 Back
 	barGlyphForward       = "→" // → U+2192 Forward
 	barGlyphReload        = "⟳" // ⟳ U+27F3 Reload
 	barGlyphHome          = "⌂" // ⌂ U+2302 Home
 	barGlyphMenu          = "☰" // ☰ U+2630 Menu
-	barGlyphBlockQuadrant = "⬔" // ⬔ U+2B14 Block quadrant scheme
-	barGlyphBlockSextant  = "▦" // ▦ U+25A6 Block sextant scheme
+	barGlyphBlockQuadrant = "⚃" // ⚃ U+2683 Block quadrant scheme
+	barGlyphBlockSextant  = "⚅" // ⚅ U+2685 Block sextant scheme
 	barGlyphSixel         = "⬣" // ⬣ U+2B23 Sixel
 	barGlyphKitty         = "✪" // ✪ U+272A Kitty
 	barGlyphClose         = "✕" // ✕ close (menu, About, and find modes)

@@ -118,7 +118,7 @@ func TestBoldSpan(t *testing.T) {
 // kind, the URL region resolves anywhere inside it, and a separator cell
 // resolves to nothing.
 func TestBarLayoutHit(t *testing.T) {
-	_, l := renderBar(80, barContent{indicator: "⬔", url: "https://example.org/"})
+	_, l := renderBar(80, barContent{indicator: "⚃", url: "https://example.org/"})
 	for _, kind := range []barSegmentKind{
 		barSegmentBack, barSegmentForward, barSegmentReload, barSegmentHome,
 		barSegmentIndicator, barSegmentURL, barSegmentMenu,
@@ -405,8 +405,8 @@ func TestFPSCommandLabelReflectsState(t *testing.T) {
 // so a click still resolves to the segment drawn under it.
 func TestFPSSegmentKeepsMenuAnchored(t *testing.T) {
 	const cols = 80
-	withFPS, withLay := renderBar(cols, barContent{indicator: "⬔", url: "https://example.org/", fps: "↓ 60.0 │ ↑ 60.0 │ ≌ 120"})
-	without, withoutLay := renderBar(cols, barContent{indicator: "⬔", url: "https://example.org/"})
+	withFPS, withLay := renderBar(cols, barContent{indicator: "⚃", url: "https://example.org/", fps: "↓ 60.0 │ ↑ 60.0 │ ≌ 120"})
+	without, withoutLay := renderBar(cols, barContent{indicator: "⚃", url: "https://example.org/"})
 
 	if runewidth.StringWidth(withFPS) != cols || runewidth.StringWidth(without) != cols {
 		t.Fatalf("bar rows are %d and %d cells, want %d", runewidth.StringWidth(withFPS), runewidth.StringWidth(without), cols)

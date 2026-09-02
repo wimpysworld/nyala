@@ -56,8 +56,8 @@ func TestBackendGlyph(t *testing.T) {
 		scheme  block.Scheme
 		want    string
 	}{
-		{"block quadrant", BackendBlock, block.SchemeQuadrant, "⬔"},
-		{"block sextant", BackendBlock, block.SchemeSextant, "▦"},
+		{"block quadrant", BackendBlock, block.SchemeQuadrant, "⚃"},
+		{"block sextant", BackendBlock, block.SchemeSextant, "⚅"},
 		{"sixel", BackendSixel, block.SchemeQuadrant, "⬣"},
 		{"kitty", BackendKitty, block.SchemeSextant, "✪"},
 	}
@@ -76,7 +76,7 @@ func TestBackendGlyph(t *testing.T) {
 // and the row content exactly cols cells wide.
 func TestRenderBarLayout(t *testing.T) {
 	const cols = 80
-	content, l := renderBar(cols, barContent{indicator: "⬔", url: "https://example.org/"})
+	content, l := renderBar(cols, barContent{indicator: "⚃", url: "https://example.org/"})
 	if w := runewidth.StringWidth(content); w != cols {
 		t.Fatalf("bar content width = %d, want %d", w, cols)
 	}
@@ -105,7 +105,7 @@ func TestRenderBarLayout(t *testing.T) {
 		barSegmentForward:   barGlyphForward,
 		barSegmentReload:    barGlyphReload,
 		barSegmentHome:      barGlyphHome,
-		barSegmentIndicator: "⬔",
+		barSegmentIndicator: "⚃",
 		barSegmentMenu:      barGlyphMenu,
 	}
 	for kind, glyph := range glyphs {
@@ -207,7 +207,7 @@ func TestRenderBarTruncatesURL(t *testing.T) {
 // cols cells wide.
 func TestRenderBarNarrowFallsBackToURL(t *testing.T) {
 	const cols = 16
-	content, l := renderBar(cols, barContent{indicator: "⬔", url: "https://example.org/page"})
+	content, l := renderBar(cols, barContent{indicator: "⚃", url: "https://example.org/page"})
 	if w := runewidth.StringWidth(content); w != cols {
 		t.Fatalf("bar content width = %d, want %d", w, cols)
 	}
@@ -258,7 +258,7 @@ func TestAppendBarSessionGlue(t *testing.T) {
 }
 
 // TestAppendBarBoldsPressedButton pins the press feedback: a pressed button
-// draws bold until its release, and an unpressed bar (the ▦ sextant
+// draws bold until its release, and an unpressed bar (the ⚅ sextant
 // indicator included, a distinct glyph rather than a shade) carries no bold.
 func TestAppendBarBoldsPressedButton(t *testing.T) {
 	st := NewState(60, 4)
