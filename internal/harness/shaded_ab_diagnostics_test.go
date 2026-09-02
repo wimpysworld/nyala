@@ -205,6 +205,19 @@ func countShadeCells(g block.Grid) int {
 	return n
 }
 
+// countDitherCells counts grid cells drawing a Block Elements full-cell
+// dither glyph U+2591..U+2593, so the tables show where the dither candidates
+// engaged.
+func countDitherCells(g block.Grid) int {
+	n := 0
+	for _, c := range g.Cells {
+		if c.Text == "" && c.Glyph >= 0x2591 && c.Glyph <= 0x2593 {
+			n++
+		}
+	}
+	return n
+}
+
 func gridsEqual(a, b block.Grid) bool {
 	if a.Cols != b.Cols || a.Rows != b.Rows {
 		return false
@@ -217,25 +230,41 @@ func gridsEqual(a, b block.Grid) bool {
 	return true
 }
 
-// logShadedABRow writes one reproducible metric row for a leg.
+// shadedVDFactor is the viewing-distance box-downscale factor: Route A
+// rasterises 8x16 pixels per cell while the compose samples 2x4, so factor 4
+// per axis is the cell subsample ratio, the scale where a dither dot pattern
+// merges into the tone it emulates. metrics.Downscale area-averages, so the
+// companion score is a pure 4x4 box filter of both images.
+const shadedVDFactor = 4
+
+// logShadedABRow writes one reproducible metric row for a leg: the native
+// scores against the reference and the ideal, and the viewing-distance
+// companion scores against the reference with both images box-downscaled by
+// shadedVDFactor.
 func logShadedABRow(t *testing.T, fixture, mode, scheme string, r shadedABRender, ref, idealImg *image.RGBA) {
 	t.Helper()
 	abs := metrics.ScorePair(r.img, ref)
 	rel := metrics.ScorePair(r.img, idealImg)
 	wcag := metrics.WCAGGrid(r.grid)
+	bounds := r.img.Bounds()
+	vdW, vdH := bounds.Dx()/shadedVDFactor, bounds.Dy()/shadedVDFactor
+	vd := metrics.ScorePair(metrics.Downscale(r.img, vdW, vdH), metrics.Downscale(ref, vdW, vdH))
 	for name, v := range map[string]float64{
 		"ssim": abs.SSIM, "msssim": abs.MSSSIM, "dEmean": abs.DeltaEMean, "dEp95": abs.DeltaEP95,
 		"relSSIM": rel.SSIM, "relMSSSIM": rel.MSSSIM, "relMSE": rel.MSE,
+		"vdSSIM": vd.SSIM, "vdMSSSIM": vd.MSSSIM, "vdPSNR": vd.PSNR, "vdDEmean": vd.DeltaEMean,
 	} {
 		if math.IsNaN(v) || math.IsInf(v, 0) {
 			t.Fatalf("fixture %s mode %s scheme %s metric %s is not finite", fixture, mode, scheme, name)
 		}
 	}
-	t.Logf("shadedAB fixture=%s mode=%s scheme=%s ssim=%.6f msssim=%.6f psnr=%.3f dE2000mean=%.4f dE2000p95=%.4f histDiv=%.6f lapVar=%.2f wcagMin=%.3f wcagBelow=%d relSSIM=%.6f relMSSSIM=%.6f relPSNR=%.3f relMSE=%.3f payloadBytes=%d shadeCells=%d",
+	t.Logf("shadedAB fixture=%s mode=%s scheme=%s ssim=%.6f msssim=%.6f psnr=%.3f dE2000mean=%.4f dE2000p95=%.4f histDiv=%.6f lapVar=%.2f wcagMin=%.3f wcagBelow=%d relSSIM=%.6f relMSSSIM=%.6f relPSNR=%.3f relMSE=%.3f vdSSIM=%.6f vdMSSSIM=%.6f vdPSNR=%.3f vdDE2000mean=%.4f vdDE2000p95=%.4f payloadBytes=%d shadeCells=%d ditherCells=%d",
 		fixture, mode, scheme,
 		abs.SSIM, abs.MSSSIM, abs.PSNR, abs.DeltaEMean, abs.DeltaEP95, 1-abs.HistIntersection,
 		metrics.LaplacianVariance(r.img), wcag.Min, wcag.BelowThreshold,
-		rel.SSIM, rel.MSSSIM, rel.PSNR, rel.MSE, r.payload, countShadeCells(r.grid))
+		rel.SSIM, rel.MSSSIM, rel.PSNR, rel.MSE,
+		vd.SSIM, vd.MSSSIM, vd.PSNR, vd.DeltaEMean, vd.DeltaEP95,
+		r.payload, countShadeCells(r.grid), countDitherCells(r.grid))
 }
 
 // TestShadedABSynthetic runs the quadrant-versus-Shaded comparison over the
