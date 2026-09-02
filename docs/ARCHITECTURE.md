@@ -1508,9 +1508,10 @@ immediately left of it, so toggling fps never moves the menu. The URL region
 absorbs the remaining width and truncates with an ellipsis. Glyph click
 targets pad to three cells.
 
-The backend indicator sits before the URL: ⬔ U+2B14 Block quadrant, ▦ U+25A6
-Block sextant, ⬣ U+2B23 Sixel, ✪ U+272A Kitty. The
-Block glyphs echo their scheme's subcell shape and track the live scheme.
+The backend indicator sits before the URL: ⚃ U+2683 Block quadrant, ⚅ U+2685
+Block sextant, ⬣ U+2B23 Sixel, ✪ U+272A Kitty. The Block glyphs are die faces
+whose pip counts match their scheme's 2x2 and 2x3 samples per cell, and they
+track the live scheme.
 Clicking the indicator cycles backends, mirroring Alt+R; a right-click steps
 the same enabled cycle backwards, mirroring Alt+Shift+R. The indicator is the
 only segment that reads the button, because it is the only one with a genuine
