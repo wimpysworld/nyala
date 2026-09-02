@@ -20,6 +20,17 @@ const (
 // foreground equal to background, matching the quadrant flat-cell convention.
 const fullBlock = 0x2588
 
+// lightShade, mediumShade, and darkShade are the Block Elements full-cell
+// dither glyphs U+2591..U+2593, drawn by terminals as 25, 50, and 75 per cent
+// foreground dot patterns since CP437. The Shaded scheme uses them to blend
+// two palette entries across a whole cell, emulating tones between palette
+// steps.
+const (
+	lightShade  = 0x2591
+	mediumShade = 0x2592
+	darkShade   = 0x2593
+)
+
 // ShadedPalette selects the output palette the Shaded scheme quantises
 // candidate colours to before scoring, so the scored cell is the cell the
 // terminal displays. Only the Shaded scheme reads it; truecolour is absent by
@@ -51,22 +62,46 @@ const (
 // rectangular medium-shade glyphs from Unicode 13.0; U+1FB93, the missing
 // left-block-and-right-shade mirror, is unassigned in Unicode 17.0, and the
 // triangular medium shades U+1FB9C..U+1FB9F are excluded because their
-// half-solid texture reads as visual noise.
+// half-solid texture reads as visual noise. The trailing full-cell dither
+// candidates score through bracketing palette pairs (shadedDithers), so
+// shadedCell iterates only the first shadedSpatialCount entries spatially.
 var shadedCandidates = [...]rune{
-	fullBlock, // U+2588 full block
-	0x0020,    // space
-	0x2580,    // upper half block
-	0x2584,    // lower half block
-	0x258C,    // left half block
-	0x2590,    // right half block
-	0x1FB8C,   // left half medium shade
-	0x1FB8D,   // right half medium shade
-	0x1FB8E,   // upper half medium shade
-	0x1FB8F,   // lower half medium shade
-	0x1FB91,   // upper half block and lower half inverse medium shade
-	0x1FB92,   // upper half inverse medium shade and lower half block
-	0x1FB94,   // left half inverse medium shade and right half block
+	fullBlock,   // U+2588 full block
+	0x0020,      // space
+	0x2580,      // upper half block
+	0x2584,      // lower half block
+	0x258C,      // left half block
+	0x2590,      // right half block
+	0x1FB8C,     // left half medium shade
+	0x1FB8D,     // right half medium shade
+	0x1FB8E,     // upper half medium shade
+	0x1FB8F,     // lower half medium shade
+	0x1FB91,     // upper half block and lower half inverse medium shade
+	0x1FB92,     // upper half inverse medium shade and lower half block
+	0x1FB94,     // left half inverse medium shade and right half block
+	lightShade,  // U+2591 light shade, 25 per cent full-cell dither
+	mediumShade, // U+2592 medium shade, 50 per cent full-cell dither
+	darkShade,   // U+2593 dark shade, 75 per cent full-cell dither
 }
+
+// shadedDithers lists the full-cell dither candidates in scoring order with
+// their uniform per-bin coverage weight in 32nds. Their coverage is the same
+// in every bin, so the covered and uncovered spatial means both collapse to
+// the cell mean; shadedCell scores them through bracketing palette pairs
+// instead.
+var shadedDithers = [...]struct {
+	glyph rune
+	w     int // uniform per-bin coverage weight, 0..shadedBinMax
+}{
+	{lightShade, shadedBinMax / 4},
+	{mediumShade, shadedBinMax / 2},
+	{darkShade, 3 * shadedBinMax / 4},
+}
+
+// shadedSpatialCount is the number of leading shadedCandidates entries scored
+// through the covered/uncovered spatial means. The remaining entries are the
+// dither candidates.
+const shadedSpatialCount = len(shadedCandidates) - len(shadedDithers)
 
 // ShadedCandidates returns the Shaded scheme's candidate glyph set in scoring
 // order. The test card tool and the raster tests iterate it, so the displayed
@@ -113,6 +148,12 @@ func ShadedOpacity(glyph rune, cx, cy int) (int, bool) {
 		return 2 - ifInk(cy < 8, 1), true
 	case 0x1FB94:
 		return 2 - ifInk(cx < 4, 1), true
+	case lightShade:
+		return ifInk(cx%2 == 0 && cy%2 == 0, 2), true
+	case mediumShade:
+		return ifInk((cx+cy)%2 == 0, 2), true
+	case darkShade:
+		return ifInk(cx%2 == 1 || cy%2 == 1, 2), true
 	}
 	return 0, false
 }
@@ -185,6 +226,76 @@ func shadedQuantise(c color.RGBA, pal ShadedPalette) color.RGBA {
 	return XTerm256RGBA(xterm256Stable[XTerm256(c)])
 }
 
+// shadedNeutralSpread is the channel spread at or below which a cell mean
+// counts as near-neutral, adding the grey-ramp bracket as an alternative
+// dither pair under the xterm-256 palette. The gate is a cost filter, not a
+// selector: the scoring contest still arbitrates between the cube and ramp
+// pairs, so the threshold only skips ramp pairs a chromatic mean makes
+// clearly unwinnable. 32 sits under the cube's smallest step (40), so any
+// mean the ramp could plausibly serve passes.
+const shadedNeutralSpread = 32
+
+// cubeBracketStep returns the 0..5 xterm colour-cube steps whose levels
+// bracket channel value v: cubeLevel(lo) <= v <= cubeLevel(hi). A value at or
+// above the top level returns the top step twice.
+func cubeBracketStep(v uint8) (lo, hi int) {
+	if v < 95 {
+		return 0, 1
+	}
+	i := int(v-95)/40 + 1
+	if i >= 5 {
+		return 5, 5
+	}
+	return i, i + 1
+}
+
+// shadedGreyBracket returns the adjacent xterm greyscale ramp entries
+// bracketing the mean's Rec.601 grey level, brighter entry first, keeping the
+// rule that grey output uses only ramp entries. Levels outside the ramp clamp
+// to its nearest pair.
+func shadedGreyBracket(mean color.RGBA) (hi, lo color.RGBA) {
+	const (
+		base = 8 * 256
+		step = 10 * 256
+	)
+	li := 0
+	if l := luma(mean); l > base {
+		li = min((l-base)/step, 23)
+	}
+	return XTermGreyRGBA(uint8(232 + min(li+1, 23))), XTermGreyRGBA(uint8(232 + li)) //nolint:gosec // li is clamped to 0..23
+}
+
+// shadedDitherPairs fills pairs with up to two bracketing palette pairs for
+// the full-cell dither candidates, brighter entry first, and returns how many
+// it wrote. The derivation is O(1) from the palette lattice: under the
+// greyscale palette the single pair is the adjacent 24-step ramp entries
+// around the mean's grey level; under xterm-256 the first pair brackets each
+// channel on the 6x6x6 cube lattice, and a near-neutral mean adds the grey
+// ramp bracket, whose 10-step pitch is far finer than the cube near the
+// neutral axis. Every entry passes through shadedQuantise, so the scored pair
+// is writer-emittable, the palette-before-score rule.
+func shadedDitherPairs(mean color.RGBA, pal ShadedPalette, pairs *[2][2]color.RGBA) int {
+	if pal == ShadedXTermGrey {
+		hi, lo := shadedGreyBracket(mean)
+		pairs[0] = [2]color.RGBA{shadedQuantise(hi, pal), shadedQuantise(lo, pal)}
+		return 1
+	}
+	rLo, rHi := cubeBracketStep(mean.R)
+	gLo, gHi := cubeBracketStep(mean.G)
+	bLo, bHi := cubeBracketStep(mean.B)
+	pairs[0] = [2]color.RGBA{
+		shadedQuantise(color.RGBA{R: cubeLevel(rHi), G: cubeLevel(gHi), B: cubeLevel(bHi), A: 0xff}, pal),
+		shadedQuantise(color.RGBA{R: cubeLevel(rLo), G: cubeLevel(gLo), B: cubeLevel(bLo), A: 0xff}, pal),
+	}
+	spread := int(max(mean.R, mean.G, mean.B)) - int(min(mean.R, mean.G, mean.B))
+	if spread > shadedNeutralSpread {
+		return 1
+	}
+	hi, lo := shadedGreyBracket(mean)
+	pairs[1] = [2]color.RGBA{shadedQuantise(hi, pal), shadedQuantise(lo, pal)}
+	return 2
+}
+
 // shadedFlat reports whether every source sample of the cell is one colour.
 func shadedFlat(s *[8]color.RGBA) bool {
 	for i := 1; i < len(s); i++ {
@@ -196,16 +307,20 @@ func shadedFlat(s *[8]color.RGBA) bool {
 }
 
 // shadedCell scores every candidate glyph against the cell's eight source
-// samples and returns the lowest-error cell. Per candidate it estimates the
-// foreground from the covered samples and the background from the uncovered
-// samples (weighted by the coverage table), quantises both to the active
-// palette, then scores the displayed result coverage*FG + (1-coverage)*BG
-// against the samples. This derives two colours per candidate rather than
-// searching palette pairs, so the work stays proportional to candidate count
-// times eight samples. An exactly flat cell short-circuits to a full block
-// with foreground equal to background, so flat regions never gain shade
-// texture. Equal-error ties keep the earliest candidate, so the result is
-// deterministic and solid glyphs win ties.
+// samples and returns the lowest-error cell. Per spatial candidate it
+// estimates the foreground from the covered samples and the background from
+// the uncovered samples (weighted by the coverage table), quantises both to
+// the active palette, then scores the displayed result coverage*FG +
+// (1-coverage)*BG against the samples. This derives two colours per candidate
+// rather than searching palette pairs, so the work stays proportional to
+// candidate count times eight samples. The full-cell dither candidates score
+// after the spatial set: their pair comes from the palette lattice brackets
+// around the cell mean (shadedDitherPairs), blended at the glyph's uniform
+// coverage ratio, so a tone between two palette steps can win as a dithered
+// blend. An exactly flat cell short-circuits to a full block with foreground
+// equal to background, so flat regions never gain shade texture. Equal-error
+// ties keep the earliest candidate, so the result is deterministic and solid
+// glyphs win ties.
 func shadedCell(s *[8]color.RGBA, pal ShadedPalette) Cell {
 	if shadedFlat(s) {
 		q := shadedQuantise(s[0], pal)
@@ -223,7 +338,7 @@ func shadedCell(s *[8]color.RGBA, pal ShadedPalette) Cell {
 
 	best := Cell{}
 	bestErr := int64(-1)
-	for ci := range shadedCandidates {
+	for ci := range shadedCandidates[:shadedSpatialCount] {
 		cov := &shadedCoverage[ci]
 		var frs, fgs, fbs, fw int
 		for i := range s {
@@ -266,6 +381,33 @@ func shadedCell(s *[8]color.RGBA, pal ShadedPalette) Cell {
 		if bestErr < 0 || errSum < bestErr {
 			bestErr = errSum
 			best = Cell{Glyph: shadedCandidates[ci], FG: fq, BG: bq}
+		}
+	}
+
+	// Full-cell dither candidates: bracket the cell mean on the palette
+	// lattice, then score each glyph's uniform blend ratio*FG + (1-ratio)*BG.
+	// The displayed colour is constant across the cell, so it computes once
+	// per candidate and pair. The strict comparison keeps the spatial
+	// candidates, which come earlier in scoring order, ahead on ties.
+	var pairs [2][2]color.RGBA
+	n := shadedDitherPairs(avgChannels(trs, tgs, tbs, len(s)), pal, &pairs)
+	for _, d := range shadedDithers {
+		for _, p := range pairs[:n] {
+			fq, bq := p[0], p[1]
+			dr := (d.w*int(fq.R) + (shadedBinMax-d.w)*int(bq.R) + shadedBinMax/2) / shadedBinMax
+			dg := (d.w*int(fq.G) + (shadedBinMax-d.w)*int(bq.G) + shadedBinMax/2) / shadedBinMax
+			db := (d.w*int(fq.B) + (shadedBinMax-d.w)*int(bq.B) + shadedBinMax/2) / shadedBinMax
+			var errSum int64
+			for i := range s {
+				er := dr - int(s[i].R)
+				eg := dg - int(s[i].G)
+				eb := db - int(s[i].B)
+				errSum += int64(er*er + eg*eg + eb*eb)
+			}
+			if errSum < bestErr {
+				bestErr = errSum
+				best = Cell{Glyph: d.glyph, FG: fq, BG: bq}
+			}
 		}
 	}
 	return best

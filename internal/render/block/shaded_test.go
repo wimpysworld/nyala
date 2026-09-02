@@ -58,6 +58,29 @@ func TestShadedCoverageTables(t *testing.T) {
 			t.Fatalf("combined glyph %U total %d, want %d", glyph, totals[glyph], 8*shadedBinMax*3/4)
 		}
 	}
+	for _, d := range shadedDithers {
+		if totals[d.glyph] != 8*d.w {
+			t.Fatalf("dither glyph %U total %d, want the uniform %d per bin", d.glyph, totals[d.glyph], 8*d.w)
+		}
+		for _, w := range shadedCoverage[shadedCandidateIndex(t, d.glyph)] {
+			if int(w) != d.w {
+				t.Fatalf("dither glyph %U bin weight %d, want uniform %d", d.glyph, w, d.w)
+			}
+		}
+	}
+}
+
+// shadedCandidateIndex returns the scoring-order index of glyph in
+// shadedCandidates.
+func shadedCandidateIndex(t *testing.T, glyph rune) int {
+	t.Helper()
+	for i, g := range shadedCandidates {
+		if g == glyph {
+			return i
+		}
+	}
+	t.Fatalf("glyph %U is not a Shaded candidate", glyph)
+	return -1
 }
 
 // TestShadedOpacityRejectsNonCandidates keeps the geometry seam honest: a rune
@@ -174,6 +197,46 @@ func TestShadedCellDiagonalPolarity(t *testing.T) {
 				t.Fatalf("corner field composed flat: fg %v == bg %v", cell.FG, cell.BG)
 			}
 		})
+	}
+}
+
+// TestShadedCellDitherBetweenPaletteSteps pins the full-cell dither path: a
+// near-flat tone between two adjacent palette entries beats every solid and
+// spatial candidate as a dithered blend of a bracketing pair. The cell is one
+// sample off exactly flat, so the flat short-circuit does not fire, and
+// carries no spatial structure a half or shade glyph could model. Under the
+// greyscale palette grey 123 sits between ramp entries 118 and 128, so the 50
+// per cent blend lands on it exactly. Under xterm-256 the perceptual LUT owns
+// the exact pair (grey 128 quantises to the cube grey 135), so the pin is
+// that a dither glyph with two distinct palette entries wins, not which pair.
+func TestShadedCellDitherBetweenPaletteSteps(t *testing.T) {
+	near := color.RGBA{R: 123, G: 123, B: 123, A: 0xff}
+	off := color.RGBA{R: 124, G: 124, B: 124, A: 0xff}
+	s := shadedSamples(func(dx, dy int) color.RGBA {
+		if dx == 1 && dy == 3 {
+			return off
+		}
+		return near
+	})
+
+	grey := shadedCell(&s, ShadedXTermGrey)
+	lo := color.RGBA{R: 118, G: 118, B: 118, A: 0xff}
+	hi := color.RGBA{R: 128, G: 128, B: 128, A: 0xff}
+	if grey.Glyph != mediumShade || grey.FG != hi || grey.BG != lo {
+		t.Fatalf("grey cell = %U fg %v bg %v, want %U fg %v bg %v", grey.Glyph, grey.FG, grey.BG, rune(mediumShade), hi, lo)
+	}
+
+	c256 := shadedCell(&s, ShadedXTerm256)
+	if c256.Glyph != lightShade && c256.Glyph != mediumShade && c256.Glyph != darkShade {
+		t.Fatalf("xterm-256 cell = %U, want a full-cell dither glyph", c256.Glyph)
+	}
+	if c256.FG == c256.BG {
+		t.Fatalf("xterm-256 dither pair collapsed: fg %v == bg %v", c256.FG, c256.BG)
+	}
+	for _, c := range []color.RGBA{c256.FG, c256.BG} {
+		if q := shadedQuantise(c, ShadedXTerm256); q != c {
+			t.Fatalf("xterm-256 pair colour %v is not a writer-emittable palette entry", c)
+		}
 	}
 }
 
