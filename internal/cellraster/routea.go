@@ -123,7 +123,11 @@ func (r *Rasteriser) drawText(img *image.RGBA, rect image.Rectangle, s string, f
 	if s == "" {
 		return
 	}
-	face := r.faceFor([]rune(s)[0])
+	runes := []rune(s)
+	if len(runes) == 1 && drawShadeCell(img, rect, runes[0], fg) {
+		return
+	}
+	face := r.faceFor(runes[0])
 	if face == nil {
 		return
 	}
@@ -149,6 +153,34 @@ func (r *Rasteriser) RenderGlyphCell(text string, fg, bg color.RGBA) *image.RGBA
 	draw.Draw(img, rect, &image.Uniform{C: bg}, image.Point{}, draw.Src)
 	r.drawText(img, rect, text, fg)
 	return img
+}
+
+// drawShadeCell draws a Symbols for Legacy Computing shade candidate
+// procedurally and reports whether it did. Neither embedded font covers
+// U+1FB8C..U+1FB9F, so the font path would leave those cells blank; the
+// procedural path reads the same block.ShadedOpacity geometry the compose
+// coverage tables are built from, one lattice point per raster pixel on the
+// 8x16 cell, so the rasterised proof and the scored model agree. Medium shade
+// draws as a rect-relative checkerboard, the deterministic model of a
+// terminal's 50 percent dot pattern; Unicode fixes no dot phase. BMP glyphs
+// (below U+1FB8C) stay on the font path, so every existing golden render is
+// unchanged.
+func drawShadeCell(img *image.RGBA, rect image.Rectangle, glyph rune, fg color.RGBA) bool {
+	if glyph < 0x1FB8C {
+		return false
+	}
+	if _, ok := block.ShadedOpacity(glyph, 0, 0); !ok {
+		return false
+	}
+	for y := range CellPxH {
+		for x := range CellPxW {
+			op, _ := block.ShadedOpacity(glyph, x, y)
+			if op == 2 || (op == 1 && (x+y)%2 == 0) {
+				img.SetRGBA(rect.Min.X+x, rect.Min.Y+y, fg)
+			}
+		}
+	}
+	return true
 }
 
 // faceFor returns the face that covers glyph, preferring the primary. It returns

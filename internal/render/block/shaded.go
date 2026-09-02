@@ -254,21 +254,30 @@ func shadedCell(s *[8]color.RGBA, pal ShadedPalette) Cell {
 		}
 	}
 
+	// The background sums derive from the whole-cell totals, so each candidate
+	// accumulates only its weighted foreground side.
+	var trs, tgs, tbs int
+	for i := range s {
+		trs += int(s[i].R)
+		tgs += int(s[i].G)
+		tbs += int(s[i].B)
+	}
+
 	best := Cell{}
 	bestErr := int64(-1)
 	for ci := range shadedCandidates {
 		cov := &shadedCoverage[ci]
-		var frs, fgs, fbs, brs, bgs, bbs, fw int
+		var frs, fgs, fbs, fw int
 		for i := range s {
 			w := int(cov[i])
 			frs += w * int(s[i].R)
 			fgs += w * int(s[i].G)
 			fbs += w * int(s[i].B)
-			brs += (shadedBinMax - w) * int(s[i].R)
-			bgs += (shadedBinMax - w) * int(s[i].G)
-			bbs += (shadedBinMax - w) * int(s[i].B)
 			fw += w
 		}
+		brs := trs*shadedBinMax - frs
+		bgs := tgs*shadedBinMax - fgs
+		bbs := tbs*shadedBinMax - fbs
 		bw := len(s)*shadedBinMax - fw
 		var fg, bg color.RGBA
 		switch {
