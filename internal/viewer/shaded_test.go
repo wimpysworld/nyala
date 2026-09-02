@@ -1,0 +1,170 @@
+package viewer
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+
+	"github.com/wimpysworld/nyala/internal/render"
+	"github.com/wimpysworld/nyala/internal/render/block"
+)
+
+// TestResolveSchemeShadedExplicitOnly pins the Shaded selection policy: only
+// the explicit --blocks=shaded value resolves to the scheme, and auto never
+// does, even on a terminal the sextant allow-list admits.
+func TestResolveSchemeShadedExplicitOnly(t *testing.T) {
+	if got := resolveScheme("shaded", nil); got != block.SchemeShaded {
+		t.Fatalf("resolveScheme(shaded) = %d, want SchemeShaded", got)
+	}
+	kittyEnv := []string{"KITTY_WINDOW_ID=1", "TERM=xterm-kitty"}
+	if got := resolveScheme("auto", kittyEnv); got == block.SchemeShaded {
+		t.Fatal("resolveScheme(auto) selected Shaded")
+	}
+}
+
+// TestApplyShadedColour pins the startup colour resolution for the explicit
+// Shaded scheme: explicit truecolour fails fast with the documented error,
+// an automatic truecolour resolution degrades to xterm-256, every compatible
+// resolved mode stands, and a non-Shaded scheme is untouched.
+func TestApplyShadedColour(t *testing.T) {
+	const wantErr = "viewer: shaded Block mode does not support truecolour; use --color=256, --color=ansi-tonal, --color=ansi-grey, or --color=none"
+
+	st := NewState(80, 24)
+	st.Scheme = block.SchemeShaded
+	st.Colour = ColourTrue
+	if err := st.applyShadedColour("truecolor"); err == nil || err.Error() != wantErr {
+		t.Fatalf("explicit truecolour error = %v, want %q", err, wantErr)
+	}
+
+	st.Colour = ColourTrue
+	if err := st.applyShadedColour("auto"); err != nil {
+		t.Fatalf("auto resolution: %v", err)
+	}
+	if st.Colour != ColourXTerm256 {
+		t.Fatalf("auto truecolour degraded to %d, want ColourXTerm256", st.Colour)
+	}
+
+	for _, mode := range []ColourMode{ColourXTerm256, ColourXTermGrey, ColourANSITonal, ColourMono} {
+		st.Colour = mode
+		if err := st.applyShadedColour("auto"); err != nil || st.Colour != mode {
+			t.Fatalf("compatible mode %d changed to %d (err %v)", mode, st.Colour, err)
+		}
+	}
+
+	quadrant := NewState(80, 24)
+	quadrant.Colour = ColourTrue
+	if err := quadrant.applyShadedColour("truecolor"); err != nil || quadrant.Colour != ColourTrue {
+		t.Fatalf("non-Shaded scheme changed: colour %d err %v", quadrant.Colour, err)
+	}
+}
+
+// TestCycleSchemeShaded pins the Alt+B glyph policy: the cycle reaches Shaded
+// only when the explicit start asserted glyph support and the colour mode is
+// compatible; an unknown terminal (no assertion) and a truecolour session both
+// skip it.
+func TestCycleSchemeShaded(t *testing.T) {
+	st := NewState(80, 24)
+	st.shadedOK = true
+	st.sextantOK = true
+	st.Colour = ColourXTerm256
+	st.Scheme = block.SchemeSextant
+	if got := st.CycleScheme(false); got != block.SchemeShaded {
+		t.Fatalf("compatible cycle = %d, want SchemeShaded", got)
+	}
+	if got := st.CycleScheme(false); got != block.SchemeHalfBlock {
+		t.Fatalf("wrap after Shaded = %d, want half", got)
+	}
+
+	st.Colour = ColourTrue
+	st.Scheme = block.SchemeSextant
+	if got := st.CycleScheme(false); got == block.SchemeShaded {
+		t.Fatal("truecolour cycle landed on Shaded")
+	}
+
+	st.Colour = ColourXTerm256
+	st.shadedOK = false
+	st.Scheme = block.SchemeSextant
+	if got := st.CycleScheme(false); got == block.SchemeShaded {
+		t.Fatal("cycle landed on Shaded without the glyph assertion")
+	}
+}
+
+// TestCycleColourShadedSkipsTruecolour pins the Alt+C rule under Shaded: the
+// ladder cycles 256 -> grey -> tonal -> mono and wraps past truecolour in both
+// directions, even when the capability cap allows truecolour.
+func TestCycleColourShadedSkipsTruecolour(t *testing.T) {
+	st := NewState(80, 24)
+	st.Scheme = block.SchemeShaded
+	st.colourCap = ColourTrue
+	st.Colour = ColourXTerm256
+	want := []ColourMode{ColourXTermGrey, ColourANSITonal, ColourMono, ColourXTerm256}
+	for i, w := range want {
+		if got := st.CycleColour(false); got != w {
+			t.Fatalf("cycle %d = %d, want %d", i, got, w)
+		}
+	}
+	if got := st.CycleColour(true); got != ColourMono {
+		t.Fatalf("reverse wrap = %d, want mono, not truecolour", got)
+	}
+}
+
+// TestShadedStreamSGRRanges proves no truecolour SGR can appear from a Shaded
+// writer path: every compatible colour mode emits only its own palette
+// escapes, and monochrome emits none.
+func TestShadedStreamSGRRanges(t *testing.T) {
+	frame := render.Frame{Img: monochromeRampImage(16, 16)}
+	for _, mode := range []ColourMode{ColourXTerm256, ColourXTermGrey, ColourANSITonal, ColourMono} {
+		st := NewState(8, 4)
+		st.Scheme = block.SchemeShaded
+		st.Colour = mode
+		st.SetDiff(&block.GridDiff{})
+		var out bytes.Buffer
+		if err := st.RenderStreamFrame(frame, &out); err != nil {
+			t.Fatalf("mode %d draw: %v", mode, err)
+		}
+		payload := out.String()
+		for _, forbidden := range []string{"\x1b[38;2;", "\x1b[48;2;"} {
+			if strings.Contains(payload, forbidden) {
+				t.Fatalf("mode %d emitted truecolour SGR %q in %q", mode, forbidden, payload)
+			}
+		}
+		for _, params := range decodedSGRs(t, payload) {
+			switch mode {
+			case ColourXTerm256, ColourXTermGrey:
+				if len(params) != 3 || params[1] != 5 || (params[0] != 38 && params[0] != 48) {
+					t.Fatalf("mode %d emitted non-indexed SGR %v", mode, params)
+				}
+				if params[2] < 16 || params[2] > 255 {
+					t.Fatalf("mode %d emitted index %d outside 16..255", mode, params[2])
+				}
+			case ColourANSITonal:
+				if len(params) != 1 || !isANSITonalCode(params[0]) {
+					t.Fatalf("tonal mode emitted invalid SGR %v", params)
+				}
+			case ColourMono:
+				t.Fatalf("monochrome mode emitted colour SGR %v", params)
+			}
+		}
+	}
+}
+
+// TestShadedComposeQuantisesToPalette proves the palette-before-score rule
+// reaches the production compose: every bitmap cell of a Shaded xterm-256
+// compose already holds a canonical palette colour, so the writer's index
+// lookup can never shift the displayed colour.
+func TestShadedComposeQuantisesToPalette(t *testing.T) {
+	st := NewState(8, 4)
+	st.Scheme = block.SchemeShaded
+	st.Colour = ColourXTerm256
+	grid := st.ComposeBlockFrame(render.Frame{Img: monochromeRampImage(16, 16)})
+	if grid == nil {
+		t.Fatal("ComposeBlockFrame returned nil")
+	}
+	for i, cell := range grid.Cells {
+		fgCanonical := block.XTerm256RGBA(block.XTerm256(cell.FG))
+		bgCanonical := block.XTerm256RGBA(block.XTerm256(cell.BG))
+		if cell.FG != fgCanonical || cell.BG != bgCanonical {
+			t.Fatalf("cell %d colours fg %v bg %v are not canonical palette entries", i, cell.FG, cell.BG)
+		}
+	}
+}
