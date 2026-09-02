@@ -43,6 +43,25 @@ func (e *ChromiumEngine) acquireProfileGuard() error {
 	return nil
 }
 
+// purgeSessionState removes Chromium's tab-restore state beneath profileDir.
+// Nyala drives every navigation itself, so a restored session is never wanted,
+// and an aborted run leaves Session and Tabs files that grow with each
+// navigation. Headless Chromium reloads that state at launch and respawns the
+// recorded tabs, which can wedge the CDP handshake before the first milestone
+// prints. launch calls this after acquireProfileGuard and before the process
+// spawns, so no live Chromium owns the files. An empty profileDir (a private
+// engine) and a missing directory are both no-ops.
+func purgeSessionState(profileDir string) error {
+	if profileDir == "" {
+		return nil
+	}
+	dir := filepath.Join(profileDir, "Default", "Sessions")
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("purge session state %q: %w", dir, err)
+	}
+	return nil
+}
+
 func (e *ChromiumEngine) releaseProfileGuard() error {
 	e.mu.Lock()
 	guard := e.profileGuard
