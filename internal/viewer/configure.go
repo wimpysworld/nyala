@@ -56,7 +56,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 	case muxScreen, muxHerdr:
 		st.setTerminalCompatibility("", environ)
 		st.configureColour(colourFlag, environ, detected, isTTY)
-		st.barSGR = resolveBarStyle(false, false, st.Colour)
+		st.barSGR = resolveBarStyle(false, false)
 		// No handshake runs here, so the transport resolves with no identity
 		// and no probe: an explicit override still wins and auto falls back
 		// to direct.
@@ -102,7 +102,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 		// The reduced handshake sent no OSC 11 query, so the bar keeps reverse
 		// video: tmux would answer from a cache read once at attach, which
 		// describes the terminal as it was rather than as it is.
-		st.barSGR = resolveBarStyle(false, false, st.Colour)
+		st.barSGR = resolveBarStyle(false, false)
 		// The reduced handshake sent no Kitty probe, so the transport resolves
 		// with no identity and no probe result: an explicit override still
 		// wins and auto falls back to direct.
@@ -124,7 +124,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 	st.kittyTransport = resolveKittyTransport(transportFlag, res.TermID, res.KittySHM, runtime.GOOS)
 	st.setTerminalCompatibility(res.TermID, environ)
 	st.configureColour(colourFlag, environ, detected, isTTY)
-	st.barSGR = resolveBarStyle(res.BackgroundDark, res.BackgroundOK, st.Colour)
+	st.barSGR = resolveBarStyle(res.BackgroundDark, res.BackgroundOK)
 	// The pointer-shape capability rides the full handshake only, like the
 	// keyboard protocol above: the reduced handshake sends no OSC 22 query,
 	// so multiplexer sessions keep the terminal's own pointer.

@@ -291,29 +291,23 @@ func TestAppendBarBoldsPressedButton(t *testing.T) {
 
 // TestResolveBarStyle pins the bar's colour decision: a detected dark terminal
 // gets the dark grey bar, a detected light one the light grey bar, and every
-// unresolved case keeps reverse video. NO_COLOR and --color=none arrive here as
-// ColourMono and take reverse video too, the one bar style that names no
-// colour at all.
+// unresolved case keeps reverse video.
 func TestResolveBarStyle(t *testing.T) {
 	cases := []struct {
-		name   string
-		dark   bool
-		ok     bool
-		colour ColourMode
-		want   string
+		name string
+		dark bool
+		ok   bool
+		want string
 	}{
-		{"dark terminal", true, true, ColourTrue, barStyleDark},
-		{"light terminal", false, true, ColourTrue, barStyleLight},
-		{"dark terminal on a 256-colour session", true, true, ColourXTerm256, barStyleDark},
-		{"terminal stayed silent", false, false, ColourTrue, barStyleReverse},
-		{"unreadable reply cannot claim dark", true, false, ColourTrue, barStyleReverse},
-		{"no colour wanted", true, true, ColourMono, barStyleReverse},
-		{"no colour wanted and no reply", false, false, ColourMono, barStyleReverse},
+		{"dark terminal", true, true, barStyleDark},
+		{"light terminal", false, true, barStyleLight},
+		{"terminal stayed silent", false, false, barStyleReverse},
+		{"unreadable reply cannot claim dark", true, false, barStyleReverse},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := resolveBarStyle(c.dark, c.ok, c.colour); got != c.want {
-				t.Fatalf("resolveBarStyle(%v, %v, %v) = %q, want %q", c.dark, c.ok, c.colour, got, c.want)
+			if got := resolveBarStyle(c.dark, c.ok); got != c.want {
+				t.Fatalf("resolveBarStyle(%v, %v) = %q, want %q", c.dark, c.ok, got, c.want)
 			}
 		})
 	}

@@ -7,9 +7,9 @@
 // The card prints the U+2584 half-block control, then every Shaded candidate
 // glyph as a repeated run with an ASCII sentinel cell after it, so a width
 // error shows as a shifted sentinel column. Rows repeat under xterm-256, ANSI
-// tonal, ANSI greyscale, and monochrome colour, on high-contrast foreground
-// and background pairs, followed by split, shade, and flat-cell rows built
-// from the same glyphs. Recording which terminals draw the card cleanly is the
+// tonal, and ANSI greyscale colour, on high-contrast foreground and
+// background pairs, followed by split, shade, and flat-cell rows built from
+// the same glyphs. Recording which terminals draw the card cleanly is the
 // owner's job; this tool only makes the evidence visible.
 package main
 
@@ -30,8 +30,7 @@ const reset = "\x1b[0m"
 const runLen = 8
 
 // colourMode is one card colour section: a name and the SGR pair builder for
-// a high-contrast foreground and background. Monochrome returns empty SGR, so
-// its rows draw in the terminal's default colours.
+// a high-contrast foreground and background.
 type colourMode struct {
 	name string
 	sgr  func(bright bool) string
@@ -56,7 +55,6 @@ var colourModes = []colourMode{
 		}
 		return "\x1b[38;5;232m\x1b[48;5;255m"
 	}},
-	{"monochrome", func(bool) string { return "" }},
 }
 
 func main() {

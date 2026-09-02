@@ -17,9 +17,6 @@ import (
 // production compose and cell-diff encoder for every compatible colour mode,
 // decodes the stream with the independent VT emulator, and compares the
 // visible terminal model with the exact grid the production writer consumed.
-// Monochrome is absent because its writer emits no colour SGR and the decoder
-// refuses a cell with no resolved colour; the monochrome writer path is
-// covered by TestShadedStreamSGRRanges and the harness A/B.
 func TestBlockTerminalRoundTripShaded(t *testing.T) {
 	const cols, rows = 12, 5
 	for _, mode := range []ColourMode{ColourXTerm256, ColourXTermGrey, ColourANSITonal} {
@@ -126,9 +123,7 @@ func TestShadedCandidateWidths(t *testing.T) {
 // TestShadedRoundTripUsesShadeGlyphs proves the round trip above exercises
 // the shade set for real: a soft diagonal ramp frame composed in ANSI tonal,
 // whose sixteen colours leave tone gaps only shade mixing can cross, carries
-// at least one Symbols for Legacy Computing shade glyph end to end. The
-// emulator needs colour SGR to report cells, so the monochrome path cannot
-// carry this proof; the harness A/B covers monochrome shade usage.
+// at least one Symbols for Legacy Computing shade glyph end to end.
 func TestShadedRoundTripUsesShadeGlyphs(t *testing.T) {
 	const cols, rows = 12, 5
 	state := NewState(cols, rows+1)

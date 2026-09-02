@@ -27,7 +27,7 @@ func TestResolveSchemeShadedExplicitOnly(t *testing.T) {
 // an automatic truecolour resolution degrades to xterm-256, every compatible
 // resolved mode stands, and a non-Shaded scheme is untouched.
 func TestApplyShadedColour(t *testing.T) {
-	const wantErr = "viewer: shaded Block mode does not support truecolour; use --color=256, --color=ansi-tonal, --color=ansi-grey, or --color=none"
+	const wantErr = "viewer: shaded Block mode does not support truecolour; use --color=256, --color=ansi-tonal, or --color=ansi-grey"
 
 	st := NewState(80, 24)
 	st.Scheme = block.SchemeShaded
@@ -44,7 +44,7 @@ func TestApplyShadedColour(t *testing.T) {
 		t.Fatalf("auto truecolour degraded to %d, want ColourXTerm256", st.Colour)
 	}
 
-	for _, mode := range []ColourMode{ColourXTerm256, ColourXTermGrey, ColourANSITonal, ColourMono} {
+	for _, mode := range []ColourMode{ColourXTerm256, ColourXTermGrey, ColourANSITonal} {
 		st.Colour = mode
 		if err := st.applyShadedColour("auto"); err != nil || st.Colour != mode {
 			t.Fatalf("compatible mode %d changed to %d (err %v)", mode, st.Colour, err)
@@ -90,30 +90,30 @@ func TestCycleSchemeShaded(t *testing.T) {
 }
 
 // TestCycleColourShadedSkipsTruecolour pins the Alt+C rule under Shaded: the
-// ladder cycles 256 -> grey -> tonal -> mono and wraps past truecolour in both
+// ladder cycles 256 -> grey -> tonal and wraps past truecolour in both
 // directions, even when the capability cap allows truecolour.
 func TestCycleColourShadedSkipsTruecolour(t *testing.T) {
 	st := NewState(80, 24)
 	st.Scheme = block.SchemeShaded
 	st.colourCap = ColourTrue
 	st.Colour = ColourXTerm256
-	want := []ColourMode{ColourXTermGrey, ColourANSITonal, ColourMono, ColourXTerm256}
+	want := []ColourMode{ColourXTermGrey, ColourANSITonal, ColourXTerm256}
 	for i, w := range want {
 		if got := st.CycleColour(false); got != w {
 			t.Fatalf("cycle %d = %d, want %d", i, got, w)
 		}
 	}
-	if got := st.CycleColour(true); got != ColourMono {
-		t.Fatalf("reverse wrap = %d, want mono, not truecolour", got)
+	if got := st.CycleColour(true); got != ColourANSITonal {
+		t.Fatalf("reverse wrap = %d, want ansi-tonal, not truecolour", got)
 	}
 }
 
 // TestShadedStreamSGRRanges proves no truecolour SGR can appear from a Shaded
 // writer path: every compatible colour mode emits only its own palette
-// escapes, and monochrome emits none.
+// escapes.
 func TestShadedStreamSGRRanges(t *testing.T) {
 	frame := render.Frame{Img: monochromeRampImage(16, 16)}
-	for _, mode := range []ColourMode{ColourXTerm256, ColourXTermGrey, ColourANSITonal, ColourMono} {
+	for _, mode := range []ColourMode{ColourXTerm256, ColourXTermGrey, ColourANSITonal} {
 		st := NewState(8, 4)
 		st.Scheme = block.SchemeShaded
 		st.Colour = mode
@@ -141,8 +141,6 @@ func TestShadedStreamSGRRanges(t *testing.T) {
 				if len(params) != 1 || !isANSITonalCode(params[0]) {
 					t.Fatalf("tonal mode emitted invalid SGR %v", params)
 				}
-			case ColourMono:
-				t.Fatalf("monochrome mode emitted colour SGR %v", params)
 			}
 		}
 	}

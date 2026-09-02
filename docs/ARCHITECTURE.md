@@ -987,22 +987,19 @@ ANSI indexes 0..15 are terminal-configurable. The quantiser uses the xterm
 reference values because Nyala does not query the user's palette. A custom
 palette can therefore change the visible tonal order.
 
-`ColourMono` is the fifth colour mode, not a backend. It keeps the
-luma-selected Block glyphs and suppresses colour SGR through the viewer
-binding (`fgSGRFunc` and `bgSGRFunc` return no-op appenders), so the page
-renders as a 1-bit silhouette in the terminal's default colours. The
-compositor keeps RGBA cell colours for every mode; only the mono writer
-drops them, and both graphics backends ignore the mode.
-
 Precedence is `--color` flag, then `NO_COLOR`, then detection
 (`resolveColour`). The flag accepts
-`auto|truecolor|256|ansi-grey|ansi-tonal|none`. Explicit choices map to
-`ColourTrue`, `ColourXTerm256`, `ColourXTermGrey`, `ColourANSITonal`, or
-`ColourMono`. Under `auto`, a present `NO_COLOR`
-key yields ColourMono with ANY value, including empty and "0", per
-no-color.org. Every explicit non-auto mode therefore overrides `NO_COLOR`. The flag spells
-`truecolor` the American way to match the `COLORTERM` token. Go identifiers
-stay British.
+`auto|truecolor|256|ansi-grey|ansi-tonal`. Explicit choices map to
+`ColourTrue`, `ColourXTerm256`, `ColourXTermGrey`, or `ColourANSITonal`.
+A monochrome mode (`--color=none`, `ColourMono`) existed and was removed: a
+web browser without colour is pointless, and every remaining mode emits SGR
+colour codes. Under `auto`, a present `NO_COLOR` key with ANY value,
+including empty and "0", per no-color.org, yields `ColourXTermGrey` on a
+truecolour or 256-colour profile, the least colourful output Nyala renders;
+a lower profile cannot honour the 256-indexed greyscale ramp and keeps its
+`ColourANSITonal` start. Every explicit non-auto mode overrides `NO_COLOR`.
+The flag spells `truecolor` the American way to match the `COLORTERM` token.
+Go identifiers stay British.
 
 Detection (`detectColour`) is env plus terminfo through `colorprofile.Detect`,
 hermetic and injectable, with no DCS round-trip. This is colour depth alone,
@@ -1011,11 +1008,9 @@ handshake does ask for over OSC 11 under Capability detection. A present `COLORT
 `kmscon`, `truecolor`, or `24bit` is a trusted positive that short-circuits to
 truecolour before `Detect` runs. The round trip was dropped because its answer
 could change nothing a reader sees: the coloured modes paint every page cell,
-so the terminal's default colours are not visible on the page area, and
-ColourMono uses the terminal's own colours by design, so the answer changes
-nothing there either. The bar row is the one
-exception under the coloured modes, the row drawn in the terminal's own
-colours, and its handling is tracked as WW-38. The round trip also failed on three measured platforms,
+so the terminal's default colours are not visible on the page area. The bar
+row is the one exception, the row drawn in the terminal's own colours, and
+its handling is tracked as WW-38. The round trip also failed on three measured platforms,
 which corroborated the drop: DECRQSS is a no-op on KMSCON's libtsm, zellij
 leaks the reply into stdin, and herdr stops answering after a child sets the
 background. Under tmux,
@@ -1024,17 +1019,16 @@ honour tmux's truecolour override. GNU screen never sets `COLORTERM` and lacks
 a Tc/RGB terminfo cap, so truecolour there is a user opt-in via `.screenrc`.
 
 For automatic startup, the detected profile maps TrueColor to `ColourTrue`,
-ANSI256 to `ColourXTerm256`, and ANSI and every lower profile to `ColourMono`.
-No real-terminal evidence supports an automatic ANSI tonal default, so
-automatic selection returns neither `ColourANSITonal` nor `ColourXTermGrey`.
-The runtime cycle order is `ColourTrue`, `ColourXTerm256`, `ColourXTermGrey`,
-`ColourANSITonal`, then `ColourMono`.
+ANSI256 to `ColourXTerm256`, and ANSI and every lower profile to
+`ColourANSITonal`, the conservative floor now that no colourless mode
+exists. The runtime cycle order is `ColourTrue`, `ColourXTerm256`,
+`ColourXTermGrey`, then `ColourANSITonal`.
 
 `resolveColourCapability` sets the cycle's effective cap from detection and an
 explicit mode. On a real TTY the cap is floored at `ColourXTerm256`: an ANSI,
-ASCII, or unknown profile still starts in `ColourMono`, but Alt+C can raise
-colour after user action, because every modern interactive terminal renders
-indexed colour. A non-TTY keeps its detected cap, so piped output never gains
+ASCII, or unknown profile still starts in `ColourANSITonal`, but Alt+C can
+raise colour after user action, because every modern interactive terminal
+renders indexed colour. A non-TTY keeps its detected cap, so piped output never gains
 colour modes. `ColourXTermGrey` and `ColourANSITonal` remain available through
 an explicit mode or the cycle when the effective cap permits it. An
 explicit mode can raise a lower detected cap because the user asserts support.
@@ -1542,8 +1536,7 @@ index 8 with index 7 ink, a light one index 7 with index 0 ink. Both are
 theme-defined, so the bar is the user's grey rather than a pinned shade.
 Reverse video holds wherever the polarity is unknown: the terminal stayed
 silent, answered unreadably, or runs under a multiplexer that sends no query.
-`NO_COLOR` and `--color=none` arrive as ColourMono and take it too, because
-reverse video is the one bar style that names no colour at all. The style is a
+The style is a
 single SGR opener resolved on every `configureBackends` path and read through
 `State.barStyle`, so the chrome row, the URL editor, the find field, the menu,
 and the About line share one decision, and a `State` that skipped the handshake
@@ -1941,9 +1934,8 @@ decode-every-frame consumer streams JPEG q90.
 - Bubble Tea v2 dropped: PTY-ownership complexity; the viewer already owns
   the terminal.
 - The DCS colour-depth round-trip dropped: the coloured modes paint every page
-  cell, so the terminal's default colours do not show on the page area, and
-  ColourMono uses the terminal's own colours by design; the bar row is the
-  exception under the coloured modes, tracked as WW-38 (details under Colour). The OSC 11 background
+  cell, so the terminal's default colours do not show on the page area; the
+  bar row is the exception, tracked as WW-38 (details under Colour). The OSC 11 background
   query is a separate decision:
   it rides the startup handshake, and the bar reads its answer (details under
   Capability detection).

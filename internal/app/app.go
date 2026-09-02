@@ -23,7 +23,7 @@ type CLI struct {
 	Version kong.VersionFlag `help:"Show version."`
 
 	// Color is the viewer colour mode.
-	Color string `help:"Viewer colour mode: auto, truecolor, 256, ansi-grey, ansi-tonal, or none." default:"auto" enum:"auto,truecolor,256,ansi-grey,ansi-tonal,none"`
+	Color string `help:"Viewer colour mode: auto, truecolor, 256, ansi-grey, or ansi-tonal." default:"auto" enum:"auto,truecolor,256,ansi-grey,ansi-tonal"`
 
 	// Backend selects the starting renderer: auto, block, kitty, or sixel. auto
 	// detects the terminal's best supported backend; a named backend fails fast

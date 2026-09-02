@@ -76,10 +76,9 @@ func (s *State) barStyle() string {
 // A dark terminal gets the dark grey bar and a light one the light grey bar.
 // Reverse video holds whenever the polarity is unknown: the terminal stayed
 // silent, answered unreadably, or runs under a multiplexer that sends no
-// query. ColourMono takes it too, because that is NO_COLOR or --color=none,
-// and reverse video is the only bar style that names no colour at all.
-func resolveBarStyle(dark, ok bool, colour ColourMode) string {
-	if !ok || colour == ColourMono {
+// query.
+func resolveBarStyle(dark, ok bool) string {
+	if !ok {
 		return barStyleReverse
 	}
 	if dark {
