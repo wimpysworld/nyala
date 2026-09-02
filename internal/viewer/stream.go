@@ -280,6 +280,12 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	if cerr := st.validateColourCompatibility(colourFlag); cerr != nil {
 		return cerr
 	}
+	// The Shaded colour resolution runs before the first paint and before
+	// navigation, whatever the starting backend, because Alt+R can cycle to
+	// Block later.
+	if serr := st.applyShadedColour(colourFlag); serr != nil {
+		return serr
+	}
 	// Start on the named --backend mode now that validation passed, so a forced
 	// block start overrides a higher-fidelity detected nomination while Alt+R
 	// keeps the full detected cycle. setupViewer handed the engine the detected backend;
@@ -460,6 +466,11 @@ func setupViewer(eng Engine, tty *os.File, colourFlag, kittyTransport string, sc
 	// for this run. The caller resolves the --blocks mode; auto keeps quadrant as
 	// the production and corpus default.
 	state.Scheme = scheme
+	// An explicit --blocks=shaded start is the user's assertion that the
+	// terminal draws the shade glyphs, and the only source of Shaded glyph
+	// policy: no allow-list records terminal evidence yet, so no detection
+	// path ever sets it.
+	state.shadedOK = scheme == block.SchemeShaded
 
 	// Detection runs in raw mode but before the full-screen switch and the key
 	// reader, so the handshake replies are not consumed by the key goroutine.
@@ -2743,14 +2754,19 @@ func medianFPS(gaps []time.Duration) float64 {
 // path, which may detect terminal support. "half" selects half-block; "quadrant"
 // selects quadrant; "auto" and "sextant" select sextant when SextantSupported(env)
 // reports the terminal renders sextant blocks, and degrade to quadrant otherwise.
-// Any other value, including the empty string, resolves to quadrant, the default
-// that keeps behaviour unchanged.
+// "shaded" selects the experimental Shaded scheme, explicit-only: "auto" never
+// resolves to it, because no terminal evidence for the shade glyphs is recorded
+// and the sextant allow-list is not proof for them. Any other value, including
+// the empty string, resolves to quadrant, the default that keeps behaviour
+// unchanged.
 func resolveScheme(blocks string, env []string) block.Scheme {
 	switch blocks {
 	case "half":
 		return block.SchemeHalfBlock
 	case "quadrant":
 		return block.SchemeQuadrant
+	case "shaded":
+		return block.SchemeShaded
 	case "auto", "sextant":
 		if _, supported := SextantSupported(env); supported {
 			return block.SchemeSextant
@@ -2770,6 +2786,8 @@ func renderScheme(s block.Scheme) render.BlockScheme {
 		return render.BlockHalf
 	case block.SchemeSextant:
 		return render.BlockSextant
+	case block.SchemeShaded:
+		return render.BlockShaded
 	default:
 		return render.BlockQuadrant
 	}

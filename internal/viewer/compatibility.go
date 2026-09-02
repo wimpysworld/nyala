@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
 // terminalCompatibility holds terminal-specific rendering policy resolved at
@@ -161,6 +163,25 @@ func (s *State) validateForcedBackend(mode string) error {
 		return fmt.Errorf("viewer: Rio 0.4.x does not render Sixel images; use --backend=kitty or --backend=block")
 	}
 	return ValidateForcedBackend(mode, s.Enabled)
+}
+
+// applyShadedColour resolves the colour mode against the explicit Shaded
+// Block scheme and returns unchanged for every other scheme. Explicit
+// truecolour is rejected before the first paint. Under --color=auto a
+// truecolour resolution degrades to xterm-256, the scheme's preferred
+// palette; a resolved 256, ANSI tonal, ANSI greyscale, or monochrome mode
+// stands, so the automatic fallback changes only the automatic choice.
+func (s *State) applyShadedColour(colourFlag string) error {
+	if s.Scheme != block.SchemeShaded {
+		return nil
+	}
+	if colourFlag == "truecolor" {
+		return fmt.Errorf("viewer: shaded Block mode does not support truecolour; use --color=256, --color=ansi-tonal, --color=ansi-grey, or --color=none")
+	}
+	if s.Colour == ColourTrue {
+		s.Colour = ColourXTerm256
+	}
+	return nil
 }
 
 // validateColourCompatibility rejects explicit truecolour on affected Rio

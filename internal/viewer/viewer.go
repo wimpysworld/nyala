@@ -85,6 +85,14 @@ type State struct {
 	// scheme the terminal cannot render.
 	sextantOK bool
 
+	// shadedOK records the Shaded glyph support policy, resolved once by
+	// setupViewer: true only when the user started the session with
+	// --blocks=shaded, which asserts the terminal draws the Symbols for Legacy
+	// Computing shade glyphs. No terminal allow-list exists yet, and the
+	// sextant allow-list is not proof for Shaded, so unknown terminals never
+	// gain the scheme through Alt+B. It is separate from sextantOK.
+	shadedOK bool
+
 	// mux is the focus multiplexer hosting the session, recorded once by
 	// configureBackends. The backend cycle and the Sixel pacing gates read
 	// it; muxNone is the zero value on a native terminal.
@@ -317,19 +325,30 @@ func (s *State) cycleBackendStep(dir int) Backend {
 }
 
 // schemeCycle is the Alt+B block glyph scheme cycle order: half, quadrant,
-// sextant, wrapping. CycleScheme skips sextant when the terminal does not
-// self-draw sextant glyphs.
-var schemeCycle = []block.Scheme{block.SchemeHalfBlock, block.SchemeQuadrant, block.SchemeSextant}
+// sextant, shaded, wrapping. CycleScheme skips sextant when the terminal does
+// not self-draw sextant glyphs, and skips shaded unless the glyph policy
+// allows it and the colour mode is compatible.
+var schemeCycle = []block.Scheme{block.SchemeHalfBlock, block.SchemeQuadrant, block.SchemeSextant, block.SchemeShaded}
 
 // CycleScheme steps the block glyph scheme through the half -> quadrant ->
-// sextant cycle (reverse steps backwards) and returns the new scheme. A scheme
-// the terminal cannot render (sextant off the allow-list) is skipped, so the
-// cycle only offers renderable schemes. The scheme applies only to the block
-// backend; the stream dispatcher drops the cycle while a graphics backend
-// draws, so no hidden state change surprises the next block stint.
+// sextant -> shaded cycle (reverse steps backwards) and returns the new
+// scheme. A scheme the terminal cannot render (sextant off the allow-list, or
+// shaded without the explicit glyph assertion) is skipped, so the cycle only
+// offers renderable schemes. Shaded is also skipped under truecolour, because
+// it is a low-colour scheme and the cycle never changes the colour mode. The
+// scheme applies only to the block backend; the stream dispatcher drops the
+// cycle while a graphics backend draws, so no hidden state change surprises
+// the next block stint.
 func (s *State) CycleScheme(reverse bool) block.Scheme {
 	s.Scheme = cycleValue(schemeCycle, s.Scheme, reverse, func(m block.Scheme) bool {
-		return m != block.SchemeSextant || s.sextantOK
+		switch m {
+		case block.SchemeSextant:
+			return s.sextantOK
+		case block.SchemeShaded:
+			return s.shadedOK && s.Colour != ColourTrue
+		default:
+			return true
+		}
 	})
 	return s.Scheme
 }
@@ -339,10 +358,15 @@ func (s *State) CycleScheme(reverse bool) block.Scheme {
 var colourCycle = []ColourMode{ColourTrue, ColourXTerm256, ColourXTermGrey, ColourANSITonal, ColourMono}
 
 // CycleColour steps through the colour ladder and returns the new mode. It
-// skips modes above the effective capability cap. The stream dispatcher drops
-// the cycle while a graphics backend draws.
+// skips modes above the effective capability cap, and skips truecolour while
+// the Shaded scheme is active, because that scheme is low-colour only; the
+// cycle itself never changes the scheme. The stream dispatcher drops the
+// cycle while a graphics backend draws.
 func (s *State) CycleColour(reverse bool) ColourMode {
 	s.Colour = cycleValue(colourCycle, s.Colour, reverse, func(m ColourMode) bool {
+		if m == ColourTrue && s.Scheme == block.SchemeShaded {
+			return false
+		}
 		return m >= s.colourCap
 	})
 	return s.Colour
@@ -549,7 +573,7 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 		return nil
 	}
 	rows := engineRows(s.Rows)
-	br := block.Renderer{Cols: s.Cols, Rows: rows, Scheme: s.Scheme}
+	br := block.Renderer{Cols: s.Cols, Rows: rows, Scheme: s.Scheme, Palette: shadedPalette(s.Colour)}
 	pxW, pxH := schemePixels(s.Scheme, s.Cols, rows)
 	if pxW <= 0 || pxH <= 0 {
 		return nil
@@ -571,6 +595,24 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 func releaseFrame(f render.Frame) {
 	if f.Release != nil {
 		f.Release()
+	}
+}
+
+// shadedPalette maps the viewer colour mode onto the block package's Shaded
+// palette, read only when the Shaded scheme composes. ColourTrue maps to
+// xterm-256 as a safe fallback: startup validation and the cycle predicates
+// keep the pair out of a live session, so the fallback can never emit
+// truecolour from a Shaded frame.
+func shadedPalette(mode ColourMode) block.ShadedPalette {
+	switch mode {
+	case ColourXTermGrey:
+		return block.ShadedXTermGrey
+	case ColourANSITonal:
+		return block.ShadedANSITonal
+	case ColourMono:
+		return block.ShadedMono
+	default:
+		return block.ShadedXTerm256
 	}
 }
 
