@@ -51,6 +51,11 @@ const (
 	// SchemeSextant maps one cell to a 2x3 source block via the sextant (2x3)
 	// binarisation, raising vertical resolution over the quadrant scheme.
 	SchemeSextant
+	// SchemeShaded maps one cell to a 2x4 source block and scores the Symbols
+	// for Legacy Computing shade candidates against it, quantising each
+	// candidate's colours to the renderer's Palette before scoring. It is a
+	// low-colour scheme: the viewer rejects it under truecolour.
+	SchemeShaded
 )
 
 // Cell is one terminal cell on the owned grid. Glyph is the block rune to draw,
@@ -141,6 +146,10 @@ type Renderer struct {
 	Cols   int    // requested grid width in cells
 	Rows   int    // requested grid height in cells
 	Scheme Scheme // pixel-to-cell mapping; zero value is SchemeQuadrant
+	// Palette is the output palette the Shaded scheme quantises to before
+	// scoring; the zero value is ShadedXTerm256. The binarisation schemes
+	// ignore it, because their colour conversion happens at the writer.
+	Palette ShadedPalette
 }
 
 // Compile-time assertion that Renderer satisfies render.Renderer.
@@ -242,6 +251,8 @@ func (br *Renderer) Compose(f render.Frame) Grid {
 		g = br.composeHalfBlock(f)
 	case SchemeSextant:
 		g = br.composeSextant(f)
+	case SchemeShaded:
+		g = br.composeShaded(f)
 	default:
 		g = br.composeQuadrant(f)
 	}
@@ -262,6 +273,8 @@ func (br *Renderer) ComposeInto(dst *Grid, f render.Frame) *Grid {
 		br.composeHalfBlockInto(dst, f)
 	case SchemeSextant:
 		br.composeSextantInto(dst, f)
+	case SchemeShaded:
+		br.composeShadedInto(dst, f)
 	default:
 		br.composeQuadrantInto(dst, f)
 	}

@@ -99,6 +99,72 @@ func ANSI16Tonal(c color.RGBA) uint8 {
 	return ansi16TonalIndexes[bestRank]
 }
 
+// XTerm256RGBA returns the canonical RGBA value of an xterm-256 palette index.
+// Indices 0..15 return the canonical ANSI colours through ANSI16RGBA, 16..231
+// the 6x6x6 colour cube on levels 0, 95, 135, 175, 215, 255, and 232..255 the
+// greyscale ramp 8..238 in steps of 10. Terminals can redefine indices 0..15;
+// the canonical values are the reference model, matching ansi16TonalLumas.
+func XTerm256RGBA(idx uint8) color.RGBA {
+	if idx < 16 {
+		return ANSI16RGBA(idx)
+	}
+	if idx >= 232 {
+		v := 8 + 10*(idx-232)
+		return color.RGBA{R: v, G: v, B: v, A: 0xff}
+	}
+	n := int(idx) - 16
+	return color.RGBA{R: cubeLevel(n / 36), G: cubeLevel(n / 6 % 6), B: cubeLevel(n % 6), A: 0xff}
+}
+
+// cubeLevel maps a 0..5 xterm colour-cube step to its channel value.
+func cubeLevel(i int) uint8 {
+	if i == 0 {
+		return 0
+	}
+	return uint8(55 + 40*i) //nolint:gosec // cube steps are 0..5, so the value is 95..255
+}
+
+// ansi16RGBA holds the canonical RGBA values of the 16 ANSI indices, on the
+// same reference palette ansi16TonalLumas derives its luma keys from, so a
+// colour quantised through ANSI16Tonal round-trips to the same index.
+var ansi16RGBA = [16]color.RGBA{
+	{A: 0xff},
+	{R: 128, A: 0xff},
+	{G: 128, A: 0xff},
+	{R: 128, G: 128, A: 0xff},
+	{B: 128, A: 0xff},
+	{R: 128, B: 128, A: 0xff},
+	{G: 128, B: 128, A: 0xff},
+	{R: 192, G: 192, B: 192, A: 0xff},
+	{R: 128, G: 128, B: 128, A: 0xff},
+	{R: 255, A: 0xff},
+	{G: 255, A: 0xff},
+	{R: 255, G: 255, A: 0xff},
+	{B: 255, A: 0xff},
+	{R: 255, B: 255, A: 0xff},
+	{G: 255, B: 255, A: 0xff},
+	{R: 255, G: 255, B: 255, A: 0xff},
+}
+
+// ANSI16RGBA returns the canonical RGBA value of an ANSI index 0..15. An index
+// past 15 returns opaque black, the palette's own index 0.
+func ANSI16RGBA(idx uint8) color.RGBA {
+	if idx >= 16 {
+		return color.RGBA{A: 0xff}
+	}
+	return ansi16RGBA[idx]
+}
+
+// XTermGreyRGBA returns the canonical RGBA value of an xterm greyscale ramp
+// index 232..255. An index outside the ramp returns opaque black.
+func XTermGreyRGBA(idx uint8) color.RGBA {
+	if idx < 232 {
+		return color.RGBA{A: 0xff}
+	}
+	v := 8 + 10*(idx-232)
+	return color.RGBA{R: v, G: v, B: v, A: 0xff}
+}
+
 // trueFGPrefix and trueBGPrefix are the truecolour foreground and background SGR
 // prefixes (ESC [ 38;2; and ESC [ 48;2;). The RGB triple and trailing "m" follow.
 const (

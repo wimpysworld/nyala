@@ -15,15 +15,18 @@ const (
 	// BlockSextant maps each cell to a 2x3 source block via the sextant (2x3)
 	// binarisation.
 	BlockSextant
+	// BlockShaded maps each cell to a 2x4 source block, the same footprint as
+	// BlockQuadrant, scored against the Shaded scheme's shade glyph candidates.
+	BlockShaded
 )
 
 // BlockCaptureSize returns the source-pixel extent a cols x rows block grid
-// samples in the given scheme. Quadrant maps each cell to a 2x4 source block, so
-// the extent is (cols*2, rows*4); half-block maps each cell to a 1x2 source
-// column, so the extent is (cols, rows*2); sextant maps each cell to a 2x3 source
-// block, so the extent is (cols*2, rows*3). The scheme is passed as a BlockScheme,
-// not a block.Scheme, because the block package imports render, so render must not
-// import block.
+// samples in the given scheme. Quadrant and Shaded map each cell to a 2x4
+// source block, so the extent is (cols*2, rows*4); half-block maps each cell
+// to a 1x2 source column, so the extent is (cols, rows*2); sextant maps each
+// cell to a 2x3 source block, so the extent is (cols*2, rows*3). The scheme is
+// passed as a BlockScheme, not a block.Scheme, because the block package
+// imports render, so render must not import block.
 func BlockCaptureSize(scheme BlockScheme, cols, rows int) (pxW, pxH int) {
 	switch scheme {
 	case BlockHalf:
