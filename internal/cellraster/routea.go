@@ -155,18 +155,19 @@ func (r *Rasteriser) RenderGlyphCell(text string, fg, bg color.RGBA) *image.RGBA
 	return img
 }
 
-// drawShadeCell draws a Symbols for Legacy Computing shade candidate
-// procedurally and reports whether it did. Neither embedded font covers
-// U+1FB8C..U+1FB94, so the font path would leave those cells blank; the
-// procedural path reads the same block.ShadedOpacity geometry the compose
-// coverage tables are built from, one lattice point per raster pixel on the
-// 8x16 cell, so the rasterised proof and the scored model agree. Medium shade
-// draws as a rect-relative checkerboard, the deterministic model of a
-// terminal's 50 percent dot pattern; Unicode fixes no dot phase. BMP glyphs
-// (below U+1FB8C) stay on the font path, so every existing golden render is
-// unchanged.
+// drawShadeCell draws a shade candidate procedurally and reports whether it
+// did. Neither embedded font covers U+1FB8C..U+1FB94, so the font path would
+// leave those cells blank, and the Block Elements dither glyphs U+2591..U+2593
+// draw procedurally too, so their 25, 50, and 75 per cent dot patterns match
+// the compose coverage model; the procedural path reads the same
+// block.ShadedOpacity geometry the compose coverage tables are built from,
+// one lattice point per raster pixel on the 8x16 cell, so the rasterised
+// proof and the scored model agree. Medium shade draws as a rect-relative
+// checkerboard, the deterministic model of a terminal's 50 percent dot
+// pattern; Unicode fixes no dot phase. Every other BMP glyph stays on the
+// font path, so every existing golden render is unchanged.
 func drawShadeCell(img *image.RGBA, rect image.Rectangle, glyph rune, fg color.RGBA) bool {
-	if glyph < 0x1FB8C {
+	if glyph < 0x1FB8C && (glyph < 0x2591 || glyph > 0x2593) {
 		return false
 	}
 	if _, ok := block.ShadedOpacity(glyph, 0, 0); !ok {

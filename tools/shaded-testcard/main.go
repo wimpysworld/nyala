@@ -8,7 +8,8 @@
 // glyph as a repeated run with an ASCII sentinel cell after it, so a width
 // error shows as a shifted sentinel column. Rows repeat under xterm-256 and
 // ANSI greyscale colour, on high-contrast foreground and background pairs,
-// followed by split, shade, and flat-cell rows built from the same glyphs. Recording which terminals draw the card cleanly is the
+// followed by split, shade, dither, and flat-cell rows built from the same
+// glyphs. Recording which terminals draw the card cleanly is the
 // owner's job; this tool only makes the evidence visible.
 package main
 
@@ -95,6 +96,11 @@ func main() {
 	fmt.Fprint(w, "shades:   ", bright)
 	for range 2 {
 		fmt.Fprint(w, "\U0001FB8C\U0001FB8D\U0001FB8E\U0001FB8F")
+	}
+	fmt.Fprintln(w, reset+"X|")
+	fmt.Fprint(w, "dithers:  ", bright)
+	for range 2 {
+		fmt.Fprint(w, "░▒▓")
 	}
 	fmt.Fprintln(w, reset+"X|")
 	fmt.Fprint(w, "flat:     ", "\x1b[38;5;244m\x1b[48;5;244m")

@@ -24,10 +24,11 @@ U+2580, U+2584, U+258C, U+2590, the full block U+2588, and space.
 ## Shaded scheme
 
 The Shaded scheme draws the Symbols for Legacy Computing medium-shade glyphs
-U+1FB8C..U+1FB8F, U+1FB91, U+1FB92, and U+1FB94. No
-terminal evidence is recorded yet, so no allow-list exists: the scheme starts
-only from an explicit `--blocks=shaded`, and automatic selection never
-chooses it.
+U+1FB8C..U+1FB8F, U+1FB91, U+1FB92, and U+1FB94, plus the Block Elements
+dither glyphs U+2591..U+2593, which carry CP437 heritage and sit in the Basic
+Multilingual Plane. No terminal evidence is recorded yet for the Symbols for
+Legacy Computing set, so no allow-list exists: the scheme starts only from an
+explicit `--blocks=shaded`, and automatic selection never chooses it.
 
 Run `just shaded-testcard` on a candidate terminal to gather evidence. A clean
 card shows every glyph drawn (no blank cell, no replacement box), every `X|`
