@@ -173,11 +173,35 @@ func composeShadedAB(t *testing.T, rast *cellraster.Rasteriser, scheme block.Sch
 	if err := st.RenderStreamFrame(frame, &payload); err != nil {
 		t.Fatalf("RenderStreamFrame: %v", err)
 	}
-	renderGrid := grid
+	return shadedABRender{grid: grid, img: rast.Rasterise(displayGrid(grid, mode)), payload: payload.Len()}
+}
+
+// displayGrid maps a composed grid onto the colours the terminal displays for
+// the mode, mirroring the writer's palette conversion, so both A/B legs score
+// the displayed result rather than the compose-internal colours. The Shaded
+// compose already stores canonical palette colours, so the conversion is a
+// no-op there; the quadrant compose stores truecolour averages, which the
+// writer quantises at emit.
+func displayGrid(g block.Grid, mode viewer.ColourMode) block.Grid {
 	if mode == viewer.ColourMono {
-		renderGrid = monoDisplayGrid(grid)
+		return monoDisplayGrid(g)
 	}
-	return shadedABRender{grid: grid, img: rast.Rasterise(renderGrid), payload: payload.Len()}
+	quantise := func(c color.RGBA) color.RGBA {
+		switch mode {
+		case viewer.ColourXTermGrey:
+			return block.XTermGreyRGBA(block.XTermGrey(c))
+		case viewer.ColourANSITonal:
+			return block.ANSI16RGBA(block.ANSI16Tonal(c))
+		default:
+			return block.XTerm256RGBA(block.XTerm256(c))
+		}
+	}
+	out := block.Grid{Cols: g.Cols, Rows: g.Rows, Cells: append([]block.Cell(nil), g.Cells...)}
+	for i := range out.Cells {
+		out.Cells[i].FG = quantise(out.Cells[i].FG)
+		out.Cells[i].BG = quantise(out.Cells[i].BG)
+	}
+	return out
 }
 
 // monoDisplayGrid recolours a grid to the monochrome display model: every
