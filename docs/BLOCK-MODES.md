@@ -8,7 +8,7 @@ Nyala supports three schemes for the Block backend. The `--blocks` flag accepts 
 | Sextant | `sextant` | 2x3 | Used when the existing sextant check passes, otherwise Quadrant |
 | Shaded | `shaded` | 2x4, scored against shade glyph candidates | Explicit choice only, experimental, low-colour only |
 
-`auto` uses Sextant when the existing sextant check passes. It uses Quadrant otherwise. `auto` never selects Shaded. The interactive Block-mode cycle contains Quadrant, Sextant, and, only on a session started with `--blocks=shaded` and a compatible colour mode, Shaded.
+`auto` uses Sextant when the existing sextant check passes. It uses Quadrant otherwise. `auto` never selects Shaded. The interactive Block-mode cycle contains Quadrant, Sextant, and, whenever the current colour mode is `256` or `ansi-grey`, Shaded, on every session however it started.
 
 ## Shaded scheme (experimental)
 
@@ -16,7 +16,7 @@ Shaded targets low-colour output. It samples the same 2x4 source block as Quadra
 
 For each candidate the compose estimates a foreground from the covered samples and a background from the uncovered samples, quantises both to the active output palette, then scores the displayed result against the samples. An exactly flat cell emits a full block with foreground equal to background, never shade texture.
 
-Shaded supports `--color=256` and `--color=ansi-grey`. `--blocks=shaded --color=truecolor` fails before the first paint. `--blocks=shaded --color=auto` degrades a truecolour resolution to `256`. <kbd>Alt</kbd>+<kbd>C</kbd> under Shaded cycles only the compatible modes and skips `truecolor`; <kbd>Alt</kbd>+<kbd>B</kbd> skips Shaded under `truecolor` and on any session not started with `--blocks=shaded`, because an explicit start is the only recorded evidence that the terminal draws the shade glyphs. Terminal support is a separate recorded fact from Unicode support: see `docs/TERMINAL-COMPATIBILITY.md` and run `just shaded-testcard` to gather evidence.
+Shaded supports `--color=256` and `--color=ansi-grey`. `--blocks=shaded --color=truecolor` fails before the first paint. `--blocks=shaded --color=auto` degrades a truecolour resolution to `256`. <kbd>Alt</kbd>+<kbd>C</kbd> under Shaded cycles only the compatible modes and skips `truecolor`; <kbd>Alt</kbd>+<kbd>B</kbd> skips Shaded while the colour mode is `truecolor` and offers it again as soon as the mode drops to `256` or `ansi-grey`, on every session however it started. Neither toggle changes the other setting: <kbd>Alt</kbd>+<kbd>B</kbd> never changes the colour mode and <kbd>Alt</kbd>+<kbd>C</kbd> never changes the scheme. Terminal support is a separate recorded fact from Unicode support: see `docs/TERMINAL-COMPATIBILITY.md` and run `just shaded-testcard` to gather evidence.
 
 ## Colour modes
 

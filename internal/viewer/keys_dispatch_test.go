@@ -506,8 +506,8 @@ func TestHandleKeyCycleBackendBothWays(t *testing.T) {
 
 // TestCycleScheme pins the Alt+B order quadrant -> sextant with wrap, the
 // reverse order, and the no-op on a terminal that cannot self-draw sextant
-// glyphs, where quadrant is the only renderable scheme without the Shaded
-// glyph assertion.
+// glyphs, where quadrant is the only renderable scheme while the colour mode
+// is truecolour.
 func TestCycleScheme(t *testing.T) {
 	st := NewState(80, 24)
 	st.sextantOK = true
