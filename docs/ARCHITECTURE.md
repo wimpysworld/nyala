@@ -976,30 +976,20 @@ xterm greyscale level, with indexes fixed to 232..255. The canonical levels are
 8 through 238 in steps of 10. An exact midpoint selects the lighter grey.
 Values outside that range clamp to its endpoints.
 
-`ColourANSITonal` converts each cell colour through `block.ANSI16Tonal`. It
-compares the same Rec.601 key against the canonical xterm values for ANSI
-indexes 0..15. Their dark-to-bright reference order is
-`0, 4, 12, 1, 5, 2, 9, 6, 13, 3, 8, 10, 14, 7, 11, 15`. An equal-distance tie
-keeps the darker rank. The writer emits basic ANSI foreground and background
-SGR, not xterm-256 SGR.
-
-ANSI indexes 0..15 are terminal-configurable. The quantiser uses the xterm
-reference values because Nyala does not query the user's palette. A custom
-palette can therefore change the visible tonal order.
-
 Precedence is `--color` flag, then `NO_COLOR`, then detection
 (`resolveColour`). The flag accepts
-`auto|truecolor|256|ansi-grey|ansi-tonal`. Explicit choices map to
-`ColourTrue`, `ColourXTerm256`, `ColourXTermGrey`, or `ColourANSITonal`.
+`auto|truecolor|256|ansi-grey`. Explicit choices map to
+`ColourTrue`, `ColourXTerm256`, or `ColourXTermGrey`.
 A monochrome mode (`--color=none`, `ColourMono`) existed and was removed: a
 web browser without colour is pointless, and every remaining mode emits SGR
-colour codes. Under `auto`, a present `NO_COLOR` key with ANY value,
-including empty and "0", per no-color.org, yields `ColourXTermGrey` on a
-truecolour or 256-colour profile, the least colourful output Nyala renders;
-a lower profile cannot honour the 256-indexed greyscale ramp and keeps its
-`ColourANSITonal` start. Every explicit non-auto mode overrides `NO_COLOR`.
-The flag spells `truecolor` the American way to match the `COLORTERM` token.
-Go identifiers stay British.
+colour codes. An ANSI tonal mode (`--color=ansi-tonal`, `ColourANSITonal`,
+16 luma-ranked ANSI indexes) followed it out: the indexes 0..15 it wrote are
+terminal-configurable, and every remaining mode builds on 256-colour
+support. Under `auto`, a present `NO_COLOR` key with ANY value,
+including empty and "0", per no-color.org, yields `ColourXTermGrey`, the
+least colourful output Nyala renders. Every explicit non-auto mode overrides
+`NO_COLOR`. The flag spells `truecolor` the American way to match the
+`COLORTERM` token. Go identifiers stay British.
 
 Detection (`detectColour`) is env plus terminfo through `colorprofile.Detect`,
 hermetic and injectable, with no DCS round-trip. This is colour depth alone,
@@ -1018,19 +1008,17 @@ detection accepts one `tmux info` exec at startup, the only reliable way to
 honour tmux's truecolour override. GNU screen never sets `COLORTERM` and lacks
 a Tc/RGB terminfo cap, so truecolour there is a user opt-in via `.screenrc`.
 
-For automatic startup, the detected profile maps TrueColor to `ColourTrue`,
-ANSI256 to `ColourXTerm256`, and ANSI and every lower profile to
-`ColourANSITonal`, the conservative floor now that no colourless mode
-exists. The runtime cycle order is `ColourTrue`, `ColourXTerm256`,
-`ColourXTermGrey`, then `ColourANSITonal`.
+For automatic startup, the detected profile maps TrueColor to `ColourTrue`
+and every other profile to `ColourXTerm256`, the floor mode: every remaining
+colour mode builds on 256-colour support, and every modern terminal renders
+indexed colour. The runtime cycle order is `ColourTrue`, `ColourXTerm256`,
+then `ColourXTermGrey`.
 
 `resolveColourCapability` sets the cycle's effective cap from detection and an
-explicit mode. On a real TTY the cap is floored at `ColourXTerm256`: an ANSI,
-ASCII, or unknown profile still starts in `ColourANSITonal`, but Alt+C can
-raise colour after user action, because every modern interactive terminal
-renders indexed colour. A non-TTY keeps its detected cap, so piped output never gains
-colour modes. `ColourXTermGrey` and `ColourANSITonal` remain available through
-an explicit mode or the cycle when the effective cap permits it. An
+explicit mode. On a real TTY the cap is floored at `ColourXTerm256`, the mode
+every profile now starts at or above. A non-TTY keeps its detected cap, so
+piped output never gains colour modes. `ColourXTermGrey` remains available
+through an explicit mode or the cycle when the effective cap permits it. An
 explicit mode can raise a lower detected cap because the user asserts support.
 Terminal compatibility remains authoritative and can lower the cap.
 `CycleColour` skips every mode above that cap. `NO_COLOR` changes the automatic

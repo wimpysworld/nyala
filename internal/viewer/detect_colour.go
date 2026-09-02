@@ -16,13 +16,12 @@ import (
 // detectColour appends TTY_FORCE=1 to a copy of environ, forcing Detect to honour
 // terminfo without a live terminal. When isTTY is false the io.Discard writer
 // with no TTY_FORCE yields NoTTY, so detectColour(nil, false) returns
-// ColourANSITonal with no exec.
+// ColourXTerm256 with no exec.
 //
-// The profile maps exhaustively: TrueColor -> ColourTrue, ANSI256 ->
-// ColourXTerm256, and ANSI/ASCII/NoTTY/Unknown -> ColourANSITonal, the
-// conservative floor now that no colourless mode exists: a profile without
-// 256-colour capability cannot honour the greyscale ramp, so the tonal ANSI
-// mode is the safest start. COLORTERM overrides first, because
+// The profile maps exhaustively: TrueColor -> ColourTrue and every other
+// profile -> ColourXTerm256, the floor mode: every remaining colour mode
+// needs 256-colour support, and every modern terminal renders indexed
+// colour. COLORTERM overrides first, because
 // colorprofile upgrades on COLORTERM only when TERM is also set and non-dumb, but
 // Nyala treats a present COLORTERM as a trusted positive regardless of TERM:
 // kmscon (which colorprofile caps at ANSI) and the truecolor/24bit tokens both
@@ -45,14 +44,10 @@ func detectColour(environ []string, isTTY bool) ColourMode {
 }
 
 func colourProfileMode(profile colorprofile.Profile) ColourMode {
-	switch profile {
-	case colorprofile.TrueColor:
+	if profile == colorprofile.TrueColor {
 		return ColourTrue
-	case colorprofile.ANSI256:
-		return ColourXTerm256
-	default:
-		return ColourANSITonal
 	}
+	return ColourXTerm256
 }
 
 // resolveColour applies the colour precedence flag > NO_COLOR > detected. An
@@ -61,9 +56,7 @@ func colourProfileMode(profile colorprofile.Profile) ColourMode {
 // the least colourful mode Nyala still renders: greyscale output still emits
 // SGR colour codes. The presence check scans environ directly so the
 // no-color.org "any value" rule wins over colorprofile, which honours only a
-// truthy NO_COLOR. A profile without 256-colour capability cannot honour the
-// greyscale ramp, so a detected mode below xterm-256 keeps the tonal ANSI
-// start with or without NO_COLOR. Otherwise auto returns the detected mode.
+// truthy NO_COLOR. Otherwise auto returns the detected mode.
 func resolveColour(flag string, environ []string, detected ColourMode) ColourMode {
 	switch flag {
 	case "truecolor":
@@ -72,10 +65,8 @@ func resolveColour(flag string, environ []string, detected ColourMode) ColourMod
 		return ColourXTerm256
 	case "ansi-grey":
 		return ColourXTermGrey
-	case "ansi-tonal":
-		return ColourANSITonal
 	}
-	if noColorPresent(environ) && detected <= ColourXTerm256 {
+	if noColorPresent(environ) {
 		return ColourXTermGrey
 	}
 	return detected

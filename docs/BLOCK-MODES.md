@@ -17,31 +17,26 @@ Shaded targets low-colour output. It samples the same 2x4 source block as Quadra
 
 For each candidate the compose estimates a foreground from the covered samples and a background from the uncovered samples, quantises both to the active output palette, then scores the displayed result against the samples. An exactly flat cell emits a full block with foreground equal to background, never shade texture.
 
-Shaded supports `--color=256`, `--color=ansi-grey`, and `--color=ansi-tonal`. `--blocks=shaded --color=truecolor` fails before the first paint. `--blocks=shaded --color=auto` degrades a truecolour resolution to `256`. <kbd>Alt</kbd>+<kbd>C</kbd> under Shaded cycles only the compatible modes and skips `truecolor`; <kbd>Alt</kbd>+<kbd>B</kbd> skips Shaded under `truecolor` and on any session not started with `--blocks=shaded`, because an explicit start is the only recorded evidence that the terminal draws the shade glyphs. Terminal support is a separate recorded fact from Unicode support: see `docs/TERMINAL-COMPATIBILITY.md` and run `just shaded-testcard` to gather evidence.
+Shaded supports `--color=256` and `--color=ansi-grey`. `--blocks=shaded --color=truecolor` fails before the first paint. `--blocks=shaded --color=auto` degrades a truecolour resolution to `256`. <kbd>Alt</kbd>+<kbd>C</kbd> under Shaded cycles only the compatible modes and skips `truecolor`; <kbd>Alt</kbd>+<kbd>B</kbd> skips Shaded under `truecolor` and on any session not started with `--blocks=shaded`, because an explicit start is the only recorded evidence that the terminal draws the shade glyphs. Terminal support is a separate recorded fact from Unicode support: see `docs/TERMINAL-COMPATIBILITY.md` and run `just shaded-testcard` to gather evidence.
 
 ## Colour modes
 
-The `--color` flag accepts `auto`, `truecolor`, `256`, `ansi-grey`, or `ansi-tonal`. These modes affect only the Block backend.
+The `--color` flag accepts `auto`, `truecolor`, `256`, or `ansi-grey`. These modes affect only the Block backend.
 
-Colour mode precedence is an explicit non-`auto` `--color` value, then `NO_COLOR` for `auto`, then detection. Detection treats `COLORTERM=kmscon`, `COLORTERM=truecolor`, or `COLORTERM=24bit` as `truecolor`, even without a TTY. Without one of these values, a non-TTY selects `ansi-tonal`.
+Colour mode precedence is an explicit non-`auto` `--color` value, then `NO_COLOR` for `auto`, then detection. Detection treats `COLORTERM=kmscon`, `COLORTERM=truecolor`, or `COLORTERM=24bit` as `truecolor`, even without a TTY. Every other profile maps to `256`.
 
 | Mode | Output | `auto` selection |
 | --- | --- | --- |
 | `truecolor` | Exact 24-bit foreground and background colours | A truecolour profile or recognised truecolour `COLORTERM` value |
 | `256` | Canonical xterm indexes 16..255 | A 256-colour profile |
-| `ansi-grey` | Fixed xterm greyscale indexes 232..255 | `NO_COLOR` on a truecolour or 256-colour profile |
-| `ansi-tonal` | Basic ANSI indexes 0..15 | ANSI, ASCII, unknown, or non-TTY output without a recognised truecolour `COLORTERM` value |
+| `ansi-grey` | Fixed xterm greyscale indexes 232..255 | `NO_COLOR` |
 
-Automatic selection maps a detected ANSI, ASCII, or unknown profile to `ansi-tonal`, the conservative floor: those profiles cannot honour the 256-indexed greyscale ramp. A present `NO_COLOR` key selects `ansi-grey` on a truecolour or 256-colour profile; greyscale output still emits SGR colour codes. On a real TTY the stored capability is floored at `256`, so the cycle can raise colour on an ANSI or unknown terminal after user action. A non-TTY keeps its detected capability.
+Automatic selection maps every profile below truecolour to `256`, the floor mode: every remaining colour mode builds on 256-colour support, and every modern terminal renders indexed colour. A present `NO_COLOR` key selects `ansi-grey`; greyscale output still emits SGR colour codes. On a real TTY the stored capability is floored at `256`. A non-TTY keeps its detected capability.
 
-<kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `ansi-grey` -> `ansi-tonal`, then wraps. The cycle skips modes above the effective capability. An explicit mode asserts support for that mode and can raise a lower detected capability. Terminal safety restrictions remain hard caps. `NO_COLOR` selects the automatic starting mode only, so the cycle can still use detected colour modes.
+<kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `ansi-grey`, then wraps. The cycle skips modes above the effective capability. An explicit mode asserts support for that mode and can raise a lower detected capability. Terminal safety restrictions remain hard caps. `NO_COLOR` selects the automatic starting mode only, so the cycle can still use detected colour modes.
 
 The `256` mode maps each RGB colour to the CIEDE2000-nearest canonical xterm entry in indexes 16..255. Both degraded modes use the Rec.601 key `77R + 150G + 29B`. The `ansi-grey` mode maps that key to the nearest fixed xterm grey in indexes 232..255. Its reference levels are 8, 18, through 238 in steps of 10. An exact midpoint selects the lighter grey.
 
-The `ansi-tonal` mode maps Rec.601 luma to the nearest canonical xterm ANSI colour. From dark to bright, the reference index order is `0, 4, 12, 1, 5, 2, 9, 6, 13, 3, 8, 10, 14, 7, 11, 15`. An exact tie selects the darker reference entry.
-
-Terminals can redefine ANSI indexes 0..15. The visible `ansi-tonal` order can differ from the reference xterm order. Nyala does not query or replace the user's terminal palette.
-
 ## NO_COLOR
 
-With `--color=auto`, a present `NO_COLOR` key selects greyscale output regardless of its value: `ansi-grey` on a truecolour or 256-colour profile, `ansi-tonal` on a lower profile. Any explicit non-auto `--color` value overrides `NO_COLOR`. Greyscale output still emits SGR colour codes; no colourless mode exists. Kitty and Sixel ignore the colour mode.
+With `--color=auto`, a present `NO_COLOR` key selects `ansi-grey` output regardless of its value. Any explicit non-auto `--color` value overrides `NO_COLOR`. Greyscale output still emits SGR colour codes; no colourless mode exists. Kitty and Sixel ignore the colour mode.

@@ -19,7 +19,7 @@ import (
 // visible terminal model with the exact grid the production writer consumed.
 func TestBlockTerminalRoundTripShaded(t *testing.T) {
 	const cols, rows = 12, 5
-	for _, mode := range []ColourMode{ColourXTerm256, ColourXTermGrey, ColourANSITonal} {
+	for _, mode := range []ColourMode{ColourXTerm256, ColourXTermGrey} {
 		state := NewState(cols, rows+1)
 		state.Backend = BackendBlock
 		state.Scheme = block.SchemeShaded
@@ -65,14 +65,10 @@ func TestBlockTerminalRoundTripShaded(t *testing.T) {
 // writerCanonical maps a composed cell colour onto the canonical RGBA the
 // mode's writer index displays, mirroring fgSGRFunc and bgSGRFunc.
 func writerCanonical(mode ColourMode, c color.RGBA) color.RGBA {
-	switch mode {
-	case ColourXTermGrey:
+	if mode == ColourXTermGrey {
 		return block.XTermGreyRGBA(block.XTermGrey(c))
-	case ColourANSITonal:
-		return block.ANSI16RGBA(block.ANSI16Tonal(c))
-	default:
-		return block.XTerm256RGBA(block.XTerm256(c))
 	}
+	return block.XTerm256RGBA(block.XTerm256(c))
 }
 
 // TestShadedCandidateWidths writes every Shaded candidate glyph through the
@@ -121,21 +117,26 @@ func TestShadedCandidateWidths(t *testing.T) {
 }
 
 // TestShadedRoundTripUsesShadeGlyphs proves the round trip above exercises
-// the shade set for real: a soft diagonal ramp frame composed in ANSI tonal,
-// whose sixteen colours leave tone gaps only shade mixing can cross, carries
-// at least one Symbols for Legacy Computing shade glyph end to end.
+// the shade set for real: a soft diagonal ramp frame composed on the
+// greyscale ramp, whose tone gaps shade mixing crosses between adjacent
+// entries, carries at least one Symbols for Legacy Computing shade glyph end
+// to end.
 func TestShadedRoundTripUsesShadeGlyphs(t *testing.T) {
 	const cols, rows = 12, 5
 	state := NewState(cols, rows+1)
 	state.Backend = BackendBlock
 	state.Scheme = block.SchemeShaded
-	state.Colour = ColourANSITonal
+	state.Colour = ColourXTermGrey
 	state.SetDiff(&block.GridDiff{})
 
+	// The ramp is shallow on purpose: each cell spans well under one 10-step
+	// grey bucket, so a cell that straddles a bucket boundary displays the
+	// intermediate tone only through shade mixing, never through a solid
+	// two-tone split.
 	img := image.NewRGBA(image.Rect(0, 0, cols*2, rows*4))
 	for y := range rows * 4 {
 		for x := range cols * 2 {
-			v := uint8((x*255/(cols*2-1) + y*255/(rows*4-1)) / 2)
+			v := uint8(96 + x*64/(cols*2-1) + y*64/(rows*4-1)) //nolint:gosec // the ramp is bounded to 96..224
 			img.SetRGBA(x, y, color.RGBA{R: v, G: v, B: v, A: 0xff})
 		}
 	}

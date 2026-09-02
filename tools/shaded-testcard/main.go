@@ -6,10 +6,9 @@
 //
 // The card prints the U+2584 half-block control, then every Shaded candidate
 // glyph as a repeated run with an ASCII sentinel cell after it, so a width
-// error shows as a shifted sentinel column. Rows repeat under xterm-256, ANSI
-// tonal, and ANSI greyscale colour, on high-contrast foreground and
-// background pairs, followed by split, shade, and flat-cell rows built from
-// the same glyphs. Recording which terminals draw the card cleanly is the
+// error shows as a shifted sentinel column. Rows repeat under xterm-256 and
+// ANSI greyscale colour, on high-contrast foreground and background pairs,
+// followed by split, shade, and flat-cell rows built from the same glyphs. Recording which terminals draw the card cleanly is the
 // owner's job; this tool only makes the evidence visible.
 package main
 
@@ -42,12 +41,6 @@ var colourModes = []colourMode{
 			return "\x1b[38;5;231m\x1b[48;5;16m"
 		}
 		return "\x1b[38;5;16m\x1b[48;5;231m"
-	}},
-	{"ansi-tonal", func(bright bool) string {
-		if bright {
-			return "\x1b[97m\x1b[40m"
-		}
-		return "\x1b[30m\x1b[107m"
 	}},
 	{"ansi-grey", func(bright bool) string {
 		if bright {

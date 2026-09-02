@@ -40,7 +40,6 @@ func TestDegradedColourDiagnostics(t *testing.T) {
 		{name: "xterm-grey", mode: viewer.ColourXTermGrey, payloadBudget: 2900, qualityFloor: 0.98},
 		// Measured SSIM is 0.941703591. The 0.92 floor leaves 0.0217 for
 		// harmless metric drift while retaining a useful 16-colour quality gate.
-		{name: "ansi-tonal", mode: viewer.ColourANSITonal, payloadBudget: 1500, qualityFloor: 0.92},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

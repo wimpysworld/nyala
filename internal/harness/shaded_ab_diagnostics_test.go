@@ -38,7 +38,6 @@ var shadedABModes = []struct {
 }{
 	{"256", viewer.ColourXTerm256},
 	{"ansi-grey", viewer.ColourXTermGrey},
-	{"ansi-tonal", viewer.ColourANSITonal},
 }
 
 // shadedABFixture is one synthetic A/B input with its assertion class.
@@ -181,14 +180,10 @@ func composeShadedAB(t *testing.T, rast *cellraster.Rasteriser, scheme block.Sch
 // writer quantises at emit.
 func displayGrid(g block.Grid, mode viewer.ColourMode) block.Grid {
 	quantise := func(c color.RGBA) color.RGBA {
-		switch mode {
-		case viewer.ColourXTermGrey:
+		if mode == viewer.ColourXTermGrey {
 			return block.XTermGreyRGBA(block.XTermGrey(c))
-		case viewer.ColourANSITonal:
-			return block.ANSI16RGBA(block.ANSI16Tonal(c))
-		default:
-			return block.XTerm256RGBA(block.XTerm256(c))
 		}
+		return block.XTerm256RGBA(block.XTerm256(c))
 	}
 	out := block.Grid{Cols: g.Cols, Rows: g.Rows, Cells: append([]block.Cell(nil), g.Cells...)}
 	for i := range out.Cells {
@@ -246,11 +241,16 @@ func logShadedABRow(t *testing.T, fixture, mode, scheme string, r shadedABRender
 // TestShadedABSynthetic runs the quadrant-versus-Shaded comparison over the
 // synthetic diagonal, shade, split, and flat fixtures under every compatible
 // colour mode, logs the full metric table, and enforces the harness-signal
-// facts: the shade and diagonal fixtures produce genuinely different grids
-// with shade glyphs in play under ANSI tonal, and the exactly flat fixtures
-// never gain shade texture.
+// facts: in each colour mode at least one shade-signal fixture produces a
+// grid different from quadrant and at least one composes shade glyphs, so a
+// silent no-signal run fails, and the exactly flat fixtures never gain shade
+// texture. The assertion sums over fixtures because a single fixture can
+// legitimately tie with quadrant in one palette: a solid pair already models
+// it there.
 func TestShadedABSynthetic(t *testing.T) {
 	rast := newRasteriser(t)
+	differing := map[string]int{}
+	shadeUsing := map[string]int{}
 	for _, fx := range shadedABFixtures() {
 		composeSrc := metrics.Downscale(fx.img, shadedABCols*2, shadedABRows*4)
 		ideal := metrics.IdealGrid(composeSrc, shadedABCols, shadedABRows)
@@ -262,12 +262,12 @@ func TestShadedABSynthetic(t *testing.T) {
 			logShadedABRow(t, fx.name, m.name, "quadrant", a, fx.img, idealImg)
 			logShadedABRow(t, fx.name, m.name, "shaded", b, fx.img, idealImg)
 
-			if fx.shadeSignal && m.mode == viewer.ColourANSITonal {
-				if gridsEqual(a.grid, b.grid) {
-					t.Fatalf("fixture %s mode %s: Shaded grid is identical to quadrant, so the fixture carries no A/B signal", fx.name, m.name)
+			if fx.shadeSignal {
+				if !gridsEqual(a.grid, b.grid) {
+					differing[m.name]++
 				}
-				if countShadeCells(b.grid) == 0 {
-					t.Fatalf("fixture %s mode %s: Shaded composed no shade glyph", fx.name, m.name)
+				if countShadeCells(b.grid) > 0 {
+					shadeUsing[m.name]++
 				}
 			}
 			if fx.flat {
@@ -280,6 +280,14 @@ func TestShadedABSynthetic(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+	for _, m := range shadedABModes {
+		if differing[m.name] == 0 {
+			t.Fatalf("mode %s: no shade-signal fixture differed from quadrant, so the harness carries no A/B signal", m.name)
+		}
+		if shadeUsing[m.name] == 0 {
+			t.Fatalf("mode %s: no shade-signal fixture composed a shade glyph", m.name)
 		}
 	}
 }

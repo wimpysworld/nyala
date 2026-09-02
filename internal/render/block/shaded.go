@@ -33,9 +33,6 @@ const (
 	// ShadedXTermGrey quantises to the fixed xterm greyscale ramp, indices
 	// 232..255, through XTermGrey.
 	ShadedXTermGrey
-	// ShadedANSITonal quantises to the 16 canonical ANSI colours by Rec.601
-	// luma, through ANSI16Tonal.
-	ShadedANSITonal
 )
 
 // shadedLatticeW and shadedLatticeH are the unit-cell sample lattice the
@@ -182,14 +179,10 @@ func buildXTerm256Stable() [256]uint8 {
 // and returns that palette entry's canonical RGBA, the palette-before-score
 // rule: the scored displayed result is built from colours the writer can emit.
 func shadedQuantise(c color.RGBA, pal ShadedPalette) color.RGBA {
-	switch pal {
-	case ShadedXTermGrey:
+	if pal == ShadedXTermGrey {
 		return XTermGreyRGBA(XTermGrey(c))
-	case ShadedANSITonal:
-		return ANSI16RGBA(ANSI16Tonal(c))
-	default:
-		return XTerm256RGBA(xterm256Stable[XTerm256(c)])
 	}
+	return XTerm256RGBA(xterm256Stable[XTerm256(c)])
 }
 
 // shadedFlat reports whether every source sample of the cell is one colour.
