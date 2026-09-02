@@ -219,9 +219,9 @@ func TestShadedPaletteRoundTrips(t *testing.T) {
 			t.Fatalf("stable index %d for %d is not a fixed point: maps to %d", stable, i, got)
 		}
 	}
-	rng := rand.New(rand.NewSource(51))
+	rng := rand.New(rand.NewSource(51)) //nolint:gosec // deterministic test fixture
 	for range 4096 {
-		c := color.RGBA{R: uint8(rng.Intn(256)), G: uint8(rng.Intn(256)), B: uint8(rng.Intn(256)), A: 0xff}
+		c := color.RGBA{R: uint8(rng.Intn(256)), G: uint8(rng.Intn(256)), B: uint8(rng.Intn(256)), A: 0xff} //nolint:gosec // Intn(256) is a byte value
 		for _, pal := range []ShadedPalette{ShadedXTerm256, ShadedXTermGrey, ShadedANSITonal} {
 			q := shadedQuantise(c, pal)
 			if again := shadedQuantise(q, pal); again != q {
@@ -237,11 +237,11 @@ func TestShadedPaletteRoundTrips(t *testing.T) {
 func TestShadedComposeParallelByteIdentity(t *testing.T) {
 	const cols, rows = 48, 24
 	img := image.NewRGBA(image.Rect(0, 0, cols*2, rows*4))
-	rng := rand.New(rand.NewSource(7))
+	rng := rand.New(rand.NewSource(7)) //nolint:gosec // deterministic test fixture
 	for i := 0; i < len(img.Pix); i += 4 {
-		img.Pix[i] = uint8(rng.Intn(256))
-		img.Pix[i+1] = uint8(rng.Intn(256))
-		img.Pix[i+2] = uint8(rng.Intn(256))
+		img.Pix[i] = uint8(rng.Intn(256))   //nolint:gosec // Intn(256) is a byte value
+		img.Pix[i+1] = uint8(rng.Intn(256)) //nolint:gosec // Intn(256) is a byte value
+		img.Pix[i+2] = uint8(rng.Intn(256)) //nolint:gosec // Intn(256) is a byte value
 		img.Pix[i+3] = 0xff
 	}
 	frame := render.Frame{Img: img}
@@ -271,19 +271,19 @@ func TestShadedComposeParallelByteIdentity(t *testing.T) {
 func TestShadedYCbCrMatchesRGBA(t *testing.T) {
 	const cols, rows = 16, 8
 	ycbcr := image.NewYCbCr(image.Rect(0, 0, cols*2, rows*4), image.YCbCrSubsampleRatio444)
-	rng := rand.New(rand.NewSource(11))
-	for y := 0; y < rows*4; y++ {
-		for x := 0; x < cols*2; x++ {
+	rng := rand.New(rand.NewSource(11)) //nolint:gosec // deterministic test fixture
+	for y := range rows * 4 {
+		for x := range cols * 2 {
 			yi := ycbcr.YOffset(x, y)
 			ci := ycbcr.COffset(x, y)
-			ycbcr.Y[yi] = uint8(rng.Intn(256))
-			ycbcr.Cb[ci] = uint8(rng.Intn(256))
-			ycbcr.Cr[ci] = uint8(rng.Intn(256))
+			ycbcr.Y[yi] = uint8(rng.Intn(256))  //nolint:gosec // Intn(256) is a byte value
+			ycbcr.Cb[ci] = uint8(rng.Intn(256)) //nolint:gosec // Intn(256) is a byte value
+			ycbcr.Cr[ci] = uint8(rng.Intn(256)) //nolint:gosec // Intn(256) is a byte value
 		}
 	}
 	rgba := image.NewRGBA(ycbcr.Bounds())
-	for y := 0; y < rows*4; y++ {
-		for x := 0; x < cols*2; x++ {
+	for y := range rows * 4 {
+		for x := range cols * 2 {
 			r, g, b := color.YCbCrToRGB(ycbcr.Y[ycbcr.YOffset(x, y)], ycbcr.Cb[ycbcr.COffset(x, y)], ycbcr.Cr[ycbcr.COffset(x, y)])
 			rgba.SetRGBA(x, y, color.RGBA{R: r, G: g, B: b, A: 0xff})
 		}
