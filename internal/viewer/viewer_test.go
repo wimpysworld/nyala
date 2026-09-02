@@ -402,7 +402,6 @@ func TestRenderFrameBlockColourModes(t *testing.T) {
 		{name: "truecolour", mode: ColourTrue, wantSGR: "\x1b[38;2;"},
 		{name: "xterm-256", mode: ColourXTerm256, wantSGR: "\x1b[38;5;"},
 		{name: "xterm-grey", mode: ColourXTermGrey, wantSGR: "\x1b[38;5;"},
-		{name: "ansi-tonal", mode: ColourANSITonal},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewState(8, 4)
@@ -448,79 +447,27 @@ func TestRenderFrameBlockColourModes(t *testing.T) {
 
 func TestDegradedColourStreamSGRRanges(t *testing.T) {
 	frame := render.Frame{Img: monochromeRampImage(16, 16)}
-	for _, mode := range []ColourMode{ColourXTermGrey, ColourANSITonal} {
-		st := NewState(8, 4)
-		st.Colour = mode
-		st.SetDiff(&block.GridDiff{})
-		var out bytes.Buffer
-		if err := st.RenderStreamFrame(frame, &out); err != nil {
-			t.Fatalf("mode %d draw: %v", mode, err)
-		}
-
-		seenFG, seenBG := false, false
-		for _, params := range decodedSGRs(t, out.String()) {
-			switch mode {
-			case ColourXTermGrey:
-				if len(params) != 3 || params[1] != 5 || (params[0] != 38 && params[0] != 48) {
-					t.Fatalf("grey mode emitted non-indexed colour SGR %v in %q", params, out.String())
-				}
-				if params[2] < 232 || params[2] > 255 {
-					t.Fatalf("grey mode emitted index %d, want 232..255", params[2])
-				}
-				seenFG = seenFG || params[0] == 38
-				seenBG = seenBG || params[0] == 48
-			case ColourANSITonal:
-				if len(params) != 1 || !isANSITonalCode(params[0]) {
-					t.Fatalf("ANSI tonal mode emitted invalid SGR %v in %q", params, out.String())
-				}
-				seenFG = seenFG || params[0] >= 30 && params[0] <= 37 || params[0] >= 90 && params[0] <= 97
-				seenBG = seenBG || params[0] >= 40 && params[0] <= 47 || params[0] >= 100 && params[0] <= 107
-			}
-		}
-		if !seenFG || !seenBG {
-			t.Fatalf("mode %d emitted foreground=%t background=%t, want both", mode, seenFG, seenBG)
-		}
-		if mode == ColourANSITonal {
-			for _, forbidden := range []string{"\x1b[38;5;", "\x1b[48;5;", "\x1b[38;2;", "\x1b[48;2;"} {
-				if strings.Contains(out.String(), forbidden) {
-					t.Fatalf("ANSI tonal mode emitted forbidden SGR %q in %q", forbidden, out.String())
-				}
-			}
-		}
-	}
-}
-
-func TestANSI16SGRAppender(t *testing.T) {
-	for idx := range 16 {
-		fgCode, bgCode := 30+idx, 40+idx
-		if idx >= 8 {
-			fgCode, bgCode = 90+idx-8, 100+idx-8
-		}
-		if got, want := string(appendSGRANSI(nil, 30, uint8(idx))), "\x1b["+strconv.Itoa(fgCode)+"m"; got != want {
-			t.Fatalf("foreground index %d = %q, want %q", idx, got, want)
-		}
-		if got, want := string(appendSGRANSI(nil, 40, uint8(idx))), "\x1b["+strconv.Itoa(bgCode)+"m"; got != want {
-			t.Fatalf("background index %d = %q, want %q", idx, got, want)
-		}
+	st := NewState(8, 4)
+	st.Colour = ColourXTermGrey
+	st.SetDiff(&block.GridDiff{})
+	var out bytes.Buffer
+	if err := st.RenderStreamFrame(frame, &out); err != nil {
+		t.Fatalf("grey draw: %v", err)
 	}
 
-	white := color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
-	if got := string(fgSGRFunc(ColourANSITonal)(nil, white)); got != "\x1b[97m" {
-		t.Fatalf("bright foreground = %q, want %q", got, "\x1b[97m")
+	seenFG, seenBG := false, false
+	for _, params := range decodedSGRs(t, out.String()) {
+		if len(params) != 3 || params[1] != 5 || (params[0] != 38 && params[0] != 48) {
+			t.Fatalf("grey mode emitted non-indexed colour SGR %v in %q", params, out.String())
+		}
+		if params[2] < 232 || params[2] > 255 {
+			t.Fatalf("grey mode emitted index %d, want 232..255", params[2])
+		}
+		seenFG = seenFG || params[0] == 38
+		seenBG = seenBG || params[0] == 48
 	}
-	if got := string(bgSGRFunc(ColourANSITonal)(nil, white)); got != "\x1b[107m" {
-		t.Fatalf("bright background = %q, want %q", got, "\x1b[107m")
-	}
-
-	var scratch [8]byte
-	var got []byte
-	if allocs := testing.AllocsPerRun(1000, func() {
-		got = appendSGRANSI(scratch[:0], 40, 15)
-	}); allocs != 0 {
-		t.Fatalf("appendSGRANSI allocations = %g, want 0", allocs)
-	}
-	if string(got) != "\x1b[107m" {
-		t.Fatalf("allocation test output = %q, want %q", got, "\x1b[107m")
+	if !seenFG || !seenBG {
+		t.Fatalf("grey mode emitted foreground=%t background=%t, want both", seenFG, seenBG)
 	}
 }
 
@@ -573,11 +520,6 @@ func decodedSGRs(t *testing.T, out string) [][]int {
 // observe cursor movement without SGR noise.
 func noSGRFunc() block.SGRFunc {
 	return func(dst []byte, _ color.RGBA) []byte { return dst }
-}
-
-func isANSITonalCode(code int) bool {
-	return code >= 30 && code <= 37 || code >= 40 && code <= 47 ||
-		code >= 90 && code <= 97 || code >= 100 && code <= 107
 }
 
 func monochromeRampImage(width, height int) *image.RGBA {

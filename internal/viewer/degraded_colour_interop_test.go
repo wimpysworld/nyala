@@ -14,10 +14,10 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
-// TestBlockTerminalRoundTripDegradedColourModes is the parent proof for the two
-// degraded colour modes. It starts each mode through the normal flag resolver,
-// sends a deterministic frame through State.RenderStreamFrame, and checks the
-// terminal-visible grid against the unquantised composed grid.
+// TestBlockTerminalRoundTripDegradedColourModes is the parent proof for the
+// degraded greyscale mode. It starts the mode through the normal flag
+// resolver, sends a deterministic frame through State.RenderStreamFrame, and
+// checks the terminal-visible grid against the unquantised composed grid.
 func TestBlockTerminalRoundTripDegradedColourModes(t *testing.T) {
 	const (
 		cols         = 20
@@ -39,9 +39,6 @@ func TestBlockTerminalRoundTripDegradedColourModes(t *testing.T) {
 		// Measured SSIM is 0.993773483. The 0.98 floor leaves 0.0137 for
 		// harmless metric drift while rejecting visible greyscale loss.
 		{name: "xterm-grey", flag: "ansi-grey", mode: ColourXTermGrey, payloadBudget: 2900, qualityFloor: 0.98},
-		// Measured SSIM is 0.941703591. The 0.92 floor leaves 0.0217 for
-		// harmless metric drift while retaining a useful 16-colour quality gate.
-		{name: "ansi-tonal", flag: "ansi-tonal", mode: ColourANSITonal, payloadBudget: 1500, qualityFloor: 0.92},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -81,7 +78,7 @@ func renderDegradedColourFrame(t *testing.T, flag string, mode ColourMode, cols,
 	t.Helper()
 	st := NewState(cols, terminalRows)
 	st.Backend = BackendBlock
-	st.configureColour(flag, []string{"NO_COLOR=1"}, ColourANSITonal, true)
+	st.configureColour(flag, []string{"NO_COLOR=1"}, ColourXTerm256, true)
 	if st.Colour != mode {
 		t.Fatalf("startup flag %q resolved to %v, want %v", flag, st.Colour, mode)
 	}

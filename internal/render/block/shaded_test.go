@@ -125,7 +125,7 @@ func TestShadedCellRectangularPolarity(t *testing.T) {
 func TestShadedCellFlatFallback(t *testing.T) {
 	flat := color.RGBA{R: 0x84, G: 0x84, B: 0x84, A: 0xff}
 	s := shadedSamples(func(_, _ int) color.RGBA { return flat })
-	for _, pal := range []ShadedPalette{ShadedXTerm256, ShadedXTermGrey, ShadedANSITonal} {
+	for _, pal := range []ShadedPalette{ShadedXTerm256, ShadedXTermGrey} {
 		cell := shadedCell(&s, pal)
 		if cell.Glyph != fullBlock || cell.FG != cell.BG {
 			t.Fatalf("palette %d flat cell = %U fg %v bg %v, want full block with fg == bg", pal, cell.Glyph, cell.FG, cell.BG)
@@ -182,12 +182,6 @@ func TestShadedCellDiagonalPolarity(t *testing.T) {
 // so the scored cell and the emitted SGR are one colour. It also pins the
 // canonical ANSI and greyscale tables against their index converters.
 func TestShadedPaletteRoundTrips(t *testing.T) {
-	for i := range 16 {
-		idx := uint8(i)
-		if got := ANSI16Tonal(ANSI16RGBA(idx)); got != idx {
-			t.Fatalf("ANSI16Tonal(ANSI16RGBA(%d)) = %d", idx, got)
-		}
-	}
 	for i := 232; i < 256; i++ {
 		idx := uint8(i)
 		if got := XTermGrey(XTermGreyRGBA(idx)); got != idx {
@@ -203,7 +197,7 @@ func TestShadedPaletteRoundTrips(t *testing.T) {
 	rng := rand.New(rand.NewSource(51)) //nolint:gosec // deterministic test fixture
 	for range 4096 {
 		c := color.RGBA{R: uint8(rng.Intn(256)), G: uint8(rng.Intn(256)), B: uint8(rng.Intn(256)), A: 0xff} //nolint:gosec // Intn(256) is a byte value
-		for _, pal := range []ShadedPalette{ShadedXTerm256, ShadedXTermGrey, ShadedANSITonal} {
+		for _, pal := range []ShadedPalette{ShadedXTerm256, ShadedXTermGrey} {
 			q := shadedQuantise(c, pal)
 			if again := shadedQuantise(q, pal); again != q {
 				t.Fatalf("palette %d quantise of %v is not idempotent: %v then %v", pal, c, q, again)
@@ -228,7 +222,7 @@ func TestShadedComposeParallelByteIdentity(t *testing.T) {
 	frame := render.Frame{Img: img}
 	pool := rowband.New()
 	pc := NewParallelCompose()
-	for _, pal := range []ShadedPalette{ShadedXTerm256, ShadedXTermGrey, ShadedANSITonal} {
+	for _, pal := range []ShadedPalette{ShadedXTerm256, ShadedXTermGrey} {
 		br := Renderer{Cols: cols, Rows: rows, Scheme: SchemeShaded, Palette: pal}
 		serial := br.Compose(frame)
 		var parallel Grid

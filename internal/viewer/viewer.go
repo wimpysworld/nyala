@@ -57,8 +57,6 @@ const (
 	ColourXTerm256
 	// ColourXTermGrey maps block colours onto the xterm greyscale ramp.
 	ColourXTermGrey
-	// ColourANSITonal maps block colours onto the terminal's ANSI tonal range.
-	ColourANSITonal
 )
 
 // State is the viewer's render and backend state. Cols and Rows are the terminal
@@ -352,7 +350,7 @@ func (s *State) CycleScheme(reverse bool) block.Scheme {
 
 // colourCycle is the Alt+C block colour mode cycle order, highest capability
 // first. CycleColour skips modes above the effective terminal cap.
-var colourCycle = []ColourMode{ColourTrue, ColourXTerm256, ColourXTermGrey, ColourANSITonal}
+var colourCycle = []ColourMode{ColourTrue, ColourXTerm256, ColourXTermGrey}
 
 // CycleColour steps through the colour ladder and returns the new mode. It
 // skips modes above the effective capability cap, and skips truecolour while
@@ -601,14 +599,10 @@ func releaseFrame(f render.Frame) {
 // keep the pair out of a live session, so the fallback can never emit
 // truecolour from a Shaded frame.
 func shadedPalette(mode ColourMode) block.ShadedPalette {
-	switch mode {
-	case ColourXTermGrey:
+	if mode == ColourXTermGrey {
 		return block.ShadedXTermGrey
-	case ColourANSITonal:
-		return block.ShadedANSITonal
-	default:
-		return block.ShadedXTerm256
 	}
+	return block.ShadedXTerm256
 }
 
 // schemePixels returns the source-pixel extent a cols x rows block grid samples
@@ -630,18 +624,6 @@ func appendSGR256(dst []byte, prefix string, idx uint8) []byte {
 	return append(dst, 'm')
 }
 
-// appendSGRANSI appends a basic or bright ANSI foreground/background SGR for
-// an ANSI index in 0..15. Bright colours use 90..97 or 100..107, never bold.
-func appendSGRANSI(dst []byte, base int, idx uint8) []byte {
-	code := base + int(idx)
-	if idx >= 8 {
-		code += 52
-	}
-	dst = append(dst, "\x1b["...)
-	dst = strconv.AppendInt(dst, int64(code), 10)
-	return append(dst, 'm')
-}
-
 // fgSGRFunc binds a colour mode into a block.SGRFunc for the cell differ, so the
 // differ stays colour-mode neutral while reusing the viewer's fg SGR rules. Each
 // mode appends into the differ's reused buffer, so no per-cell string allocates.
@@ -654,10 +636,6 @@ func fgSGRFunc(mode ColourMode) block.SGRFunc {
 	case ColourXTermGrey:
 		return func(dst []byte, c color.RGBA) []byte {
 			return appendSGR256(dst, fg256Prefix, block.XTermGrey(c))
-		}
-	case ColourANSITonal:
-		return func(dst []byte, c color.RGBA) []byte {
-			return appendSGRANSI(dst, 30, block.ANSI16Tonal(c))
 		}
 	default:
 		return block.AppendTrueColorFG
@@ -676,10 +654,6 @@ func bgSGRFunc(mode ColourMode) block.SGRFunc {
 	case ColourXTermGrey:
 		return func(dst []byte, c color.RGBA) []byte {
 			return appendSGR256(dst, bg256Prefix, block.XTermGrey(c))
-		}
-	case ColourANSITonal:
-		return func(dst []byte, c color.RGBA) []byte {
-			return appendSGRANSI(dst, 40, block.ANSI16Tonal(c))
 		}
 	default:
 		return block.AppendTrueColorBG

@@ -58,52 +58,11 @@ func XTermGrey(c color.RGBA) uint8 {
 	return uint8(232 + n) //nolint:gosec // n is clamped to 0..23.
 }
 
-var ansi16TonalIndexes = [16]uint8{0, 4, 12, 1, 5, 2, 9, 6, 13, 3, 8, 10, 14, 7, 11, 15}
-
-var ansi16TonalLumas = [16]int{
-	0,
-	29 * 128,
-	29 * 255,
-	77 * 128,
-	(77 + 29) * 128,
-	150 * 128,
-	77 * 255,
-	(150 + 29) * 128,
-	(77 + 29) * 255,
-	(77 + 150) * 128,
-	128 * 256,
-	150 * 255,
-	(150 + 29) * 255,
-	192 * 256,
-	(77 + 150) * 255,
-	255 * 256,
-}
-
-// ANSI16Tonal converts an RGBA colour to the canonical xterm ANSI index with
-// the nearest Rec.601 luma. Equal distances select the darker tonal rank.
-// Alpha is ignored.
-func ANSI16Tonal(c color.RGBA) uint8 {
-	key := luma(c)
-	bestRank := 0
-	bestDistance := key
-	for rank := 1; rank < len(ansi16TonalIndexes); rank++ {
-		distance := ansi16TonalLumas[rank] - key
-		if distance < 0 {
-			distance = -distance
-		}
-		if distance < bestDistance {
-			bestRank = rank
-			bestDistance = distance
-		}
-	}
-	return ansi16TonalIndexes[bestRank]
-}
-
 // XTerm256RGBA returns the canonical RGBA value of an xterm-256 palette index.
 // Indices 0..15 return the canonical ANSI colours through ANSI16RGBA, 16..231
 // the 6x6x6 colour cube on levels 0, 95, 135, 175, 215, 255, and 232..255 the
 // greyscale ramp 8..238 in steps of 10. Terminals can redefine indices 0..15;
-// the canonical values are the reference model, matching ansi16TonalLumas.
+// the canonical values are the reference model.
 func XTerm256RGBA(idx uint8) color.RGBA {
 	if idx < 16 {
 		return ANSI16RGBA(idx)
@@ -124,9 +83,8 @@ func cubeLevel(i int) uint8 {
 	return uint8(55 + 40*i) //nolint:gosec // cube steps are 0..5, so the value is 95..255
 }
 
-// ansi16RGBA holds the canonical RGBA values of the 16 ANSI indices, on the
-// same reference palette ansi16TonalLumas derives its luma keys from, so a
-// colour quantised through ANSI16Tonal round-trips to the same index.
+// ansi16RGBA holds the canonical RGBA values of the 16 ANSI indices on the
+// xterm reference palette, the model XTerm256RGBA serves indices 0..15 from.
 var ansi16RGBA = [16]color.RGBA{
 	{A: 0xff},
 	{R: 128, A: 0xff},

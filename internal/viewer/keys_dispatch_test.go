@@ -534,14 +534,14 @@ func TestCycleScheme(t *testing.T) {
 // TestCycleColour pins the full Alt+C ladder in both directions for every cap.
 func TestCycleColour(t *testing.T) {
 	st := NewState(80, 24)
-	want := []ColourMode{ColourXTerm256, ColourXTermGrey, ColourANSITonal, ColourTrue}
+	want := []ColourMode{ColourXTerm256, ColourXTermGrey, ColourTrue}
 	for i, w := range want {
 		if got := st.CycleColour(false); got != w {
 			t.Fatalf("cycle %d = %d, want %d", i, got, w)
 		}
 	}
-	if got := st.CycleColour(true); got != ColourANSITonal {
-		t.Fatalf("reverse cycle = %d, want ansi-tonal", got)
+	if got := st.CycleColour(true); got != ColourXTermGrey {
+		t.Fatalf("reverse cycle = %d, want ansi-grey", got)
 	}
 
 	for _, cap := range colourCycle {
@@ -570,7 +570,6 @@ func TestDegradedColourModesUseTheirWriters(t *testing.T) {
 		wantBG string
 	}{
 		{ColourXTermGrey, "\x1b[38;5;255m", "\x1b[48;5;255m"},
-		{ColourANSITonal, "\x1b[97m", "\x1b[107m"},
 	}
 	for _, tc := range cases {
 		if got := string(fgSGRFunc(tc.mode)(nil, c)); got != tc.wantFG {

@@ -125,7 +125,7 @@ func TestRioColourCompatibility(t *testing.T) {
 	if err := st.validateColourCompatibility("truecolor"); err == nil || !strings.Contains(err.Error(), "truecolour Block") {
 		t.Fatalf("Rio truecolor error = %v", err)
 	}
-	for _, colour := range []string{"auto", "256", "ansi-grey", "ansi-tonal"} {
+	for _, colour := range []string{"auto", "256", "ansi-grey"} {
 		if err := st.validateColourCompatibility(colour); err != nil {
 			t.Fatalf("colour %s rejected: %v", colour, err)
 		}
@@ -146,17 +146,15 @@ func TestColourCapability(t *testing.T) {
 	}{
 		{"auto true", "auto", ColourTrue, terminalCompatibility{}, false, ColourTrue},
 		{"auto 256", "auto", ColourXTerm256, terminalCompatibility{}, false, ColourXTerm256},
-		{"auto tonal", "auto", ColourANSITonal, terminalCompatibility{}, false, ColourANSITonal},
-		{"explicit true raises tonal", "truecolor", ColourANSITonal, terminalCompatibility{}, false, ColourTrue},
-		{"explicit 256 raises tonal", "256", ColourANSITonal, terminalCompatibility{}, false, ColourXTerm256},
-		{"explicit grey raises tonal", "ansi-grey", ColourANSITonal, terminalCompatibility{}, false, ColourXTermGrey},
+		{"auto 256 keeps its cap", "auto", ColourXTerm256, terminalCompatibility{}, false, ColourXTerm256},
+		{"explicit true raises 256", "truecolor", ColourXTerm256, terminalCompatibility{}, false, ColourTrue},
+		{"explicit grey keeps a 256 cap", "ansi-grey", ColourXTerm256, terminalCompatibility{}, false, ColourXTerm256},
 		{"explicit lower mode keeps true cap", "ansi-grey", ColourTrue, terminalCompatibility{}, false, ColourTrue},
 		{"Rio auto caps true", "auto", ColourTrue, terminalCompatibility{rio04: true}, false, ColourXTerm256},
-		{"Rio assertion cannot raise true", "truecolor", ColourANSITonal, terminalCompatibility{rio04: true}, false, ColourXTerm256},
-		{"TTY floors auto tonal", "auto", ColourANSITonal, terminalCompatibility{}, true, ColourXTerm256},
+		{"Rio assertion cannot raise true", "truecolor", ColourXTerm256, terminalCompatibility{rio04: true}, false, ColourXTerm256},
 		{"TTY keeps auto 256", "auto", ColourXTerm256, terminalCompatibility{}, true, ColourXTerm256},
 		{"TTY keeps auto true", "auto", ColourTrue, terminalCompatibility{}, true, ColourTrue},
-		{"Rio TTY floor stays at 256", "auto", ColourANSITonal, terminalCompatibility{rio04: true}, true, ColourXTerm256},
+		{"Rio TTY floor stays at 256", "auto", ColourXTerm256, terminalCompatibility{rio04: true}, true, ColourXTerm256},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -179,23 +177,15 @@ func TestConfigureColourStoresModeAndCapabilitySeparately(t *testing.T) {
 		t.Fatalf("NO_COLOR state = mode %v cap %v, want ansi-grey and 256", st.Colour, st.colourCap)
 	}
 
-	st.configureColour("auto", nil, ColourANSITonal, false)
-	if st.Colour != ColourANSITonal || st.colourCap != ColourANSITonal {
-		t.Fatalf("non-TTY ANSI state = mode %v cap %v, want tonal and tonal", st.Colour, st.colourCap)
+	st.configureColour("auto", nil, ColourXTerm256, false)
+	if st.Colour != ColourXTerm256 || st.colourCap != ColourXTerm256 {
+		t.Fatalf("non-TTY 256 state = mode %v cap %v, want 256 and 256", st.Colour, st.colourCap)
 	}
-	if got := st.CycleColour(false); got != ColourANSITonal {
-		t.Fatalf("non-TTY ANSI forward cycle = %v, want tonal", got)
+	if got := st.CycleColour(false); got != ColourXTermGrey {
+		t.Fatalf("non-TTY 256 forward cycle = %v, want ansi-grey", got)
 	}
-	if got := st.CycleColour(true); got != ColourANSITonal {
-		t.Fatalf("non-TTY ANSI reverse cycle = %v, want tonal", got)
-	}
-
-	st.configureColour("auto", nil, ColourANSITonal, true)
-	if st.Colour != ColourANSITonal || st.colourCap != ColourXTerm256 {
-		t.Fatalf("TTY ANSI state = mode %v cap %v, want tonal and 256", st.Colour, st.colourCap)
-	}
-	if got := st.CycleColour(false); got != ColourXTerm256 {
-		t.Fatalf("TTY ANSI forward cycle = %v, want 256", got)
+	if got := st.CycleColour(true); got != ColourXTerm256 {
+		t.Fatalf("non-TTY 256 reverse cycle = %v, want 256", got)
 	}
 }
 
