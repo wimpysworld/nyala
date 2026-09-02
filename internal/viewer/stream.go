@@ -225,7 +225,7 @@ func handleFatalSignal(sig os.Signal, restore func(), closeEngine func() error, 
 // detection did not confirm it. blocks is the --blocks mode selecting the block
 // glyph scheme; Stream resolves it with resolveScheme against os.Environ(), so
 // auto and sextant render sextant on a supported terminal and quadrant otherwise,
-// quadrant forces quadrant, and half renders half-block.
+// and quadrant forces quadrant.
 // kittyTransport is the --kitty-transport intent (auto, direct, or shm).
 // configureBackends resolves it against the probe result and the allow and
 // deny lists. version is the Nyala build version (main.version, ldflags-set)
@@ -2761,7 +2761,7 @@ func resolveScheme(blocks string, env []string) block.Scheme {
 
 // renderScheme maps a block.Scheme to the render package's BlockScheme, the enum
 // render.BlockCaptureSize takes. The render package cannot import block, so this
-// viewer-side helper bridges the two enums for the three schemes.
+// viewer-side helper bridges the two enums for the two schemes.
 func renderScheme(s block.Scheme) render.BlockScheme {
 	if s == block.SchemeSextant {
 		return render.BlockSextant

@@ -15,7 +15,7 @@ for any other glyph range.
 ## Quadrant scheme
 
 The quadrant scheme draws the U+2596..U+259F quadrant glyphs, the half blocks
-U+2580, U+2584, U+258C, U+2590, the full block U+2588, and space.
+U+2580, U+2584, U+258C, U+2590, and the full block U+2588.
 
 | Terminal | Version | Font path | Multiplexer | Mode | Result |
 | --- | --- | --- | --- | --- | --- |
