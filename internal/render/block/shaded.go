@@ -56,8 +56,10 @@ const (
 // shadedCandidates is the Shaded scheme's candidate glyph set in scoring
 // order. Solid candidates come first, so an equal-error tie prefers a solid
 // glyph over shade texture. The shade set is the Symbols for Legacy Computing
-// rectangular and triangular medium-shade glyphs from Unicode 13.0; U+1FB93,
-// the missing left-block-and-right-shade mirror, is unassigned in Unicode 17.0.
+// rectangular medium-shade glyphs from Unicode 13.0; U+1FB93, the missing
+// left-block-and-right-shade mirror, is unassigned in Unicode 17.0, and the
+// triangular medium shades U+1FB9C..U+1FB9F are excluded because their
+// half-solid texture reads as visual noise.
 var shadedCandidates = [...]rune{
 	fullBlock, // U+2588 full block
 	0x0020,    // space
@@ -72,10 +74,6 @@ var shadedCandidates = [...]rune{
 	0x1FB91,   // upper half block and lower half inverse medium shade
 	0x1FB92,   // upper half inverse medium shade and lower half block
 	0x1FB94,   // left half inverse medium shade and right half block
-	0x1FB9C,   // upper left triangular medium shade
-	0x1FB9D,   // upper right triangular medium shade
-	0x1FB9E,   // lower right triangular medium shade
-	0x1FB9F,   // lower left triangular medium shade
 }
 
 // ShadedCandidates returns the Shaded scheme's candidate glyph set in scoring
@@ -123,17 +121,6 @@ func ShadedOpacity(glyph rune, cx, cy int) (int, bool) {
 		return 2 - ifInk(cy < 8, 1), true
 	case 0x1FB94:
 		return 2 - ifInk(cx < 4, 1), true
-	// The triangle edges follow the spec geometry on lattice point centres:
-	// x + y <= 1 becomes 2*cx + cy <= 14, with no exact ties because the
-	// parities of the two sides always differ.
-	case 0x1FB9C:
-		return ifInk(2*cx+cy <= 14, 1), true
-	case 0x1FB9D:
-		return ifInk(cy <= 2*cx, 1), true
-	case 0x1FB9E:
-		return ifInk(2*cx+cy >= 15, 1), true
-	case 0x1FB9F:
-		return ifInk(cy >= 2*cx+1, 1), true
 	}
 	return 0, false
 }

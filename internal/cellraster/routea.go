@@ -157,7 +157,7 @@ func (r *Rasteriser) RenderGlyphCell(text string, fg, bg color.RGBA) *image.RGBA
 
 // drawShadeCell draws a Symbols for Legacy Computing shade candidate
 // procedurally and reports whether it did. Neither embedded font covers
-// U+1FB8C..U+1FB9F, so the font path would leave those cells blank; the
+// U+1FB8C..U+1FB94, so the font path would leave those cells blank; the
 // procedural path reads the same block.ShadedOpacity geometry the compose
 // coverage tables are built from, one lattice point per raster pixel on the
 // 8x16 cell, so the rasterised proof and the scored model agree. Medium shade

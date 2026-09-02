@@ -153,7 +153,7 @@ func TestShadedRoundTripUsesShadeGlyphs(t *testing.T) {
 		t.Fatalf("blockinterop.Decode: %v", err)
 	}
 	for _, cell := range decoded.Cells {
-		if r := []rune(cell.Text); len(r) == 1 && r[0] >= 0x1FB8C && r[0] <= 0x1FB9F {
+		if r := []rune(cell.Text); len(r) == 1 && r[0] >= 0x1FB8C && r[0] <= 0x1FB94 {
 			return
 		}
 	}

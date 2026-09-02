@@ -31,8 +31,8 @@ func shadedSamples(at func(dx, dy int) color.RGBA) [8]color.RGBA {
 
 // TestShadedCoverageTables pins the coverage model: every bin weight is within
 // 0..32, the flat candidates hit the extremes, the shade halves carry exactly
-// half opacity on their covered side, and each triangle covers exactly half
-// the cell at medium shade.
+// half opacity on their covered side, and each half-and-shade combination
+// carries three quarters of the full-cell weight.
 func TestShadedCoverageTables(t *testing.T) {
 	totals := map[rune]int{}
 	for ci, glyph := range shadedCandidates {
@@ -53,11 +53,6 @@ func TestShadedCoverageTables(t *testing.T) {
 			t.Fatalf("shade half %U total %d, want %d", glyph, totals[glyph], 8*shadedBinMax/4)
 		}
 	}
-	for _, glyph := range []rune{0x1FB9C, 0x1FB9D, 0x1FB9E, 0x1FB9F} {
-		if totals[glyph] != 8*shadedBinMax/4 {
-			t.Fatalf("triangle %U total %d, want half-cell medium shade %d", glyph, totals[glyph], 8*shadedBinMax/4)
-		}
-	}
 	for _, glyph := range []rune{0x1FB91, 0x1FB92, 0x1FB94} {
 		if totals[glyph] != 8*shadedBinMax*3/4 {
 			t.Fatalf("combined glyph %U total %d, want %d", glyph, totals[glyph], 8*shadedBinMax*3/4)
@@ -71,6 +66,11 @@ func TestShadedCoverageTables(t *testing.T) {
 func TestShadedOpacityRejectsNonCandidates(t *testing.T) {
 	if _, ok := ShadedOpacity(0x1FB93, 0, 0); ok {
 		t.Fatal("U+1FB93 is unassigned and must not be a candidate")
+	}
+	for _, glyph := range []rune{0x1FB9C, 0x1FB9D, 0x1FB9E, 0x1FB9F} {
+		if _, ok := ShadedOpacity(glyph, 0, 0); ok {
+			t.Fatalf("triangular shade %U is excluded and must not be a candidate", glyph)
+		}
 	}
 	if _, ok := ShadedOpacity(fullBlock, shadedLatticeW, 0); ok {
 		t.Fatal("out-of-lattice point must not report a candidate")
@@ -162,13 +162,15 @@ func TestShadedCellMonoTone(t *testing.T) {
 	}
 }
 
-// TestShadedCellDiagonalPolarity pins the triangular selections in monochrome:
-// a soft diagonal tone field oriented at each corner picks that corner's
-// triangular medium shade, which the axis-aligned candidates cannot model.
+// TestShadedCellDiagonalPolarity pins the monochrome selections for corner
+// tone fields. With the triangular shades out of the candidate set, no
+// candidate models a diagonal edge exactly, so each corner field scores an
+// exact tie between the two adjacent half-cell medium shades and the earlier
+// candidate in scoring order wins: the left shade for the left corners, the
+// right shade for the right corners.
 func TestShadedCellDiagonalPolarity(t *testing.T) {
-	// mix returns the displayed tone of a triangle's own coverage, so each
-	// fixture is the exact field its triangle models: covered samples at half
-	// tone, uncovered at black.
+	// tone builds a corner field at half tone over black, the field a
+	// triangular medium shade would model exactly.
 	tone := func(covered bool) color.RGBA {
 		if covered {
 			return color.RGBA{R: 0x80, G: 0x80, B: 0x80, A: 0xff}
@@ -180,10 +182,10 @@ func TestShadedCellDiagonalPolarity(t *testing.T) {
 		at    func(dx, dy int) color.RGBA
 		glyph rune
 	}{
-		{"upper left", func(dx, dy int) color.RGBA { return tone(2*dx+dy <= 2) }, 0x1FB9C},
-		{"upper right", func(dx, dy int) color.RGBA { return tone(dy <= 2*dx) }, 0x1FB9D},
-		{"lower right", func(dx, dy int) color.RGBA { return tone(2*dx+dy >= 3) }, 0x1FB9E},
-		{"lower left", func(dx, dy int) color.RGBA { return tone(dy >= 2*dx+1) }, 0x1FB9F},
+		{"upper left", func(dx, dy int) color.RGBA { return tone(2*dx+dy <= 2) }, 0x1FB8C},
+		{"upper right", func(dx, dy int) color.RGBA { return tone(dy <= 2*dx) }, 0x1FB8D},
+		{"lower right", func(dx, dy int) color.RGBA { return tone(2*dx+dy >= 3) }, 0x1FB8D},
+		{"lower left", func(dx, dy int) color.RGBA { return tone(dy >= 2*dx+1) }, 0x1FB8C},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -302,21 +304,21 @@ func TestShadedYCbCrMatchesRGBA(t *testing.T) {
 // UTF-8 form of the Supplementary Multilingual Plane shade glyphs and re-emits
 // a cell whose glyph alone changes, so shade texture never sticks.
 func TestShadedDiffEmitsSMPRunes(t *testing.T) {
-	grid := Grid{Cols: 1, Rows: 1, Cells: []Cell{{Glyph: 0x1FB9C, FG: shadedWhite, BG: shadedBlack}}}
+	grid := Grid{Cols: 1, Rows: 1, Cells: []Cell{{Glyph: 0x1FB8C, FG: shadedWhite, BG: shadedBlack}}}
 	var d GridDiff
 	var out bytes.Buffer
 	if err := d.EmitTrueColour(&out, grid); err != nil {
 		t.Fatalf("EmitTrueColour: %v", err)
 	}
-	if !strings.Contains(out.String(), "\U0001FB9C") {
+	if !strings.Contains(out.String(), "\U0001FB8C") {
 		t.Fatalf("payload %q does not carry the four-byte shade glyph", out.String())
 	}
-	grid.Cells[0].Glyph = 0x1FB9D
+	grid.Cells[0].Glyph = 0x1FB8D
 	out.Reset()
 	if err := d.EmitTrueColour(&out, grid); err != nil {
 		t.Fatalf("EmitTrueColour second frame: %v", err)
 	}
-	if !strings.Contains(out.String(), "\U0001FB9D") {
+	if !strings.Contains(out.String(), "\U0001FB8D") {
 		t.Fatalf("glyph-only change was not re-emitted: %q", out.String())
 	}
 }

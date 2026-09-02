@@ -233,7 +233,7 @@ func greyscale(img *image.RGBA) *image.RGBA {
 func countShadeCells(g block.Grid) int {
 	n := 0
 	for _, c := range g.Cells {
-		if c.Text == "" && c.Glyph >= 0x1FB8C && c.Glyph <= 0x1FB9F {
+		if c.Text == "" && c.Glyph >= 0x1FB8C && c.Glyph <= 0x1FB94 {
 			n++
 		}
 	}

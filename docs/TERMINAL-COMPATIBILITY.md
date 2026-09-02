@@ -15,7 +15,7 @@ for any other glyph range.
 ## Shaded scheme
 
 The Shaded scheme draws the Symbols for Legacy Computing medium-shade glyphs
-U+1FB8C..U+1FB8F, U+1FB91, U+1FB92, U+1FB94, and U+1FB9C..U+1FB9F. No
+U+1FB8C..U+1FB8F, U+1FB91, U+1FB92, and U+1FB94. No
 terminal evidence is recorded yet, so no allow-list exists: the scheme starts
 only from an explicit `--blocks=shaded`, and automatic selection never
 chooses it.
