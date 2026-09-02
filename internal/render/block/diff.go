@@ -9,9 +9,9 @@ import (
 
 // SGRFunc appends the SGR escape that sets a cell colour for the chosen colour
 // mode to dst and returns the extended slice. The caller owns the colour mode, so
-// the differ stays mode-neutral: truecolour, xterm-256, and monochrome (which
-// appends nothing) all flow through the same compare and coalescing. Appending
-// into the differ's reused buffer keeps the per-cell colour build allocation-free.
+// the differ stays mode-neutral: truecolour and every indexed mode flow through
+// the same compare and coalescing. Appending into the differ's reused buffer
+// keeps the per-cell colour build allocation-free.
 type SGRFunc func(dst []byte, c color.RGBA) []byte
 
 // GridDiff retains the last drawn grid and the last emitted foreground and
@@ -209,9 +209,9 @@ func (d *GridDiff) Reset() {
 // emitted bytes changed since the last emitted cell. It updates the cache so a
 // same-colour run sends one SGR pair. A same-colour cell (RGBA equal to the last
 // colour built) skips the rebuild entirely, the common run fast path; on a colour
-// change it rebuilds into the reused buffer and compares the bytes, so two colours
-// that collapse to the same escape (an xterm-256 palette collision, or monochrome
-// which emits nothing) still coalesce.
+// change it rebuilds into the reused buffer and compares the bytes, so two
+// colours that collapse to the same escape (an xterm-256 palette collision)
+// still coalesce.
 func (d *GridDiff) writeColour(w io.Writer, c *Cell, fg, bg SGRFunc) error {
 	if c.FG != d.fgCol {
 		d.sgrBuf = fg(d.sgrBuf[:0], c.FG)

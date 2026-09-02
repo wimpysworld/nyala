@@ -87,23 +87,22 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 | `--private` | off | Use a disposable browser profile and ignore persistent profile settings. |
 | `--backend` | `auto` | Renderer backend: `auto`, `block`, `kitty`, or `sixel`. `auto` picks the terminal's best supported backend. A named backend sets the starting renderer and fails fast if the terminal cannot run it. |
 | `--blocks` | `auto` | Block glyph mode: `auto`, `sextant` (2x3), `quadrant` (2x2), or `half` (1x2). `auto` picks sextant on terminals known to self-draw it, read from a static allow-list of environment variables, and quadrant elsewhere. |
-| `--color` | `auto` | Block colour mode: `auto`, `truecolor`, `256`, `ansi-grey`, `ansi-tonal`, or `none`. |
+| `--color` | `auto` | Block colour mode: `auto`, `truecolor`, `256`, `ansi-grey`, or `ansi-tonal`. |
 | `--disable-frame-rate-limit` | off | Disable Chromium's browser frame-rate limit for benchmark testing. Does not control terminal or display synchronisation. |
 | `--version` | | Print the version and exit. |
 
 ### Block colour modes
 
-Colour mode precedence is an explicit non-`auto` `--color` value, then `NO_COLOR` for `auto`, then detection. Detection treats `COLORTERM=kmscon`, `COLORTERM=truecolor`, or `COLORTERM=24bit` as `truecolor`, even without a TTY. Without one of these values, a non-TTY selects `none`. For a TTY, `auto` keeps the existing truecolour and 256-colour rules. An ANSI profile starts in `none`, and on a real TTY the capability for the colour cycle is floored at `256`, so <kbd>Alt</kbd>+<kbd>C</kbd> can raise colour on an ANSI or unknown terminal. A permitted explicit value selects that exact starting mode.
+Colour mode precedence is an explicit non-`auto` `--color` value, then `NO_COLOR` for `auto`, then detection. Detection treats `COLORTERM=kmscon`, `COLORTERM=truecolor`, or `COLORTERM=24bit` as `truecolor`, even without a TTY. Without one of these values, a non-TTY selects `ansi-tonal`. For a TTY, `auto` keeps the existing truecolour and 256-colour rules. An ANSI, ASCII, or unknown profile starts in `ansi-tonal`, and on a real TTY the capability for the colour cycle is floored at `256`, so <kbd>Alt</kbd>+<kbd>C</kbd> can raise colour on such a terminal. A permitted explicit value selects that exact starting mode. `NO_COLOR` selects the greyscale `ansi-grey` start on a truecolour or 256-colour profile; greyscale output still emits SGR colour codes.
 
 | Mode | Block output | Automatic selection |
 |---|---|---|
 | `truecolor` | 24-bit foreground and background colours. | A truecolour profile or recognised truecolour `COLORTERM` value. |
 | `256` | Canonical xterm palette indexes 16..255. | A 256-colour terminal. |
 | `ansi-grey` | The fixed xterm greyscale ramp at indexes 232..255. | Never. |
-| `ansi-tonal` | Basic ANSI indexes 0..15, selected by tonal value. | Never. |
-| `none` | No colour sequences. | `NO_COLOR`, an ANSI, ASCII, or unknown profile, or a non-TTY output without a recognised truecolour `COLORTERM` value. |
+| `ansi-tonal` | Basic ANSI indexes 0..15, selected by tonal value. | An ANSI, ASCII, or unknown profile, or a non-TTY output without a recognised truecolour `COLORTERM` value. |
 
-<kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `ansi-grey` -> `ansi-tonal` -> `none`, then wraps. Nyala skips modes above the effective terminal capability. With `--color=auto`, an ANSI profile starts in `none`, and the first forward cycle reaches `256`. That change follows user action, not automatic selection. `ansi-grey` remains available through `--color=ansi-grey` or the cycle when the effective capability permits it. An explicit mode can raise a lower detected capability, but a terminal safety rule can still lower it. `NO_COLOR` changes the automatic starting mode to `none`. It does not lower the detected capability for the cycle.
+<kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `ansi-grey` -> `ansi-tonal`, then wraps. Nyala skips modes above the effective terminal capability. With `--color=auto`, an ANSI profile starts in `ansi-tonal`, and on a real TTY the cycle can reach `256`. That change follows user action, not automatic selection. An explicit mode can raise a lower detected capability, but a terminal safety rule can still lower it. `NO_COLOR` changes the automatic starting mode only. It does not lower the detected capability for the cycle.
 
 The `256` mode uses the CIEDE2000-nearest canonical xterm colour. Both degraded modes quantise by luma only. `ansi-grey` maps Rec.601 luma to the nearest fixed xterm grey. `ansi-tonal` maps the same luma to the nearest entry in the reference xterm ANSI order `0, 4, 12, 1, 5, 2, 9, 6, 13, 3, 8, 10, 14, 7, 11, 15`. An exact tie selects the darker entry.
 
@@ -226,7 +225,7 @@ Block shows the glyph mode Nyala auto-selects; `--blocks` overrides it. Yes unde
 That Sixel spread is not new, and it widens across more terminals. In an earlier run at 2560x1600, Nyala's own cost held constant (decode 13.0 to 13.7 ms, encode 28.3 to 30.3 ms) while delivered frames ranged 13x: mlterm 22.9 fps, Alacritty 17.5, foot 8.1, Contour 4.0, WezTerm 1.8.
 
 > [!NOTE]
-> **Rio 0.4.x.** Rio advertises Sixel but does not render it, so Nyala excludes Sixel from auto backend selection. Rio's style table caps truecolour, so auto colour uses the xterm-256 palette. `--color=256`, `--color=ansi-grey`, `--color=ansi-tonal`, and `--color=none` remain available. `--color=truecolor` is rejected. Kitty graphics work, with the live fps badge omitted.
+> **Rio 0.4.x.** Rio advertises Sixel but does not render it, so Nyala excludes Sixel from auto backend selection. Rio's style table caps truecolour, so auto colour uses the xterm-256 palette. `--color=256`, `--color=ansi-grey`, and `--color=ansi-tonal` remain available. `--color=truecolor` is rejected. Kitty graphics work, with the live fps badge omitted.
 
 #### Multiplexers
 

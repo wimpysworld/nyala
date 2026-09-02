@@ -81,7 +81,7 @@ func renderDegradedColourFrame(t *testing.T, flag string, mode ColourMode, cols,
 	t.Helper()
 	st := NewState(cols, terminalRows)
 	st.Backend = BackendBlock
-	st.configureColour(flag, []string{"NO_COLOR=1"}, ColourMono, true)
+	st.configureColour(flag, []string{"NO_COLOR=1"}, ColourANSITonal, true)
 	if st.Colour != mode {
 		t.Fatalf("startup flag %q resolved to %v, want %v", flag, st.Colour, mode)
 	}

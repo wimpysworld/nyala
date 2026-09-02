@@ -534,14 +534,14 @@ func TestCycleScheme(t *testing.T) {
 // TestCycleColour pins the full Alt+C ladder in both directions for every cap.
 func TestCycleColour(t *testing.T) {
 	st := NewState(80, 24)
-	want := []ColourMode{ColourXTerm256, ColourXTermGrey, ColourANSITonal, ColourMono, ColourTrue}
+	want := []ColourMode{ColourXTerm256, ColourXTermGrey, ColourANSITonal, ColourTrue}
 	for i, w := range want {
 		if got := st.CycleColour(false); got != w {
 			t.Fatalf("cycle %d = %d, want %d", i, got, w)
 		}
 	}
-	if got := st.CycleColour(true); got != ColourMono {
-		t.Fatalf("reverse cycle = %d, want mono", got)
+	if got := st.CycleColour(true); got != ColourANSITonal {
+		t.Fatalf("reverse cycle = %d, want ansi-tonal", got)
 	}
 
 	for _, cap := range colourCycle {

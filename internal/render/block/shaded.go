@@ -36,11 +36,6 @@ const (
 	// ShadedANSITonal quantises to the 16 canonical ANSI colours by Rec.601
 	// luma, through ANSI16Tonal.
 	ShadedANSITonal
-	// ShadedMono scores glyph coverage against sample luma with no colour
-	// quantisation; the monochrome writer emits no colour SGR. The model
-	// assumes a light-on-dark terminal, matching the binarise schemes, whose
-	// bright sub-cells also map to glyph ink.
-	ShadedMono
 )
 
 // shadedLatticeW and shadedLatticeH are the unit-cell sample lattice the
@@ -159,10 +154,6 @@ func buildShadedCoverage() [len(shadedCandidates)][8]uint8 {
 	return t
 }
 
-// shadedMonoInk is the modelled luma of full glyph ink for monochrome scoring:
-// the integer Rec.601 luma of opaque white, matching luma's fixed-point scale.
-const shadedMonoInk = (lumaWeightR + lumaWeightG + lumaWeightB) * 255
-
 // xterm256Stable maps each canonical xterm-256 index 16..255 to the stable
 // index whose canonical colour the perceptual LUT maps back to itself. A few
 // canonical colours fall in a 5-bit LUT bucket owned by a perceptual
@@ -190,16 +181,12 @@ func buildXTerm256Stable() [256]uint8 {
 // shadedQuantise maps an estimated cell colour onto the active output palette
 // and returns that palette entry's canonical RGBA, the palette-before-score
 // rule: the scored displayed result is built from colours the writer can emit.
-// Monochrome returns the colour unchanged, because its writer emits no SGR and
-// its scoring runs on luma coverage instead.
 func shadedQuantise(c color.RGBA, pal ShadedPalette) color.RGBA {
 	switch pal {
 	case ShadedXTermGrey:
 		return XTermGreyRGBA(XTermGrey(c))
 	case ShadedANSITonal:
 		return ANSI16RGBA(ANSI16Tonal(c))
-	case ShadedMono:
-		return c
 	default:
 		return XTerm256RGBA(xterm256Stable[XTerm256(c)])
 	}
@@ -222,23 +209,14 @@ func shadedFlat(s *[8]color.RGBA) bool {
 // palette, then scores the displayed result coverage*FG + (1-coverage)*BG
 // against the samples. This derives two colours per candidate rather than
 // searching palette pairs, so the work stays proportional to candidate count
-// times eight samples. Monochrome scores modelled ink luma against sample
-// luma. An exactly flat cell under a colour palette short-circuits to a full
-// block with foreground equal to background, so flat regions never gain shade
-// texture; monochrome keeps full scoring, because rendering flat tone as
-// coverage is that mode's purpose. Equal-error ties keep the earliest
-// candidate, so the result is deterministic and solid glyphs win ties.
+// times eight samples. An exactly flat cell short-circuits to a full block
+// with foreground equal to background, so flat regions never gain shade
+// texture. Equal-error ties keep the earliest candidate, so the result is
+// deterministic and solid glyphs win ties.
 func shadedCell(s *[8]color.RGBA, pal ShadedPalette) Cell {
-	if pal != ShadedMono && shadedFlat(s) {
+	if shadedFlat(s) {
 		q := shadedQuantise(s[0], pal)
 		return Cell{Glyph: fullBlock, FG: q, BG: q}
-	}
-
-	var lumas [8]int
-	if pal == ShadedMono {
-		for i := range s {
-			lumas[i] = luma(s[i])
-		}
 	}
 
 	// The background sums derive from the whole-cell totals, so each candidate
@@ -282,22 +260,15 @@ func shadedCell(s *[8]color.RGBA, pal ShadedPalette) Cell {
 		bq := shadedQuantise(bg, pal)
 
 		var errSum int64
-		if pal == ShadedMono {
-			for i := range s {
-				d := int(cov[i])*shadedMonoInk/shadedBinMax - lumas[i]
-				errSum += int64(d) * int64(d)
-			}
-		} else {
-			for i := range s {
-				w := int(cov[i])
-				dr := (w*int(fq.R) + (shadedBinMax-w)*int(bq.R) + shadedBinMax/2) / shadedBinMax
-				dg := (w*int(fq.G) + (shadedBinMax-w)*int(bq.G) + shadedBinMax/2) / shadedBinMax
-				db := (w*int(fq.B) + (shadedBinMax-w)*int(bq.B) + shadedBinMax/2) / shadedBinMax
-				dr -= int(s[i].R)
-				dg -= int(s[i].G)
-				db -= int(s[i].B)
-				errSum += int64(dr*dr + dg*dg + db*db)
-			}
+		for i := range s {
+			w := int(cov[i])
+			dr := (w*int(fq.R) + (shadedBinMax-w)*int(bq.R) + shadedBinMax/2) / shadedBinMax
+			dg := (w*int(fq.G) + (shadedBinMax-w)*int(bq.G) + shadedBinMax/2) / shadedBinMax
+			db := (w*int(fq.B) + (shadedBinMax-w)*int(bq.B) + shadedBinMax/2) / shadedBinMax
+			dr -= int(s[i].R)
+			dg -= int(s[i].G)
+			db -= int(s[i].B)
+			errSum += int64(dr*dr + dg*dg + db*db)
 		}
 		if bestErr < 0 || errSum < bestErr {
 			bestErr = errSum

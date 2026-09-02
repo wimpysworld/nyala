@@ -395,16 +395,14 @@ func TestWaitForNavigateReturnsNavigateError(t *testing.T) {
 func TestRenderFrameBlockColourModes(t *testing.T) {
 	src := solidImage(color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})
 	for _, tc := range []struct {
-		name       string
-		mode       ColourMode
-		wantSGR    string
-		forbidSGRs bool
+		name    string
+		mode    ColourMode
+		wantSGR string
 	}{
 		{name: "truecolour", mode: ColourTrue, wantSGR: "\x1b[38;2;"},
 		{name: "xterm-256", mode: ColourXTerm256, wantSGR: "\x1b[38;5;"},
 		{name: "xterm-grey", mode: ColourXTermGrey, wantSGR: "\x1b[38;5;"},
 		{name: "ansi-tonal", mode: ColourANSITonal},
-		{name: "monochrome", mode: ColourMono, forbidSGRs: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewState(8, 4)
@@ -426,9 +424,6 @@ func TestRenderFrameBlockColourModes(t *testing.T) {
 			}
 			if tc.wantSGR != "" && !strings.Contains(out, tc.wantSGR) {
 				t.Fatalf("first draw missing %q SGR", tc.wantSGR)
-			}
-			if tc.forbidSGRs && (strings.Contains(out, "\x1b[38;") || strings.Contains(out, "\x1b[48;")) {
-				t.Fatalf("monochrome draw leaked colour SGR: %q", out)
 			}
 
 			var second bytes.Buffer
@@ -529,29 +524,19 @@ func TestANSI16SGRAppender(t *testing.T) {
 	}
 }
 
-func TestExistingIndexedAndMonoWriterByteIdentity(t *testing.T) {
+func TestExistingIndexedWriterByteIdentity(t *testing.T) {
 	grid := block.Grid{Cols: 2, Rows: 1, Cells: []block.Cell{
 		{Glyph: 'a', FG: color.RGBA{A: 0xff}, BG: color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}},
 		{Glyph: 'b', FG: color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}, BG: color.RGBA{A: 0xff}},
 	}}
-	for _, tc := range []struct {
-		name string
-		mode ColourMode
-		want string
-	}{
-		{"xterm-256", ColourXTerm256, "\x1b[1;1H\x1b[38;5;16m\x1b[48;5;231ma\x1b[38;5;231m\x1b[48;5;16mb"},
-		{"monochrome", ColourMono, "\x1b[1;1Hab"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var d block.GridDiff
-			var out bytes.Buffer
-			if err := d.Emit(&out, grid, fgSGRFunc(tc.mode), bgSGRFunc(tc.mode)); err != nil {
-				t.Fatal(err)
-			}
-			if got := out.String(); got != tc.want {
-				t.Fatalf("output = %q, want %q", got, tc.want)
-			}
-		})
+	want := "\x1b[1;1H\x1b[38;5;16m\x1b[48;5;231ma\x1b[38;5;231m\x1b[48;5;16mb"
+	var d block.GridDiff
+	var out bytes.Buffer
+	if err := d.Emit(&out, grid, fgSGRFunc(ColourXTerm256), bgSGRFunc(ColourXTerm256)); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
 	}
 }
 
@@ -582,6 +567,12 @@ func decodedSGRs(t *testing.T, out string) [][]int {
 		start = end
 	}
 	return decoded
+}
+
+// noSGRFunc returns an SGRFunc that appends nothing, so a differ test can
+// observe cursor movement without SGR noise.
+func noSGRFunc() block.SGRFunc {
+	return func(dst []byte, _ color.RGBA) []byte { return dst }
 }
 
 func isANSITonalCode(code int) bool {
@@ -1078,11 +1069,11 @@ func TestRenderStreamFrameRoutesThroughDiff(t *testing.T) {
 
 // TestViewerDiffChangedCellCountDrivesEmit pins AC 4 on the viewer's differ path:
 // one changed cell emits escapes for that cell only, not the whole grid. It drives
-// the viewer's own GridDiff with the viewer's colour funcs in monochrome, so the
-// only escape is the single cell's CUP.
+// the viewer's own GridDiff with SGR-free colour funcs, so the only escape is
+// the single cell's CUP.
 func TestViewerDiffChangedCellCountDrivesEmit(t *testing.T) {
 	var d block.GridDiff
-	fg, bg := fgSGRFunc(ColourMono), bgSGRFunc(ColourMono)
+	fg, bg := noSGRFunc(), noSGRFunc()
 	g := diffGridOf(6, 3, block.Cell{Glyph: 'a'})
 	if err := d.Emit(&bytes.Buffer{}, g, fg, bg); err != nil {
 		t.Fatal(err)
@@ -1134,11 +1125,11 @@ func TestViewerDiffUniformRowOneSGRPair(t *testing.T) {
 }
 
 // TestViewerDiffContiguousRunOneCUP pins AC 6 on the viewer's differ path: a
-// contiguous changed run emits a single CUP for the run. Monochrome removes SGR
-// noise, so every escape in the stream is a CUP.
+// contiguous changed run emits a single CUP for the run. SGR-free colour funcs
+// remove SGR noise, so every escape in the stream is a CUP.
 func TestViewerDiffContiguousRunOneCUP(t *testing.T) {
 	var d block.GridDiff
-	fg, bg := fgSGRFunc(ColourMono), bgSGRFunc(ColourMono)
+	fg, bg := noSGRFunc(), noSGRFunc()
 	g := diffGridOf(6, 1, block.Cell{Glyph: 'a'})
 	if err := d.Emit(&bytes.Buffer{}, g, fg, bg); err != nil {
 		t.Fatal(err)

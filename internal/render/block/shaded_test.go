@@ -136,41 +136,18 @@ func TestShadedCellFlatFallback(t *testing.T) {
 	}
 }
 
-// TestShadedCellMonoTone pins the monochrome coverage model: flat black reads
-// as the space glyph, flat white as the full block, and flat mid grey as a
-// medium-shade candidate rather than either flat extreme, because coverage is
-// the only tone monochrome has.
-func TestShadedCellMonoTone(t *testing.T) {
-	flat := func(c color.RGBA) [8]color.RGBA {
-		return shadedSamples(func(_, _ int) color.RGBA { return c })
-	}
-	black := flat(shadedBlack)
-	if cell := shadedCell(&black, ShadedMono); cell.Glyph != 0x0020 {
-		t.Fatalf("mono flat black = %U, want space", cell.Glyph)
-	}
-	white := flat(shadedWhite)
-	if cell := shadedCell(&white, ShadedMono); cell.Glyph != fullBlock {
-		t.Fatalf("mono flat white = %U, want full block", cell.Glyph)
-	}
-	grey := flat(color.RGBA{R: 0x80, G: 0x80, B: 0x80, A: 0xff})
-	cell := shadedCell(&grey, ShadedMono)
-	if cell.Glyph == 0x0020 || cell.Glyph == fullBlock {
-		t.Fatalf("mono flat mid grey = %U, want a shade candidate carrying tone", cell.Glyph)
-	}
-	if _, ok := ShadedOpacity(cell.Glyph, 0, 0); !ok {
-		t.Fatalf("mono mid grey picked %U, which is not a candidate", cell.Glyph)
-	}
-}
-
-// TestShadedCellDiagonalPolarity pins the monochrome selections for corner
-// tone fields. With the triangular shades out of the candidate set, no
-// candidate models a diagonal edge exactly, so each corner field scores an
-// exact tie between the two adjacent half-cell medium shades and the earlier
-// candidate in scoring order wins: the left shade for the left corners, the
-// right shade for the right corners.
+// TestShadedCellDiagonalPolarity pins the selections for corner tone fields
+// under the greyscale palette. With the triangular shades out of the
+// candidate set, no candidate models a diagonal edge, and the derived
+// foreground of every four-bin candidate averages the same grey, so all four
+// orientations score an exact tie and the earliest four-bin candidate in
+// scoring order wins: the upper half block, with distinct foreground and
+// background. The pin is the determinism of that tie, not a shade selection;
+// shade glyphs appear where solid pairs cannot cross a palette tone gap,
+// which the compose quantisation and round-trip tests cover.
 func TestShadedCellDiagonalPolarity(t *testing.T) {
 	// tone builds a corner field at half tone over black, the field a
-	// triangular medium shade would model exactly.
+	// triangular medium shade modelled exactly before its removal.
 	tone := func(covered bool) color.RGBA {
 		if covered {
 			return color.RGBA{R: 0x80, G: 0x80, B: 0x80, A: 0xff}
@@ -178,21 +155,23 @@ func TestShadedCellDiagonalPolarity(t *testing.T) {
 		return shadedBlack
 	}
 	cases := []struct {
-		name  string
-		at    func(dx, dy int) color.RGBA
-		glyph rune
+		name string
+		at   func(dx, dy int) color.RGBA
 	}{
-		{"upper left", func(dx, dy int) color.RGBA { return tone(2*dx+dy <= 2) }, 0x1FB8C},
-		{"upper right", func(dx, dy int) color.RGBA { return tone(dy <= 2*dx) }, 0x1FB8D},
-		{"lower right", func(dx, dy int) color.RGBA { return tone(2*dx+dy >= 3) }, 0x1FB8D},
-		{"lower left", func(dx, dy int) color.RGBA { return tone(dy >= 2*dx+1) }, 0x1FB8C},
+		{"upper left", func(dx, dy int) color.RGBA { return tone(2*dx+dy <= 2) }},
+		{"upper right", func(dx, dy int) color.RGBA { return tone(dy <= 2*dx) }},
+		{"lower right", func(dx, dy int) color.RGBA { return tone(2*dx+dy >= 3) }},
+		{"lower left", func(dx, dy int) color.RGBA { return tone(dy >= 2*dx+1) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := shadedSamples(tc.at)
-			cell := shadedCell(&s, ShadedMono)
-			if cell.Glyph != tc.glyph {
-				t.Fatalf("cell = %U, want %U", cell.Glyph, tc.glyph)
+			cell := shadedCell(&s, ShadedXTermGrey)
+			if cell.Glyph != 0x2580 {
+				t.Fatalf("cell = %U, want the tie-resolved upper half block", cell.Glyph)
+			}
+			if cell.FG == cell.BG {
+				t.Fatalf("corner field composed flat: fg %v == bg %v", cell.FG, cell.BG)
 			}
 		})
 	}
@@ -249,7 +228,7 @@ func TestShadedComposeParallelByteIdentity(t *testing.T) {
 	frame := render.Frame{Img: img}
 	pool := rowband.New()
 	pc := NewParallelCompose()
-	for _, pal := range []ShadedPalette{ShadedXTerm256, ShadedXTermGrey, ShadedANSITonal, ShadedMono} {
+	for _, pal := range []ShadedPalette{ShadedXTerm256, ShadedXTermGrey, ShadedANSITonal} {
 		br := Renderer{Cols: cols, Rows: rows, Scheme: SchemeShaded, Palette: pal}
 		serial := br.Compose(frame)
 		var parallel Grid

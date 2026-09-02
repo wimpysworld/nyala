@@ -116,8 +116,9 @@ func (c terminalCompatibility) trueColourAllowed() bool {
 
 // resolveCompatibleColour applies terminal compatibility after normal colour
 // resolution. Rio 0.4.x auto mode is capped at xterm-256 because its append-only
-// style table is exhausted by truecolour Block frames. Explicit 256 and none
-// retain their normal result; explicit truecolor remains visible for validation.
+// style table is exhausted by truecolour Block frames. Every explicit indexed
+// mode retains its normal result; explicit truecolor remains visible for
+// validation.
 func resolveCompatibleColour(flag string, environ []string, detected ColourMode, compat terminalCompatibility) ColourMode {
 	resolved := resolveColour(flag, environ, detected)
 	if flag == "auto" && !compat.trueColourAllowed() && resolved == ColourTrue {
@@ -130,7 +131,7 @@ func resolveCompatibleColour(flag string, environ []string, detected ColourMode,
 // cycle can use. An explicit mode raises a lower detected cap because the user
 // asserted support, while terminal compatibility remains authoritative. On a
 // real TTY the cap is floored at xterm-256: an unknown or degraded profile
-// still starts monochrome, but Alt+C can raise colour on user action, because
+// still starts tonal ANSI, but Alt+C can raise colour on user action, because
 // every modern interactive terminal renders indexed colour. A non-TTY keeps
 // its detected cap, so piped output never gains colour modes.
 func resolveColourCapability(flag string, detected ColourMode, compat terminalCompatibility, isTTY bool) ColourMode {
@@ -169,14 +170,14 @@ func (s *State) validateForcedBackend(mode string) error {
 // Block scheme and returns unchanged for every other scheme. Explicit
 // truecolour is rejected before the first paint. Under --color=auto a
 // truecolour resolution degrades to xterm-256, the scheme's preferred
-// palette; a resolved 256, ANSI tonal, ANSI greyscale, or monochrome mode
-// stands, so the automatic fallback changes only the automatic choice.
+// palette; a resolved 256, ANSI tonal, or ANSI greyscale mode stands, so the
+// automatic fallback changes only the automatic choice.
 func (s *State) applyShadedColour(colourFlag string) error {
 	if s.Scheme != block.SchemeShaded {
 		return nil
 	}
 	if colourFlag == "truecolor" {
-		return fmt.Errorf("viewer: shaded Block mode does not support truecolour; use --color=256, --color=ansi-tonal, --color=ansi-grey, or --color=none")
+		return fmt.Errorf("viewer: shaded Block mode does not support truecolour; use --color=256, --color=ansi-tonal, or --color=ansi-grey")
 	}
 	if s.Colour == ColourTrue {
 		s.Colour = ColourXTerm256
@@ -189,7 +190,7 @@ func (s *State) applyShadedColour(colourFlag string) error {
 // backend, so truecolour Block frames are always reachable at runtime.
 func (s *State) validateColourCompatibility(colourFlag string) error {
 	if s.compat.rio04 && colourFlag == "truecolor" {
-		return fmt.Errorf("viewer: Rio 0.4.x cannot use truecolour Block rendering; use --color=256, --color=ansi-grey, --color=ansi-tonal, or --color=none")
+		return fmt.Errorf("viewer: Rio 0.4.x cannot use truecolour Block rendering; use --color=256, --color=ansi-grey, or --color=ansi-tonal")
 	}
 	return nil
 }

@@ -39,7 +39,6 @@ var shadedABModes = []struct {
 	{"256", viewer.ColourXTerm256},
 	{"ansi-grey", viewer.ColourXTermGrey},
 	{"ansi-tonal", viewer.ColourANSITonal},
-	{"mono", viewer.ColourMono},
 }
 
 // shadedABFixture is one synthetic A/B input with its assertion class.
@@ -155,8 +154,6 @@ type shadedABRender struct {
 // composeShadedAB drives one (scheme, mode) leg through the production seams:
 // viewer.State.ComposeBlockFrame for the grid, RenderStreamFrame with a fresh
 // differ for the full-frame payload bytes, and Route A for the render image.
-// Monochrome rasterises the grid recoloured to the terminal-default model,
-// white ink on black, matching the scheme's light-on-dark tone model.
 func composeShadedAB(t *testing.T, rast *cellraster.Rasteriser, scheme block.Scheme, mode viewer.ColourMode, frame render.Frame, cols, rows int) shadedABRender {
 	t.Helper()
 	st := viewer.NewState(cols, rows+1)
@@ -183,9 +180,6 @@ func composeShadedAB(t *testing.T, rast *cellraster.Rasteriser, scheme block.Sch
 // no-op there; the quadrant compose stores truecolour averages, which the
 // writer quantises at emit.
 func displayGrid(g block.Grid, mode viewer.ColourMode) block.Grid {
-	if mode == viewer.ColourMono {
-		return monoDisplayGrid(g)
-	}
 	quantise := func(c color.RGBA) color.RGBA {
 		switch mode {
 		case viewer.ColourXTermGrey:
@@ -200,30 +194,6 @@ func displayGrid(g block.Grid, mode viewer.ColourMode) block.Grid {
 	for i := range out.Cells {
 		out.Cells[i].FG = quantise(out.Cells[i].FG)
 		out.Cells[i].BG = quantise(out.Cells[i].BG)
-	}
-	return out
-}
-
-// monoDisplayGrid recolours a grid to the monochrome display model: every
-// cell's ink is the terminal default foreground (white) on the default
-// background (black), which is what a monochrome terminal shows for a stream
-// that carries no colour SGR.
-func monoDisplayGrid(g block.Grid) block.Grid {
-	out := block.Grid{Cols: g.Cols, Rows: g.Rows, Cells: append([]block.Cell(nil), g.Cells...)}
-	for i := range out.Cells {
-		out.Cells[i].FG = color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
-		out.Cells[i].BG = color.RGBA{A: 0xff}
-	}
-	return out
-}
-
-// greyscale returns the Rec.601 greyscale of img, the reference form the
-// monochrome legs compare against, so mono scores tone rather than hue.
-func greyscale(img *image.RGBA) *image.RGBA {
-	out := image.NewRGBA(img.Bounds())
-	for i := 0; i < len(img.Pix); i += 4 {
-		v := uint8((77*int(img.Pix[i]) + 150*int(img.Pix[i+1]) + 29*int(img.Pix[i+2])) / 256)
-		out.Pix[i], out.Pix[i+1], out.Pix[i+2], out.Pix[i+3] = v, v, v, 0xff
 	}
 	return out
 }
@@ -277,28 +247,22 @@ func logShadedABRow(t *testing.T, fixture, mode, scheme string, r shadedABRender
 // synthetic diagonal, shade, split, and flat fixtures under every compatible
 // colour mode, logs the full metric table, and enforces the harness-signal
 // facts: the shade and diagonal fixtures produce genuinely different grids
-// with shade glyphs in play under monochrome and ANSI tonal, and the exactly
-// flat fixtures never gain shade texture under a colour palette.
+// with shade glyphs in play under ANSI tonal, and the exactly flat fixtures
+// never gain shade texture.
 func TestShadedABSynthetic(t *testing.T) {
 	rast := newRasteriser(t)
 	for _, fx := range shadedABFixtures() {
 		composeSrc := metrics.Downscale(fx.img, shadedABCols*2, shadedABRows*4)
 		ideal := metrics.IdealGrid(composeSrc, shadedABCols, shadedABRows)
 		idealImg := rast.Rasterise(ideal)
-		monoIdealImg := rast.Rasterise(monoDisplayGrid(ideal))
-		greyRef := greyscale(fx.img)
 		for _, m := range shadedABModes {
 			frame := render.Frame{Img: fx.img}
 			a := composeShadedAB(t, rast, block.SchemeQuadrant, m.mode, frame, shadedABCols, shadedABRows)
 			b := composeShadedAB(t, rast, block.SchemeShaded, m.mode, frame, shadedABCols, shadedABRows)
-			ref, oracle := fx.img, idealImg
-			if m.mode == viewer.ColourMono {
-				ref, oracle = greyRef, monoIdealImg
-			}
-			logShadedABRow(t, fx.name, m.name, "quadrant", a, ref, oracle)
-			logShadedABRow(t, fx.name, m.name, "shaded", b, ref, oracle)
+			logShadedABRow(t, fx.name, m.name, "quadrant", a, fx.img, idealImg)
+			logShadedABRow(t, fx.name, m.name, "shaded", b, fx.img, idealImg)
 
-			if fx.shadeSignal && (m.mode == viewer.ColourMono || m.mode == viewer.ColourANSITonal) {
+			if fx.shadeSignal && m.mode == viewer.ColourANSITonal {
 				if gridsEqual(a.grid, b.grid) {
 					t.Fatalf("fixture %s mode %s: Shaded grid is identical to quadrant, so the fixture carries no A/B signal", fx.name, m.name)
 				}
@@ -306,7 +270,7 @@ func TestShadedABSynthetic(t *testing.T) {
 					t.Fatalf("fixture %s mode %s: Shaded composed no shade glyph", fx.name, m.name)
 				}
 			}
-			if fx.flat && m.mode != viewer.ColourMono {
+			if fx.flat {
 				if n := countShadeCells(b.grid); n != 0 {
 					t.Fatalf("fixture %s mode %s: flat source gained %d shade cells", fx.name, m.name, n)
 				}
@@ -335,18 +299,12 @@ func TestShadedABCorpus(t *testing.T) {
 		composeSrc := metrics.Downscale(src, CalibCols*2, CalibRows*4)
 		ideal := metrics.IdealGrid(composeSrc, CalibCols, CalibRows)
 		idealImg := rast.Rasterise(ideal)
-		monoIdealImg := rast.Rasterise(monoDisplayGrid(ideal))
-		greyRef := greyscale(ref)
 		for _, m := range shadedABModes {
 			frame := render.Frame{Img: src}
 			a := composeShadedAB(t, rast, block.SchemeQuadrant, m.mode, frame, CalibCols, CalibRows)
 			b := composeShadedAB(t, rast, block.SchemeShaded, m.mode, frame, CalibCols, CalibRows)
-			pageRef, oracle := ref, idealImg
-			if m.mode == viewer.ColourMono {
-				pageRef, oracle = greyRef, monoIdealImg
-			}
-			logShadedABRow(t, pageName(card), m.name, "quadrant", a, pageRef, oracle)
-			logShadedABRow(t, pageName(card), m.name, "shaded", b, pageRef, oracle)
+			logShadedABRow(t, pageName(card), m.name, "quadrant", a, ref, idealImg)
+			logShadedABRow(t, pageName(card), m.name, "shaded", b, ref, idealImg)
 		}
 	}
 }

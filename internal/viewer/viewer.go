@@ -59,9 +59,6 @@ const (
 	ColourXTermGrey
 	// ColourANSITonal maps block colours onto the terminal's ANSI tonal range.
 	ColourANSITonal
-	// ColourMono emits each cell's glyph with no fg/bg SGR, rendering a 1-bit
-	// silhouette on the terminal default fg/bg. detect_colour.go cites this value.
-	ColourMono
 )
 
 // State is the viewer's render and backend state. Cols and Rows are the terminal
@@ -355,7 +352,7 @@ func (s *State) CycleScheme(reverse bool) block.Scheme {
 
 // colourCycle is the Alt+C block colour mode cycle order, highest capability
 // first. CycleColour skips modes above the effective terminal cap.
-var colourCycle = []ColourMode{ColourTrue, ColourXTerm256, ColourXTermGrey, ColourANSITonal, ColourMono}
+var colourCycle = []ColourMode{ColourTrue, ColourXTerm256, ColourXTermGrey, ColourANSITonal}
 
 // CycleColour steps through the colour ladder and returns the new mode. It
 // skips modes above the effective capability cap, and skips truecolour while
@@ -609,8 +606,6 @@ func shadedPalette(mode ColourMode) block.ShadedPalette {
 		return block.ShadedXTermGrey
 	case ColourANSITonal:
 		return block.ShadedANSITonal
-	case ColourMono:
-		return block.ShadedMono
 	default:
 		return block.ShadedXTerm256
 	}
@@ -652,8 +647,6 @@ func appendSGRANSI(dst []byte, base int, idx uint8) []byte {
 // mode appends into the differ's reused buffer, so no per-cell string allocates.
 func fgSGRFunc(mode ColourMode) block.SGRFunc {
 	switch mode {
-	case ColourMono:
-		return func(dst []byte, _ color.RGBA) []byte { return dst }
 	case ColourXTerm256:
 		return func(dst []byte, c color.RGBA) []byte {
 			return appendSGR256(dst, fg256Prefix, block.XTerm256(c))
@@ -676,8 +669,6 @@ func fgSGRFunc(mode ColourMode) block.SGRFunc {
 // mode appends into the differ's reused buffer, so no per-cell string allocates.
 func bgSGRFunc(mode ColourMode) block.SGRFunc {
 	switch mode {
-	case ColourMono:
-		return func(dst []byte, _ color.RGBA) []byte { return dst }
 	case ColourXTerm256:
 		return func(dst []byte, c color.RGBA) []byte {
 			return appendSGR256(dst, bg256Prefix, block.XTerm256(c))

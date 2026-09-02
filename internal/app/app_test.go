@@ -126,11 +126,17 @@ func TestParseURLRequired(t *testing.T) {
 }
 
 func TestParseColorOverrides(t *testing.T) {
-	for _, mode := range []string{"truecolor", "256", "ansi-grey", "ansi-tonal", "none"} {
+	for _, mode := range []string{"truecolor", "256", "ansi-grey", "ansi-tonal"} {
 		cli := parse(t, "--color", mode, "example.com")
 		if cli.Color != mode {
 			t.Errorf("--color %s: Color = %q, want %q", mode, cli.Color, mode)
 		}
+	}
+}
+
+func TestParseColorNoneRemoved(t *testing.T) {
+	if _, err := tryParse("--color", "none", "example.com"); err == nil {
+		t.Errorf("--color none: want a parse error, got nil")
 	}
 }
 
