@@ -115,7 +115,7 @@ func TestComposeYCbCrMatchesIntermediateRGBA(t *testing.T) {
 		image.YCbCrSubsampleRatio411,
 		image.YCbCrSubsampleRatio410,
 	}
-	schemes := []Scheme{SchemeQuadrant, SchemeHalfBlock, SchemeSextant}
+	schemes := []Scheme{SchemeQuadrant, SchemeSextant}
 	sources := []struct {
 		name string
 		full image.Rectangle
@@ -348,8 +348,8 @@ func TestParallelComposeReuseTransitions(t *testing.T) {
 			overlay: ycbcrTestRuns(),
 		},
 		{
-			name: "resized-half",
-			br:   Renderer{Cols: 11, Rows: 9, Scheme: SchemeHalfBlock},
+			name: "resized-quadrant",
+			br:   Renderer{Cols: 11, Rows: 9, Scheme: SchemeQuadrant},
 			src:  patternedYCbCr(image.Rect(0, 0, 143, 131), image.YCbCrSubsampleRatio444),
 		},
 	}

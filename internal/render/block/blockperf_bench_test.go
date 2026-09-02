@@ -38,7 +38,6 @@ func BenchmarkBlockCompose(b *testing.B) {
 	}{
 		{"quadrant", SchemeQuadrant, render.BlockQuadrant},
 		{"sextant", SchemeSextant, render.BlockSextant},
-		{"half", SchemeHalfBlock, render.BlockHalf},
 		{"shaded", SchemeShaded, render.BlockShaded},
 	} {
 		b.Run(scheme.name, func(b *testing.B) {
@@ -75,7 +74,6 @@ func BenchmarkBlockComposeParallel(b *testing.B) {
 	}{
 		{"quadrant", SchemeQuadrant, render.BlockQuadrant},
 		{"sextant", SchemeSextant, render.BlockSextant},
-		{"half", SchemeHalfBlock, render.BlockHalf},
 		{"shaded", SchemeShaded, render.BlockShaded},
 	} {
 		b.Run(scheme.name, func(b *testing.B) {

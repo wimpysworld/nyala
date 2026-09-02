@@ -370,31 +370,6 @@ func TestRendererName(t *testing.T) {
 	}
 }
 
-// TestComposeHalfBlockCell builds a synthetic one-cell half-block frame whose top
-// source pixel is bright and bottom pixel is dark, then asserts the cell carries
-// the lower-half-block glyph with fg = bottom pixel and bg = top pixel.
-func TestComposeHalfBlockCell(t *testing.T) {
-	img := image.NewRGBA(image.Rect(0, 0, halfCellPxW, halfCellPxH))
-	setPx := func(x, y int, c color.RGBA) {
-		i := img.PixOffset(x, y)
-		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = c.R, c.G, c.B, c.A
-	}
-	setPx(0, 0, bright) // top pixel -> background
-	setPx(0, 1, dark)   // bottom pixel -> foreground
-	br := &Renderer{Cols: 1, Rows: 1, Scheme: SchemeHalfBlock}
-	g := br.Compose(render.Frame{Img: img})
-	cell := g.At(0, 0)
-	if cell.Glyph != 0x2584 {
-		t.Fatalf("glyph: got %#U, want U+2584", cell.Glyph)
-	}
-	if cell.FG != dark {
-		t.Fatalf("fg: got %v, want bottom pixel dark %v", cell.FG, dark)
-	}
-	if cell.BG != bright {
-		t.Fatalf("bg: got %v, want top pixel bright %v", cell.BG, bright)
-	}
-}
-
 // validGrid checks a composed grid matches the requested cols x rows, stores
 // exactly cols*rows cells, and every cell carries a non-zero glyph.
 func validGrid(t *testing.T, g Grid, cols, rows int) {
@@ -412,9 +387,10 @@ func validGrid(t *testing.T, g Grid, cols, rows int) {
 	}
 }
 
-// TestComposeBothSchemes renders the same Frame in both schemes and asserts each
-// produces a valid grid. The Frame is sized to the quadrant footprint, the larger
-// of the two, so the half-block sampler stays in bounds too.
+// TestComposeBothSchemes renders the same Frame in the quadrant and sextant
+// binarisation schemes and asserts each produces a valid grid. The Frame is
+// sized to the quadrant footprint, the larger of the two, so the sextant
+// sampler stays in bounds too.
 func TestComposeBothSchemes(t *testing.T) {
 	const cols, rows = 4, 3
 	img := fillRGBA(cols*cellPxW, rows*cellPxH, color.RGBA{R: 200, G: 120, B: 40, A: 0xff})
@@ -423,28 +399,8 @@ func TestComposeBothSchemes(t *testing.T) {
 	quad := &Renderer{Cols: cols, Rows: rows, Scheme: SchemeQuadrant}
 	validGrid(t, quad.Compose(f), cols, rows)
 
-	half := &Renderer{Cols: cols, Rows: rows, Scheme: SchemeHalfBlock}
-	hg := half.Compose(f)
-	validGrid(t, hg, cols, rows)
-	for i := range hg.Cells {
-		if hg.Cells[i].Glyph != 0x2584 {
-			t.Fatalf("half-block cell %d: got %#U, want U+2584", i, hg.Cells[i].Glyph)
-		}
-	}
-}
-
-// TestSampleHalfBlockChannelOrder asserts RGBA channel order through the half-
-// block sampler. A cell whose source pixels are pure red must surface red fg and
-// bg, never green or blue. A channel swap would surface here.
-func TestSampleHalfBlockChannelOrder(t *testing.T) {
-	red := color.RGBA{R: 255, G: 0, B: 0, A: 0xff}
-	img := fillRGBA(halfCellPxW, halfCellPxH, red)
-	top, bottom := sampleHalfBlock(img, 0, 0)
-	for _, q := range []color.RGBA{top, bottom} {
-		if q.R != 255 || q.G != 0 || q.B != 0 {
-			t.Fatalf("RGBA order: got %v, want pure red (255,0,0)", q)
-		}
-	}
+	sext := &Renderer{Cols: cols, Rows: rows, Scheme: SchemeSextant}
+	validGrid(t, sext.Compose(f), cols, rows)
 }
 
 // TestSampleQuadrantChannelOrder asserts RGBA channel order through the sampler.

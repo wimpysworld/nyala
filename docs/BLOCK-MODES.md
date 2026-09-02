@@ -1,15 +1,14 @@
 # Block modes
 
-Nyala supports four schemes for the Block backend. The `--blocks` flag accepts `auto`, `sextant`, `quadrant`, `half`, or `shaded`.
+Nyala supports three schemes for the Block backend. The `--blocks` flag accepts `auto`, `sextant`, `quadrant`, or `shaded`.
 
 | Scheme | Flag value | Source pixels per cell | Selection |
 | --- | --- | --- | --- |
 | Quadrant | `quadrant` | 2x4, reduced to a 2x2 mask | Explicit choice and fallback |
-| Half-block | `half` | 1x2 | Explicit choice |
 | Sextant | `sextant` | 2x3 | Used when the existing sextant check passes, otherwise Quadrant |
 | Shaded | `shaded` | 2x4, scored against shade glyph candidates | Explicit choice only, experimental, low-colour only |
 
-`auto` uses Sextant when the existing sextant check passes. It uses Quadrant otherwise. `auto` never selects Shaded. The interactive Block-mode cycle contains Half-block, Quadrant, Sextant, and, only on a session started with `--blocks=shaded` and a compatible colour mode, Shaded.
+`auto` uses Sextant when the existing sextant check passes. It uses Quadrant otherwise. `auto` never selects Shaded. The interactive Block-mode cycle contains Quadrant, Sextant, and, only on a session started with `--blocks=shaded` and a compatible colour mode, Shaded.
 
 ## Shaded scheme (experimental)
 

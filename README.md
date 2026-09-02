@@ -86,7 +86,7 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 | `--profile` | `~/.local/share/nyala/profile` | Persistent browser profile directory. `NYALA_PROFILE` and `XDG_DATA_HOME` can change the default. |
 | `--private` | off | Use a disposable browser profile and ignore persistent profile settings. |
 | `--backend` | `auto` | Renderer backend: `auto`, `block`, `kitty`, or `sixel`. `auto` picks the terminal's best supported backend. A named backend sets the starting renderer and fails fast if the terminal cannot run it. |
-| `--blocks` | `auto` | Block glyph mode: `auto`, `sextant` (2x3), `quadrant` (2x2), or `half` (1x2). `auto` picks sextant on terminals known to self-draw it, read from a static allow-list of environment variables, and quadrant elsewhere. |
+| `--blocks` | `auto` | Block glyph mode: `auto`, `sextant` (2x3), or `quadrant` (2x2). `auto` picks sextant on terminals known to self-draw it, read from a static allow-list of environment variables, and quadrant elsewhere. |
 | `--color` | `auto` | Block colour mode: `auto`, `truecolor`, `256`, or `ansi-grey`. |
 | `--disable-frame-rate-limit` | off | Disable Chromium's browser frame-rate limit for benchmark testing. Does not control terminal or display synchronisation. |
 | `--version` | | Print the version and exit. |
@@ -137,7 +137,7 @@ The `256` mode uses the CIEDE2000-nearest canonical xterm colour. `ansi-grey` qu
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Interrupt |
 | <kbd>Alt</kbd>+<kbd>R</kbd> | Cycle rendering backend |
 | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> | Cycle rendering backend backwards |
-| <kbd>Alt</kbd>+<kbd>B</kbd> | Cycle Block mode: Half -> Quadrant -> Sextant (Block backend only) |
+| <kbd>Alt</kbd>+<kbd>B</kbd> | Cycle Block mode: Quadrant -> Sextant (Block backend only) |
 | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> | Cycle Block mode backwards (Block backend only) |
 | <kbd>Alt</kbd>+<kbd>C</kbd> | Cycle colour mode: Truecolour -> 256 -> ANSI grey (Block backend only) |
 | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> | Cycle colour mode backwards (Block backend only) |
@@ -161,7 +161,7 @@ Three backends sit behind one `Renderer` seam. Swapping backend changes the rend
 
 | Backend | Protocol | Fidelity | Notes |
 |---|---|---|---|
-| **Block** | None; plain Unicode glyphs | Universal floor | Any TTY, including a bare Linux console. Three schemes: sextant (2x3), quadrant (2x2, the fallback), half-block (1x2). Colour modes range from truecolour to no colour. |
+| **Block** | None; plain Unicode glyphs | Universal floor | Any TTY, including a bare Linux console. Two schemes: sextant (2x3) and quadrant (2x2, the fallback). Colour modes range from truecolour to greyscale. |
 | **Sixel** | Sixel graphics | Higher | Bitmap output with a temporally stable adaptive palette. |
 | **Kitty** | Kitty graphics | Highest | Two transports. Shared memory, probed at startup: decoded raw RGBA handed over POSIX shared memory. Direct fallback: Chromium's PNG passed straight to Kitty framing, no decode, no re-encode. |
 
@@ -202,7 +202,7 @@ Nyala is the fastest terminal browser, and the highest fidelity one. On the WebG
 
 WebGL Aquarium at 2560x1440. The terminal sets the Sixel rate, not Nyala: on Alacritty the write costs 51.1 ms per frame against 25.5 ms for Nyala's entire encode. Sixel stays capped because uncapping it only adds contention and drops more frames.
 
-Sextants split a cell into three rows where quadrants and half-blocks split it into two, so Block resolves 1.5 times the vertical detail of either.
+Sextants split a cell into three rows where quadrants split it into two, so Block resolves 1.5 times the vertical detail.
 
 Design rationale and the full measurement record live in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 

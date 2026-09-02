@@ -2751,18 +2751,15 @@ func medianFPS(gaps []time.Duration) float64 {
 }
 
 // resolveScheme maps the --blocks mode to a block.Scheme for the interactive
-// path, which may detect terminal support. "half" selects half-block; "quadrant"
-// selects quadrant; "auto" and "sextant" select sextant when SextantSupported(env)
-// reports the terminal renders sextant blocks, and degrade to quadrant otherwise.
-// "shaded" selects the experimental Shaded scheme, explicit-only: "auto" never
-// resolves to it, because no terminal evidence for the shade glyphs is recorded
-// and the sextant allow-list is not proof for them. Any other value, including
-// the empty string, resolves to quadrant, the default that keeps behaviour
-// unchanged.
+// path, which may detect terminal support. "quadrant" selects quadrant; "auto"
+// and "sextant" select sextant when SextantSupported(env) reports the terminal
+// renders sextant blocks, and degrade to quadrant otherwise. "shaded" selects
+// the experimental Shaded scheme, explicit-only: "auto" never resolves to it,
+// because no terminal evidence for the shade glyphs is recorded and the sextant
+// allow-list is not proof for them. Any other value, including the empty
+// string, resolves to quadrant, the default that keeps behaviour unchanged.
 func resolveScheme(blocks string, env []string) block.Scheme {
 	switch blocks {
-	case "half":
-		return block.SchemeHalfBlock
 	case "quadrant":
 		return block.SchemeQuadrant
 	case "shaded":
@@ -2782,8 +2779,6 @@ func resolveScheme(blocks string, env []string) block.Scheme {
 // viewer-side helper bridges the two enums for the three schemes.
 func renderScheme(s block.Scheme) render.BlockScheme {
 	switch s {
-	case block.SchemeHalfBlock:
-		return render.BlockHalf
 	case block.SchemeSextant:
 		return render.BlockSextant
 	case block.SchemeShaded:

@@ -34,7 +34,6 @@ const (
 	barGlyphReload        = "⟳" // ⟳ U+27F3 Reload
 	barGlyphHome          = "⌂" // ⌂ U+2302 Home
 	barGlyphMenu          = "☰" // ☰ U+2630 Menu
-	barGlyphBlockHalf     = "⬒" // ⬒ U+2B12 Block half scheme
 	barGlyphBlockQuadrant = "⬔" // ⬔ U+2B14 Block quadrant scheme
 	barGlyphBlockSextant  = "▦" // ▦ U+25A6 Block sextant scheme
 	barGlyphBlockShaded   = "▨" // ▨ U+25A8 Block shaded scheme
@@ -107,8 +106,6 @@ func backendGlyph(backend Backend, scheme block.Scheme) string {
 		return barGlyphKitty
 	default:
 		switch scheme {
-		case block.SchemeHalfBlock:
-			return barGlyphBlockHalf
 		case block.SchemeSextant:
 			return barGlyphBlockSextant
 		case block.SchemeShaded:

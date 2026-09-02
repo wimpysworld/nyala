@@ -202,8 +202,8 @@ stream cap: the Block sub-cell sample grid or the graphics full-pixel grid.
 Both capture helpers live in `internal/render/geometry.go` as free functions,
 because the block package imports render, so render must not import block.
 `BlockCaptureSize(scheme, cols, rows)` takes a local `BlockScheme` enum
-(quadrant `cols*2 x rows*4`, half-block `cols x rows*2`, sextant
-`cols*2 x rows*3`); `GraphicsCaptureSize(cols, rows, cellW, cellH)` returns
+(quadrant `cols*2 x rows*4`, sextant `cols*2 x rows*3`);
+`GraphicsCaptureSize(cols, rows, cellW, cellH)` returns
 `cols*cellW x rows*cellH`.
 
 Each backend derives a continuous device scale Z (`frame.go`). The page lays
@@ -864,9 +864,7 @@ background space.
 The diagnostic rasteriser resolves glyphs through `font.Atlas.Resolve`
 (`internal/render/font`), which checks coverage via `sfnt.GlyphIndex` with no
 runtime probe: FiraCode Nerd Font Mono first, then GNU Unifont, else the rune
-is reported uncovered. Both faces ship in the binary via `go:embed`. The
-half-block floor remains the design floor for terminals whose fonts cover
-neither face's block set.
+is reported uncovered. Both faces ship in the binary via `go:embed`.
 
 The placement oracle is an exact-template matcher (`internal/ocr`, pure Go,
 cgo-free), not general OCR. The candidate set is the run's graphemes plus the
@@ -887,23 +885,25 @@ in Correctness architecture covers it.
 ### Glyph schemes
 
 The Block backend draws the page as Unicode block glyphs, one glyph per cell,
-with a foreground and background colour. Three schemes trade resolution against
+with a foreground and background colour. Two schemes trade resolution against
 colour fidelity:
 
 | Scheme | Sub-cells | Capture size (cols x rows grid) | Role |
 | --- | --- | --- | --- |
 | Sextant | 2x3 | `cols*2` x `rows*3` | Sharpest; allow-listed terminals only |
 | Quadrant | 2x2 | `cols*2` x `rows*4` | Default |
-| Half-block | 1x2 | `cols` x `rows*2` | The floor; explicit only |
 
-`--blocks=auto|sextant|quadrant|half` selects the scheme (`resolveScheme` in
+`--blocks=auto|sextant|quadrant` selects the scheme (`resolveScheme` in
 `internal/viewer`). `auto` and `sextant` resolve to sextant when
 `SextantSupported` matches the terminal against the allow-list (detailed
-under Capability detection), and degrade to quadrant otherwise. The fallback ladder is sextant to quadrant only; half stays
-reachable through an explicit `--blocks=half`. Fallback is silent by owner
-decision. Alt+B cycles half, quadrant, sextant live; `CycleScheme` skips
-sextant on a terminal off the allow-list. Capture paths resolve `auto` to
-quadrant, so diagnostic bundles stay comparable across terminals.
+under Capability detection), and degrade to quadrant otherwise. Fallback is
+silent by owner decision. Alt+B cycles quadrant and sextant live;
+`CycleScheme` skips sextant on a terminal off the allow-list. Capture paths
+resolve `auto` to quadrant, so diagnostic bundles stay comparable across
+terminals. A half-block scheme (`--blocks=half`, `SchemeHalfBlock`, one 1x2
+source column per cell drawn as U+2584) existed and was removed: no auto
+route selected it, no compatibility niche was recorded for it, and it gave
+no perceivable speed benefit on the parallel compose path.
 
 **Quadrant.** A cell maps to a 2x4 source region. Each of the four quadrants
 box-averages a 1x2 source column into one sub-cell colour. Each sub-cell
@@ -913,9 +913,6 @@ sub-cell's luma exceeds the cell midpoint `min + (max-min)/2`. The 4-bit mask
 the glyph choice and the foreground/background split: the foreground is the
 average of the bright sub-cells, the background the average of the dark ones.
 The two flat masks (0000 and 1111) emit U+2588 with fg equal to bg.
-
-**Half-block.** A cell maps to a 1x2 source column: the top pixel becomes the
-background, the bottom pixel the foreground, and every glyph is U+2584.
 
 **Sextant.** A cell maps to a 2x3 source region, one pixel per sub-cell. The
 glyphs are the Unicode 13 Symbols for Legacy Computing sextants,
@@ -1496,8 +1493,8 @@ immediately left of it, so toggling fps never moves the menu. The URL region
 absorbs the remaining width and truncates with an ellipsis. Glyph click
 targets pad to three cells.
 
-The backend indicator sits before the URL: ⬒ U+2B12 Block half, ⬔ U+2B14
-Block quadrant, ▦ U+25A6 Block sextant, ⬣ U+2B23 Sixel, ✪ U+272A Kitty. The
+The backend indicator sits before the URL: ⬔ U+2B14 Block quadrant, ▦ U+25A6
+Block sextant, ⬣ U+2B23 Sixel, ✪ U+272A Kitty. The
 Block glyphs echo their scheme's subcell shape and track the live scheme.
 Clicking the indicator cycles backends, mirroring Alt+R; a right-click steps
 the same enabled cycle backwards, mirroring Alt+Shift+R. The indicator is the

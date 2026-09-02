@@ -21,8 +21,6 @@ const composeBandMinRows = 4
 // runs once after the band-join.
 func (br *Renderer) composeBand(g *Grid, f render.Frame, row0, row1 int) {
 	switch br.Scheme {
-	case SchemeHalfBlock:
-		br.composeHalfBlockRows(g, f, row0, row1)
 	case SchemeSextant:
 		br.composeSextantRows(g, f, row0, row1)
 	case SchemeShaded:

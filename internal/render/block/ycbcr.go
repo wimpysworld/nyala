@@ -320,8 +320,6 @@ func ycbcrSubsampleShift(r image.YCbCrSubsampleRatio) (h, v int) {
 
 func (br *Renderer) ycbcrSampleSize() (width, height int) {
 	switch br.Scheme {
-	case SchemeHalfBlock:
-		return br.Cols * halfCellPxW, br.Rows * halfCellPxH
 	case SchemeSextant:
 		return br.Cols * sextCellPxW, br.Rows * sextCellPxH
 	default:
@@ -363,8 +361,6 @@ func (br *Renderer) ComposeYCbCrInto(dst *Grid, f render.Frame) *Grid {
 
 func (br *Renderer) composeYCbCrRows(g *Grid, src *ycbcrSampler, row0, row1 int) {
 	switch br.Scheme {
-	case SchemeHalfBlock:
-		composeYCbCrHalfRows(g, src, row0, row1)
 	case SchemeSextant:
 		composeYCbCrSextantRows(g, src, row0, row1)
 	case SchemeShaded:
@@ -384,17 +380,6 @@ func composeYCbCrQuadrantRows(g *Grid, src *ycbcrSampler, row0, row1 int) {
 			w := sampledColour(src, x0+1, y0+2, 2)
 			glyph, fg, bg := binarizeQuadrant(x, y, z, w)
 			*g.At(col, row) = Cell{Glyph: glyph, FG: fg, BG: bg}
-		}
-	}
-}
-
-func composeYCbCrHalfRows(g *Grid, src *ycbcrSampler, row0, row1 int) {
-	for row := row0; row < row1; row++ {
-		for col := range g.Cols {
-			x0, y0 := col*halfCellPxW, row*halfCellPxH
-			top := sampledColour(src, x0, y0, 1)
-			bottom := sampledColour(src, x0, y0+1, 1)
-			*g.At(col, row) = Cell{Glyph: lowerHalfBlock, FG: bottom, BG: top}
 		}
 	}
 }

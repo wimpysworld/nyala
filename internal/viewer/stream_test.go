@@ -8,9 +8,9 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
-// TestResolveScheme asserts the interactive --blocks resolution: half and
-// quadrant map straight through, auto and sextant render sextant on a supported
-// terminal and degrade to quadrant on an unsupported one.
+// TestResolveScheme asserts the interactive --blocks resolution: quadrant maps
+// straight through, auto and sextant render sextant on a supported terminal
+// and degrade to quadrant on an unsupported one.
 func TestResolveScheme(t *testing.T) {
 	supportedEnv := []string{"TERM=xterm-kitty"}
 	unsupportedEnv := []string{"TERM=xterm-256color"}
@@ -21,7 +21,6 @@ func TestResolveScheme(t *testing.T) {
 		scheme block.Scheme
 	}{
 		{"quadrant", "quadrant", supportedEnv, block.SchemeQuadrant},
-		{"half", "half", supportedEnv, block.SchemeHalfBlock},
 		{"auto supported", "auto", supportedEnv, block.SchemeSextant},
 		{"auto unsupported", "auto", unsupportedEnv, block.SchemeQuadrant},
 		{"sextant supported", "sextant", supportedEnv, block.SchemeSextant},

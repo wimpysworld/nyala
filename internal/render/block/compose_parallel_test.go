@@ -43,7 +43,6 @@ func TestParallelComposeByteIdentical(t *testing.T) {
 	}{
 		{"quadrant", SchemeQuadrant, render.BlockQuadrant},
 		{"sextant", SchemeSextant, render.BlockSextant},
-		{"halfblock", SchemeHalfBlock, render.BlockHalf},
 	}
 	for _, sc := range schemes {
 		for _, overlay := range []bool{false, true} {

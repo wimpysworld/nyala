@@ -10,8 +10,6 @@ const (
 	// BlockQuadrant maps each cell to a 2x4 source block via the quadrant (2x2)
 	// binarisation. It is the zero value and the default scheme.
 	BlockQuadrant BlockScheme = iota
-	// BlockHalf maps each cell to a 1x2 source column via the half-block floor.
-	BlockHalf
 	// BlockSextant maps each cell to a 2x3 source block via the sextant (2x3)
 	// binarisation.
 	BlockSextant
@@ -22,15 +20,12 @@ const (
 
 // BlockCaptureSize returns the source-pixel extent a cols x rows block grid
 // samples in the given scheme. Quadrant and Shaded map each cell to a 2x4
-// source block, so the extent is (cols*2, rows*4); half-block maps each cell
-// to a 1x2 source column, so the extent is (cols, rows*2); sextant maps each
-// cell to a 2x3 source block, so the extent is (cols*2, rows*3). The scheme is
-// passed as a BlockScheme, not a block.Scheme, because the block package
-// imports render, so render must not import block.
+// source block, so the extent is (cols*2, rows*4); sextant maps each cell to a
+// 2x3 source block, so the extent is (cols*2, rows*3). The scheme is passed as
+// a BlockScheme, not a block.Scheme, because the block package imports render,
+// so render must not import block.
 func BlockCaptureSize(scheme BlockScheme, cols, rows int) (pxW, pxH int) {
 	switch scheme {
-	case BlockHalf:
-		return cols, rows * 2
 	case BlockSextant:
 		return cols * 2, rows * 3
 	default:

@@ -71,8 +71,8 @@ func TestCycleSchemeShaded(t *testing.T) {
 	if got := st.CycleScheme(false); got != block.SchemeShaded {
 		t.Fatalf("compatible cycle = %d, want SchemeShaded", got)
 	}
-	if got := st.CycleScheme(false); got != block.SchemeHalfBlock {
-		t.Fatalf("wrap after Shaded = %d, want half", got)
+	if got := st.CycleScheme(false); got != block.SchemeQuadrant {
+		t.Fatalf("wrap after Shaded = %d, want quadrant", got)
 	}
 
 	st.Colour = ColourTrue
