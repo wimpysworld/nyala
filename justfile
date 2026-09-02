@@ -242,6 +242,10 @@ overlay:
 kmscon-testcard:
     @go run ./tools/kmscon-testcard
 
+# Print the Shaded Block test card to the TTY (owner-verified, off CI)
+shaded-testcard:
+    @go run ./tools/shaded-testcard
+
 # Regenerate the committed testdata/overlay/*.runs fixtures
 genruns:
     @go run ./tools/genruns

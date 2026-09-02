@@ -1,14 +1,23 @@
 # Block modes
 
-Nyala supports three schemes for the Block backend. The `--blocks` flag accepts `auto`, `sextant`, `quadrant`, or `half`.
+Nyala supports four schemes for the Block backend. The `--blocks` flag accepts `auto`, `sextant`, `quadrant`, `half`, or `shaded`.
 
 | Scheme | Flag value | Source pixels per cell | Selection |
 | --- | --- | --- | --- |
 | Quadrant | `quadrant` | 2x4, reduced to a 2x2 mask | Explicit choice and fallback |
 | Half-block | `half` | 1x2 | Explicit choice |
 | Sextant | `sextant` | 2x3 | Used when the existing sextant check passes, otherwise Quadrant |
+| Shaded | `shaded` | 2x4, scored against shade glyph candidates | Explicit choice only, experimental, low-colour only |
 
-`auto` uses Sextant when the existing sextant check passes. It uses Quadrant otherwise. The interactive Block-mode cycle contains Half-block, Quadrant, and Sextant.
+`auto` uses Sextant when the existing sextant check passes. It uses Quadrant otherwise. `auto` never selects Shaded. The interactive Block-mode cycle contains Half-block, Quadrant, Sextant, and, only on a session started with `--blocks=shaded` and a compatible colour mode, Shaded.
+
+## Shaded scheme (experimental)
+
+Shaded targets low-colour output. It samples the same 2x4 source block as Quadrant, then scores a fixed candidate set against the eight samples: the solid block glyphs (space, full, and the four half blocks) plus the Symbols for Legacy Computing medium-shade glyphs U+1FB8C..U+1FB8F, U+1FB91, U+1FB92, U+1FB94, and the triangular shades U+1FB9C..U+1FB9F. A medium shade displays half the foreground over the background, so mixing two palette colours crosses tone gaps a solid glyph cannot.
+
+For each candidate the compose estimates a foreground from the covered samples and a background from the uncovered samples, quantises both to the active output palette, then scores the displayed result against the samples. Monochrome scores glyph coverage against sample luma, so coverage carries tone. An exactly flat cell under a colour palette emits a full block with foreground equal to background, never shade texture.
+
+Shaded supports `--color=256`, `--color=ansi-grey`, `--color=ansi-tonal`, and `--color=none`. `--blocks=shaded --color=truecolor` fails before the first paint. `--blocks=shaded --color=auto` degrades a truecolour resolution to `256`. <kbd>Alt</kbd>+<kbd>C</kbd> under Shaded cycles only the compatible modes and skips `truecolor`; <kbd>Alt</kbd>+<kbd>B</kbd> skips Shaded under `truecolor` and on any session not started with `--blocks=shaded`, because an explicit start is the only recorded evidence that the terminal draws the shade glyphs. Terminal support is a separate recorded fact from Unicode support: see `docs/TERMINAL-COMPATIBILITY.md` and run `just shaded-testcard` to gather evidence.
 
 ## Colour modes
 
