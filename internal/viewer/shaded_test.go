@@ -58,34 +58,48 @@ func TestApplyShadedColour(t *testing.T) {
 	}
 }
 
-// TestCycleSchemeShaded pins the Alt+B glyph policy: the cycle reaches Shaded
-// only when the explicit start asserted glyph support and the colour mode is
-// compatible; an unknown terminal (no assertion) and a truecolour session both
-// skip it.
+// TestCycleSchemeShaded pins the Alt+B policy for Shaded: the cycle offers
+// Shaded whenever the current colour mode is 256 or ansi-grey, on every
+// session however it started, and skips it while the mode is truecolour. No
+// startup state arms the scheme; the toggles read only the current colour
+// mode, so leaving Shaded keeps no hidden flag.
 func TestCycleSchemeShaded(t *testing.T) {
 	st := NewState(80, 24)
-	st.shadedOK = true
 	st.sextantOK = true
-	st.Colour = ColourXTerm256
+	st.Scheme = block.SchemeSextant
+
+	// A truecolour-start session skips Shaded and wraps to quadrant.
+	if got := st.CycleScheme(false); got != block.SchemeQuadrant {
+		t.Fatalf("truecolour cycle = %d, want quadrant", got)
+	}
+
+	// Alt+C to 256 puts Shaded in the cycle at once, and Alt+B never touches
+	// the colour mode.
+	if got := st.CycleColour(false); got != ColourXTerm256 {
+		t.Fatalf("colour cycle = %d, want ColourXTerm256", got)
+	}
 	st.Scheme = block.SchemeSextant
 	if got := st.CycleScheme(false); got != block.SchemeShaded {
-		t.Fatalf("compatible cycle = %d, want SchemeShaded", got)
+		t.Fatalf("256 cycle = %d, want SchemeShaded", got)
 	}
 	if got := st.CycleScheme(false); got != block.SchemeQuadrant {
 		t.Fatalf("wrap after Shaded = %d, want quadrant", got)
 	}
+	if st.Colour != ColourXTerm256 {
+		t.Fatalf("scheme cycle changed colour to %d, want ColourXTerm256", st.Colour)
+	}
 
+	// Raising the colour mode back to truecolour removes Shaded from the
+	// cycle until the mode drops again, even after a Shaded stint.
 	st.Colour = ColourTrue
 	st.Scheme = block.SchemeSextant
 	if got := st.CycleScheme(false); got == block.SchemeShaded {
-		t.Fatal("truecolour cycle landed on Shaded")
+		t.Fatal("truecolour cycle landed on Shaded after a Shaded stint")
 	}
-
-	st.Colour = ColourXTerm256
-	st.shadedOK = false
+	st.Colour = ColourXTermGrey
 	st.Scheme = block.SchemeSextant
-	if got := st.CycleScheme(false); got == block.SchemeShaded {
-		t.Fatal("cycle landed on Shaded without the glyph assertion")
+	if got := st.CycleScheme(false); got != block.SchemeShaded {
+		t.Fatalf("ansi-grey cycle = %d, want SchemeShaded", got)
 	}
 }
 

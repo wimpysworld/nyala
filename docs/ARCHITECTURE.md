@@ -897,8 +897,10 @@ colour fidelity:
 `internal/viewer`). `auto` and `sextant` resolve to sextant when
 `SextantSupported` matches the terminal against the allow-list (detailed
 under Capability detection), and degrade to quadrant otherwise. Fallback is
-silent by owner decision. Alt+B cycles quadrant and sextant live;
-`CycleScheme` skips sextant on a terminal off the allow-list. Capture paths
+silent by owner decision. Alt+B cycles quadrant, sextant, and Shaded live;
+`CycleScheme` skips sextant on a terminal off the allow-list and skips Shaded
+while the colour mode is truecolour, reading only the current mode, so no
+startup state gates the cycle. Capture paths
 resolve `auto` to quadrant, so diagnostic bundles stay comparable across
 terminals. A half-block scheme (`--blocks=half`, `SchemeHalfBlock`, one 1x2
 source column per cell drawn as U+2584) existed and was removed: no auto

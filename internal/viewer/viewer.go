@@ -80,14 +80,6 @@ type State struct {
 	// scheme the terminal cannot render.
 	sextantOK bool
 
-	// shadedOK records the Shaded glyph support policy, resolved once by
-	// setupViewer: true only when the user started the session with
-	// --blocks=shaded, which asserts the terminal draws the Symbols for Legacy
-	// Computing shade glyphs. No terminal allow-list exists yet, and the
-	// sextant allow-list is not proof for Shaded, so unknown terminals never
-	// gain the scheme through Alt+B. It is separate from sextantOK.
-	shadedOK bool
-
 	// mux is the focus multiplexer hosting the session, recorded once by
 	// configureBackends. The backend cycle and the Sixel pacing gates read
 	// it; muxNone is the zero value on a native terminal.
@@ -321,25 +313,26 @@ func (s *State) cycleBackendStep(dir int) Backend {
 
 // schemeCycle is the Alt+B block glyph scheme cycle order: quadrant, sextant,
 // shaded, wrapping. CycleScheme skips sextant when the terminal does not
-// self-draw sextant glyphs, and skips shaded unless the glyph policy allows it
-// and the colour mode is compatible.
+// self-draw sextant glyphs, and skips shaded while the colour mode is
+// truecolour.
 var schemeCycle = []block.Scheme{block.SchemeQuadrant, block.SchemeSextant, block.SchemeShaded}
 
 // CycleScheme steps the block glyph scheme through the quadrant -> sextant ->
-// shaded cycle (reverse steps backwards) and returns the new scheme. A scheme the terminal cannot render (sextant off the allow-list, or
-// shaded without the explicit glyph assertion) is skipped, so the cycle only
-// offers renderable schemes. Shaded is also skipped under truecolour, because
-// it is a low-colour scheme and the cycle never changes the colour mode. The
-// scheme applies only to the block backend; the stream dispatcher drops the
-// cycle while a graphics backend draws, so no hidden state change surprises
-// the next block stint.
+// shaded cycle (reverse steps backwards) and returns the new scheme. Sextant
+// is skipped on a terminal off the allow-list, so the cycle only offers
+// renderable schemes. Shaded is skipped under truecolour, because it is a
+// low-colour scheme and the cycle never changes the colour mode; it rejoins
+// the cycle as soon as Alt+C drops the mode to 256 or ansi-grey, however the
+// session started. The scheme applies only to the block backend; the stream
+// dispatcher drops the cycle while a graphics backend draws, so no hidden
+// state change surprises the next block stint.
 func (s *State) CycleScheme(reverse bool) block.Scheme {
 	s.Scheme = cycleValue(schemeCycle, s.Scheme, reverse, func(m block.Scheme) bool {
 		switch m {
 		case block.SchemeSextant:
 			return s.sextantOK
 		case block.SchemeShaded:
-			return s.shadedOK && s.Colour != ColourTrue
+			return s.Colour != ColourTrue
 		default:
 			return true
 		}

@@ -466,11 +466,6 @@ func setupViewer(eng Engine, tty *os.File, colourFlag, kittyTransport string, sc
 	// for this run. The caller resolves the --blocks mode; auto keeps quadrant as
 	// the production and corpus default.
 	state.Scheme = scheme
-	// An explicit --blocks=shaded start is the user's assertion that the
-	// terminal draws the shade glyphs, and the only source of Shaded glyph
-	// policy: no allow-list records terminal evidence yet, so no detection
-	// path ever sets it.
-	state.shadedOK = scheme == block.SchemeShaded
 
 	// Detection runs in raw mode but before the full-screen switch and the key
 	// reader, so the handshake replies are not consumed by the key goroutine.
