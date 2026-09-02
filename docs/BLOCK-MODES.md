@@ -13,7 +13,7 @@ Nyala supports four schemes for the Block backend. The `--blocks` flag accepts `
 
 ## Shaded scheme (experimental)
 
-Shaded targets low-colour output. It samples the same 2x4 source block as Quadrant, then scores a fixed candidate set against the eight samples: the solid block glyphs (space, full, and the four half blocks) plus the Symbols for Legacy Computing medium-shade glyphs U+1FB8C..U+1FB8F, U+1FB91, U+1FB92, U+1FB94, and the triangular shades U+1FB9C..U+1FB9F. A medium shade displays half the foreground over the background, so mixing two palette colours crosses tone gaps a solid glyph cannot.
+Shaded targets low-colour output. It samples the same 2x4 source block as Quadrant, then scores a fixed candidate set against the eight samples: the solid block glyphs (space, full, and the four half blocks) plus the Symbols for Legacy Computing rectangular medium-shade glyphs U+1FB8C..U+1FB8F, U+1FB91, U+1FB92, U+1FB94. The triangular medium shades U+1FB9C..U+1FB9F are excluded, because their half-solid texture reads as visual noise. A medium shade displays half the foreground over the background, so mixing two palette colours crosses tone gaps a solid glyph cannot.
 
 For each candidate the compose estimates a foreground from the covered samples and a background from the uncovered samples, quantises both to the active output palette, then scores the displayed result against the samples. Monochrome scores glyph coverage against sample luma, so coverage carries tone. An exactly flat cell under a colour palette emits a full block with foreground equal to background, never shade texture.
 

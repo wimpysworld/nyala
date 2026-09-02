@@ -8,7 +8,7 @@
 // glyph as a repeated run with an ASCII sentinel cell after it, so a width
 // error shows as a shifted sentinel column. Rows repeat under xterm-256, ANSI
 // tonal, ANSI greyscale, and monochrome colour, on high-contrast foreground
-// and background pairs, followed by diagonal, corner, and flat-cell rows built
+// and background pairs, followed by split, shade, and flat-cell rows built
 // from the same glyphs. Recording which terminals draw the card cleanly is the
 // owner's job; this tool only makes the evidence visible.
 package main
@@ -91,19 +91,19 @@ func main() {
 		fmt.Fprintln(w)
 	}
 
-	// Composite rows: a diagonal edge from the triangular shades, the four
-	// corner triangles, and a flat row (foreground equal to background), the
-	// cell classes the Shaded compose emits on real pages.
+	// Composite rows: half-and-shade splits, side-by-side medium shades, and a
+	// flat row (foreground equal to background), the cell classes the Shaded
+	// compose emits on real pages.
 	fmt.Fprintln(w, "== composite rows (xterm-256) ==")
 	bright := "\x1b[38;5;231m\x1b[48;5;16m"
-	fmt.Fprint(w, "diagonal: ", bright)
+	fmt.Fprint(w, "splits:   ", bright)
 	for range 4 {
-		fmt.Fprint(w, "\U0001FB9C\U0001FB9E")
+		fmt.Fprint(w, "\U0001FB91\U0001FB92")
 	}
 	fmt.Fprintln(w, reset+"X|")
-	fmt.Fprint(w, "corners:  ", bright)
+	fmt.Fprint(w, "shades:   ", bright)
 	for range 2 {
-		fmt.Fprint(w, "\U0001FB9C\U0001FB9D\U0001FB9F\U0001FB9E")
+		fmt.Fprint(w, "\U0001FB8C\U0001FB8D\U0001FB8E\U0001FB8F")
 	}
 	fmt.Fprintln(w, reset+"X|")
 	fmt.Fprint(w, "flat:     ", "\x1b[38;5;244m\x1b[48;5;244m")
