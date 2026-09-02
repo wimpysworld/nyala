@@ -504,14 +504,15 @@ func TestHandleKeyCycleBackendBothWays(t *testing.T) {
 	}
 }
 
-// TestCycleScheme pins the Alt+B order half -> quadrant -> sextant with wrap,
-// the reverse order, and the sextant skip on a terminal that cannot self-draw
-// sextant glyphs.
+// TestCycleScheme pins the Alt+B order quadrant -> sextant with wrap, the
+// reverse order, and the no-op on a terminal that cannot self-draw sextant
+// glyphs, where quadrant is the only renderable scheme without the Shaded
+// glyph assertion.
 func TestCycleScheme(t *testing.T) {
 	st := NewState(80, 24)
 	st.sextantOK = true
-	st.Scheme = block.SchemeHalfBlock
-	want := []block.Scheme{block.SchemeQuadrant, block.SchemeSextant, block.SchemeHalfBlock}
+	st.Scheme = block.SchemeQuadrant
+	want := []block.Scheme{block.SchemeSextant, block.SchemeQuadrant}
 	for i, w := range want {
 		if got := st.CycleScheme(false); got != w {
 			t.Fatalf("cycle %d = %d, want %d", i, got, w)
@@ -523,8 +524,8 @@ func TestCycleScheme(t *testing.T) {
 
 	st.sextantOK = false
 	st.Scheme = block.SchemeQuadrant
-	if got := st.CycleScheme(false); got != block.SchemeHalfBlock {
-		t.Fatalf("unsupported sextant not skipped: got %d, want half", got)
+	if got := st.CycleScheme(false); got != block.SchemeQuadrant {
+		t.Fatalf("unsupported sextant not skipped: got %d, want quadrant", got)
 	}
 	if got := st.CycleScheme(true); got != block.SchemeQuadrant {
 		t.Fatalf("reverse skip = %d, want quadrant", got)

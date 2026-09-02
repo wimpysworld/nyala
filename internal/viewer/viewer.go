@@ -319,15 +319,14 @@ func (s *State) cycleBackendStep(dir int) Backend {
 	return s.Backend
 }
 
-// schemeCycle is the Alt+B block glyph scheme cycle order: half, quadrant,
-// sextant, shaded, wrapping. CycleScheme skips sextant when the terminal does
-// not self-draw sextant glyphs, and skips shaded unless the glyph policy
-// allows it and the colour mode is compatible.
-var schemeCycle = []block.Scheme{block.SchemeHalfBlock, block.SchemeQuadrant, block.SchemeSextant, block.SchemeShaded}
+// schemeCycle is the Alt+B block glyph scheme cycle order: quadrant, sextant,
+// shaded, wrapping. CycleScheme skips sextant when the terminal does not
+// self-draw sextant glyphs, and skips shaded unless the glyph policy allows it
+// and the colour mode is compatible.
+var schemeCycle = []block.Scheme{block.SchemeQuadrant, block.SchemeSextant, block.SchemeShaded}
 
-// CycleScheme steps the block glyph scheme through the half -> quadrant ->
-// sextant -> shaded cycle (reverse steps backwards) and returns the new
-// scheme. A scheme the terminal cannot render (sextant off the allow-list, or
+// CycleScheme steps the block glyph scheme through the quadrant -> sextant ->
+// shaded cycle (reverse steps backwards) and returns the new scheme. A scheme the terminal cannot render (sextant off the allow-list, or
 // shaded without the explicit glyph assertion) is skipped, so the cycle only
 // offers renderable schemes. Shaded is also skipped under truecolour, because
 // it is a low-colour scheme and the cycle never changes the colour mode. The
@@ -606,8 +605,8 @@ func shadedPalette(mode ColourMode) block.ShadedPalette {
 }
 
 // schemePixels returns the source-pixel extent a cols x rows block grid samples
-// in the given scheme: 2x4 per cell for quadrant, 1x2 per cell for half-block,
-// 2x3 per cell for sextant. The compose step needs the source at this extent so
+// in the given scheme: 2x4 per cell for quadrant and shaded, 2x3 per cell for
+// sextant. The compose step needs the source at this extent so
 // each cell maps to its own block of pixels. It maps the block.Scheme to a
 // render.BlockScheme via renderScheme, then calls render.BlockCaptureSize, the
 // shared helper the engine also calls.

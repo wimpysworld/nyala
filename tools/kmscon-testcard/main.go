@@ -4,7 +4,7 @@
 // run headless. Run it via `just kmscon-testcard` on a KMSCON console.
 //
 // The card draws the ten quadrant block glyphs U+2596..U+259F, each on its own
-// pair of contrasting backgrounds, then a half-block floor row U+2584. On a clean
+// pair of contrasting backgrounds, then a lower-half-block row U+2584. On a clean
 // terminal each glyph fills its quadrants exactly with the foreground colour and
 // the cell rows abut with no gap; bleed shows as a bright or dark seam between
 // rows. The owner reads the card and confirms the rows do not bleed.
@@ -32,8 +32,8 @@ var quadrantGlyphs = []rune{
 	0x259F, // quadrant upper right, lower left, lower right
 }
 
-// lowerHalfBlock is the U+2584 lower-half-block glyph the floor row draws, the
-// fallback the renderer uses when a font lacks the full quadrant set.
+// lowerHalfBlock is the U+2584 lower-half-block glyph the last card row draws.
+// The quadrant scheme emits it for the 0011 mask, so the card covers it too.
 const lowerHalfBlock = 0x2584
 
 // rgb is one 24-bit colour for the truecolour SGR sequences the card emits.
@@ -92,10 +92,10 @@ func main() {
 		fmt.Fprintln(w)
 	}
 
-	fmt.Fprintln(w, "half-block floor (U+2584):")
-	floor := pairs[0]
+	fmt.Fprintln(w, "lower half block (U+2584):")
+	pair := pairs[0]
 	for range 2 {
-		fmt.Fprint(w, fgSGR(floor.fg), bgSGR(floor.bg))
+		fmt.Fprint(w, fgSGR(pair.fg), bgSGR(pair.bg))
 		for range len(quadrantGlyphs) * cellsPerGlyph {
 			fmt.Fprint(w, string(rune(lowerHalfBlock)))
 		}

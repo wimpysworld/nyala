@@ -189,10 +189,7 @@ func recomposeBoundaryCellsFrom(g *Grid, src pixelSource, run render.GlyphRun, s
 			continue
 		}
 		pxW, pxH := cellPxW, cellPxH
-		switch scheme {
-		case SchemeHalfBlock:
-			pxW, pxH = halfCellPxW, halfCellPxH
-		case SchemeSextant:
+		if scheme == SchemeSextant {
 			pxW, pxH = sextCellPxW, sextCellPxH
 		}
 		covered := coveredColumnsAt(run, gridCol, cellCSSW, pxW)
@@ -229,9 +226,8 @@ func claimed(c *Cell) bool {
 
 // cellBGAverageFrom averages the uncovered source footprint of cell (col, row) into
 // one RGBA colour, in RGBA channel order. The footprint is the scheme's per-cell
-// source block: 2x4 (cellPxW x cellPxH) for the quadrant scheme, 1x2
-// (halfCellPxW x halfCellPxH) for the half-block scheme, 2x3 (sextCellPxW x
-// sextCellPxH) for the sextant scheme. The run's box covers
+// source block: 2x4 (cellPxW x cellPxH) for the quadrant scheme, 2x3
+// (sextCellPxW x sextCellPxH) for the sextant scheme. The run's box covers
 // part of the cell; averaging only the uncovered source columns keeps the
 // covered bitmap ghost out of the recomposed background. The covered span comes
 // from run.X and run.W (CSS px) relative to this cell's snapped grid position
@@ -247,10 +243,7 @@ func claimed(c *Cell) bool {
 // Out-of-bounds reads return opaque black via pixel, matching the bitmap path.
 func cellBGAverageFrom(src pixelSource, col, row int, scheme Scheme, run render.GlyphRun, off int, cellCSSW float64) color.RGBA {
 	pxW, pxH := cellPxW, cellPxH
-	switch scheme {
-	case SchemeHalfBlock:
-		pxW, pxH = halfCellPxW, halfCellPxH
-	case SchemeSextant:
+	if scheme == SchemeSextant {
 		pxW, pxH = sextCellPxW, sextCellPxH
 	}
 	covered := coveredColumns(run, off, cellCSSW, pxW)

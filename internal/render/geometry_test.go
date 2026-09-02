@@ -11,8 +11,6 @@ func TestBlockCaptureSize(t *testing.T) {
 	}{
 		{"quadrant 80x24", BlockQuadrant, 80, 24, 160, 96},
 		{"quadrant 1x1", BlockQuadrant, 1, 1, 2, 4},
-		{"half-block 80x24", BlockHalf, 80, 24, 80, 48},
-		{"half-block 1x1", BlockHalf, 1, 1, 1, 2},
 		{"sextant 80x24", BlockSextant, 80, 24, 160, 72},
 		{"sextant 1x1", BlockSextant, 1, 1, 2, 3},
 	}

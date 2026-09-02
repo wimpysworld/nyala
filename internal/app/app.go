@@ -30,12 +30,12 @@ type CLI struct {
 	// when the terminal cannot run it. Alt+R cycles all supported backends.
 	Backend string `help:"Renderer backend: auto, block, kitty, or sixel." default:"auto" enum:"auto,block,kitty,sixel"`
 
-	// Blocks selects the block glyph mode: auto, sextant, quadrant, half, or
-	// shaded. On the interactive path auto and sextant render sextant when the
-	// terminal supports it and degrade to quadrant otherwise; quadrant forces
-	// quadrant; half renders half-block. shaded is experimental and explicit
-	// only: auto never selects it, and it rejects --color=truecolor.
-	Blocks string `help:"Block glyph mode: auto, sextant, quadrant, half, or shaded (experimental, low-colour only)." name:"blocks" default:"auto" enum:"auto,sextant,quadrant,half,shaded"`
+	// Blocks selects the block glyph mode: auto, sextant, quadrant, or shaded.
+	// On the interactive path auto and sextant render sextant when the terminal
+	// supports it and degrade to quadrant otherwise; quadrant forces quadrant.
+	// shaded is experimental and explicit only: auto never selects it, and it
+	// rejects --color=truecolor.
+	Blocks string `help:"Block glyph mode: auto, sextant, quadrant, or shaded (experimental, low-colour only)." name:"blocks" default:"auto" enum:"auto,sextant,quadrant,shaded"`
 
 	// Browser is the path to the Chromium executable to drive. Empty falls back
 	// to NYALA_BROWSER, CHROME_PATH, then a PATH lookup at launch.

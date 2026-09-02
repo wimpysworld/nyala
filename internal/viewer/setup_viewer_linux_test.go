@@ -79,7 +79,6 @@ func TestSetupViewerWiresResolvedScheme(t *testing.T) {
 		want   block.Scheme
 	}{
 		{"quadrant", "quadrant", supportedEnv, block.SchemeQuadrant},
-		{"half", "half", supportedEnv, block.SchemeHalfBlock},
 		{"auto supported", "auto", supportedEnv, block.SchemeSextant},
 		{"auto unsupported", "auto", unsupportedEnv, block.SchemeQuadrant},
 		{"sextant supported", "sextant", supportedEnv, block.SchemeSextant},

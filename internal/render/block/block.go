@@ -21,33 +21,20 @@ const (
 	cellPxH = 4
 )
 
-// halfCellPxW and halfCellPxH are the source-pixel footprint of one cell in the
-// half-block scheme. The half-block floor maps one cell to a 1x2 source column:
-// the top pixel becomes the cell background, the bottom pixel its foreground,
-// drawn with the lower-half-block glyph U+2584.
-const (
-	halfCellPxW = 1
-	halfCellPxH = 2
-)
-
 // lowerHalfBlock is the U+2584 lower-half-block glyph. The glyph fills the lower
 // half of the cell with the foreground colour and leaves the upper half showing
 // the background colour.
 const lowerHalfBlock = 0x2584
 
 // Scheme selects how Renderer maps source pixels to cells. SchemeQuadrant
-// is the 2x2 binarisation default; SchemeHalfBlock is the half-block floor;
-// SchemeSextant is the 2x3 sextant binarisation.
+// is the 2x2 binarisation default; SchemeSextant is the 2x3 sextant
+// binarisation.
 type Scheme int
 
 const (
 	// SchemeQuadrant maps one cell to a 2x4 source block via the quadrant (2x2)
 	// binarisation. It is the default scheme.
 	SchemeQuadrant Scheme = iota
-	// SchemeHalfBlock maps one cell to a 1x2 source column, emitting the lower-
-	// half-block glyph U+2584 with the top pixel as background and the bottom
-	// pixel as foreground.
-	SchemeHalfBlock
 	// SchemeSextant maps one cell to a 2x3 source block via the sextant (2x3)
 	// binarisation, raising vertical resolution over the quadrant scheme.
 	SchemeSextant
@@ -138,7 +125,7 @@ func (g *Grid) At(col, row int) *Cell {
 
 // Renderer composites a Frame onto an owned cell grid, then writes one
 // truecolour SGR cell per grid cell. Scheme selects quadrant or sextant
-// binarisation, or the half-block floor. The binarisation schemes fill bright
+// binarisation, or the Shaded scoring. The binarisation schemes fill bright
 // sub-cells with the foreground and dark sub-cells with the background. The
 // scheme is a backend-specific knob on this concrete type, not on the
 // render.Renderer interface. Renderer satisfies render.Renderer.
@@ -247,8 +234,6 @@ func (br *Renderer) Compose(f render.Frame) Grid {
 	f = rgbaFrame(f)
 	var g Grid
 	switch br.Scheme {
-	case SchemeHalfBlock:
-		g = br.composeHalfBlock(f)
 	case SchemeSextant:
 		g = br.composeSextant(f)
 	case SchemeShaded:
@@ -269,8 +254,6 @@ func (br *Renderer) ComposeInto(dst *Grid, f render.Frame) *Grid {
 	f = rgbaFrame(f)
 	reuseGrid(dst, br.Cols, br.Rows)
 	switch br.Scheme {
-	case SchemeHalfBlock:
-		br.composeHalfBlockInto(dst, f)
 	case SchemeSextant:
 		br.composeSextantInto(dst, f)
 	case SchemeShaded:
@@ -370,41 +353,6 @@ func (br *Renderer) composeQuadrantRowsExact(g *Grid, img *image.RGBA, row0, row
 	}
 }
 
-// composeHalfBlock maps the frame image onto a fresh Cols x Rows half-block grid.
-// Each cell samples a 1x2 source column: the top pixel becomes the cell
-// background, the bottom pixel its foreground, and the glyph is the lower-half-
-// block U+2584. An empty or nil image yields an all-black grid.
-func (br *Renderer) composeHalfBlock(f render.Frame) Grid {
-	g := Grid{
-		Cols:  br.Cols,
-		Rows:  br.Rows,
-		Cells: make([]Cell, br.Cols*br.Rows),
-	}
-	br.composeHalfBlockInto(&g, f)
-	return g
-}
-
-// composeHalfBlockInto maps the frame image onto g, which the caller has already
-// sized to Cols x Rows. It is the shared body of composeHalfBlock (fresh grid)
-// and ComposeInto (reused grid).
-func (br *Renderer) composeHalfBlockInto(g *Grid, f render.Frame) {
-	br.composeHalfBlockRows(g, f, 0, g.Rows)
-}
-
-// composeHalfBlockRows maps grid rows [row0, row1) of g from the frame image. It
-// is the per-band body of composeHalfBlockInto: each cell samples its own 1x2
-// source column and writes only its own cell, so a call over a disjoint row range
-// writes the same cells the whole-grid pass writes for those rows.
-func (br *Renderer) composeHalfBlockRows(g *Grid, f render.Frame, row0, row1 int) {
-	img, _ := f.Img.(*image.RGBA)
-	for row := row0; row < row1; row++ {
-		for col := range g.Cols {
-			top, bottom := sampleHalfBlock(img, col, row)
-			*g.At(col, row) = Cell{Glyph: lowerHalfBlock, FG: bottom, BG: top}
-		}
-	}
-}
-
 // rgbaFrame converts a decoder-native image at the block consumer boundary.
 // The live viewer already supplies its downscaled RGBA plane, so the hot path is
 // one type assertion and no copy.
@@ -420,19 +368,6 @@ func rgbaFrame(f render.Frame) render.Frame {
 	draw.Draw(rgba, rgba.Bounds(), f.Img, b.Min, draw.Src)
 	f.Img = rgba
 	return f
-}
-
-// sampleHalfBlock reads the two source pixels of cell (col, row) for the half-
-// block scheme. The cell maps to a 1x2 source column; top is the upper pixel,
-// bottom the lower. Pixels outside the image read as opaque black.
-func sampleHalfBlock(img *image.RGBA, col, row int) (top, bottom color.RGBA) {
-	x0 := col * halfCellPxW
-	y0 := row * halfCellPxH
-	tr, tg, tb := pixel(img, x0, y0)
-	br, bg, bb := pixel(img, x0, y0+1)
-	top = color.RGBA{R: tr, G: tg, B: tb, A: 0xff}
-	bottom = color.RGBA{R: br, G: bg, B: bb, A: 0xff}
-	return top, bottom
 }
 
 // sampleQuadrant box-averages the 2x4 source block for cell (col, row) into the

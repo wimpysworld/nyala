@@ -56,7 +56,6 @@ func TestBackendGlyph(t *testing.T) {
 		scheme  block.Scheme
 		want    string
 	}{
-		{"block half", BackendBlock, block.SchemeHalfBlock, "⬒"},
 		{"block quadrant", BackendBlock, block.SchemeQuadrant, "⬔"},
 		{"block sextant", BackendBlock, block.SchemeSextant, "▦"},
 		{"sixel", BackendSixel, block.SchemeQuadrant, "⬣"},
