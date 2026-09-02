@@ -23,8 +23,6 @@ func (br *Renderer) composeBand(g *Grid, f render.Frame, row0, row1 int) {
 	switch br.Scheme {
 	case SchemeSextant:
 		br.composeSextantRows(g, f, row0, row1)
-	case SchemeShaded:
-		br.composeShadedRows(g, f, row0, row1)
 	default:
 		br.composeQuadrantRows(g, f, row0, row1)
 	}

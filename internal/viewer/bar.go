@@ -36,7 +36,6 @@ const (
 	barGlyphMenu          = "☰" // ☰ U+2630 Menu
 	barGlyphBlockQuadrant = "⬔" // ⬔ U+2B14 Block quadrant scheme
 	barGlyphBlockSextant  = "▦" // ▦ U+25A6 Block sextant scheme
-	barGlyphBlockShaded   = "▨" // ▨ U+25A8 Block shaded scheme
 	barGlyphSixel         = "⬣" // ⬣ U+2B23 Sixel
 	barGlyphKitty         = "✪" // ✪ U+272A Kitty
 	barGlyphClose         = "✕" // ✕ close (menu, About, and find modes)
@@ -105,14 +104,10 @@ func backendGlyph(backend Backend, scheme block.Scheme) string {
 	case BackendKitty:
 		return barGlyphKitty
 	default:
-		switch scheme {
-		case block.SchemeSextant:
+		if scheme == block.SchemeSextant {
 			return barGlyphBlockSextant
-		case block.SchemeShaded:
-			return barGlyphBlockShaded
-		default:
-			return barGlyphBlockQuadrant
 		}
+		return barGlyphBlockQuadrant
 	}
 }
 

@@ -280,12 +280,6 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	if cerr := st.validateColourCompatibility(colourFlag); cerr != nil {
 		return cerr
 	}
-	// The Shaded colour resolution runs before the first paint and before
-	// navigation, whatever the starting backend, because Alt+R can cycle to
-	// Block later.
-	if serr := st.applyShadedColour(colourFlag); serr != nil {
-		return serr
-	}
 	// Start on the named --backend mode now that validation passed, so a forced
 	// block start overrides a higher-fidelity detected nomination while Alt+R
 	// keeps the full detected cycle. setupViewer handed the engine the detected backend;
@@ -2748,17 +2742,13 @@ func medianFPS(gaps []time.Duration) float64 {
 // resolveScheme maps the --blocks mode to a block.Scheme for the interactive
 // path, which may detect terminal support. "quadrant" selects quadrant; "auto"
 // and "sextant" select sextant when SextantSupported(env) reports the terminal
-// renders sextant blocks, and degrade to quadrant otherwise. "shaded" selects
-// the experimental Shaded scheme, explicit-only: "auto" never resolves to it,
-// because no terminal evidence for the shade glyphs is recorded and the sextant
-// allow-list is not proof for them. Any other value, including the empty
-// string, resolves to quadrant, the default that keeps behaviour unchanged.
+// renders sextant blocks, and degrade to quadrant otherwise. Any other value,
+// including the empty string, resolves to quadrant, the default that keeps
+// behaviour unchanged.
 func resolveScheme(blocks string, env []string) block.Scheme {
 	switch blocks {
 	case "quadrant":
 		return block.SchemeQuadrant
-	case "shaded":
-		return block.SchemeShaded
 	case "auto", "sextant":
 		if _, supported := SextantSupported(env); supported {
 			return block.SchemeSextant
@@ -2773,14 +2763,10 @@ func resolveScheme(blocks string, env []string) block.Scheme {
 // render.BlockCaptureSize takes. The render package cannot import block, so this
 // viewer-side helper bridges the two enums for the three schemes.
 func renderScheme(s block.Scheme) render.BlockScheme {
-	switch s {
-	case block.SchemeSextant:
+	if s == block.SchemeSextant {
 		return render.BlockSextant
-	case block.SchemeShaded:
-		return render.BlockShaded
-	default:
-		return render.BlockQuadrant
 	}
+	return render.BlockQuadrant
 }
 
 // scrollKeyCode maps a recognised caret key to the CDP key code the engine
