@@ -17,8 +17,8 @@ import (
 	"github.com/wimpysworld/nyala/internal/viewer"
 )
 
-// TestDegradedColourDiagnostics proves that both shipped degraded colour modes
-// retain their palette, quality, payload, and cell geometry through the
+// TestDegradedColourDiagnostics proves that the shipped degraded greyscale
+// mode retains its palette, quality, payload, and cell geometry through the
 // browser-free diagnostics path.
 func TestDegradedColourDiagnostics(t *testing.T) {
 	const (
@@ -38,8 +38,6 @@ func TestDegradedColourDiagnostics(t *testing.T) {
 		// Measured SSIM is 0.993773483. The 0.98 floor leaves 0.0137 for
 		// harmless metric drift while rejecting visible greyscale loss.
 		{name: "xterm-grey", mode: viewer.ColourXTermGrey, payloadBudget: 2900, qualityFloor: 0.98},
-		// Measured SSIM is 0.941703591. The 0.92 floor leaves 0.0217 for
-		// harmless metric drift while retaining a useful 16-colour quality gate.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,34 +137,9 @@ func assertDiagnosticsGrid(t *testing.T, got, want block.Grid) {
 
 func assertDiagnosticsPaletteRange(t *testing.T, grid block.Grid, mode viewer.ColourMode) {
 	t.Helper()
-	ansiPalette := [...]color.RGBA{
-		{A: 0xff},
-		{R: 128, A: 0xff},
-		{G: 128, A: 0xff},
-		{R: 128, G: 128, A: 0xff},
-		{B: 128, A: 0xff},
-		{R: 128, B: 128, A: 0xff},
-		{G: 128, B: 128, A: 0xff},
-		{R: 192, G: 192, B: 192, A: 0xff},
-		{R: 128, G: 128, B: 128, A: 0xff},
-		{R: 255, A: 0xff},
-		{G: 255, A: 0xff},
-		{R: 255, G: 255, A: 0xff},
-		{B: 255, A: 0xff},
-		{R: 255, B: 255, A: 0xff},
-		{G: 255, B: 255, A: 0xff},
-		{R: 255, G: 255, B: 255, A: 0xff},
-	}
 	for i, cell := range grid.Cells {
 		for _, c := range []color.RGBA{cell.FG, cell.BG} {
-			valid := false
-			if mode == viewer.ColourXTermGrey {
-				valid = c.A == 0xff && c.R == c.G && c.G == c.B && c.R >= 8 && c.R <= 238 && (c.R-8)%10 == 0
-			} else {
-				for _, paletteColour := range ansiPalette {
-					valid = valid || c == paletteColour
-				}
-			}
+			valid := c.A == 0xff && c.R == c.G && c.G == c.B && c.R >= 8 && c.R <= 238 && (c.R-8)%10 == 0
 			if !valid {
 				t.Fatalf("cell %d colour %v is outside the degraded palette for mode %v", i, c, mode)
 			}

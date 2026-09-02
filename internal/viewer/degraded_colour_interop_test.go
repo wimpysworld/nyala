@@ -1,3 +1,5 @@
+//go:build blockinterop
+
 package viewer
 
 import (
