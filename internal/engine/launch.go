@@ -351,7 +351,8 @@ func (e *ChromiumEngine) injectFontStylesheet(ctx context.Context) error {
 	return nil
 }
 
-// launch resolves the executable from flag, builds the allocator and the
+// launch resolves the executable from flag, purges the profile's tab-restore
+// state under the held guard, builds the allocator and the
 // chromedp context sized to the device-pixel surface, fetches
 // the browser window id, enables lifecycle events, then sizes the layout viewport
 // and the captured surface together. It stores the context, its cancel, and the
@@ -374,6 +375,9 @@ func (e *ChromiumEngine) launch(flag string) error {
 	disableFrameRateLimit := e.disableFrameRateLimit
 	profileDir := e.profileDir
 	e.mu.Unlock()
+	if err := purgeSessionState(profileDir); err != nil {
+		return err
+	}
 	enableGPU := true
 	enableAudio := audioAvailable()
 	allocCtx, allocCancel := newAllocator(context.Background(), allocatorConfig{

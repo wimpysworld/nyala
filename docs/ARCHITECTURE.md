@@ -154,6 +154,16 @@ resolves, creates, inspects, or locks the persistent directory. `newAllocator`
 then omits `chromedp.UserDataDir`, leaving chromedp to create its disposable
 profile.
 
+Launch purges `Default/Sessions` beneath the persistent profile after the
+guard is held and before the process spawns. Nyala drives every navigation
+itself, so Chromium's tab-restore state is never wanted, and an aborted run
+leaves Session and Tabs files that grow with each navigation. Headless
+Chromium reloads that state at launch and respawns the recorded tabs, which
+wedged the CDP handshake before the first load milestone on a profile that had
+accumulated hundreds of entries. The guard makes the deletion safe: no other
+Nyala holds the profile, and the engine's own Chromium has not spawned yet. A
+private engine has an empty profile path, so it purges nothing.
+
 `newAllocator` launches through `chromedp.NewExecAllocator`. When audio is
 enabled it appends `chromedp.Flag("mute-audio", false)` with a bool value; a
 bool `false` emits no flag at all, which is what unmutes Chromium, while the
