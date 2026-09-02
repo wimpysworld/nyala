@@ -55,6 +55,10 @@ const (
 	ColourTrue ColourMode = iota
 	// ColourXTerm256 maps each block cell colour onto the xterm-256 palette.
 	ColourXTerm256
+	// ColourXTermGrey maps block colours onto the xterm greyscale ramp.
+	ColourXTermGrey
+	// ColourANSITonal maps block colours onto the terminal's ANSI tonal range.
+	ColourANSITonal
 	// ColourMono emits each cell's glyph with no fg/bg SGR, rendering a 1-bit
 	// silhouette on the terminal default fg/bg. detect_colour.go cites this value.
 	ColourMono
@@ -65,14 +69,15 @@ const (
 // cycle order, highest-fidelity first with block last; the embedded cellPx is the
 // real terminal cell pixel size used to scale the graphics backends.
 type State struct {
-	Backend Backend               // active backend in the cycle
-	Scheme  block.Scheme          // block glyph scheme; applies only to the block backend
-	Colour  ColourMode            // block colour depth; applies only to the block backend
-	Cols    int                   // terminal width in cells
-	Rows    int                   // terminal height in cells
-	Enabled []Backend             // backends in the Alt+R cycle, highest-fidelity first
-	cellPx                        // terminal cell pixel size for graphics scaling
-	compat  terminalCompatibility // terminal-specific rendering compatibility policy
+	Backend   Backend               // active backend in the cycle
+	Scheme    block.Scheme          // block glyph scheme; applies only to the block backend
+	Colour    ColourMode            // block colour depth; applies only to the block backend
+	Cols      int                   // terminal width in cells
+	Rows      int                   // terminal height in cells
+	Enabled   []Backend             // backends in the Alt+R cycle, highest-fidelity first
+	cellPx                          // terminal cell pixel size for graphics scaling
+	compat    terminalCompatibility // terminal-specific rendering compatibility policy
+	colourCap ColourMode            // highest colour mode that Alt+C can select
 
 	// sextantOK records whether the terminal self-draws sextant glyphs, resolved
 	// once by configureBackends from the environment. The Alt+B scheme cycle
@@ -256,13 +261,14 @@ func (s *State) SetDiff(d *block.GridDiff) {
 // the best available backend, and sets the real cell size after the handshake.
 func NewState(cols, rows int) State {
 	return State{
-		Backend: BackendBlock,
-		Scheme:  block.SchemeQuadrant,
-		Colour:  ColourTrue,
-		Cols:    cols,
-		Rows:    rows,
-		Enabled: []Backend{BackendKitty, BackendSixel, BackendBlock},
-		cellPx:  cellPx{W: cellraster.CellPxW, H: cellraster.CellPxH},
+		Backend:   BackendBlock,
+		Scheme:    block.SchemeQuadrant,
+		Colour:    ColourTrue,
+		colourCap: ColourTrue,
+		Cols:      cols,
+		Rows:      rows,
+		Enabled:   []Backend{BackendKitty, BackendSixel, BackendBlock},
+		cellPx:    cellPx{W: cellraster.CellPxW, H: cellraster.CellPxH},
 	}
 }
 
@@ -328,21 +334,16 @@ func (s *State) CycleScheme(reverse bool) block.Scheme {
 	return s.Scheme
 }
 
-// colourCycle is the Alt+C block colour mode cycle order: truecolour,
-// xterm-256, monochrome, wrapping. CycleColour skips truecolour where the
-// terminal compatibility policy caps it.
-var colourCycle = []ColourMode{ColourTrue, ColourXTerm256, ColourMono}
+// colourCycle is the Alt+C block colour mode cycle order, highest capability
+// first. CycleColour skips modes above the effective terminal cap.
+var colourCycle = []ColourMode{ColourTrue, ColourXTerm256, ColourXTermGrey, ColourANSITonal, ColourMono}
 
-// CycleColour steps the block colour mode through the truecolour -> 256 ->
-// monochrome cycle (reverse steps backwards) and returns the new mode. A mode
-// the terminal cannot sustain (truecolour under Rio 0.4.x, whose style table
-// truecolour Block frames exhaust) is skipped, following the same
-// compatibility state that caps --color=auto. The mode applies only to the
-// block backend; the stream dispatcher drops the cycle while a graphics
-// backend draws.
+// CycleColour steps through the colour ladder and returns the new mode. It
+// skips modes above the effective capability cap. The stream dispatcher drops
+// the cycle while a graphics backend draws.
 func (s *State) CycleColour(reverse bool) ColourMode {
 	s.Colour = cycleValue(colourCycle, s.Colour, reverse, func(m ColourMode) bool {
-		return m != ColourTrue || s.compat.trueColourAllowed()
+		return m >= s.colourCap
 	})
 	return s.Colour
 }
@@ -505,7 +506,7 @@ func decodeFramePNG(data string) (image.Image, error) {
 }
 
 // renderBlock composes the source onto the Cols x page-rows grid and writes it
-// as SGR cells, honouring the colour toggle: truecolour SGR or xterm-256 SGR.
+// as SGR cells, honouring the selected colour mode.
 // text is the crisp DOM-text overlay folded onto the composed grid; a nil text
 // draws the bitmap alone.
 //
@@ -592,6 +593,18 @@ func appendSGR256(dst []byte, prefix string, idx uint8) []byte {
 	return append(dst, 'm')
 }
 
+// appendSGRANSI appends a basic or bright ANSI foreground/background SGR for
+// an ANSI index in 0..15. Bright colours use 90..97 or 100..107, never bold.
+func appendSGRANSI(dst []byte, base int, idx uint8) []byte {
+	code := base + int(idx)
+	if idx >= 8 {
+		code += 52
+	}
+	dst = append(dst, "\x1b["...)
+	dst = strconv.AppendInt(dst, int64(code), 10)
+	return append(dst, 'm')
+}
+
 // fgSGRFunc binds a colour mode into a block.SGRFunc for the cell differ, so the
 // differ stays colour-mode neutral while reusing the viewer's fg SGR rules. Each
 // mode appends into the differ's reused buffer, so no per-cell string allocates.
@@ -602,6 +615,14 @@ func fgSGRFunc(mode ColourMode) block.SGRFunc {
 	case ColourXTerm256:
 		return func(dst []byte, c color.RGBA) []byte {
 			return appendSGR256(dst, fg256Prefix, block.XTerm256(c))
+		}
+	case ColourXTermGrey:
+		return func(dst []byte, c color.RGBA) []byte {
+			return appendSGR256(dst, fg256Prefix, block.XTermGrey(c))
+		}
+	case ColourANSITonal:
+		return func(dst []byte, c color.RGBA) []byte {
+			return appendSGRANSI(dst, 30, block.ANSI16Tonal(c))
 		}
 	default:
 		return block.AppendTrueColorFG
@@ -618,6 +639,14 @@ func bgSGRFunc(mode ColourMode) block.SGRFunc {
 	case ColourXTerm256:
 		return func(dst []byte, c color.RGBA) []byte {
 			return appendSGR256(dst, bg256Prefix, block.XTerm256(c))
+		}
+	case ColourXTermGrey:
+		return func(dst []byte, c color.RGBA) []byte {
+			return appendSGR256(dst, bg256Prefix, block.XTermGrey(c))
+		}
+	case ColourANSITonal:
+		return func(dst []byte, c color.RGBA) []byte {
+			return appendSGRANSI(dst, 40, block.ANSI16Tonal(c))
 		}
 	default:
 		return block.AppendTrueColorBG

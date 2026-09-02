@@ -3,6 +3,7 @@ package viewer
 import (
 	"bytes"
 	"image/color"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -530,28 +531,54 @@ func TestCycleScheme(t *testing.T) {
 	}
 }
 
-// TestCycleColour pins the Alt+C order truecolour -> 256 -> monochrome with
-// wrap, the reverse order, and the truecolour skip under the Rio 0.4.x
-// compatibility cap, the same availability state that caps --color=auto.
+// TestCycleColour pins the full Alt+C ladder in both directions for every cap.
 func TestCycleColour(t *testing.T) {
 	st := NewState(80, 24)
-	want := []ColourMode{ColourXTerm256, ColourMono, ColourTrue}
+	want := []ColourMode{ColourXTerm256, ColourXTermGrey, ColourANSITonal, ColourMono, ColourTrue}
 	for i, w := range want {
 		if got := st.CycleColour(false); got != w {
 			t.Fatalf("cycle %d = %d, want %d", i, got, w)
 		}
 	}
 	if got := st.CycleColour(true); got != ColourMono {
-		t.Fatalf("reverse cycle = %d, want monochrome", got)
+		t.Fatalf("reverse cycle = %d, want mono", got)
 	}
 
-	st.compat.rio04 = true
-	st.Colour = ColourMono
-	if got := st.CycleColour(false); got != ColourXTerm256 {
-		t.Fatalf("capped truecolour not skipped: got %d, want 256", got)
+	for _, cap := range colourCycle {
+		t.Run(strconv.Itoa(int(cap)), func(t *testing.T) {
+			allowed := colourCycle[cap:]
+			for i, current := range allowed {
+				st.colourCap = cap
+				st.Colour = current
+				if got, want := st.CycleColour(false), allowed[(i+1)%len(allowed)]; got != want {
+					t.Fatalf("cap %d forward from %d = %d, want %d", cap, current, got, want)
+				}
+				st.Colour = current
+				if got, want := st.CycleColour(true), allowed[(i-1+len(allowed))%len(allowed)]; got != want {
+					t.Fatalf("cap %d reverse from %d = %d, want %d", cap, current, got, want)
+				}
+			}
+		})
 	}
-	if got := st.CycleColour(true); got != ColourMono {
-		t.Fatalf("reverse capped cycle = %d, want monochrome", got)
+}
+
+func TestDegradedColourModesUseTheirWriters(t *testing.T) {
+	c := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	cases := []struct {
+		mode   ColourMode
+		wantFG string
+		wantBG string
+	}{
+		{ColourXTermGrey, "\x1b[38;5;255m", "\x1b[48;5;255m"},
+		{ColourANSITonal, "\x1b[97m", "\x1b[107m"},
+	}
+	for _, tc := range cases {
+		if got := string(fgSGRFunc(tc.mode)(nil, c)); got != tc.wantFG {
+			t.Errorf("mode %d foreground = %q, want %q", tc.mode, got, tc.wantFG)
+		}
+		if got := string(bgSGRFunc(tc.mode)(nil, c)); got != tc.wantBG {
+			t.Errorf("mode %d background = %q, want %q", tc.mode, got, tc.wantBG)
+		}
 	}
 }
 

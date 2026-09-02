@@ -128,13 +128,82 @@ func TestRioColourCompatibility(t *testing.T) {
 	if err := st.validateColourCompatibility("truecolor"); err == nil || !strings.Contains(err.Error(), "truecolour Block") {
 		t.Fatalf("Rio truecolor error = %v", err)
 	}
-	for _, colour := range []string{"auto", "256", "none"} {
+	for _, colour := range []string{"auto", "256", "ansi-grey", "ansi-tonal", "none"} {
 		if err := st.validateColourCompatibility(colour); err != nil {
 			t.Fatalf("colour %s rejected: %v", colour, err)
 		}
 	}
 	if err := (&State{}).validateColourCompatibility("truecolor"); err != nil {
 		t.Fatalf("non-Rio truecolor rejected: %v", err)
+	}
+}
+
+func TestColourCapability(t *testing.T) {
+	cases := []struct {
+		name     string
+		flag     string
+		detected ColourMode
+		compat   terminalCompatibility
+		isTTY    bool
+		want     ColourMode
+	}{
+		{"auto true", "auto", ColourTrue, terminalCompatibility{}, false, ColourTrue},
+		{"auto 256", "auto", ColourXTerm256, terminalCompatibility{}, false, ColourXTerm256},
+		{"auto tonal", "auto", ColourANSITonal, terminalCompatibility{}, false, ColourANSITonal},
+		{"auto mono", "auto", ColourMono, terminalCompatibility{}, false, ColourMono},
+		{"explicit true raises mono", "truecolor", ColourMono, terminalCompatibility{}, false, ColourTrue},
+		{"explicit 256 raises tonal", "256", ColourANSITonal, terminalCompatibility{}, false, ColourXTerm256},
+		{"explicit grey raises tonal", "ansi-grey", ColourANSITonal, terminalCompatibility{}, false, ColourXTermGrey},
+		{"explicit tonal raises mono", "ansi-tonal", ColourMono, terminalCompatibility{}, false, ColourANSITonal},
+		{"explicit lower mode keeps true cap", "ansi-grey", ColourTrue, terminalCompatibility{}, false, ColourTrue},
+		{"Rio auto caps true", "auto", ColourTrue, terminalCompatibility{rio04: true}, false, ColourXTerm256},
+		{"Rio assertion cannot raise true", "truecolor", ColourMono, terminalCompatibility{rio04: true}, false, ColourXTerm256},
+		{"TTY floors auto mono", "auto", ColourMono, terminalCompatibility{}, true, ColourXTerm256},
+		{"TTY floors auto tonal", "auto", ColourANSITonal, terminalCompatibility{}, true, ColourXTerm256},
+		{"TTY keeps auto 256", "auto", ColourXTerm256, terminalCompatibility{}, true, ColourXTerm256},
+		{"TTY keeps auto true", "auto", ColourTrue, terminalCompatibility{}, true, ColourTrue},
+		{"TTY floors explicit none", "none", ColourMono, terminalCompatibility{}, true, ColourXTerm256},
+		{"Rio TTY floor stays at 256", "auto", ColourMono, terminalCompatibility{rio04: true}, true, ColourXTerm256},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := resolveColourCapability(c.flag, c.detected, c.compat, c.isTTY); got != c.want {
+				t.Fatalf("cap = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestConfigureColourStoresModeAndCapabilitySeparately(t *testing.T) {
+	st := NewState(80, 24)
+	st.configureColour("ansi-grey", []string{"NO_COLOR="}, ColourTrue, true)
+	if st.Colour != ColourXTermGrey || st.colourCap != ColourTrue {
+		t.Fatalf("explicit grey state = mode %v cap %v, want grey and true", st.Colour, st.colourCap)
+	}
+
+	st.configureColour("auto", []string{"NO_COLOR="}, ColourXTerm256, true)
+	if st.Colour != ColourMono || st.colourCap != ColourXTerm256 {
+		t.Fatalf("NO_COLOR state = mode %v cap %v, want mono and 256", st.Colour, st.colourCap)
+	}
+
+	st.configureColour("auto", nil, ColourANSITonal, false)
+	if st.Colour != ColourMono || st.colourCap != ColourANSITonal {
+		t.Fatalf("non-TTY ANSI state = mode %v cap %v, want mono and tonal", st.Colour, st.colourCap)
+	}
+	if got := st.CycleColour(false); got != ColourANSITonal {
+		t.Fatalf("non-TTY ANSI forward cycle = %v, want tonal", got)
+	}
+	st.Colour = ColourMono
+	if got := st.CycleColour(true); got != ColourANSITonal {
+		t.Fatalf("non-TTY ANSI reverse cycle = %v, want tonal", got)
+	}
+
+	st.configureColour("auto", nil, ColourANSITonal, true)
+	if st.Colour != ColourMono || st.colourCap != ColourXTerm256 {
+		t.Fatalf("TTY ANSI state = mode %v cap %v, want mono and 256", st.Colour, st.colourCap)
+	}
+	if got := st.CycleColour(false); got != ColourXTerm256 {
+		t.Fatalf("TTY ANSI forward cycle = %v, want 256", got)
 	}
 }
 

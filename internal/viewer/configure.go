@@ -28,7 +28,8 @@ import (
 // from the flag and the probe result, and lands on st for the kitty draw path.
 func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, transportFlag string) error {
 	environ := os.Environ()
-	detected := detectColour(environ, cterm.IsTerminal(tty.Fd()))
+	isTTY := cterm.IsTerminal(tty.Fd())
+	detected := detectColour(environ, isTTY)
 	// Record sextant support once, on every path, so the Alt+B scheme cycle
 	// skips the sextant scheme on a terminal that cannot self-draw it,
 	// matching the resolveScheme startup degrade.
@@ -54,7 +55,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 	switch mux {
 	case muxScreen, muxHerdr:
 		st.setTerminalCompatibility("", environ)
-		st.Colour = resolveCompatibleColour(colourFlag, environ, detected, st.compat)
+		st.configureColour(colourFlag, environ, detected, isTTY)
 		st.barSGR = resolveBarStyle(false, false, st.Colour)
 		// No handshake runs here, so the transport resolves with no identity
 		// and no probe: an explicit override still wins and auto falls back
@@ -97,7 +98,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 				st.sixelBudget.debug = os.Getenv(debugTimingEnv) != ""
 			}
 		}
-		st.Colour = resolveCompatibleColour(colourFlag, environ, detected, st.compat)
+		st.configureColour(colourFlag, environ, detected, isTTY)
 		// The reduced handshake sent no OSC 11 query, so the bar keeps reverse
 		// video: tmux would answer from a cache read once at attach, which
 		// describes the terminal as it was rather than as it is.
@@ -122,7 +123,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 	st.kittyKeyboard = res.KittyKbd
 	st.kittyTransport = resolveKittyTransport(transportFlag, res.TermID, res.KittySHM, runtime.GOOS)
 	st.setTerminalCompatibility(res.TermID, environ)
-	st.Colour = resolveCompatibleColour(colourFlag, environ, detected, st.compat)
+	st.configureColour(colourFlag, environ, detected, isTTY)
 	st.barSGR = resolveBarStyle(res.BackgroundDark, res.BackgroundOK, st.Colour)
 	// The pointer-shape capability rides the full handshake only, like the
 	// keyboard protocol above: the reduced handshake sends no OSC 22 query,

@@ -170,7 +170,7 @@ diagnostics:
     sixel_found=0
     if command -v sixel2png >/dev/null 2>&1; then sixel_found=1; fi
     run_leg 'browser-free quality' go test -count=1 -tags diagnostics ./internal/harness/
-    run_leg 'Block protocol interop' go test -count=1 -tags blockinterop ./internal/viewer/ -run '^TestBlockTerminalRoundTrip$'
+    run_leg 'Block protocol interop' go test -count=1 -tags blockinterop ./internal/viewer/ -run '^TestBlockTerminalRoundTrip'
     run_leg 'Kitty protocol interop' go test -count=1 -tags kittyinterop ./internal/viewer/ -run '^TestKittyTerminalRoundTrip$'
     if [ "$sixel_found" -eq 1 ]; then
         run_leg 'Sixel protocol interop' go test -count=1 -tags sixelinterop ./internal/render/sixel/ -run '^TestLibsixelRoundTrip$'
@@ -200,7 +200,7 @@ diagnostics:
 
 # Run the synthetic Block terminal protocol gate
 block-interop:
-    @go test -count=1 -tags blockinterop ./internal/viewer/ -run '^TestBlockTerminalRoundTrip$'
+    @go test -count=1 -tags blockinterop ./internal/viewer/ -run '^TestBlockTerminalRoundTrip'
 
 # Run the synthetic Kitty terminal protocol gate
 kitty-interop:
