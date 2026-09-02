@@ -45,6 +45,60 @@ func XTerm256(c color.RGBA) uint8 {
 	return xterm256PerceptualLUT[key]
 }
 
+// XTermGrey converts an RGBA colour to the nearest fixed xterm-256 greyscale
+// ramp entry. The result always lies in indices 232..255. Alpha is ignored.
+func XTermGrey(c color.RGBA) uint8 {
+	const (
+		base = 8 * 256
+		step = 10 * 256
+	)
+
+	n := (luma(c) - base + step/2) / step
+	n = max(0, min(n, 23))
+	return uint8(232 + n) //nolint:gosec // n is clamped to 0..23.
+}
+
+var ansi16TonalIndexes = [16]uint8{0, 4, 12, 1, 5, 2, 9, 6, 13, 3, 8, 10, 14, 7, 11, 15}
+
+var ansi16TonalLumas = [16]int{
+	0,
+	29 * 128,
+	29 * 255,
+	77 * 128,
+	(77 + 29) * 128,
+	150 * 128,
+	77 * 255,
+	(150 + 29) * 128,
+	(77 + 29) * 255,
+	(77 + 150) * 128,
+	128 * 256,
+	150 * 255,
+	(150 + 29) * 255,
+	192 * 256,
+	(77 + 150) * 255,
+	255 * 256,
+}
+
+// ANSI16Tonal converts an RGBA colour to the canonical xterm ANSI index with
+// the nearest Rec.601 luma. Equal distances select the darker tonal rank.
+// Alpha is ignored.
+func ANSI16Tonal(c color.RGBA) uint8 {
+	key := luma(c)
+	bestRank := 0
+	bestDistance := key
+	for rank := 1; rank < len(ansi16TonalIndexes); rank++ {
+		distance := ansi16TonalLumas[rank] - key
+		if distance < 0 {
+			distance = -distance
+		}
+		if distance < bestDistance {
+			bestRank = rank
+			bestDistance = distance
+		}
+	}
+	return ansi16TonalIndexes[bestRank]
+}
+
 // trueFGPrefix and trueBGPrefix are the truecolour foreground and background SGR
 // prefixes (ESC [ 38;2; and ESC [ 48;2;). The RGB triple and trailing "m" follow.
 const (

@@ -226,7 +226,7 @@ func handleFatalSignal(sig os.Signal, restore func(), closeEngine func() error, 
 // glyph scheme; Stream resolves it with resolveScheme against os.Environ(), so
 // auto and sextant render sextant on a supported terminal and quadrant otherwise,
 // quadrant forces quadrant, and half renders half-block.
-// kittyTransport is the --kitty-transport intent (auto, direct, or shm);
+// kittyTransport is the --kitty-transport intent (auto, direct, or shm).
 // configureBackends resolves it against the probe result and the allow and
 // deny lists. version is the Nyala build version (main.version, ldflags-set)
 // the bar's About mode shows.
@@ -438,8 +438,8 @@ func (c *control) run() {
 // the engine sizes its screencast capture and derives its layout scale. It
 // returns the tty fd, the State, and a restore closure the caller must defer to
 // leave raw mode. Scheme is the resolved block glyph scheme; it is set directly
-// on State. The caller resolves it through detection. kittyTransport is the
-// --kitty-transport intent, resolved inside configureBackends.
+// on State. The caller resolves it through detection.
+// kittyTransport is the --kitty-transport intent, resolved inside configureBackends.
 func setupViewer(eng Engine, tty *os.File, colourFlag, kittyTransport string, scheme block.Scheme) (fd uintptr, st *State, restore func(), err error) {
 	fd = tty.Fd()
 	if !cterm.IsTerminal(fd) {

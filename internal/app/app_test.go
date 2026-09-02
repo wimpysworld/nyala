@@ -126,7 +126,7 @@ func TestParseURLRequired(t *testing.T) {
 }
 
 func TestParseColorOverrides(t *testing.T) {
-	for _, mode := range []string{"truecolor", "256", "none"} {
+	for _, mode := range []string{"truecolor", "256", "ansi-grey", "ansi-tonal", "none"} {
 		cli := parse(t, "--color", mode, "example.com")
 		if cli.Color != mode {
 			t.Errorf("--color %s: Color = %q, want %q", mode, cli.Color, mode)

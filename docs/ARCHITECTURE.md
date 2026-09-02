@@ -958,8 +958,9 @@ packed-RGBA exact sampler (-64%) serves PNG-derived frames only.
 
 ### Colour
 
-Truecolour SGR passthrough is the default. The 256-colour fallback converts
-each cell colour through `block.XTerm256`, a generated 32 KiB lookup table: a
+`ColourTrue` passes each cell's RGB values through 24-bit SGR.
+`ColourXTerm256` converts each cell colour through `block.XTerm256`, a generated
+32 KiB lookup table: a
 15-bit RGB key indexes the CIEDE2000-nearest canonical xterm colour in 16..255,
 so configurable system colours 0..15 never appear. One indexed load per colour,
 no search and no start-up work. The internal rendering harness measured the LUT
@@ -969,18 +970,39 @@ and full-path p90 9.86%. PSNR and SSIM favoured nearest-two, but CIEDE2000
 is the stated selection metric. The generated asset is deterministic,
 exactly 32,768 bytes.
 
-`ColourMono` is a third colour mode, not a backend. It keeps the luma-selected
-glyph and suppresses all colour SGR, a 1-bit silhouette on the terminal's
-default colours. It lives in the viewer's SGR binding (`fgSGRFunc` and
-`bgSGRFunc` return no-op appenders); the block renderer itself stays
-truecolour-only.
+`ColourXTermGrey` converts each cell colour through `block.XTermGrey`. It uses
+the integer Rec.601 key `77R + 150G + 29B` and selects the nearest canonical
+xterm greyscale level, with indexes fixed to 232..255. The canonical levels are
+8 through 238 in steps of 10. An exact midpoint selects the lighter grey.
+Values outside that range clamp to its endpoints.
+
+`ColourANSITonal` converts each cell colour through `block.ANSI16Tonal`. It
+compares the same Rec.601 key against the canonical xterm values for ANSI
+indexes 0..15. Their dark-to-bright reference order is
+`0, 4, 12, 1, 5, 2, 9, 6, 13, 3, 8, 10, 14, 7, 11, 15`. An equal-distance tie
+keeps the darker rank. The writer emits basic ANSI foreground and background
+SGR, not xterm-256 SGR.
+
+ANSI indexes 0..15 are terminal-configurable. The quantiser uses the xterm
+reference values because Nyala does not query the user's palette. A custom
+palette can therefore change the visible tonal order.
+
+`ColourMono` is the fifth colour mode, not a backend. It keeps the
+luma-selected Block glyphs and suppresses colour SGR through the viewer
+binding (`fgSGRFunc` and `bgSGRFunc` return no-op appenders), so the page
+renders as a 1-bit silhouette in the terminal's default colours. The
+compositor keeps RGBA cell colours for every mode; only the mono writer
+drops them, and both graphics backends ignore the mode.
 
 Precedence is `--color` flag, then `NO_COLOR`, then detection
-(`resolveColour`). `--color=auto|truecolor|256|none` maps an explicit choice to
-ColourTrue, ColourXTerm256, or ColourMono. Under `auto`, a present `NO_COLOR`
+(`resolveColour`). The flag accepts
+`auto|truecolor|256|ansi-grey|ansi-tonal|none`. Explicit choices map to
+`ColourTrue`, `ColourXTerm256`, `ColourXTermGrey`, `ColourANSITonal`, or
+`ColourMono`. Under `auto`, a present `NO_COLOR`
 key yields ColourMono with ANY value, including empty and "0", per
-no-color.org. The flag spells `truecolor` the American way to match the
-`COLORTERM` token; Go identifiers stay British.
+no-color.org. Every explicit non-auto mode therefore overrides `NO_COLOR`. The flag spells
+`truecolor` the American way to match the `COLORTERM` token. Go identifiers
+stay British.
 
 Detection (`detectColour`) is env plus terminfo through `colorprofile.Detect`,
 hermetic and injectable, with no DCS round-trip. This is colour depth alone,
@@ -1000,6 +1022,25 @@ background. Under tmux,
 detection accepts one `tmux info` exec at startup, the only reliable way to
 honour tmux's truecolour override. GNU screen never sets `COLORTERM` and lacks
 a Tc/RGB terminfo cap, so truecolour there is a user opt-in via `.screenrc`.
+
+For automatic startup, the detected profile maps TrueColor to `ColourTrue`,
+ANSI256 to `ColourXTerm256`, and ANSI and every lower profile to `ColourMono`.
+No real-terminal evidence supports an automatic ANSI tonal default, so
+automatic selection returns neither `ColourANSITonal` nor `ColourXTermGrey`.
+The runtime cycle order is `ColourTrue`, `ColourXTerm256`, `ColourXTermGrey`,
+`ColourANSITonal`, then `ColourMono`.
+
+`resolveColourCapability` sets the cycle's effective cap from detection and an
+explicit mode. On a real TTY the cap is floored at `ColourXTerm256`: an ANSI,
+ASCII, or unknown profile still starts in `ColourMono`, but Alt+C can raise
+colour after user action, because every modern interactive terminal renders
+indexed colour. A non-TTY keeps its detected cap, so piped output never gains
+colour modes. `ColourXTermGrey` and `ColourANSITonal` remain available through
+an explicit mode or the cycle when the effective cap permits it. An
+explicit mode can raise a lower detected cap because the user asserts support.
+Terminal compatibility remains authoritative and can lower the cap.
+`CycleColour` skips every mode above that cap. `NO_COLOR` changes the automatic
+starting mode but does not change the detected cap.
 
 ### The diff writer
 

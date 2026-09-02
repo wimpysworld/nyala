@@ -124,6 +124,35 @@ func resolveCompatibleColour(flag string, environ []string, detected ColourMode,
 	return resolved
 }
 
+// resolveColourCapability returns the highest mode that the runtime colour
+// cycle can use. An explicit mode raises a lower detected cap because the user
+// asserted support, while terminal compatibility remains authoritative. On a
+// real TTY the cap is floored at xterm-256: an unknown or degraded profile
+// still starts monochrome, but Alt+C can raise colour on user action, because
+// every modern interactive terminal renders indexed colour. A non-TTY keeps
+// its detected cap, so piped output never gains colour modes.
+func resolveColourCapability(flag string, detected ColourMode, compat terminalCompatibility, isTTY bool) ColourMode {
+	cap := detected
+	if flag != "auto" {
+		explicit := resolveColour(flag, nil, detected)
+		if explicit < cap {
+			cap = explicit
+		}
+	}
+	if isTTY && cap > ColourXTerm256 {
+		cap = ColourXTerm256
+	}
+	if !compat.trueColourAllowed() && cap == ColourTrue {
+		return ColourXTerm256
+	}
+	return cap
+}
+
+func (s *State) configureColour(flag string, environ []string, detected ColourMode, isTTY bool) {
+	s.Colour = resolveCompatibleColour(flag, environ, detected, s.compat)
+	s.colourCap = resolveColourCapability(flag, detected, s.compat, isTTY)
+}
+
 // validateForcedBackend applies terminal-specific errors before the generic
 // capability check. Rio 0.4.x advertises Sixel but draws no image, so an explicit
 // request points to its working alternatives.
@@ -139,7 +168,7 @@ func (s *State) validateForcedBackend(mode string) error {
 // backend, so truecolour Block frames are always reachable at runtime.
 func (s *State) validateColourCompatibility(colourFlag string) error {
 	if s.compat.rio04 && colourFlag == "truecolor" {
-		return fmt.Errorf("viewer: Rio 0.4.x cannot use truecolour Block rendering; use --color=256 or --color=none")
+		return fmt.Errorf("viewer: Rio 0.4.x cannot use truecolour Block rendering; use --color=256, --color=ansi-grey, --color=ansi-tonal, or --color=none")
 	}
 	return nil
 }

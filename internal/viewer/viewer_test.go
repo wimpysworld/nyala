@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -390,7 +391,7 @@ func TestWaitForNavigateReturnsNavigateError(t *testing.T) {
 
 // TestRenderFrameBlockColourModes asserts the production differ emits every row
 // after Reset, emits no cell payload for an unchanged second draw, and honours
-// the selected truecolour, xterm-256, or monochrome mode.
+// every colour mode.
 func TestRenderFrameBlockColourModes(t *testing.T) {
 	src := solidImage(color.RGBA{R: 0x40, G: 0x80, B: 0xc0, A: 0xff})
 	for _, tc := range []struct {
@@ -401,6 +402,8 @@ func TestRenderFrameBlockColourModes(t *testing.T) {
 	}{
 		{name: "truecolour", mode: ColourTrue, wantSGR: "\x1b[38;2;"},
 		{name: "xterm-256", mode: ColourXTerm256, wantSGR: "\x1b[38;5;"},
+		{name: "xterm-grey", mode: ColourXTermGrey, wantSGR: "\x1b[38;5;"},
+		{name: "ansi-tonal", mode: ColourANSITonal},
 		{name: "monochrome", mode: ColourMono, forbidSGRs: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -435,8 +438,166 @@ func TestRenderFrameBlockColourModes(t *testing.T) {
 			if second.Len() != 0 {
 				t.Fatalf("unchanged draw emitted %q", second.String())
 			}
+
+			d.Reset()
+			var reset bytes.Buffer
+			if err := s.RenderStreamFrame(render.Frame{Img: src}, &reset); err != nil {
+				t.Fatalf("draw after reset: %v", err)
+			}
+			if !bytes.Equal(reset.Bytes(), first.Bytes()) {
+				t.Fatalf("draw after reset changed bytes:\nfirst %q\nreset %q", first.Bytes(), reset.Bytes())
+			}
 		})
 	}
+}
+
+func TestDegradedColourStreamSGRRanges(t *testing.T) {
+	frame := render.Frame{Img: monochromeRampImage(16, 16)}
+	for _, mode := range []ColourMode{ColourXTermGrey, ColourANSITonal} {
+		st := NewState(8, 4)
+		st.Colour = mode
+		st.SetDiff(&block.GridDiff{})
+		var out bytes.Buffer
+		if err := st.RenderStreamFrame(frame, &out); err != nil {
+			t.Fatalf("mode %d draw: %v", mode, err)
+		}
+
+		seenFG, seenBG := false, false
+		for _, params := range decodedSGRs(t, out.String()) {
+			switch mode {
+			case ColourXTermGrey:
+				if len(params) != 3 || params[1] != 5 || (params[0] != 38 && params[0] != 48) {
+					t.Fatalf("grey mode emitted non-indexed colour SGR %v in %q", params, out.String())
+				}
+				if params[2] < 232 || params[2] > 255 {
+					t.Fatalf("grey mode emitted index %d, want 232..255", params[2])
+				}
+				seenFG = seenFG || params[0] == 38
+				seenBG = seenBG || params[0] == 48
+			case ColourANSITonal:
+				if len(params) != 1 || !isANSITonalCode(params[0]) {
+					t.Fatalf("ANSI tonal mode emitted invalid SGR %v in %q", params, out.String())
+				}
+				seenFG = seenFG || params[0] >= 30 && params[0] <= 37 || params[0] >= 90 && params[0] <= 97
+				seenBG = seenBG || params[0] >= 40 && params[0] <= 47 || params[0] >= 100 && params[0] <= 107
+			}
+		}
+		if !seenFG || !seenBG {
+			t.Fatalf("mode %d emitted foreground=%t background=%t, want both", mode, seenFG, seenBG)
+		}
+		if mode == ColourANSITonal {
+			for _, forbidden := range []string{"\x1b[38;5;", "\x1b[48;5;", "\x1b[38;2;", "\x1b[48;2;"} {
+				if strings.Contains(out.String(), forbidden) {
+					t.Fatalf("ANSI tonal mode emitted forbidden SGR %q in %q", forbidden, out.String())
+				}
+			}
+		}
+	}
+}
+
+func TestANSI16SGRAppender(t *testing.T) {
+	for idx := range 16 {
+		fgCode, bgCode := 30+idx, 40+idx
+		if idx >= 8 {
+			fgCode, bgCode = 90+idx-8, 100+idx-8
+		}
+		if got, want := string(appendSGRANSI(nil, 30, uint8(idx))), "\x1b["+strconv.Itoa(fgCode)+"m"; got != want {
+			t.Fatalf("foreground index %d = %q, want %q", idx, got, want)
+		}
+		if got, want := string(appendSGRANSI(nil, 40, uint8(idx))), "\x1b["+strconv.Itoa(bgCode)+"m"; got != want {
+			t.Fatalf("background index %d = %q, want %q", idx, got, want)
+		}
+	}
+
+	white := color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+	if got := string(fgSGRFunc(ColourANSITonal)(nil, white)); got != "\x1b[97m" {
+		t.Fatalf("bright foreground = %q, want %q", got, "\x1b[97m")
+	}
+	if got := string(bgSGRFunc(ColourANSITonal)(nil, white)); got != "\x1b[107m" {
+		t.Fatalf("bright background = %q, want %q", got, "\x1b[107m")
+	}
+
+	var scratch [8]byte
+	var got []byte
+	if allocs := testing.AllocsPerRun(1000, func() {
+		got = appendSGRANSI(scratch[:0], 40, 15)
+	}); allocs != 0 {
+		t.Fatalf("appendSGRANSI allocations = %g, want 0", allocs)
+	}
+	if string(got) != "\x1b[107m" {
+		t.Fatalf("allocation test output = %q, want %q", got, "\x1b[107m")
+	}
+}
+
+func TestExistingIndexedAndMonoWriterByteIdentity(t *testing.T) {
+	grid := block.Grid{Cols: 2, Rows: 1, Cells: []block.Cell{
+		{Glyph: 'a', FG: color.RGBA{A: 0xff}, BG: color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}},
+		{Glyph: 'b', FG: color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}, BG: color.RGBA{A: 0xff}},
+	}}
+	for _, tc := range []struct {
+		name string
+		mode ColourMode
+		want string
+	}{
+		{"xterm-256", ColourXTerm256, "\x1b[1;1H\x1b[38;5;16m\x1b[48;5;231ma\x1b[38;5;231m\x1b[48;5;16mb"},
+		{"monochrome", ColourMono, "\x1b[1;1Hab"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var d block.GridDiff
+			var out bytes.Buffer
+			if err := d.Emit(&out, grid, fgSGRFunc(tc.mode), bgSGRFunc(tc.mode)); err != nil {
+				t.Fatal(err)
+			}
+			if got := out.String(); got != tc.want {
+				t.Fatalf("output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func decodedSGRs(t *testing.T, out string) [][]int {
+	t.Helper()
+	var decoded [][]int
+	for start := 0; start < len(out); start++ {
+		if out[start] != '\x1b' || start+1 >= len(out) || out[start+1] != '[' {
+			continue
+		}
+		end := start + 2
+		for end < len(out) && (out[end] == ';' || out[end] >= '0' && out[end] <= '9') {
+			end++
+		}
+		if end >= len(out) || out[end] != 'm' {
+			continue
+		}
+		fields := strings.Split(out[start+2:end], ";")
+		params := make([]int, len(fields))
+		for i, field := range fields {
+			value, err := strconv.Atoi(field)
+			if err != nil {
+				t.Fatalf("decode SGR %q: %v", out[start:end+1], err)
+			}
+			params[i] = value
+		}
+		decoded = append(decoded, params)
+		start = end
+	}
+	return decoded
+}
+
+func isANSITonalCode(code int) bool {
+	return code >= 30 && code <= 37 || code >= 40 && code <= 47 ||
+		code >= 90 && code <= 97 || code >= 100 && code <= 107
+}
+
+func monochromeRampImage(width, height int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := range height {
+		for x := range width {
+			value := uint8(x * 255 / max(width-1, 1)) //nolint:gosec // The ramp is bounded to 0..255.
+			img.SetRGBA(x, y, color.RGBA{R: value, G: value, B: value, A: 0xff})
+		}
+	}
+	return img
 }
 
 // TestRenderFrameGraphics asserts the graphics backends emit a non-empty framed
