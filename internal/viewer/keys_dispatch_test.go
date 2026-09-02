@@ -541,7 +541,7 @@ func TestCycleColour(t *testing.T) {
 		}
 	}
 	if got := st.CycleColour(true); got != ColourXTermGrey {
-		t.Fatalf("reverse cycle = %d, want ansi-grey", got)
+		t.Fatalf("reverse cycle = %d, want grey", got)
 	}
 
 	for _, cap := range colourCycle {

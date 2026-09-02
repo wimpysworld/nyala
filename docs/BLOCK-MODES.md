@@ -11,7 +11,7 @@ Nyala supports two schemes for the Block backend. The `--blocks` flag accepts `a
 
 ## Colour modes
 
-The `--color` flag accepts `auto`, `truecolor`, `256`, or `ansi-grey`. These modes affect only the Block backend.
+The `--color` flag accepts `auto`, `truecolor`, `256`, or `grey`. These modes affect only the Block backend.
 
 Colour mode precedence is an explicit non-`auto` `--color` value, then `NO_COLOR` for `auto`, then detection. Detection treats `COLORTERM=kmscon`, `COLORTERM=truecolor`, or `COLORTERM=24bit` as `truecolor`, even without a TTY. Every other profile maps to `256`.
 
@@ -19,14 +19,14 @@ Colour mode precedence is an explicit non-`auto` `--color` value, then `NO_COLOR
 | --- | --- | --- |
 | `truecolor` | Exact 24-bit foreground and background colours | A truecolour profile or recognised truecolour `COLORTERM` value |
 | `256` | Canonical xterm indexes 16..255 | A 256-colour profile |
-| `ansi-grey` | Fixed xterm greyscale indexes 232..255 | `NO_COLOR` |
+| `grey` | Fixed xterm greyscale indexes 232..255 | `NO_COLOR` |
 
-Automatic selection maps every profile below truecolour to `256`, the floor mode: every remaining colour mode builds on 256-colour support, and every modern terminal renders indexed colour. A present `NO_COLOR` key selects `ansi-grey`; greyscale output still emits SGR colour codes. On a real TTY the stored capability is floored at `256`. A non-TTY keeps its detected capability.
+Automatic selection maps every profile below truecolour to `256`, the floor mode: every remaining colour mode builds on 256-colour support, and every modern terminal renders indexed colour. A present `NO_COLOR` key selects `grey`; greyscale output still emits SGR colour codes. On a real TTY the stored capability is floored at `256`. A non-TTY keeps its detected capability.
 
-<kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `ansi-grey`, then wraps. The cycle skips modes above the effective capability. An explicit mode asserts support for that mode and can raise a lower detected capability. Terminal safety restrictions remain hard caps. `NO_COLOR` selects the automatic starting mode only, so the cycle can still use detected colour modes.
+<kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `grey`, then wraps. The cycle skips modes above the effective capability. An explicit mode asserts support for that mode and can raise a lower detected capability. Terminal safety restrictions remain hard caps. `NO_COLOR` selects the automatic starting mode only, so the cycle can still use detected colour modes.
 
-The `256` mode maps each RGB colour to the CIEDE2000-nearest canonical xterm entry in indexes 16..255. Both degraded modes use the Rec.601 key `77R + 150G + 29B`. The `ansi-grey` mode maps that key to the nearest fixed xterm grey in indexes 232..255. Its reference levels are 8, 18, through 238 in steps of 10. An exact midpoint selects the lighter grey.
+The `256` mode maps each RGB colour to the CIEDE2000-nearest canonical xterm entry in indexes 16..255. Both degraded modes use the Rec.601 key `77R + 150G + 29B`. The `grey` mode maps that key to the nearest fixed xterm grey in indexes 232..255. Its reference levels are 8, 18, through 238 in steps of 10. An exact midpoint selects the lighter grey.
 
 ## NO_COLOR
 
-With `--color=auto`, a present `NO_COLOR` key selects `ansi-grey` output regardless of its value. Any explicit non-auto `--color` value overrides `NO_COLOR`. Greyscale output still emits SGR colour codes; no colourless mode exists. Kitty and Sixel ignore the colour mode.
+With `--color=auto`, a present `NO_COLOR` key selects `grey` output regardless of its value. Any explicit non-auto `--color` value overrides `NO_COLOR`. Greyscale output still emits SGR colour codes; no colourless mode exists. Kitty and Sixel ignore the colour mode.

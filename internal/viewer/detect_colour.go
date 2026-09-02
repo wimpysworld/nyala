@@ -63,7 +63,7 @@ func resolveColour(flag string, environ []string, detected ColourMode) ColourMod
 		return ColourTrue
 	case "256":
 		return ColourXTerm256
-	case "ansi-grey":
+	case "grey":
 		return ColourXTermGrey
 	}
 	if noColorPresent(environ) {

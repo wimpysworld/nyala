@@ -126,19 +126,56 @@ func TestParseURLRequired(t *testing.T) {
 }
 
 func TestParseColorOverrides(t *testing.T) {
-	for _, mode := range []string{"truecolor", "256", "ansi-grey"} {
+	for _, mode := range []string{"truecolor", "256", "grey"} {
 		cli := parse(t, "--color", mode, "example.com")
-		if cli.Color != mode {
+		if string(cli.Color) != mode {
 			t.Errorf("--color %s: Color = %q, want %q", mode, cli.Color, mode)
 		}
 	}
 }
 
+// TestParseColorGrayAlias pins the unadvertised spelling: gray parses and maps
+// to the same grey mode, so both spellings reach the viewer as one value.
+func TestParseColorGrayAlias(t *testing.T) {
+	cli := parse(t, "--color", "gray", "example.com")
+	if cli.Color != "grey" {
+		t.Errorf("--color gray: Color = %q, want %q", cli.Color, "grey")
+	}
+}
+
 func TestParseColorRemovedModes(t *testing.T) {
-	for _, mode := range []string{"none", "ansi-tonal"} {
+	for _, mode := range []string{"none", "ansi-tonal", "ansi-grey"} {
 		if _, err := tryParse("--color", mode, "example.com"); err == nil {
 			t.Errorf("--color %s: want a parse error, got nil", mode)
 		}
+	}
+}
+
+// TestHelpAdvertisesGreyOnly pins the help surface: the colour flag advertises
+// grey, and neither the gray alias nor the removed ansi-grey name appears.
+func TestHelpAdvertisesGreyOnly(t *testing.T) {
+	var cli CLI
+	var output bytes.Buffer
+	parser, err := kong.New(
+		&cli,
+		kong.Name("nyala"),
+		kong.Vars{"version": "test"},
+		kong.Writers(&output, &output),
+		kong.Exit(func(int) {}),
+	)
+	if err != nil {
+		t.Fatalf("kong.New: %v", err)
+	}
+	_, _ = parser.Parse([]string{"--help"})
+	help := strings.Join(strings.Fields(output.String()), " ")
+	if !strings.Contains(help, "256, or grey") {
+		t.Errorf("help is missing the grey colour mode:\n%s", output.String())
+	}
+	if strings.Contains(help, "gray") {
+		t.Errorf("help advertises the gray alias:\n%s", output.String())
+	}
+	if strings.Contains(help, "ansi-grey") {
+		t.Errorf("help advertises the removed ansi-grey mode:\n%s", output.String())
 	}
 }
 

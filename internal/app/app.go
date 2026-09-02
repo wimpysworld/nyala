@@ -23,7 +23,7 @@ type CLI struct {
 	Version kong.VersionFlag `help:"Show version."`
 
 	// Color is the viewer colour mode.
-	Color string `help:"Viewer colour mode: auto, truecolor, 256, or ansi-grey." default:"auto" enum:"auto,truecolor,256,ansi-grey"`
+	Color ColorFlag `help:"Viewer colour mode: auto, truecolor, 256, or grey." default:"auto" enum:"auto,truecolor,256,grey"`
 
 	// Backend selects the starting renderer: auto, block, kitty, or sixel. auto
 	// detects the terminal's best supported backend; a named backend fails fast
@@ -60,6 +60,22 @@ type CLI struct {
 	URL string `arg:"" help:"URL to open."`
 }
 
+// ColorFlag is the --color value. Kong decodes it through UnmarshalText
+// before the enum check, so the unadvertised "gray" spelling parses to the
+// same mode while help output and enum errors advertise "grey" only.
+type ColorFlag string
+
+// UnmarshalText normalises the flag value: "gray" becomes "grey", and every
+// other value passes through unchanged for the enum check.
+func (c *ColorFlag) UnmarshalText(text []byte) error {
+	v := string(text)
+	if v == "gray" {
+		v = "grey"
+	}
+	*c = ColorFlag(v)
+	return nil
+}
+
 // Run dispatches a parsed CLI on the given tty. It prepends https:// when the
 // URL has no scheme, accepts http, https, and file, and rejects any other
 // scheme with a clear error. It configures the Chromium engine from the
@@ -79,7 +95,7 @@ func Run(cli CLI, version string, tty *os.File) error {
 	}
 	chromium.SetDisableFrameRateLimit(cli.DisableFrameRateLimit)
 	eng := engineAdapter{chromium}
-	return viewer.Stream(eng, target, tty, cli.Color, cli.Backend, cli.Blocks, cli.KittyTransport, version)
+	return viewer.Stream(eng, target, tty, string(cli.Color), cli.Backend, cli.Blocks, cli.KittyTransport, version)
 }
 
 // engineAdapter wraps a ChromiumEngine to satisfy viewer.Engine. The viewer
