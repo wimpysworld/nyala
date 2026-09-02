@@ -897,15 +897,28 @@ colour fidelity:
 `internal/viewer`). `auto` and `sextant` resolve to sextant when
 `SextantSupported` matches the terminal against the allow-list (detailed
 under Capability detection), and degrade to quadrant otherwise. Fallback is
-silent by owner decision. Alt+B cycles quadrant, sextant, and Shaded live;
-`CycleScheme` skips sextant on a terminal off the allow-list and skips Shaded
-while the colour mode is truecolour, reading only the current mode, so no
-startup state gates the cycle. Capture paths
+silent by owner decision. Alt+B cycles quadrant and sextant live;
+`CycleScheme` skips sextant on a terminal off the allow-list. Capture paths
 resolve `auto` to quadrant, so diagnostic bundles stay comparable across
 terminals. A half-block scheme (`--blocks=half`, `SchemeHalfBlock`, one 1x2
 source column per cell drawn as U+2584) existed and was removed: no auto
 route selected it, no compatibility niche was recorded for it, and it gave
 no perceivable speed benefit on the parallel compose path.
+
+A Shaded scheme (`--blocks=shaded`, `SchemeShaded`) existed and was removed
+after a full evaluation. It scored the Symbols for Legacy Computing
+medium-shade glyphs and, later, the U+2591..U+2593 full-cell dither
+candidates against each cell's 2x4 samples, quantising candidate colours to
+the active low-colour palette before scoring. The scheme was implemented in
+full with a reproducible A/B harness against Quadrant. The findings:
+monochrome was its only decisive win, and that colour mode was removed
+first; under 256 and ansi-grey it tied Quadrant on flat fixtures and trailed
+it on corpus pages and hard edges; the dither candidates, blending
+lattice-bracketed palette pairs, won only anti-aliased gradients, and only
+at viewing distance (a 4x box downscale before scoring); the owner observed
+evened-out grey patches on video, a real but niche gain. Adaptive OSC 4
+palette work (WW-236) supersedes glyph-side palette emulation, so the scheme
+came out.
 
 **Quadrant.** A cell maps to a 2x4 source region. Each of the four quadrants
 box-averages a 1x2 source column into one sub-cell colour. Each sub-cell

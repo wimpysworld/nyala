@@ -363,8 +363,6 @@ func (br *Renderer) composeYCbCrRows(g *Grid, src *ycbcrSampler, row0, row1 int)
 	switch br.Scheme {
 	case SchemeSextant:
 		composeYCbCrSextantRows(g, src, row0, row1)
-	case SchemeShaded:
-		composeYCbCrShadedRows(g, src, row0, row1, br.Palette)
 	default:
 		composeYCbCrQuadrantRows(g, src, row0, row1)
 	}
@@ -396,24 +394,6 @@ func composeYCbCrSextantRows(g *Grid, src *ycbcrSampler, row0, row1 int) {
 			botRight := sampledColour(src, x0+1, y0+2, 1)
 			glyph, fg, bg := binarizeSextant(tl, tr, ml, mr, bl, botRight)
 			*g.At(col, row) = Cell{Glyph: glyph, FG: fg, BG: bg}
-		}
-	}
-}
-
-// composeYCbCrShadedRows scores grid rows [row0, row1) directly from native
-// YCbCr samples. The Shaded scheme shares the quadrant 2x4 sample grid, read
-// as eight individual samples, so the sampler needs no extra geometry.
-func composeYCbCrShadedRows(g *Grid, src *ycbcrSampler, row0, row1 int, pal ShadedPalette) {
-	for row := row0; row < row1; row++ {
-		for col := range g.Cols {
-			var s [8]color.RGBA
-			x0, y0 := col*shadedCellPxW, row*shadedCellPxH
-			for dy := range shadedCellPxH {
-				for dx := range shadedCellPxW {
-					s[dy*shadedCellPxW+dx] = sampledColour(src, x0+dx, y0+dy, 1)
-				}
-			}
-			*g.At(col, row) = shadedCell(&s, pal)
 		}
 	}
 }

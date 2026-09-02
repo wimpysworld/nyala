@@ -137,7 +137,7 @@ The `256` mode uses the CIEDE2000-nearest canonical xterm colour. `ansi-grey` qu
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Interrupt |
 | <kbd>Alt</kbd>+<kbd>R</kbd> | Cycle rendering backend |
 | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> | Cycle rendering backend backwards |
-| <kbd>Alt</kbd>+<kbd>B</kbd> | Cycle Block mode: Quadrant -> Sextant, plus Shaded when the colour mode is 256 or ANSI grey (Block backend only) |
+| <kbd>Alt</kbd>+<kbd>B</kbd> | Cycle Block mode: Quadrant -> Sextant (Block backend only) |
 | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> | Cycle Block mode backwards (Block backend only) |
 | <kbd>Alt</kbd>+<kbd>C</kbd> | Cycle colour mode: Truecolour -> 256 -> ANSI grey (Block backend only) |
 | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> | Cycle colour mode backwards (Block backend only) |

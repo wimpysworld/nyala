@@ -312,30 +312,22 @@ func (s *State) cycleBackendStep(dir int) Backend {
 }
 
 // schemeCycle is the Alt+B block glyph scheme cycle order: quadrant, sextant,
-// shaded, wrapping. CycleScheme skips sextant when the terminal does not
-// self-draw sextant glyphs, and skips shaded while the colour mode is
-// truecolour.
-var schemeCycle = []block.Scheme{block.SchemeQuadrant, block.SchemeSextant, block.SchemeShaded}
+// wrapping. CycleScheme skips sextant when the terminal does not self-draw
+// sextant glyphs.
+var schemeCycle = []block.Scheme{block.SchemeQuadrant, block.SchemeSextant}
 
-// CycleScheme steps the block glyph scheme through the quadrant -> sextant ->
-// shaded cycle (reverse steps backwards) and returns the new scheme. Sextant
-// is skipped on a terminal off the allow-list, so the cycle only offers
-// renderable schemes. Shaded is skipped under truecolour, because it is a
-// low-colour scheme and the cycle never changes the colour mode; it rejoins
-// the cycle as soon as Alt+C drops the mode to 256 or ansi-grey, however the
-// session started. The scheme applies only to the block backend; the stream
-// dispatcher drops the cycle while a graphics backend draws, so no hidden
-// state change surprises the next block stint.
+// CycleScheme steps the block glyph scheme through the quadrant -> sextant
+// cycle (reverse steps backwards) and returns the new scheme. Sextant is
+// skipped on a terminal off the allow-list, so the cycle only offers
+// renderable schemes. The scheme applies only to the block backend; the
+// stream dispatcher drops the cycle while a graphics backend draws, so no
+// hidden state change surprises the next block stint.
 func (s *State) CycleScheme(reverse bool) block.Scheme {
 	s.Scheme = cycleValue(schemeCycle, s.Scheme, reverse, func(m block.Scheme) bool {
-		switch m {
-		case block.SchemeSextant:
+		if m == block.SchemeSextant {
 			return s.sextantOK
-		case block.SchemeShaded:
-			return s.Colour != ColourTrue
-		default:
-			return true
 		}
+		return true
 	})
 	return s.Scheme
 }
@@ -345,15 +337,10 @@ func (s *State) CycleScheme(reverse bool) block.Scheme {
 var colourCycle = []ColourMode{ColourTrue, ColourXTerm256, ColourXTermGrey}
 
 // CycleColour steps through the colour ladder and returns the new mode. It
-// skips modes above the effective capability cap, and skips truecolour while
-// the Shaded scheme is active, because that scheme is low-colour only; the
-// cycle itself never changes the scheme. The stream dispatcher drops the
-// cycle while a graphics backend draws.
+// skips modes above the effective capability cap. The stream dispatcher drops
+// the cycle while a graphics backend draws.
 func (s *State) CycleColour(reverse bool) ColourMode {
 	s.Colour = cycleValue(colourCycle, s.Colour, reverse, func(m ColourMode) bool {
-		if m == ColourTrue && s.Scheme == block.SchemeShaded {
-			return false
-		}
 		return m >= s.colourCap
 	})
 	return s.Colour
@@ -560,7 +547,7 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 		return nil
 	}
 	rows := engineRows(s.Rows)
-	br := block.Renderer{Cols: s.Cols, Rows: rows, Scheme: s.Scheme, Palette: shadedPalette(s.Colour)}
+	br := block.Renderer{Cols: s.Cols, Rows: rows, Scheme: s.Scheme}
 	pxW, pxH := schemePixels(s.Scheme, s.Cols, rows)
 	if pxW <= 0 || pxH <= 0 {
 		return nil
@@ -585,20 +572,8 @@ func releaseFrame(f render.Frame) {
 	}
 }
 
-// shadedPalette maps the viewer colour mode onto the block package's Shaded
-// palette, read only when the Shaded scheme composes. ColourTrue maps to
-// xterm-256 as a safe fallback: startup validation and the cycle predicates
-// keep the pair out of a live session, so the fallback can never emit
-// truecolour from a Shaded frame.
-func shadedPalette(mode ColourMode) block.ShadedPalette {
-	if mode == ColourXTermGrey {
-		return block.ShadedXTermGrey
-	}
-	return block.ShadedXTerm256
-}
-
 // schemePixels returns the source-pixel extent a cols x rows block grid samples
-// in the given scheme: 2x4 per cell for quadrant and shaded, 2x3 per cell for
+// in the given scheme: 2x4 per cell for quadrant, 2x3 per cell for
 // sextant. The compose step needs the source at this extent so
 // each cell maps to its own block of pixels. It maps the block.Scheme to a
 // render.BlockScheme via renderScheme, then calls render.BlockCaptureSize, the
