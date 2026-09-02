@@ -38,7 +38,7 @@ func TestBlockTerminalRoundTripDegradedColourModes(t *testing.T) {
 	}{
 		// Measured SSIM is 0.993773483. The 0.98 floor leaves 0.0137 for
 		// harmless metric drift while rejecting visible greyscale loss.
-		{name: "xterm-grey", flag: "ansi-grey", mode: ColourXTermGrey, payloadBudget: 2900, qualityFloor: 0.98},
+		{name: "xterm-grey", flag: "grey", mode: ColourXTermGrey, payloadBudget: 2900, qualityFloor: 0.98},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

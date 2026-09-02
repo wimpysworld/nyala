@@ -168,7 +168,7 @@ func (s *State) validateForcedBackend(mode string) error {
 // backend, so truecolour Block frames are always reachable at runtime.
 func (s *State) validateColourCompatibility(colourFlag string) error {
 	if s.compat.rio04 && colourFlag == "truecolor" {
-		return fmt.Errorf("viewer: Rio 0.4.x cannot use truecolour Block rendering; use --color=256 or --color=ansi-grey")
+		return fmt.Errorf("viewer: Rio 0.4.x cannot use truecolour Block rendering; use --color=256 or --color=grey")
 	}
 	return nil
 }

@@ -82,7 +82,7 @@ func TestResolveColour(t *testing.T) {
 		{"flag truecolor overrides detection", "truecolor", nil, ColourXTerm256, ColourTrue},
 		{"flag 256 overrides no_color", "256", []string{"NO_COLOR=1"}, ColourTrue, ColourXTerm256},
 		{"flag 256 overrides detection", "256", nil, ColourTrue, ColourXTerm256},
-		{"flag ansi grey selects exactly", "ansi-grey", nil, ColourTrue, ColourXTermGrey},
+		{"flag grey selects exactly", "grey", nil, ColourTrue, ColourXTermGrey},
 		{"auto no_color key only", "auto", []string{"NO_COLOR"}, ColourTrue, ColourXTermGrey},
 		{"auto no_color present", "auto", []string{"NO_COLOR=1"}, ColourTrue, ColourXTermGrey},
 		{"auto no_color empty", "auto", []string{"NO_COLOR="}, ColourTrue, ColourXTermGrey},

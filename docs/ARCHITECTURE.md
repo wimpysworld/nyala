@@ -912,7 +912,7 @@ candidates against each cell's 2x4 samples, quantising candidate colours to
 the active low-colour palette before scoring. The scheme was implemented in
 full with a reproducible A/B harness against Quadrant. The findings:
 monochrome was its only decisive win, and that colour mode was removed
-first; under 256 and ansi-grey it tied Quadrant on flat fixtures and trailed
+first; under 256 and grey it tied Quadrant on flat fixtures and trailed
 it on corpus pages and hard edges; the dither candidates, blending
 lattice-bracketed palette pairs, won only anti-aliased gradients, and only
 at viewing distance (a 4x box downscale before scoring); the owner observed
@@ -990,7 +990,7 @@ Values outside that range clamp to its endpoints.
 
 Precedence is `--color` flag, then `NO_COLOR`, then detection
 (`resolveColour`). The flag accepts
-`auto|truecolor|256|ansi-grey`. Explicit choices map to
+`auto|truecolor|256|grey`. Explicit choices map to
 `ColourTrue`, `ColourXTerm256`, or `ColourXTermGrey`.
 A monochrome mode (`--color=none`, `ColourMono`) existed and was removed: a
 web browser without colour is pointless, and every remaining mode emits SGR
