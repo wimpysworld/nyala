@@ -18,7 +18,11 @@ func SamplePalette(rgba *image.RGBA, maxColours int) color.Palette {
 // SamplePaletteInto quantises a fresh palette of at most maxColours entries
 // into dst and returns it with the (possibly reallocated) downsample scratch.
 func SamplePaletteInto(rgba *image.RGBA, maxColours int, dst color.Palette, sample *image.RGBA) (color.Palette, *image.RGBA) {
-	if cap(dst) < maxColours {
+	// The quantiser reads cap, not a count argument, so the capacity must equal
+	// the limit rather than merely reach it. A wider destination would otherwise
+	// quantise to its own capacity and return more than maxColours entries. This
+	// is the rule Engine.Requantise applies to the retained palette.
+	if cap(dst) != maxColours {
 		dst = make(color.Palette, 0, maxColours)
 	}
 	src, sample := SampleInto(rgba, sample)

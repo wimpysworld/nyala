@@ -186,9 +186,19 @@ func (t *PaletteTracker) rewriteSGR(body string) (string, error) {
 			out = append(out, params[i])
 			continue
 		}
-		if i+2 >= len(params) || params[i+1] != "5" {
+		// Reject a truncated indexed colour rather than copy it through. A
+		// decoder that passes "38;5" on hands the emulator a malformed attribute,
+		// and the consistency proof this package exists for would then rest on
+		// input no terminal can read.
+		if i+1 >= len(params) {
+			return "", fmt.Errorf("SGR parameter %q ends without a colour selector", params[i])
+		}
+		if params[i+1] != "5" {
 			out = append(out, params[i])
 			continue
+		}
+		if i+2 >= len(params) {
+			return "", fmt.Errorf("SGR parameters %q;5 end without a register", params[i])
 		}
 		index, err := paletteIndex(params[i+2])
 		if err != nil {

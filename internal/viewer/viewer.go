@@ -199,15 +199,13 @@ type State struct {
 	// changes size.
 	paletteSrc *image.RGBA
 
-	// paletteWritten records that a frame wrote OSC 4 registers the terminal
-	// still holds, so the teardown, a backend switch, and a colour cycle out of
-	// the adaptive mode all write the bare OSC 104 restore. It is atomic because
-	// the fatal-signal watcher goroutine reads it through restoreTerminal while
-	// the producer goroutine writes it, and it is a pointer because NewState
-	// returns a State by value and an atomic.Bool cannot be copied. NewState
-	// allocates it, so every production State carries the record before any
-	// goroutine starts; paletteRecord covers a zero-value State.
-	paletteWritten *atomic.Bool
+	// paletteWrites records the OSC 4 registers this run wrote, so the teardown,
+	// a backend switch, and a colour cycle out of the adaptive mode all write
+	// the bare OSC 104 restore. It is a pointer because NewState returns a State
+	// by value and an atomic.Bool cannot be copied. NewState allocates it, so
+	// every production State carries the record before any goroutine starts;
+	// paletteRecord covers a zero-value State.
+	paletteWrites *paletteWriteRecord
 
 	// fgSGR and bgSGR are the cached SGR writer pair the differ folds into its
 	// reused per-frame buffer. sgrColour and sgrLUT record what the pair was
@@ -319,15 +317,15 @@ func (s *State) SetDiff(d *block.GridDiff) {
 // the best available backend, and sets the real cell size after the handshake.
 func NewState(cols, rows int) State {
 	return State{
-		Backend:        BackendBlock,
-		Scheme:         block.SchemeQuadrant,
-		Colour:         ColourTrue,
-		colourCap:      ColourTrue,
-		Cols:           cols,
-		Rows:           rows,
-		Enabled:        []Backend{BackendKitty, BackendSixel, BackendBlock},
-		cellPx:         cellPx{W: cellraster.CellPxW, H: cellraster.CellPxH},
-		paletteWritten: &atomic.Bool{},
+		Backend:       BackendBlock,
+		Scheme:        block.SchemeQuadrant,
+		Colour:        ColourTrue,
+		colourCap:     ColourTrue,
+		Cols:          cols,
+		Rows:          rows,
+		Enabled:       []Backend{BackendKitty, BackendSixel, BackendBlock},
+		cellPx:        cellPx{W: cellraster.CellPxW, H: cellraster.CellPxH},
+		paletteWrites: &paletteWriteRecord{},
 	}
 }
 
@@ -703,6 +701,21 @@ func (s *State) paletteFrame(grid *block.Grid) *image.RGBA {
 	return s.paletteSrc
 }
 
+// paletteWriteRecord records the OSC 4 registers one run wrote. live is the
+// mid-run gate: releasePalette clears it as it hands the bare OSC 104 to the
+// ordered control path, so a later switch that disturbed nothing writes no
+// needless restore. ever is sticky and the teardown reads it, because the
+// control write is asynchronous and a fatal signal or a failed write can lose
+// the queued restore; a teardown reading the cleared gate would then leave the
+// adaptive palette on the terminal after Nyala exits. The teardown's restore is
+// idempotent, so the sticky record costs at most one redundant OSC 104 at exit.
+// Both fields are atomic because the fatal-signal watcher goroutine reads them
+// while the producer goroutine writes them.
+type paletteWriteRecord struct {
+	live atomic.Bool
+	ever atomic.Bool
+}
+
 // pendingPaletteWrite returns the OSC 4 bytes the last compose produced,
 // or nil when that compose reused the retained palette. It records that the
 // terminal now holds written registers, which is what releasePalette and the
@@ -712,34 +725,38 @@ func (s *State) pendingPaletteWrite() []byte {
 	if len(s.paletteOSC4) == 0 {
 		return nil
 	}
-	s.paletteRecord().Store(true)
+	record := s.paletteRecord()
+	record.live.Store(true)
+	record.ever.Store(true)
 	return s.paletteOSC4
 }
 
 // paletteRecord returns the shared OSC 4 write record, allocating it for a
 // zero-value State. Only the draw goroutine calls it, so the lazy allocation
 // never races the fatal-signal watcher, which reads through paletteDisturbed.
-func (s *State) paletteRecord() *atomic.Bool {
-	if s.paletteWritten == nil {
-		s.paletteWritten = &atomic.Bool{}
+func (s *State) paletteRecord() *paletteWriteRecord {
+	if s.paletteWrites == nil {
+		s.paletteWrites = &paletteWriteRecord{}
 	}
-	return s.paletteWritten
+	return s.paletteWrites
 }
 
-// paletteDisturbed reports whether a frame wrote OSC 4 registers the terminal
-// still holds. The teardown reads it, so it is safe on any goroutine and on a
-// State that never drew a frame.
+// paletteDisturbed reports whether any frame in this run wrote OSC 4 registers.
+// The teardown reads it, so it is safe on any goroutine and on a State that
+// never drew a frame. It stays true after releasePalette, so an exit that races
+// the queued restore still writes its own.
 func (s *State) paletteDisturbed() bool {
-	return s.paletteWritten != nil && s.paletteWritten.Load()
+	return s.paletteWrites != nil && s.paletteWrites.ever.Load()
 }
 
 // releasePalette returns the bare OSC 104 restore when the adaptive mode wrote
 // registers the terminal no longer needs, and the empty string otherwise. It
-// clears the record and drops the retained palette, so a later adaptive frame
-// re-quantises and rewrites the registers the reset discarded. The gate matters:
-// a run that never disturbed the palette must leave the user's theme untouched.
+// clears the mid-run gate and drops the retained palette, so a later adaptive
+// frame re-quantises and rewrites the registers the reset discarded. The gate
+// matters: a run that never disturbed the palette must leave the user's theme
+// untouched.
 func (s *State) releasePalette() string {
-	if !s.paletteRecord().Swap(false) {
+	if !s.paletteRecord().live.Swap(false) {
 		return ""
 	}
 	s.paletteEngine.Invalidate()
