@@ -41,15 +41,15 @@ func TestRenderBarMenuLayout(t *testing.T) {
 }
 
 // TestRenderBarAbout pins the About row: `Nyala <version> │ <browser> │ ✕`
-// with the browser segment omitted when empty, the close anchored right, and
+// with the browser field omitted when empty, the close anchored right, and
 // the row exactly cols cells wide.
 func TestRenderBarAbout(t *testing.T) {
 	const cols = 60
-	content, spans := renderBarAbout(cols, "dev", "Chromium 138.0.7204.49")
+	content, spans, _ := renderBarAbout(cols, []barField{{text: "Nyala dev", priority: 2}, {text: "Chromium 138", priority: 3}})
 	if w := runewidth.StringWidth(content); w != cols {
 		t.Fatalf("about row width = %d, want %d", w, cols)
 	}
-	if !strings.Contains(content, "Nyala dev") || !strings.Contains(content, "Chromium 138.0.7204.49") {
+	if !strings.Contains(content, "Nyala dev") || !strings.Contains(content, "Chromium 138") {
 		t.Fatalf("about row %q missing the versions", content)
 	}
 	if len(spans) != 1 || spans[0].item != barSpanClose {
@@ -59,9 +59,9 @@ func TestRenderBarAbout(t *testing.T) {
 		t.Fatalf("close ends at %d, want the corner column %d", end, cols)
 	}
 
-	bare, _ := renderBarAbout(cols, "dev", "")
-	if strings.Contains(bare, barSeparator) {
-		t.Fatalf("about row without a browser kept a separator: %q", bare)
+	bare, _, _ := renderBarAbout(cols, []barField{{text: "Nyala dev", priority: 2}})
+	if strings.Count(bare, barSeparator) != 1 {
+		t.Fatalf("about row without a browser kept a field separator: %q", bare)
 	}
 }
 
@@ -572,7 +572,7 @@ func TestMenuModeKeyboard(t *testing.T) {
 		t.Fatalf("About did not open: mode %d", s.barMode)
 	}
 	out := s.tty.(interface{ String() string }).String()
-	if !strings.Contains(out, "Nyala dev") || !strings.Contains(out, "Chromium 138.0.7204.49") {
+	if !strings.Contains(out, "Nyala dev") || !strings.Contains(out, "Chromium 138") {
 		t.Fatalf("about repaint missing the versions: %q", out)
 	}
 	s.handleKey(keyEvent{b: keyEsc})

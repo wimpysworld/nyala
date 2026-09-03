@@ -148,6 +148,11 @@ type State struct {
 	// keep the legacy parser.
 	kittyKeyboard bool
 
+	// probe is the terminal handshake result configureBackends recorded, so
+	// the About bar reads the terminal identity from one source. It stays the
+	// zero value under GNU screen and herdr, which run no handshake.
+	probe probeResult
+
 	// pointerShapeOK records that the startup handshake confirmed OSC 22
 	// pointer-shape support, resolved once by configureBackends. It stays
 	// false under a multiplexer, whose reduced handshake sends no OSC 22

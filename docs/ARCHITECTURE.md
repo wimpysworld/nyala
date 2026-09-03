@@ -1736,6 +1736,64 @@ because a shell alias does that job and the binary stays stateless. The bar
 pulls `CurrentURL` from the engine's committed navigation state on each
 repaint and strips control characters at the display boundary.
 
+### The About row
+
+The menu's About command swaps the bar for a one-row capability summary:
+
+```text
+Nyala dev │ Chrome 150 │ Kitty 0.4.0 │ ✓ Kitty (shm) │ ✗ Sixel │ ✓ Sextant │ Colour: True Colour │ WebGL ➁  (Intel) │ ✕
+```
+
+Every field formats from one `capabilitySnapshot`, built in
+`internal/viewer/capability.go` from the state `configureBackends` resolved:
+`State.Enabled`, the resolved Kitty transport, the sextant gate, the colour
+mode, the stored handshake identity, the engine's browser version, and the
+engine's WebGL state. The fields show effective decisions, not raw probe
+evidence, so a backend that the multiplexer rule or the compatibility list
+blocked reads `✗` even when the terminal answered the probe. `?` is reserved
+for unknown runtime state, which today is only the WebGL tier before or without
+a probe result. The terminal field is omitted when the handshake gave no
+XTVERSION identity, and the browser field when the engine has no version. The
+grey colour mode reads `Greyscale`. The row keeps the bar's `│` separator
+rather than the ASCII `|` of the original mock-up, because the About row shares
+the chrome row's framing.
+
+The WebGL probe runs once in `startSession`, after the browser version fetch
+and while the page is still `about:blank`, under a two-second timeout. Context
+creation counts as support: `webgl.js` asks for `webgl2`, then `webgl`, then
+`experimental-webgl`, and records the first version that answers. A software
+rasteriser creates a context the same way, so the tier never claims hardware
+acceleration. A tier other than unknown caches across crash rebuilds, and a
+failure or timeout leaves it unknown so the next session start retries. The
+vendor label is compact, whole-word, control-stripped text capped at 24 cells,
+taken from the vendor string or from the vendor that an `ANGLE (...)` renderer
+wraps. The viewer reads the state through the optional `webGLReporter`
+interface, so the `Engine` seam and every fake stay unchanged, and a fake that
+lacks it shows `?`.
+
+Fields drop whole when the row does not fit, highest priority number first,
+and one `…` field stands in for whatever dropped:
+
+1. the close control, which never drops
+2. the Nyala version
+3. the browser
+4. the terminal
+5. Kitty and its transport
+6. Sixel
+7. Sextant
+8. the colour mode
+9. the WebGL tier
+10. the WebGL vendor
+
+The vendor is a glued field with no separator before it, so its double space
+before the parenthesis survives the join, and it drops with the tier or on its
+own before it. When no field fits, the row is ` … │ ✕ `, and a terminal
+narrower than seven cells falls back to `closeAnchoredRow`, which keeps only
+whole spans. The `✓` and `✗` glyphs are coloured green and red as a hint added
+after layout, so the glyph carries the meaning alone: `ColourXTermGrey` writes
+no colour SGR and the row still reads. Input ownership is unchanged: Esc
+closes back to chrome, the quit keys quit, and everything else is swallowed.
+
 ### Key bindings and text input
 
 Chrome-mode key bindings live in `internal/viewer/keys.go`. Rendering: Alt+R
