@@ -269,6 +269,9 @@ func TestRenderBarAboutTruncationOrder(t *testing.T) {
 		if w := runewidth.StringWidth(content); w != cols {
 			t.Fatalf("row at %d cols is %d cells: %q", cols, w, content)
 		}
+		if cols >= 3 && !strings.Contains(content, barGlyphClose) {
+			t.Fatalf("row at %d cols dropped the close before the ellipsis: %q", cols, content)
+		}
 	}
 }
 
