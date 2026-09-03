@@ -80,7 +80,7 @@ func (*Renderer) render(f render.Frame, id int, w io.Writer) error {
 		Compression:     kitty.Zlib,
 		Transmission:    kitty.Direct,
 		Action:          kitty.TransmitAndPut,
-		Quite:           2, // upstream spelling; sets q=2, suppress replies
+		Quiet:           2, // q=2, suppress OK and error replies
 		DoNotMoveCursor: true,
 	}
 	if id > 0 {
@@ -125,7 +125,7 @@ func DeleteImage(id int) string {
 		Delete:          kitty.DeleteID,
 		DeleteResources: true,
 		ID:              id,
-		Quite:           2,
+		Quiet:           2,
 	}
 	return ansi.KittyGraphics(nil, opts.Options()...)
 }
