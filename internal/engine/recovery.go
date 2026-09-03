@@ -60,8 +60,10 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	// A rebuild reuses them. A failure degrades to an empty version string and no
 	// user-agent override, while missing client hints keep the legacy override.
 	e.fetchBrowserVersion(ctx)
-	// Probe WebGL support once the page context exists. A failure leaves the
-	// tier unknown and never blocks the session.
+	// Probe WebGL support once the page context exists. The probe runs
+	// synchronously before navigation, so it cannot race Page.navigate, and
+	// webGLProbeTimeout bounds a stalled evaluate. A failure or timeout leaves
+	// the tier unknown and never fails the session.
 	e.probeWebGL(ctx)
 	if err := e.applyUserAgentOverride(ctx); err != nil {
 		e.teardownSession()
