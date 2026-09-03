@@ -152,18 +152,6 @@ func renderBarMenu(cols int, names []string) (string, []barSpan) {
 	return closeAnchoredRow(cols, left.String(), spans)
 }
 
-// renderBarAbout lays out the in-bar About row
-// `Nyala <version> │ <browser> │ ✕` for a cols-wide terminal. The browser
-// segment is omitted when the engine reported no version. Only the
-// right-anchored close button is clickable.
-func renderBarAbout(cols int, version, browser string) (string, []barSpan) {
-	left := " Nyala " + version
-	if browser != "" {
-		left += " " + barSeparator + " " + browser
-	}
-	return closeAnchoredRow(cols, left, nil)
-}
-
 // renderBarEdit lays out the URL editor row: the ❯ prompt, then the editor's
 // viewport-windowed text padded to the row end.
 func renderBarEdit(cols int, e *urlEditor) (content string, cursorCol, promptW int) {
@@ -553,12 +541,13 @@ func (s *streamSession) appendBarMode(buf *bytes.Buffer) {
 		}
 		fmt.Fprintf(buf, "\x1b[%d;1H%s%s\x1b[0m", row, s.st.barStyle(), content)
 	case barModeAbout:
-		browser := ""
-		if s.eng != nil {
-			browser = s.eng.BrowserVersion()
-		}
-		content, spans := renderBarAbout(s.st.Cols, s.version, browser)
+		content, spans, glyphs := renderBarAbout(s.st.Cols, aboutFields(s.aboutSnapshot()))
 		s.modeSpans = spans
+		// The state glyphs carry their meaning alone, so the greyscale ladder
+		// writes no colour and every other mode adds the hint after layout.
+		if s.st.Colour != ColourXTermGrey {
+			content = colourGlyphs(content, glyphs, "\x1b[0m"+s.st.barStyle())
+		}
 		fmt.Fprintf(buf, "\x1b[%d;1H%s%s\x1b[0m", row, s.st.barStyle(), content)
 	}
 }

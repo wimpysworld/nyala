@@ -2431,6 +2431,15 @@ type ingestReporter interface {
 	IngestSummary() render.IngestStats
 }
 
+// webGLReporter is the optional engine capability the About bar reads for the
+// WebGL tier and vendor. ChromiumEngine implements it; a fake engine that does
+// not is shown as WebGLUnknown. The viewer type-asserts the Engine against it,
+// so the Engine seam and all fakes stay unchanged.
+type webGLReporter interface {
+	// WebGL returns the cached WebGL probe snapshot for the session.
+	WebGL() render.WebGLState
+}
+
 // newFPSMeter returns a meter when NYALA_FPS_TIMING is set in env, or nil
 // otherwise. The env read happens once per Stream, so an off run does no per-frame
 // work beyond the draw path's nil check. start is stamped now, so the warm-up span

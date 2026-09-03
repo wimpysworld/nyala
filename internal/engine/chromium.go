@@ -70,6 +70,11 @@ type ChromiumEngine struct {
 	browserUserAgent  string
 	userAgentMetadata *userAgentMetadata
 
+	// webgl is the WebGL support snapshot probeWebGL records once per engine
+	// and WebGL reports. It stays WebGLUnknown until a session probe answers,
+	// and a crash rebuild reuses a known answer without probing again.
+	webgl render.WebGLState
+
 	// scrollYTarget is the raw intended vertical scroll offset in CSS pixels before
 	// whole-cell snapping. On the block backend dispatchWheel accumulates every raw
 	// wheel delta here and snaps this target to the nearest whole cellCSSH to derive

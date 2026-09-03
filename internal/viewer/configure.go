@@ -65,6 +65,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 		return nil
 	case muxTmux, muxZellij:
 		res := probeTerminalReduced(tty, cols, rows)
+		st.probe = res
 		if !overrideOK && !winOK {
 			st.cellPx = res.cellPx
 		}
@@ -113,6 +114,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 	}
 
 	res := probeTerminal(tty, cols, rows)
+	st.probe = res
 	if !overrideOK && !winOK {
 		st.cellPx = res.cellPx
 	}
