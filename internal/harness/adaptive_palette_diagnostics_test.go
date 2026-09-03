@@ -530,8 +530,11 @@ func writeAdaptiveEvidence(t *testing.T, records map[string][]adaptiveScore) {
 }
 
 // benchFrame builds the wide-gradient frame the adaptive benchmarks drive. The
-// gradient is the worst realistic case for the drift test, so the benchmark
-// measures a palette that re-quantises rather than one that reuses.
+// gradient is the widest colour spread the quantiser meets, so the first
+// compose builds the hardest palette. Every iteration then feeds that same
+// frame, whose sample never drifts, so the loop measures the steady-state
+// reuse path: the sample, the drift test, and the compose, without a
+// re-quantisation. That is what a live stint spends nearly every frame on.
 func benchFrame() render.Frame {
 	return render.Frame{Img: wideGradient(CalibCols*2, CalibRows*4)}
 }

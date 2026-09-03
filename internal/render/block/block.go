@@ -138,8 +138,8 @@ type Renderer struct {
 	// colour through compose and the SGR writer maps that colour when it emits
 	// the cell. That is why attaching a palette leaves the serial and the
 	// parallel compose byte-identical, and why one field on the renderer covers
-	// both compose entries, ComposeInto and ComposeYCbCrInto, which each take
-	// the renderer by value.
+	// both compose entries, ComposeInto and ComposeYCbCrInto, which each read
+	// the renderer through a pointer.
 	PaletteLUT []uint8
 }
 

@@ -363,8 +363,11 @@ func TestTabSwitchRestoresTheAdaptivePalette(t *testing.T) {
 			if strings.Index(got, palette.OSC104) < strings.Index(got, clearScreen) {
 				t.Fatalf("the palette restore precedes the erase: %q", got)
 			}
-			if st.paletteDisturbed() {
-				t.Fatal("the switch left the palette recorded as written")
+			if again := st.releasePalette(); again != "" {
+				t.Fatalf("a second release after the switch = %q, want no restore", again)
+			}
+			if !st.paletteDisturbed() {
+				t.Fatal("the switch cleared the record the teardown reads")
 			}
 		})
 	}
@@ -400,7 +403,10 @@ func TestRecomposeBlockRestoresTheAdaptivePaletteOnAColourCycle(t *testing.T) {
 	if !strings.Contains(got, palette.OSC104) {
 		t.Fatalf("a cycle out of the adaptive mode = %q, missing %q", got, palette.OSC104)
 	}
-	if st.paletteDisturbed() {
-		t.Fatal("the cycle left the palette recorded as written")
+	if again := st.releasePalette(); again != "" {
+		t.Fatalf("a second release after the cycle = %q, want no restore", again)
+	}
+	if !st.paletteDisturbed() {
+		t.Fatal("the cycle cleared the record the teardown reads")
 	}
 }
