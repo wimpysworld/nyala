@@ -81,19 +81,28 @@ func encodeBaseline420(tb testing.TB, img image.Image) []byte {
 	return buf.Bytes()
 }
 
-// unsupportedSequentialJPEG returns an extended sequential JPEG. The stdlib
-// decoder accepts this valid SOF1 form, while jpegn deliberately rejects it.
-func unsupportedSequentialJPEG(tb testing.TB) []byte {
+// unsupportedBaselineScanJPEG returns a baseline JPEG whose first SOS segment
+// carries a non-zero point transform (Al = 1). The stdlib decoder ignores the
+// Ss, Se, Ah, and Al scan fields on a baseline frame and decodes the fixture,
+// while jpegn rejects any non-default value on a baseline scan with
+// ErrUnsupported.
+func unsupportedBaselineScanJPEG(tb testing.TB) []byte {
 	tb.Helper()
 	raw := encodeBaseline420(tb, loadSourceRGBA(tb))
-	sof := bytes.Index(raw, []byte{0xff, 0xc0})
-	if sof < 0 {
-		tb.Fatal("baseline JPEG fixture has no SOF0 marker")
+	sos := bytes.Index(raw, []byte{0xff, 0xda})
+	if sos < 0 {
+		tb.Fatal("baseline JPEG fixture has no SOS marker")
+	}
+	// SOS layout: marker, two-byte length, Ns, Ns component pairs, Ss, Se, Ah/Al.
+	ns := int(raw[sos+4])
+	ahAl := sos + 5 + 2*ns + 2
+	if ahAl >= len(raw) {
+		tb.Fatal("baseline JPEG fixture SOS segment is truncated")
 	}
 	raw = bytes.Clone(raw)
-	raw[sof+1] = 0xc1
+	raw[ahAl] |= 0x01
 	if _, err := jpeg.Decode(bytes.NewReader(raw)); err != nil {
-		tb.Fatalf("stdlib rejected extended sequential JPEG fixture: %v", err)
+		tb.Fatalf("stdlib rejected baseline JPEG fixture with Al = 1: %v", err)
 	}
 	return raw
 }
@@ -254,7 +263,7 @@ func TestDecodeFrameImageKeepsJpegnFailuresAuthoritative(t *testing.T) {
 		wantCause error
 	}{
 		{name: "corrupt", raw: []byte{0xff, 0xd8, 0xff, 0xdb, 0x00}, wantCause: jpegn.ErrSyntax},
-		{name: "unsupported", raw: unsupportedSequentialJPEG(t), wantCause: jpegn.ErrUnsupported},
+		{name: "unsupported", raw: unsupportedBaselineScanJPEG(t), wantCause: jpegn.ErrUnsupported},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			directImg, directErr := jpegn.Decode(bytes.NewReader(test.raw))
