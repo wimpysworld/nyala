@@ -2,12 +2,15 @@
 
 // The adaptive-palette A/B diagnostics.
 //
-// The question this file answers is narrow: does ColourXTerm256Adaptive draw a
-// frame closer to the truecolour reference than ColourXTerm256 does, on real
-// page content and on gradients? Both modes compose the same grid, because the
-// binarise pass never reads a palette (internal/render/block/block.go
-// documents that), so the composed grid is the shared truecolour reference and
-// the two modes differ only in the register each cell colour lands on.
+// The question this file answers is narrow: does ColourXTerm256 with an
+// answered OSC 4 palette query (the scene-fitted palette) draw a frame closer
+// to the truecolour reference than the same mode with an unanswered query (the
+// canonical xterm-256 table), on real page content and on gradients? The
+// verdict is set through State.SetPaletteQueryOK. Both techniques compose the
+// same grid, because the binarise pass never reads a palette
+// (internal/render/block/block.go documents that), so the composed grid is the
+// shared truecolour reference and the two techniques differ only in the
+// register each cell colour lands on.
 //
 // The terminal-visible grid is modelled here rather than decoded from the
 // stream, because the vt emulator behind internal/blockinterop implements no
@@ -90,7 +93,9 @@ var adaptiveFixtures = []adaptiveFixture{
 // two 256-register modes; the CIEDE2000 mean is the colour measure that
 // separates them, and both are recorded so a later reader needs neither rerun.
 type adaptiveScore struct {
-	// Mode is the colour-mode label ("256" or "256-adaptive").
+	// Mode is the technique label: "256" for the unanswered palette query
+	// (canonical table) or "256-palette" for the answered query (scene-fitted
+	// palette).
 	Mode string
 	// SSIMNative is the SSIM against the reference at the full 960x640 raster.
 	SSIMNative float64
@@ -106,10 +111,11 @@ type adaptiveScore struct {
 	Registers int
 }
 
-// TestAdaptivePaletteDiagnostics scores ColourXTerm256Adaptive against
-// ColourXTerm256 on the browser-free page corpus and on two synthetic
-// gradients, natively and at viewing distance, and writes the whole measurement
-// set to gitignored testdata/diagnostics/adaptive-palette/scores.json.
+// TestAdaptivePaletteDiagnostics scores ColourXTerm256 with the palette query
+// answered (scene-fitted palette) against ColourXTerm256 with the query
+// unanswered (canonical table) on the browser-free page corpus and on two
+// synthetic gradients, natively and at viewing distance, and writes the whole
+// measurement set to gitignored testdata/diagnostics/adaptive-palette/scores.json.
 //
 // The floors below are per-mode absolute floors plus one relative rule: the
 // adaptive mode must not score worse than the static mode on mean dE for any
@@ -125,8 +131,8 @@ func TestAdaptivePaletteDiagnostics(t *testing.T) {
 			reference := composeReference(t, frame)
 			raster := rasteriser.Rasterise(reference)
 
-			static := scoreMode(t, rasteriser, frame, reference, raster, viewer.ColourXTerm256)
-			adaptive := scoreMode(t, rasteriser, frame, reference, raster, viewer.ColourXTerm256Adaptive)
+			static := scoreMode(t, rasteriser, frame, reference, raster, false)
+			adaptive := scoreMode(t, rasteriser, frame, reference, raster, true)
 			records[fx.Name] = []adaptiveScore{static, adaptive}
 
 			for _, s := range []adaptiveScore{static, adaptive} {
@@ -242,14 +248,15 @@ func assertFinite(t *testing.T, label string, v float64) {
 	}
 }
 
-// scoreMode renders one colour mode through the production stream writer,
-// models the terminal-visible grid, and scores it against the truecolour
-// reference raster natively and at viewing distance.
-func scoreMode(t *testing.T, rast *cellraster.Rasteriser, frame render.Frame, reference block.Grid, referenceRaster *image.RGBA, mode viewer.ColourMode) adaptiveScore {
+// scoreMode renders ColourXTerm256 with the given palette-query verdict through
+// the production stream writer, models the terminal-visible grid, and scores it
+// against the truecolour reference raster natively and at viewing distance.
+func scoreMode(t *testing.T, rast *cellraster.Rasteriser, frame render.Frame, reference block.Grid, referenceRaster *image.RGBA, paletteOK bool) adaptiveScore {
 	t.Helper()
 	st := viewer.NewState(CalibCols, CalibRows+1)
 	st.Backend = viewer.BackendBlock
-	st.Colour = mode
+	st.Colour = viewer.ColourXTerm256
+	st.SetPaletteQueryOK(paletteOK)
 	st.SetDiff(&block.GridDiff{})
 
 	var payload bytes.Buffer
@@ -258,8 +265,8 @@ func scoreMode(t *testing.T, rast *cellraster.Rasteriser, frame render.Frame, re
 	}
 
 	entries, base := parseOSC4(t, payload.Bytes())
-	visible := terminalGrid(t, reference, mode, entries, base)
-	if mode == viewer.ColourXTerm256 {
+	visible := terminalGrid(t, reference, paletteOK, entries, base)
+	if !paletteOK {
 		assertDecodedMatchesModel(t, payload.Bytes(), visible)
 	}
 
@@ -269,7 +276,7 @@ func scoreMode(t *testing.T, rast *cellraster.Rasteriser, frame render.Frame, re
 	de := metrics.CIEDE2000(raster, referenceRaster)
 
 	return adaptiveScore{
-		Mode:         adaptiveModeLabel(mode),
+		Mode:         paletteLabel(paletteOK),
 		SSIMNative:   metrics.SSIM(raster, referenceRaster),
 		SSIMDistant:  metrics.SSIM(distantGot, distantRef),
 		DeltaEMean:   de.Mean,
@@ -279,11 +286,11 @@ func scoreMode(t *testing.T, rast *cellraster.Rasteriser, frame render.Frame, re
 	}
 }
 
-// adaptiveModeLabel returns the flag spelling of a colour mode, so the evidence
-// record and the log lines name the mode the operator would type.
-func adaptiveModeLabel(mode viewer.ColourMode) string {
-	if mode == viewer.ColourXTerm256Adaptive {
-		return "256-adaptive"
+// paletteLabel returns the technique label for a palette-query verdict, so the
+// evidence record and the log lines name which of the two 256 paths ran.
+func paletteLabel(paletteOK bool) string {
+	if paletteOK {
+		return "256-palette"
 	}
 	return "256"
 }
@@ -308,14 +315,14 @@ func composeReference(t *testing.T, frame render.Frame) block.Grid {
 }
 
 // terminalGrid returns the reference grid with every cell colour replaced by
-// the colour the terminal actually shows in the given mode. Static 256 maps
-// through block.XTerm256 onto the canonical table; the adaptive mode maps
-// through block.PaletteIndex onto a LUT rebuilt from the palette the frame
-// wrote, so the mapping is the production one in both cases.
-func terminalGrid(t *testing.T, reference block.Grid, mode viewer.ColourMode, entries color.Palette, base int) block.Grid {
+// the colour the terminal actually shows for the given palette-query verdict.
+// An unanswered query maps through block.XTerm256 onto the canonical table; an
+// answered query maps through block.PaletteIndex onto a LUT rebuilt from the
+// palette the frame wrote, so the mapping is the production one in both cases.
+func terminalGrid(t *testing.T, reference block.Grid, paletteOK bool, entries color.Palette, base int) block.Grid {
 	t.Helper()
 	var lut []uint8
-	if mode == viewer.ColourXTerm256Adaptive {
+	if paletteOK {
 		if len(entries) == 0 {
 			t.Fatal("adaptive frame wrote no OSC 4 palette")
 		}
@@ -539,11 +546,13 @@ func benchFrame() render.Frame {
 	return render.Frame{Img: wideGradient(CalibCols*2, CalibRows*4)}
 }
 
-// benchState builds a Block viewer State at the pinned grid in one colour mode.
-func benchState(mode viewer.ColourMode) viewer.State {
+// benchState builds a Block viewer State at the pinned grid in ColourXTerm256
+// with the given palette-query verdict.
+func benchState(paletteOK bool) viewer.State {
 	st := viewer.NewState(CalibCols, CalibRows+1)
 	st.Backend = viewer.BackendBlock
-	st.Colour = mode
+	st.Colour = viewer.ColourXTerm256
+	st.SetPaletteQueryOK(paletteOK)
 	st.SetDiff(&block.GridDiff{})
 	return st
 }
@@ -552,7 +561,7 @@ func benchState(mode viewer.ColourMode) viewer.State {
 // which includes the palette sample, the drift test, and any re-quantisation.
 func BenchmarkAdaptiveCompose(b *testing.B) {
 	frame := benchFrame()
-	st := benchState(viewer.ColourXTerm256Adaptive)
+	st := benchState(true)
 	b.ReportAllocs()
 	for b.Loop() {
 		if st.ComposeBlockFrame(frame) == nil {
@@ -565,7 +574,7 @@ func BenchmarkAdaptiveCompose(b *testing.B) {
 // same compose with no palette engine, so the difference is the adaptive cost.
 func BenchmarkStatic256Compose(b *testing.B) {
 	frame := benchFrame()
-	st := benchState(viewer.ColourXTerm256)
+	st := benchState(false)
 	b.ReportAllocs()
 	for b.Loop() {
 		if st.ComposeBlockFrame(frame) == nil {
@@ -578,20 +587,21 @@ func BenchmarkStatic256Compose(b *testing.B) {
 // and reports the payload size, so a palette-write regression shows as bytes
 // per frame rather than only as time.
 func BenchmarkAdaptivePayload(b *testing.B) {
-	benchmarkPayload(b, viewer.ColourXTerm256Adaptive)
+	benchmarkPayload(b, true)
 }
 
 // BenchmarkStatic256Payload is the control for BenchmarkAdaptivePayload.
 func BenchmarkStatic256Payload(b *testing.B) {
-	benchmarkPayload(b, viewer.ColourXTerm256)
+	benchmarkPayload(b, false)
 }
 
-// benchmarkPayload drives RenderStreamFrame in one colour mode, reporting time,
-// allocations, and the bytes the first frame wrote.
-func benchmarkPayload(b *testing.B, mode viewer.ColourMode) {
+// benchmarkPayload drives RenderStreamFrame in ColourXTerm256 with the given
+// palette-query verdict, reporting time, allocations, and the bytes the first
+// frame wrote.
+func benchmarkPayload(b *testing.B, paletteOK bool) {
 	b.Helper()
 	frame := benchFrame()
-	st := benchState(mode)
+	st := benchState(paletteOK)
 	var first bytes.Buffer
 	if err := st.RenderStreamFrame(frame, &first); err != nil {
 		b.Fatalf("RenderStreamFrame: %v", err)

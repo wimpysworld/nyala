@@ -58,14 +58,18 @@ func paletteSolidImage(w, h int, c color.RGBA) *image.RGBA {
 	return img
 }
 
-// paletteTestState returns a Block state in the given colour mode whose adaptive
-// engine already holds a quantised palette, so a compose has a table to attach.
-func paletteTestState(t *testing.T, mode ColourMode) (*State, []uint8) {
+// paletteTestState returns a Block state in the 256 colour mode, carrying the
+// given OSC 4 palette-query verdict, whose adaptive engine already holds a
+// quantised palette, so a compose has a table to attach. Production sets the
+// verdict once before any frame, so a test that needs both verdicts builds one
+// state per verdict rather than flipping the field mid-run.
+func paletteTestState(t *testing.T, paletteOK bool) (*State, []uint8) {
 	t.Helper()
 	state := NewState(20, 11)
 	st := &state
 	st.Backend = BackendBlock
-	st.Colour = mode
+	st.Colour = ColourXTerm256
+	st.paletteQueryOK = paletteOK
 	st.SetDiff(&block.GridDiff{})
 	sample := paletteTestImage(48, 48)
 	engine := st.adaptivePalette()
@@ -88,10 +92,11 @@ func blockFrame(t *testing.T, st *State) *image.RGBA {
 }
 
 // TestComposeBlockFrameAttachesAdaptivePalette proves the compose attaches the
-// engine's table in the adaptive mode and attaches none in every other mode, so
-// only the adaptive mode draws through a written palette.
+// engine's table in the 256 mode when the OSC 4 probe answered, and attaches
+// none in every other mode or when the probe went unanswered, so only that
+// combination draws through a written palette.
 func TestComposeBlockFrameAttachesAdaptivePalette(t *testing.T) {
-	st, lut := paletteTestState(t, ColourXTerm256Adaptive)
+	st, lut := paletteTestState(t, true)
 	src := blockFrame(t, st)
 
 	if st.ComposeBlockFrame(render.Frame{Img: src}) == nil {
@@ -102,7 +107,7 @@ func TestComposeBlockFrameAttachesAdaptivePalette(t *testing.T) {
 		t.Fatal("adaptive compose attached a table other than the engine's")
 	}
 
-	for _, mode := range []ColourMode{ColourTrue, ColourXTerm256, ColourXTermGrey} {
+	for _, mode := range []ColourMode{ColourTrue, ColourXTermGrey} {
 		st.Colour = mode
 		if st.ComposeBlockFrame(render.Frame{Img: src}) == nil {
 			t.Fatal("ComposeBlockFrame returned nil")
@@ -111,13 +116,21 @@ func TestComposeBlockFrameAttachesAdaptivePalette(t *testing.T) {
 			t.Errorf("mode %d attached a palette table", mode)
 		}
 	}
+
+	unanswered, _ := paletteTestState(t, false)
+	if unanswered.ComposeBlockFrame(render.Frame{Img: src}) == nil {
+		t.Fatal("ComposeBlockFrame returned nil")
+	}
+	if unanswered.blockRenderer.PaletteLUT != nil {
+		t.Error("the 256 mode attached a palette table on an unanswered probe")
+	}
 }
 
 // TestComposeBlockFrameYCbCrAttachesTheSamePalette proves the native YCbCr
 // compose entry carries the same table as the RGBA entry, so the Block draw and
 // the diagnostics cannot diverge on which palette a frame used.
 func TestComposeBlockFrameYCbCrAttachesTheSamePalette(t *testing.T) {
-	st, lut := paletteTestState(t, ColourXTerm256Adaptive)
+	st, lut := paletteTestState(t, true)
 
 	if st.ComposeBlockFrame(render.Frame{Img: blockFrame(t, st)}) == nil {
 		t.Fatal("ComposeBlockFrame returned nil for the RGBA frame")
@@ -145,7 +158,7 @@ func TestComposeBlockFrameYCbCrAttachesTheSamePalette(t *testing.T) {
 // registers the engine's table names once a compose attached it, and that the
 // registers stay inside the budget range the terminal palette write covers.
 func TestBlockSGRMapsThroughTheAdaptivePalette(t *testing.T) {
-	st, lut := paletteTestState(t, ColourXTerm256Adaptive)
+	st, lut := paletteTestState(t, true)
 	if st.ComposeBlockFrame(render.Frame{Img: blockFrame(t, st)}) == nil {
 		t.Fatal("ComposeBlockFrame returned nil")
 	}
@@ -181,7 +194,7 @@ func TestBlockSGRMapsThroughTheAdaptivePalette(t *testing.T) {
 // TestBlockSGRRebuildsOnAModeChange proves the cached writer pair follows the
 // colour mode, so a mode change never writes the previous mode's registers.
 func TestBlockSGRRebuildsOnAModeChange(t *testing.T) {
-	st, _ := paletteTestState(t, ColourXTerm256Adaptive)
+	st, _ := paletteTestState(t, true)
 	src := blockFrame(t, st)
 	if st.ComposeBlockFrame(render.Frame{Img: src}) == nil {
 		t.Fatal("ComposeBlockFrame returned nil")
@@ -190,25 +203,26 @@ func TestBlockSGRRebuildsOnAModeChange(t *testing.T) {
 	fg, _ := st.blockSGR()
 	adaptive := string(fg(nil, c))
 
-	st.Colour = ColourXTerm256
+	st.Colour = ColourXTermGrey
 	if st.ComposeBlockFrame(render.Frame{Img: src}) == nil {
 		t.Fatal("ComposeBlockFrame returned nil")
 	}
 	fg, _ = st.blockSGR()
-	static := string(fg(nil, c))
-	if want := string(fgSGRFunc(ColourXTerm256, nil)(nil, c)); static != want {
-		t.Fatalf("static foreground = %q, want %q", static, want)
+	grey := string(fg(nil, c))
+	if want := string(fgSGRFunc(ColourXTermGrey, nil, false)(nil, c)); grey != want {
+		t.Fatalf("grey foreground = %q, want %q", grey, want)
 	}
-	if adaptive == static {
-		t.Fatal("the adaptive and the static writers produced the same register, so the rebuild is untested")
+	if adaptive == grey {
+		t.Fatal("the adaptive and the grey writers produced the same register, so the rebuild is untested")
 	}
 }
 
 // TestRenderBlockXTerm256IgnoresTheEngine proves a quantised engine cannot leak
-// into the static 256-colour mode: the frame bytes match a state whose engine
-// never quantised, so --color=256 output is unchanged.
+// into the 256 mode on an unanswered OSC 4 probe: the frame bytes match a state
+// whose engine never quantised, so --color=256 output on such a terminal is
+// unchanged.
 func TestRenderBlockXTerm256IgnoresTheEngine(t *testing.T) {
-	quantised, _ := paletteTestState(t, ColourXTerm256)
+	quantised, _ := paletteTestState(t, false)
 	src := blockFrame(t, quantised)
 	var withEngine bytes.Buffer
 	if err := quantised.RenderStreamFrame(render.Frame{Img: src}, &withEngine); err != nil {
@@ -239,7 +253,7 @@ func TestRenderBlockXTerm256IgnoresTheEngine(t *testing.T) {
 // cell byte. A palette write that reached the terminal after the cells would
 // draw the frame in the previous frame's colours.
 func TestRenderBlockPairsThePaletteWriteWithTheRepaint(t *testing.T) {
-	st, _ := paletteTestState(t, ColourXTerm256Adaptive)
+	st, _ := paletteTestState(t, true)
 	pxW, pxH := schemePixels(st.Scheme, st.Cols, engineRows(st.Rows))
 
 	flat := paletteSolidImage(pxW, pxH, color.RGBA{R: 8, G: 8, B: 40, A: 0xff})
@@ -282,7 +296,7 @@ func TestRenderBlockPairsThePaletteWriteWithTheRepaint(t *testing.T) {
 // verdict, not a frame counter, gates the palette write: a frame the drift test
 // lets keep the retained palette writes no palette bytes at all.
 func TestRenderBlockReusedPaletteWritesNoPaletteBytes(t *testing.T) {
-	st, _ := paletteTestState(t, ColourXTerm256Adaptive)
+	st, _ := paletteTestState(t, true)
 	src := blockFrame(t, st)
 
 	var first bytes.Buffer
@@ -323,24 +337,31 @@ func TestExitTerminalRestoresTheAdaptivePalette(t *testing.T) {
 	}
 }
 
-// TestTabSwitchRestoresTheAdaptivePalette proves a backend switch away from an
-// adaptive Block stint restores the terminal palette in the same control buffer
-// as the switch clear, after the erase so no cell is on screen while the
-// registers change, and that a stint that wrote no register writes no restore.
+// TestTabSwitchRestoresTheAdaptivePalette proves a backend switch away from a
+// 256 Block stint on a terminal that answered the OSC 4 probe restores the
+// terminal palette in the same control buffer as the switch clear, after the
+// erase so no cell is on screen while the registers change, and that a stint on
+// an unanswered probe wrote no register and so writes no restore.
 func TestTabSwitchRestoresTheAdaptivePalette(t *testing.T) {
-	for _, mode := range []ColourMode{ColourXTerm256Adaptive, ColourXTerm256} {
-		t.Run(colourLabel(mode), func(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		adaptive bool
+	}{
+		{"probe answered", true},
+		{"probe unanswered", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			eng := &switchOpEngine{}
 			done := make(chan struct{})
 			defer close(done)
 
-			st, _ := paletteTestState(t, mode)
+			st, _ := paletteTestState(t, tc.adaptive)
 			st.SetEnabled([]Backend{BackendBlock, BackendSixel})
 			st.Backend = BackendBlock
 			if err := st.RenderStreamFrame(render.Frame{Img: blockFrame(t, st)}, io.Discard); err != nil {
 				t.Fatalf("RenderStreamFrame: %v", err)
 			}
-			adaptive := mode == ColourXTerm256Adaptive
+			adaptive := tc.adaptive
 			if got := st.paletteDisturbed(); got != adaptive {
 				t.Fatalf("palette written after a Block frame = %v, want %v", got, adaptive)
 			}
@@ -374,15 +395,16 @@ func TestTabSwitchRestoresTheAdaptivePalette(t *testing.T) {
 }
 
 // TestRecomposeBlockRestoresTheAdaptivePaletteOnAColourCycle proves a colour
-// cycle out of the adaptive mode restores the palette, because no later frame
-// writes those registers, and that a cycle staying in the adaptive mode keeps
-// them, because the next frame reuses the retained palette and writes none.
+// cycle from 256 to grey on a terminal that answered the OSC 4 probe restores
+// the palette, because no later frame writes those registers, and that a cycle
+// staying in 256 keeps them, because the next frame reuses the retained palette
+// and writes none.
 func TestRecomposeBlockRestoresTheAdaptivePaletteOnAColourCycle(t *testing.T) {
 	eng := &switchOpEngine{}
 	done := make(chan struct{})
 	defer close(done)
 
-	st, _ := paletteTestState(t, ColourXTerm256Adaptive)
+	st, _ := paletteTestState(t, true)
 	st.Backend = BackendBlock
 	if err := st.RenderStreamFrame(render.Frame{Img: blockFrame(t, st)}, io.Discard); err != nil {
 		t.Fatalf("RenderStreamFrame: %v", err)
@@ -393,15 +415,15 @@ func TestRecomposeBlockRestoresTheAdaptivePaletteOnAColourCycle(t *testing.T) {
 	s.firstDrawn.Store(true)
 	s.recomposeBlock(true)
 	if got := out.String(); strings.Contains(got, palette.OSC104) {
-		t.Fatalf("a scheme cycle inside the adaptive mode restored the palette: %q", got)
+		t.Fatalf("a scheme cycle inside the 256 mode restored the palette: %q", got)
 	}
 
 	out.Reset()
-	st.Colour = ColourXTerm256
+	st.Colour = ColourXTermGrey
 	s.recomposeBlock(true)
 	got := out.String()
 	if !strings.Contains(got, palette.OSC104) {
-		t.Fatalf("a cycle out of the adaptive mode = %q, missing %q", got, palette.OSC104)
+		t.Fatalf("a cycle from 256 to grey = %q, missing %q", got, palette.OSC104)
 	}
 	if again := st.releasePalette(); again != "" {
 		t.Fatalf("a second release after the cycle = %q, want no restore", again)

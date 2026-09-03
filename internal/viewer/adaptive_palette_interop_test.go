@@ -15,16 +15,18 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
-// adaptivePaletteInteropState returns a Block state in the adaptive mode whose
-// engine holds no palette yet. The engine must quantise for the first time
-// inside the frame path, because a palette built outside it would name
-// registers the stream never wrote, which no production run can produce.
+// adaptivePaletteInteropState returns a Block state in the 256 mode on a
+// terminal that answered the OSC 4 probe, whose engine holds no palette yet.
+// The engine must quantise for the first time inside the frame path, because a
+// palette built outside it would name registers the stream never wrote, which
+// no production run can produce.
 func adaptivePaletteInteropState(t *testing.T) *State {
 	t.Helper()
 	state := NewState(20, 11)
 	st := &state
 	st.Backend = BackendBlock
-	st.Colour = ColourXTerm256Adaptive
+	st.Colour = ColourXTerm256
+	st.paletteQueryOK = true
 	st.SetDiff(&block.GridDiff{})
 	return st
 }
@@ -289,7 +291,7 @@ func TestBlockTerminalRoundTripAdaptivePaletteRestoreOnBackendSwitch(t *testing.
 
 	// A stint that wrote no register must leave the user's theme alone.
 	plain := adaptivePaletteInteropState(t)
-	plain.Colour = ColourXTerm256
+	plain.paletteQueryOK = false
 	plain.SetEnabled([]Backend{BackendBlock, BackendSixel})
 	if err = plain.RenderStreamFrame(render.Frame{Img: paletteTestImage(pxW, pxH)}, io.Discard); err != nil {
 		t.Fatalf("RenderStreamFrame in the static mode: %v", err)

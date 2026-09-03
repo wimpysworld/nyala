@@ -59,13 +59,6 @@ const (
 	ColourXTerm256
 	// ColourXTermGrey maps block colours onto the xterm greyscale ramp.
 	ColourXTermGrey
-	// ColourXTerm256Adaptive quantises each block frame to its own 240-entry
-	// palette, writes that palette over OSC 4, and maps cells onto terminal
-	// indexes 16..255. It is appended after ColourXTermGrey so the existing
-	// values keep their numbers; it is therefore outside the
-	// highest-capability-first order the cap comparisons read, and
-	// resolveColourCapability and CycleColour both special-case it.
-	ColourXTerm256Adaptive
 )
 
 // State is the viewer's render and backend state. Cols and Rows are the terminal
@@ -171,12 +164,14 @@ type State struct {
 	// paletteQueryOK records that the startup handshake confirmed OSC 4
 	// palette-query support, resolved once by configureBackends. It stays
 	// false under a multiplexer, whose reduced handshake sends no OSC 4
-	// query. No caller reads it yet: the adaptive 256-colour mode will gate
-	// its selection on it.
+	// query. ColourXTerm256 reads it: when it is true the mode quantises each
+	// frame to a scene-fitted palette, writes that palette over OSC 4, and maps
+	// cells onto terminal indexes 16..255; when it is false the mode keeps the
+	// canonical xterm-256 table and writes no palette.
 	paletteQueryOK bool
 
-	// paletteEngine is the shared adaptive-palette engine the
-	// ColourXTerm256Adaptive mode draws through. Every other mode leaves it
+	// paletteEngine is the shared adaptive-palette engine the 256 mode on a
+	// terminal that answered the OSC 4 probe draws through. Every other mode leaves it
 	// alone, and its zero value carries no palette, which draws through the
 	// static xterm-256 table. adaptivePalette puts it into the budget mode.
 	paletteEngine palette.Engine
@@ -310,6 +305,13 @@ func (s *State) SetDiff(d *block.GridDiff) {
 	s.diff = d
 }
 
+// SetPaletteQueryOK sets the OSC 4 palette-query verdict, so diagnostics and
+// tests outside the package can select the scene-fitted 256 palette without
+// running the terminal handshake. configureBackends writes the field directly.
+func (s *State) SetPaletteQueryOK(ok bool) {
+	s.paletteQueryOK = ok
+}
+
 // NewState builds the initial state: block as the safe pre-detection backend, the
 // quadrant scheme, truecolour, and sized to a cols x rows terminal. The cycle
 // holds every backend highest-fidelity first and the cell
@@ -395,22 +397,17 @@ func (s *State) CycleScheme(reverse bool) block.Scheme {
 }
 
 // colourCycle is the Alt+C block colour mode cycle order, highest capability
-// first. CycleColour skips modes above the effective terminal cap. The adaptive
-// mode sits beside xterm-256 by hand, because its enum value is appended last
-// and so carries no ordering of its own.
-var colourCycle = []ColourMode{ColourTrue, ColourXTerm256, ColourXTerm256Adaptive, ColourXTermGrey}
+// first. CycleColour skips modes above the effective terminal cap.
+var colourCycle = []ColourMode{ColourTrue, ColourXTerm256, ColourXTermGrey}
 
 // CycleColour steps through the colour ladder and returns the new mode. It
-// skips modes above the effective capability cap. The adaptive mode is gated on
-// the startup OSC 4 palette query instead of the cap: a terminal that answered
-// no query cannot take a written palette, so the cycle must never land on a
-// mode that cannot draw. The stream dispatcher drops the cycle while a graphics
+// skips modes above the effective capability cap. The 256 rung draws a
+// scene-fitted palette only when the startup OSC 4 palette query answered, and
+// the canonical xterm-256 table otherwise, so the cycle never lands on a mode
+// that cannot draw. The stream dispatcher drops the cycle while a graphics
 // backend draws.
 func (s *State) CycleColour(reverse bool) ColourMode {
 	s.Colour = cycleValue(colourCycle, s.Colour, reverse, func(m ColourMode) bool {
-		if m == ColourXTerm256Adaptive {
-			return s.paletteQueryOK
-		}
 		return m >= s.colourCap
 	})
 	return s.Colour
@@ -651,7 +648,8 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 // updatePalette drives the adaptive palette engine for one composed grid and
 // returns that grid unchanged. It runs inside the compose, so both compose
 // entries and every caller, live and diagnostic, move one palette. Outside
-// ColourXTerm256Adaptive it clears the pending write and does nothing else.
+// ColourXTerm256, or when the terminal answered no OSC 4 palette query, it
+// clears the pending write and does nothing else.
 //
 // The engine's reuse verdict is the gate, never a frame count: a frame the drift
 // test lets keep the retained palette leaves paletteOSC4 empty and therefore
@@ -660,7 +658,7 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 // frame emits a cell.
 func (s *State) updatePalette(grid *block.Grid) *block.Grid {
 	s.paletteOSC4 = s.paletteOSC4[:0]
-	if grid == nil || s.Colour != ColourXTerm256Adaptive {
+	if grid == nil || s.Colour != ColourXTerm256 || !s.paletteQueryOK {
 		return grid
 	}
 	src := s.paletteFrame(grid)
@@ -773,12 +771,12 @@ func (s *State) adaptivePalette() *palette.Engine {
 }
 
 // adaptiveLUT returns the RGB555 lookup table the Block path maps cell colours
-// through, or nil when the colour mode is not ColourXTerm256Adaptive or the
-// engine holds no palette yet. A nil table falls back to the static xterm-256
-// table inside block.PaletteIndex, which is the correct draw before the first
-// quantisation.
+// through, or nil when the colour mode is not ColourXTerm256, the terminal
+// answered no OSC 4 palette query, or the engine holds no palette yet. A nil
+// table falls back to the static xterm-256 table inside block.PaletteIndex,
+// which is the correct draw before the first quantisation.
 func (s *State) adaptiveLUT() []uint8 {
-	if s.Colour != ColourXTerm256Adaptive {
+	if s.Colour != ColourXTerm256 || !s.paletteQueryOK {
 		return nil
 	}
 	return s.adaptivePalette().LUT
@@ -806,8 +804,8 @@ func (s *State) blockSGR() (fg, bg block.SGRFunc) {
 func (s *State) refreshBlockSGR(lut []uint8) {
 	s.sgrColour = s.Colour
 	s.sgrLUT = lut
-	s.fgSGR = fgSGRFunc(s.Colour, lut)
-	s.bgSGR = bgSGRFunc(s.Colour, lut)
+	s.fgSGR = fgSGRFunc(s.Colour, lut, s.paletteQueryOK)
+	s.bgSGR = bgSGRFunc(s.Colour, lut, s.paletteQueryOK)
 }
 
 // sameTable reports whether two palette tables are the same slice: equal length
@@ -850,19 +848,22 @@ func appendSGR256(dst []byte, prefix string, idx uint8) []byte {
 	return append(dst, 'm')
 }
 
-// fgSGRFunc binds a colour mode and an adaptive palette table into a
-// block.SGRFunc for the cell differ, so the differ stays colour-mode neutral
-// while reusing the viewer's fg SGR rules. Each mode appends into the differ's
-// reused buffer, so no per-cell string allocates. ColourXTerm256Adaptive maps
-// through lut, which holds absolute terminal registers; a nil lut falls back to
-// the static xterm-256 table. Every other mode ignores lut.
-func fgSGRFunc(mode ColourMode, lut []uint8) block.SGRFunc {
+// fgSGRFunc binds a colour mode, an adaptive palette table, and the OSC 4
+// probe verdict into a block.SGRFunc for the cell differ, so the differ stays
+// colour-mode neutral while reusing the viewer's fg SGR rules. Each mode
+// appends into the differ's reused buffer, so no per-cell string allocates.
+// ColourXTerm256 with paletteOK maps through lut, which holds absolute
+// terminal registers; a nil lut falls back to the static xterm-256 table.
+// ColourXTerm256 without paletteOK maps through the static table directly.
+// Every other mode ignores lut and paletteOK.
+func fgSGRFunc(mode ColourMode, lut []uint8, paletteOK bool) block.SGRFunc {
 	switch mode {
-	case ColourXTerm256Adaptive:
-		return func(dst []byte, c color.RGBA) []byte {
-			return appendSGR256(dst, fg256Prefix, block.PaletteIndex(lut, c))
-		}
 	case ColourXTerm256:
+		if paletteOK {
+			return func(dst []byte, c color.RGBA) []byte {
+				return appendSGR256(dst, fg256Prefix, block.PaletteIndex(lut, c))
+			}
+		}
 		return func(dst []byte, c color.RGBA) []byte {
 			return appendSGR256(dst, fg256Prefix, block.XTerm256(c))
 		}
@@ -875,19 +876,22 @@ func fgSGRFunc(mode ColourMode, lut []uint8) block.SGRFunc {
 	}
 }
 
-// bgSGRFunc binds a colour mode and an adaptive palette table into a
-// block.SGRFunc for the cell differ, so the differ stays colour-mode neutral
-// while reusing the viewer's bg SGR rules. Each mode appends into the differ's
-// reused buffer, so no per-cell string allocates. ColourXTerm256Adaptive maps
-// through lut, which holds absolute terminal registers; a nil lut falls back to
-// the static xterm-256 table. Every other mode ignores lut.
-func bgSGRFunc(mode ColourMode, lut []uint8) block.SGRFunc {
+// bgSGRFunc binds a colour mode, an adaptive palette table, and the OSC 4
+// probe verdict into a block.SGRFunc for the cell differ, so the differ stays
+// colour-mode neutral while reusing the viewer's bg SGR rules. Each mode
+// appends into the differ's reused buffer, so no per-cell string allocates.
+// ColourXTerm256 with paletteOK maps through lut, which holds absolute
+// terminal registers; a nil lut falls back to the static xterm-256 table.
+// ColourXTerm256 without paletteOK maps through the static table directly.
+// Every other mode ignores lut and paletteOK.
+func bgSGRFunc(mode ColourMode, lut []uint8, paletteOK bool) block.SGRFunc {
 	switch mode {
-	case ColourXTerm256Adaptive:
-		return func(dst []byte, c color.RGBA) []byte {
-			return appendSGR256(dst, bg256Prefix, block.PaletteIndex(lut, c))
-		}
 	case ColourXTerm256:
+		if paletteOK {
+			return func(dst []byte, c color.RGBA) []byte {
+				return appendSGR256(dst, bg256Prefix, block.PaletteIndex(lut, c))
+			}
+		}
 		return func(dst []byte, c color.RGBA) []byte {
 			return appendSGR256(dst, bg256Prefix, block.XTerm256(c))
 		}
