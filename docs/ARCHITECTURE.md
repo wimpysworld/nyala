@@ -1789,7 +1789,7 @@ The vendor is a glued field with no separator before it, so its double space
 before the parenthesis survives the join, and it drops with the tier or on its
 own before it. When no field fits, the row is ` … │ ✕ `, and a terminal
 narrower than seven cells falls back to `closeAnchoredRow`, which keeps only
-whole spans. The `✓` and `✗` glyphs are coloured green and red as a hint added
+whole spans and drops the ellipsis before the close. The `✓` and `✗` glyphs are coloured green and red as a hint added
 after layout, so the glyph carries the meaning alone: `ColourXTermGrey` writes
 no colour SGR and the row still reads. Input ownership is unchanged: Esc
 closes back to chrome, the quit keys quit, and everything else is swallowed.

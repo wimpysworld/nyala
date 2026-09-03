@@ -119,7 +119,8 @@ func webGLGlyph(tier render.WebGLTier) string {
 // row fits, and one ellipsis field stands in for whatever dropped. A field
 // glued to a dropped field drops with it. When no field fits the row is
 // ` … │ ✕ `, and a terminal narrower than that falls back to
-// closeAnchoredRow, which keeps only whole spans. It returns the plain row
+// closeAnchoredRow, which keeps only whole spans. The close never drops, so
+// the ellipsis goes before it when both cannot fit. It returns the plain row
 // content, exactly cols cells wide, the click spans (the close alone), and the
 // cells of every ✓ and ✗ for the colour pass.
 func renderBarAbout(cols int, fields []barField) (content string, spans []barSpan, glyphs []barSegment) {
@@ -127,6 +128,7 @@ func renderBarAbout(cols int, fields []barField) (content string, spans []barSpa
 		return "", nil, nil
 	}
 	closeW := runewidth.StringWidth(aboutClose)
+	closeSpanW := runewidth.StringWidth(" " + barGlyphClose + " ")
 	kept := make([]bool, len(fields))
 	for i := range kept {
 		kept[i] = true
@@ -145,6 +147,9 @@ func renderBarAbout(cols int, fields []barField) (content string, spans []barSpa
 			}
 		}
 		if drop < 0 {
+			if runewidth.StringWidth(left)+closeSpanW > cols {
+				left = ""
+			}
 			content, spans = closeAnchoredRow(cols, left, nil)
 			return content, spans, nil
 		}
@@ -156,7 +161,6 @@ func renderBarAbout(cols int, fields []barField) (content string, spans []barSpa
 	}
 	pad := cols - runewidth.StringWidth(left) - closeW
 	content = left + strings.Repeat(" ", pad) + aboutClose
-	closeSpanW := runewidth.StringWidth(" " + barGlyphClose + " ")
 	spans = []barSpan{{item: barSpanClose, col: cols - closeSpanW + 1, width: closeSpanW}}
 	return content, spans, glyphs
 }
