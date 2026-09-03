@@ -23,7 +23,7 @@ type CLI struct {
 	Version kong.VersionFlag `help:"Show version."`
 
 	// Color is the viewer colour mode.
-	Color ColorFlag `help:"Viewer colour mode: auto, truecolor, 256, 256-adaptive, or grey." default:"auto" enum:"auto,truecolor,256,256-adaptive,grey"`
+	Color ColorFlag `help:"Viewer colour mode: auto, truecolor, 256, or grey." default:"auto" enum:"auto,truecolor,256,grey"`
 
 	// Backend selects the starting renderer: auto, block, kitty, or sixel. auto
 	// detects the terminal's best supported backend; a named backend fails fast
@@ -66,8 +66,7 @@ type CLI struct {
 type ColorFlag string
 
 // UnmarshalText normalises the flag value: "gray" becomes "grey", and every
-// other value passes through unchanged for the enum check. "256-adaptive"
-// needs no normalisation, so it reaches the enum check as written.
+// other value passes through unchanged for the enum check.
 func (c *ColorFlag) UnmarshalText(text []byte) error {
 	v := string(text)
 	if v == "gray" {

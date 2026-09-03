@@ -173,7 +173,6 @@ func TestCapabilitySnapshotColourLabel(t *testing.T) {
 	}{
 		{ColourTrue, "True Colour"},
 		{ColourXTerm256, "256 Colour"},
-		{ColourXTerm256Adaptive, "256 Adaptive"},
 		{ColourXTermGrey, "Greyscale"},
 		{ColourMode(99), "True Colour"},
 	} {

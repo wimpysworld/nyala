@@ -2160,12 +2160,12 @@ func (s *streamSession) recomposeBlock(changed bool) {
 	}
 	var ctl bytes.Buffer
 	ctl.WriteString(sgrReset + clearScreen)
-	// A colour cycle out of the adaptive mode leaves the terminal holding
-	// registers no later frame writes, so restore the palette here for the same
-	// reason the backend switch does. A cycle that stays in the adaptive mode
-	// keeps the registers, because the next frame reuses the retained palette and
-	// writes none of its own.
-	if s.st.Colour != ColourXTerm256Adaptive {
+	// A colour cycle away from 256 on a terminal that answered the OSC 4 probe
+	// leaves the terminal holding registers no later frame writes, so restore
+	// the palette here for the same reason the backend switch does. A cycle that
+	// stays in 256 keeps the registers, because the next frame reuses the
+	// retained palette and writes none of its own.
+	if s.st.Colour != ColourXTerm256 || !s.st.paletteQueryOK {
 		ctl.WriteString(s.st.releasePalette())
 	}
 	s.appendBar(&ctl)

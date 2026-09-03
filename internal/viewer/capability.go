@@ -80,14 +80,12 @@ func boolState(on bool) capabilityState {
 }
 
 // colourLabel returns the human-readable name of a Block colour mode: "True
-// Colour", "256 Colour", "256 Adaptive", or "Greyscale". An out-of-range mode
-// reports "True Colour", the NewState default.
+// Colour", "256 Colour", or "Greyscale". An out-of-range mode reports "True
+// Colour", the NewState default.
 func colourLabel(m ColourMode) string {
 	switch m {
 	case ColourXTerm256:
 		return "256 Colour"
-	case ColourXTerm256Adaptive:
-		return "256 Adaptive"
 	case ColourXTermGrey:
 		return "Greyscale"
 	default:

@@ -56,17 +56,13 @@ func colourProfileMode(profile colorprofile.Profile) ColourMode {
 // the least colourful mode Nyala still renders: greyscale output still emits
 // SGR colour codes. The presence check scans environ directly so the
 // no-color.org "any value" rule wins over colorprofile, which honours only a
-// truthy NO_COLOR. Otherwise auto returns the detected mode. The adaptive
-// xterm-256 mode is explicit-only: it writes the terminal palette, so auto
-// never selects it and detection never reports it.
+// truthy NO_COLOR. Otherwise auto returns the detected mode.
 func resolveColour(flag string, environ []string, detected ColourMode) ColourMode {
 	switch flag {
 	case "truecolor":
 		return ColourTrue
 	case "256":
 		return ColourXTerm256
-	case "256-adaptive":
-		return ColourXTerm256Adaptive
 	case "grey":
 		return ColourXTermGrey
 	}

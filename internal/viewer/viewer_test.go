@@ -479,7 +479,7 @@ func TestExistingIndexedWriterByteIdentity(t *testing.T) {
 	want := "\x1b[1;1H\x1b[38;5;16m\x1b[48;5;231ma\x1b[38;5;231m\x1b[48;5;16mb"
 	var d block.GridDiff
 	var out bytes.Buffer
-	if err := d.Emit(&out, grid, fgSGRFunc(ColourXTerm256, nil), bgSGRFunc(ColourXTerm256, nil)); err != nil {
+	if err := d.Emit(&out, grid, fgSGRFunc(ColourXTerm256, nil, false), bgSGRFunc(ColourXTerm256, nil, false)); err != nil {
 		t.Fatal(err)
 	}
 	if got := out.String(); got != want {
@@ -1041,7 +1041,7 @@ func TestViewerDiffChangedCellCountDrivesEmit(t *testing.T) {
 // uniform-colour changed row sends one truecolour SGR pair, not one per cell.
 func TestViewerDiffUniformRowOneSGRPair(t *testing.T) {
 	var d block.GridDiff
-	fg, bg := fgSGRFunc(ColourTrue, nil), bgSGRFunc(ColourTrue, nil)
+	fg, bg := fgSGRFunc(ColourTrue, nil, false), bgSGRFunc(ColourTrue, nil, false)
 	g := diffGridOf(5, 1, block.Cell{
 		Glyph: 'a',
 		FG:    color.RGBA{R: 0x10, G: 0x20, B: 0x30, A: 0xff},
