@@ -1,6 +1,7 @@
 package block
 
 import (
+	"image"
 	"testing"
 
 	"github.com/wimpysworld/nyala/internal/render"
@@ -134,4 +135,62 @@ func assertGridEqual(t *testing.T, a, b Grid) {
 			t.Fatalf("cell %d differs: serial %+v, parallel %+v", i, a.Cells[i], b.Cells[i])
 		}
 	}
+}
+
+// TestParallelComposeWithPaletteByteIdentical proves an attached adaptive
+// palette moves no cell: the serial and the parallel compose stay
+// byte-identical with a table on the renderer, and the grid equals the grid the
+// same frame composes to without one. The binarise never reads the table,
+// because a cell keeps its averaged RGBA colour and the SGR writer maps that
+// colour when it emits the cell. That is the property this test pins.
+func TestParallelComposeWithPaletteByteIdentical(t *testing.T) {
+	pool := rowband.NewSized(8)
+	defer pool.Close()
+	pc := NewParallelCompose()
+	lut := adaptiveTestLUT()
+
+	for _, g := range composeCases {
+		t.Run(g.name, func(t *testing.T) {
+			plain := Renderer{Cols: g.cols, Rows: g.rows, Scheme: SchemeQuadrant}
+			withPalette := plain
+			withPalette.PaletteLUT = lut
+			pxW, pxH := render.BlockCaptureSize(render.BlockQuadrant, g.cols, g.rows)
+			f := render.Frame{Img: benchImage(pxW, pxH), Text: benchRuns(g.rows, true)}
+
+			var want Grid
+			plain.ComposeInto(&want, f)
+
+			var serial Grid
+			withPalette.ComposeInto(&serial, f)
+			assertGridEqual(t, want, serial)
+
+			var parallel Grid
+			pc.ComposeInto(&withPalette, &parallel, f, pool)
+			assertGridEqual(t, want, parallel)
+		})
+	}
+}
+
+// TestComposeYCbCrWithPaletteByteIdentical proves the native YCbCr compose entry
+// behaves the same way: an attached palette changes no cell, so the two compose
+// entries cannot diverge on the palette.
+func TestComposeYCbCrWithPaletteByteIdentical(t *testing.T) {
+	pool := rowband.NewSized(8)
+	defer pool.Close()
+	pc := NewParallelCompose()
+
+	const cols, rows = 40, 12
+	plain := Renderer{Cols: cols, Rows: rows, Scheme: SchemeQuadrant}
+	withPalette := plain
+	withPalette.PaletteLUT = adaptiveTestLUT()
+	pxW, pxH := render.BlockCaptureSize(render.BlockQuadrant, cols, rows)
+	src := patternedYCbCr(image.Rect(0, 0, pxW*2, pxH*2), image.YCbCrSubsampleRatio420)
+	f := render.Frame{Img: src, Text: benchRuns(rows, true)}
+
+	var want Grid
+	pc.ComposeYCbCrInto(&plain, &want, f, pool)
+
+	var got Grid
+	pc.ComposeYCbCrInto(&withPalette, &got, f, pool)
+	assertGridEqual(t, want, got)
 }

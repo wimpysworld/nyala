@@ -471,6 +471,44 @@ func TestParsePointerShapes(t *testing.T) {
 	}
 }
 
+// TestParsePaletteQuery asserts the OSC 4 reply parser accepts both
+// terminators, requires the echoed index to equal the probed one, and treats a
+// missing, truncated, or malformed reply as no palette support, matching the
+// parseBackgroundDark polarity.
+func TestParsePaletteQuery(t *testing.T) {
+	cases := []struct {
+		name string
+		buf  string
+		want bool
+	}{
+		{"reply st", "\x1b]4;16;rgb:0000/0000/0000\x1b\\\x1b[?62;4c", true},
+		{"reply bel", "\x1b]4;16;rgb:1c1c/2b2b/3636\x07\x1b[?62;4c", true},
+		{"two digits per component", "\x1b]4;16;rgb:1c/2b/36\x07", true},
+		{"hex form", "\x1b]4;16;#1c2b36\x07", true},
+		{"no reply", "\x1b[?62;4c", false},
+		{"empty buffer", "", false},
+		// The echoed index must equal the probed one: a reply naming another
+		// entry proves nothing about the entry Nyala asked about.
+		{"another index", "\x1b]4;17;rgb:0000/0000/0000\x07", false},
+		{"index with the probed one as a prefix", "\x1b]4;160;rgb:0000/0000/0000\x07", false},
+		{"no echoed index", "\x1b]4;rgb:0000/0000/0000\x07", false},
+		{"malformed spec", "\x1b]4;16;rgb:zzzz/0000/0000\x07", false},
+		{"colour name needs a table", "\x1b]4;16;grey20\x07", false},
+		{"empty spec", "\x1b]4;16;\x07", false},
+		// A truncated reply must not borrow the next reply's escape byte as its
+		// terminator, the parseBackgroundDark rule.
+		{"truncated before the DA1 reply", "\x1b]4;16;rgb:0000/0000/0000\x1b[?62;4c", false},
+		{"no terminator at all", "\x1b]4;16;rgb:0000/0000/0000", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := parsePaletteQuery([]byte(c.buf)); got != c.want {
+				t.Fatalf("parsePaletteQuery(%q) = %v, want %v", c.buf, got, c.want)
+			}
+		})
+	}
+}
+
 // TestPointerShapeQueryRidesTheHandshake asserts the OSC 22 capability query
 // travels in the one startup batch, ahead of the DA1 fence that bounds the
 // read, and that the reduced multiplexer handshake omits it, matching the

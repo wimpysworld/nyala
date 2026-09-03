@@ -128,6 +128,19 @@ type Renderer struct {
 	Cols   int    // requested grid width in cells
 	Rows   int    // requested grid height in cells
 	Scheme Scheme // pixel-to-cell mapping; zero value is SchemeQuadrant
+	// PaletteLUT is the adaptive palette's RGB555 lookup table, or nil when the
+	// renderer draws through the static xterm-256 table. It holds absolute
+	// terminal register numbers and is keyed exactly like XTerm256, so a
+	// consumer writes an entry straight into an SGR with no arithmetic of its
+	// own. PaletteIndex is the one reader.
+	//
+	// The binarise pass never reads the table: a cell keeps its averaged RGBA
+	// colour through compose and the SGR writer maps that colour when it emits
+	// the cell. That is why attaching a palette leaves the serial and the
+	// parallel compose byte-identical, and why one field on the renderer covers
+	// both compose entries, ComposeInto and ComposeYCbCrInto, which each take
+	// the renderer by value.
+	PaletteLUT []uint8
 }
 
 // Compile-time assertion that Renderer satisfies render.Renderer.

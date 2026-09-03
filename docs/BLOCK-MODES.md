@@ -11,7 +11,7 @@ Nyala supports two schemes for the Block backend. The `--blocks` flag accepts `a
 
 ## Colour modes
 
-The `--color` flag accepts `auto`, `truecolor`, `256`, or `grey`. These modes affect only the Block backend.
+The `--color` flag accepts `auto`, `truecolor`, `256`, `256-adaptive`, or `grey`. These modes affect only the Block backend.
 
 Colour mode precedence is an explicit non-`auto` `--color` value, then `NO_COLOR` for `auto`, then detection. Detection treats `COLORTERM=kmscon`, `COLORTERM=truecolor`, or `COLORTERM=24bit` as `truecolor`, even without a TTY. Every other profile maps to `256`.
 
@@ -19,13 +19,24 @@ Colour mode precedence is an explicit non-`auto` `--color` value, then `NO_COLOR
 | --- | --- | --- |
 | `truecolor` | Exact 24-bit foreground and background colours | A truecolour profile or recognised truecolour `COLORTERM` value |
 | `256` | Canonical xterm indexes 16..255 | A 256-colour profile |
+| `256-adaptive` | A scene-fitted 240-entry palette written into indexes 16..255 | Never (explicit `--color=256-adaptive` only) |
 | `grey` | Fixed xterm greyscale indexes 232..255 | `NO_COLOR` |
 
 Automatic selection maps every profile below truecolour to `256`, the floor mode: every remaining colour mode builds on 256-colour support, and every modern terminal renders indexed colour. A present `NO_COLOR` key selects `grey`; greyscale output still emits SGR colour codes. On a real TTY the stored capability is floored at `256`. A non-TTY keeps its detected capability.
 
-<kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `grey`, then wraps. The cycle skips modes above the effective capability. An explicit mode asserts support for that mode and can raise a lower detected capability. Terminal safety restrictions remain hard caps. `NO_COLOR` selects the automatic starting mode only, so the cycle can still use detected colour modes.
+<kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `256-adaptive` -> `grey`, then wraps. The cycle skips modes above the effective capability. It offers `256-adaptive` only when the startup probe recorded OSC 4 palette support. An explicit mode asserts support for that mode and can raise a lower detected capability. Terminal safety restrictions remain hard caps. `NO_COLOR` selects the automatic starting mode only, so the cycle can still use detected colour modes.
 
 The `256` mode maps each RGB colour to the CIEDE2000-nearest canonical xterm entry in indexes 16..255. The `grey` mode maps the Rec.601 key `77R + 150G + 29B` to the nearest fixed xterm grey in indexes 232..255. Its reference levels are 8, 18, through 238 in steps of 10. An exact midpoint selects the lighter grey.
+
+The `256-adaptive` mode quantises each Block frame to a 240-entry palette fitted to that frame and writes the palette into the terminal. Indexes 0..15 stay the user's theme. The adaptive entries live in indexes 16..255. A palette change writes the palette as a series of short OSC 4 sequences of at most seven entries each, paired with a full repaint, so the cells and the palette always describe the same frame. The sequences are short because terminal parsers cap the number of OSC parameters they accept: Alacritty and Rio stop at sixteen and then drop an oversized sequence entirely, so a single batched write sets no register at all on those terminals. A frame that reuses the palette writes no palette bytes.
+
+The mode is explicit-only. `--color=auto` never selects it, by design, until `docs/TERMINAL-COMPATIBILITY.md` records per-terminal evidence. Selection gates on the startup handshake probe, which sends `OSC 4 ; 16 ; ?` and requires an answer. Support is the probe's verdict, never a `TERM` heuristic. On a terminal that did not answer, startup fails before the first paint with this error.
+
+```text
+viewer: this terminal did not answer the OSC 4 palette query, so it cannot use adaptive 256-colour rendering; use --color=256 or --color=truecolor
+```
+
+The reduced multiplexer handshake sends no OSC 4 query, so tmux, zellij, GNU screen, and herdr sessions record unsupported and cannot use the mode. GNU screen drops OSC 4. The Linux console has 16 palette entries, so it cannot use the mode either. Nyala writes bare `OSC 104` to restore the terminal palette on exit, on every backend switch, and on a colour cycle out of the mode. WezTerm freezes its configured colours from the first OSC 4 until that reset, so the restore is unconditional rather than WezTerm-specific.
 
 ## NO_COLOR
 

@@ -35,14 +35,36 @@ func buildDecByte() [256]string {
 	return t
 }
 
+// rgb555Key packs an RGBA colour into the 15-bit RGB555 key both the generated
+// perceptual table and an adaptive palette table are indexed by: the top five
+// bits of red, then green, then blue. The alpha channel is ignored.
+func rgb555Key(c color.RGBA) uint16 {
+	return uint16(c.R>>3)<<10 | uint16(c.G>>3)<<5 | uint16(c.B>>3)
+}
+
+// rgb555Entries is the entry count of a full RGB555 lookup table, one per
+// 15-bit key.
+const rgb555Entries = 1 << 15
+
 // XTerm256 converts an RGBA colour to a perceptually nearest canonical
 // xterm-256 index through a generated 15-bit lookup table. The result always
 // lies in indices 16..255, avoiding the terminal-configurable system colours.
 //
 // The alpha channel is ignored; only R, G, and B drive the index.
 func XTerm256(c color.RGBA) uint8 {
-	key := uint16(c.R>>3)<<10 | uint16(c.G>>3)<<5 | uint16(c.B>>3)
-	return xterm256PerceptualLUT[key]
+	return xterm256PerceptualLUT[rgb555Key(c)]
+}
+
+// PaletteIndex converts an RGBA colour to a terminal register through an
+// adaptive palette's RGB555 lookup table. The table must hold absolute register
+// numbers, which is what the shared palette engine builds. A table of any other
+// length, including a nil one, falls back to XTerm256, so a renderer that
+// carries no palette yet still draws. The alpha channel is ignored.
+func PaletteIndex(lut []uint8, c color.RGBA) uint8 {
+	if len(lut) != rgb555Entries {
+		return XTerm256(c)
+	}
+	return lut[rgb555Key(c)]
 }
 
 // XTermGrey converts an RGBA colour to the nearest fixed xterm-256 greyscale

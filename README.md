@@ -87,7 +87,7 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 | `--private` | off | Use a disposable browser profile and ignore persistent profile settings. |
 | `--backend` | `auto` | Renderer backend: `auto`, `block`, `kitty`, or `sixel`. `auto` picks the terminal's best supported backend. A named backend sets the starting renderer and fails fast if the terminal cannot run it. |
 | `--blocks` | `auto` | Block glyph mode: `auto`, `sextant` (2x3), or `quadrant` (2x2). `auto` picks sextant on terminals known to self-draw it, read from a static allow-list of environment variables, and quadrant elsewhere. |
-| `--color` | `auto` | Block colour mode: `auto`, `truecolor`, `256`, or `grey`. |
+| `--color` | `auto` | Block colour mode: `auto`, `truecolor`, `256`, `256-adaptive`, or `grey`. |
 | `--disable-frame-rate-limit` | off | Disable Chromium's browser frame-rate limit for benchmark testing. Does not control terminal or display synchronisation. |
 | `--version` | | Print the version and exit. |
 
@@ -99,14 +99,17 @@ Colour mode precedence is an explicit non-`auto` `--color` value, then `NO_COLOR
 |---|---|---|
 | `truecolor` | 24-bit foreground and background colours. | A truecolour profile or recognised truecolour `COLORTERM` value. |
 | `256` | Canonical xterm palette indexes 16..255. | Every profile below truecolour. |
+| `256-adaptive` | A scene-fitted 240-entry palette written into indexes 16..255. | Never (explicit `--color=256-adaptive` only). |
 | `grey` | The fixed xterm greyscale ramp at indexes 232..255. | Never. |
 
-<kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `grey`, then wraps. Nyala skips modes above the effective terminal capability. An explicit mode can raise a lower detected capability, but a terminal safety rule can still lower it. `NO_COLOR` changes the automatic starting mode only. It does not lower the detected capability for the cycle.
+<kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `256-adaptive` -> `grey`, then wraps. Nyala skips modes above the effective terminal capability, and offers `256-adaptive` only when the startup probe recorded OSC 4 palette support. An explicit mode can raise a lower detected capability, but a terminal safety rule can still lower it. `NO_COLOR` changes the automatic starting mode only. It does not lower the detected capability for the cycle.
 
 The `256` mode uses the CIEDE2000-nearest canonical xterm colour. `grey` quantises by luma only: it maps the Rec.601 key to the nearest fixed xterm grey.
 
+The `256-adaptive` mode fits a 240-entry palette to each Block frame and writes it into indexes 16..255, leaving indexes 0..15 on your theme. It is explicit-only: `--color=auto` never selects it, and Nyala refuses it before the first paint on a terminal that did not answer the startup `OSC 4 ; 16 ; ?` query. A multiplexer session records unsupported, so tmux, zellij, GNU screen, and herdr cannot use the mode. [`docs/BLOCK-MODES.md`](docs/BLOCK-MODES.md) records the full behaviour.
+
 > [!NOTE]
-> Both remaining degraded outputs use only indexes 16..255, which terminals do not customarily redefine.
+> The `256` and `grey` outputs use only indexes 16..255, which terminals do not customarily redefine. The `256-adaptive` mode redefines those indexes on purpose and restores the terminal palette with bare OSC 104 on exit and on every backend switch.
 
 ### Keys
 
@@ -139,7 +142,7 @@ The `256` mode uses the CIEDE2000-nearest canonical xterm colour. `grey` quantis
 | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> | Cycle rendering backend backwards |
 | <kbd>Alt</kbd>+<kbd>B</kbd> | Cycle Block mode: Quadrant -> Sextant (Block backend only) |
 | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> | Cycle Block mode backwards (Block backend only) |
-| <kbd>Alt</kbd>+<kbd>C</kbd> | Cycle colour mode: Truecolour -> 256 -> grey (Block backend only) |
+| <kbd>Alt</kbd>+<kbd>C</kbd> | Cycle colour mode: Truecolour -> 256 -> 256 Adaptive -> grey (Block backend only) |
 | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> | Cycle colour mode backwards (Block backend only) |
 
 Notes:

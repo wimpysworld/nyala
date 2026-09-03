@@ -9,11 +9,10 @@ import (
 	"image/color"
 	"image/draw"
 	"io"
-	"runtime"
 	"strconv"
 	"sync"
 
-	"github.com/soniakeys/quant/median"
+	"github.com/wimpysworld/nyala/internal/palette"
 )
 
 const (
@@ -42,26 +41,11 @@ type opaqueEncoder struct {
 	outScratch []byte
 	band       []bandScratch
 	rgba       *image.RGBA
-	sample     *image.RGBA
 	paletted   *image.Paletted
-	palette    color.Palette
-	lut        []uint8
 
-	// Retained adaptive-palette state. While paletteValid holds, palette and
-	// lut carry over between frames and encode re-quantises only when the
-	// drift test in reusePalette fires. Geometry changes and leaving the
-	// adaptive path invalidate the retained state.
-	paletteValid bool
-	// paletteBounds is the frame geometry the retained palette was built for.
-	paletteBounds image.Rectangle
-	// paletteError is the sample mapping error recorded when the retained
-	// palette was built; it is the drift test's baseline.
-	paletteError float64
-	// oldPalette is scratch holding the previous palette during hysteresis.
-	oldPalette color.Palette
-	// requantCount counts full re-quantisations. Tests and benchmarks read it
-	// as the reuse hook; production ignores it.
-	requantCount int
+	// Engine owns the retained adaptive palette, its LUT, and the drift test.
+	// It is held by value so the frame path pays no extra indirection.
+	palette.Engine
 }
 
 func newOpaqueEncoder(w io.Writer) *opaqueEncoder { return &opaqueEncoder{w: w} }
@@ -101,22 +85,22 @@ func (e *opaqueEncoder) encode(img image.Image) error {
 		return fmt.Errorf("unsupported image type %T", img)
 	}
 	if !exact {
-		sample := e.paletteSample(rgba)
-		if !e.reusePalette(rgba.Bounds(), sample) {
-			e.requantisePalette(rgba.Bounds(), sample, colours-1)
+		sample := e.Sample(rgba)
+		if !e.Reuse(rgba.Bounds(), sample) {
+			e.Requantise(rgba.Bounds(), sample, colours-1)
 		}
-		palette := e.palette
+		framePalette := e.Palette
 		if paletted == nil {
-			paletted = reusablePaletted(e.paletted, rgba.Bounds(), palette)
+			paletted = reusablePaletted(e.paletted, rgba.Bounds(), framePalette)
 			e.paletted = paletted
 		} else {
-			paletted.Palette = palette
+			paletted.Palette = framePalette
 		}
-		mapPaletted(paletted, rgba, e.lut)
+		mapPaletted(paletted, rgba, e.LUT)
 	} else {
 		// Leaving the adaptive path invalidates the retained palette; the
 		// next adaptive frame re-quantises from scratch.
-		e.paletteValid = false
+		e.Invalidate()
 	}
 
 	paletteSize := len(paletted.Palette)
@@ -353,97 +337,10 @@ func (e *opaqueEncoder) toRGBA(img image.Image) *image.RGBA {
 	return e.rgba
 }
 
-func samplePalette(rgba *image.RGBA, maxColours int) color.Palette { //nolint:unparam // The fixed production limit remains explicit for test helpers.
-	palette, _ := samplePaletteInto(rgba, maxColours, nil, nil)
-	return palette
-}
-
-func samplePaletteInto(rgba *image.RGBA, maxColours int, dst color.Palette, sample *image.RGBA) (color.Palette, *image.RGBA) {
-	if cap(dst) < maxColours {
-		dst = make(color.Palette, 0, maxColours)
-	}
-	src, sample := paletteSampleInto(rgba, sample)
-	return median.Quantizer(0).Quantize(dst[:0], src), sample
-}
-
-// paletteSample builds this frame's palette sample and retains the downsample
-// scratch. The sample feeds both the drift test and re-quantisation, so it is
-// built every frame regardless of whether the retained palette is reused.
-func (e *opaqueEncoder) paletteSample(rgba *image.RGBA) *image.RGBA {
-	src, sample := paletteSampleInto(rgba, e.sample)
-	e.sample = sample
-	return src
-}
-
-// paletteSampleInto returns the image the quantiser and drift test read: the
-// frame itself when it is within the 64K pixel budget, otherwise a fixed-phase
-// strided downsample written into the reusable sample scratch. It also returns
-// the (possibly reallocated) scratch.
-func paletteSampleInto(rgba, sample *image.RGBA) (*image.RGBA, *image.RGBA) {
-	const budget = 1 << 16
-	bounds := rgba.Bounds()
-	if bounds.Dx()*bounds.Dy() <= budget {
-		return rgba, sample
-	}
-	step := 2
-	width, height := max(1, bounds.Dx()/step), max(1, bounds.Dy()/step)
-	for width > budget/height {
-		step++
-		width, height = max(1, bounds.Dx()/step), max(1, bounds.Dy()/step)
-	}
-	sampleBounds := image.Rect(0, 0, width, height)
-	if sample == nil || sample.Bounds() != sampleBounds {
-		sample = image.NewRGBA(sampleBounds)
-	}
-	for y := range height {
-		dstOffset := sample.PixOffset(0, y)
-		for x := range width {
-			srcOffset := rgba.PixOffset(bounds.Min.X+x*step, bounds.Min.Y+y*step)
-			copy(sample.Pix[dstOffset:dstOffset+4], rgba.Pix[srcOffset:srcOffset+4])
-			dstOffset += 4
-		}
-	}
-	return sample, sample
-}
-
-func newPaletteLUT(palette color.Palette) []uint8 {
-	return paletteLUT(nil, palette)
-}
-
-func paletteLUT(lut []uint8, palette color.Palette) []uint8 {
-	var pr, pg, pb [256]int32
-	for i, colour := range palette {
-		r, g, b, _ := colour.RGBA()
-		pr[i], pg[i], pb[i] = int32(r>>8), int32(g>>8), int32(b>>8)
-	}
-	if len(lut) != 1<<15 || cap(lut) != 1<<15 {
-		lut = make([]uint8, 1<<15)
-	}
-	workers := sixelWorkerCount()
-	var wg sync.WaitGroup
-	for worker := range workers {
-		lo, hi := len(lut)*worker/workers, len(lut)*(worker+1)/workers
-		wg.Go(func() {
-			for i := lo; i < hi; i++ {
-				r := int32(i>>10&31<<3 | 4) //nolint:gosec // A 15-bit LUT index bounds this to 252.
-				g := int32(i>>5&31<<3 | 4)  //nolint:gosec // A 15-bit LUT index bounds this to 252.
-				b := int32(i&31<<3 | 4)     //nolint:gosec // A 15-bit LUT index bounds this to 252.
-				best, bestDistance := 0, int32(1<<31-1)
-				for j := range palette {
-					dr, dg, db := r-pr[j], g-pg[j], b-pb[j]
-					if distance := dr*dr + dg*dg + db*db; distance < bestDistance {
-						best, bestDistance = j, distance
-					}
-				}
-				lut[i] = uint8(best)
-			}
-		})
-	}
-	wg.Wait()
-	return lut
-}
-
-func sixelWorkerCount() int { return min(4, runtime.GOMAXPROCS(0)) }
+// sixelWorkerCount is the band and mapping goroutine budget. It shares
+// palette.WorkerCount so band emission, pixel mapping, and the LUT build split
+// their work the same way.
+func sixelWorkerCount() int { return palette.WorkerCount() }
 
 func mapPaletted(dst *image.Paletted, src *image.RGBA, lut []uint8) {
 	bounds := src.Bounds()

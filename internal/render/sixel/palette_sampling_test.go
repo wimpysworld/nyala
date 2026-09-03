@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/wimpysworld/nyala/internal/metrics"
+	paletteengine "github.com/wimpysworld/nyala/internal/palette"
 )
 
 const (
@@ -117,39 +118,6 @@ func TestSamplePalette64KRareColours(t *testing.T) {
 	}
 }
 
-func TestSamplePaletteExtremeAspectRatio(t *testing.T) {
-	t.Parallel()
-	const height = 65537
-	src := image.NewRGBA(image.Rect(0, 0, 1, height))
-	for y := range height {
-		src.SetRGBA(0, y, color.RGBA{R: uint8(y), G: uint8(y >> 8), B: uint8(y >> 4), A: 0xff})
-	}
-
-	palette := samplePalette(src, paletteColours)
-	if len(palette) == 0 || len(palette) > paletteColours {
-		t.Fatalf("samplePalette() returned %d colours, want 1..%d", len(palette), paletteColours)
-	}
-}
-
-func TestSamplePaletteIntoReusesScratch(t *testing.T) {
-	src := image.NewRGBA(image.Rect(0, 0, 1024, 128))
-	for i := range src.Pix {
-		src.Pix[i] = uint8(i)
-	}
-	palette, sample := samplePaletteInto(src, paletteColours, nil, nil)
-	if sample == nil {
-		t.Fatal("samplePaletteInto() did not allocate sample scratch for an image over budget")
-	}
-	want := sample
-	palette, sample = samplePaletteInto(src, paletteColours, palette, sample)
-	if sample != want {
-		t.Fatal("samplePaletteInto() replaced same-size sample scratch")
-	}
-	if len(palette) == 0 || len(palette) > paletteColours {
-		t.Fatalf("samplePaletteInto() returned %d colours, want 1..%d", len(palette), paletteColours)
-	}
-}
-
 func TestSamplePalette64KPreservesExactColourPath(t *testing.T) {
 	src := image.NewRGBA(image.Rect(0, 0, 24, 24))
 	for y := range 24 {
@@ -194,9 +162,9 @@ func TestOpaquePaletteFallbackReuseMatchesFreshMapping(t *testing.T) {
 		t.Fatal("fallback fixture did not exceed the exact palette limit")
 	}
 
-	palette := samplePalette(src, paletteColours)
+	palette := paletteengine.SamplePalette(src, paletteColours)
 	fresh := image.NewPaletted(src.Bounds(), palette)
-	mapPaletted(fresh, src, newPaletteLUT(palette))
+	mapPaletted(fresh, src, paletteengine.NewLUT(palette))
 	var want, got bytes.Buffer
 	if err := newOpaqueEncoder(&want).encode(fresh); err != nil {
 		t.Fatal(err)
@@ -215,7 +183,7 @@ func encodePaletteBudget(t *testing.T, src *image.RGBA, budget int) []byte {
 	if !exact {
 		palette := samplePaletteBudget(src, budget)
 		paletted.Palette = palette
-		mapPaletted(paletted, src, newPaletteLUT(palette))
+		mapPaletted(paletted, src, paletteengine.NewLUT(palette))
 	}
 	var out bytes.Buffer
 	if err := newOpaqueEncoder(&out).encode(paletted); err != nil {

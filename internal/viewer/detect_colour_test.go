@@ -46,6 +46,34 @@ func TestDetectColourNilNoTTY(t *testing.T) {
 	}
 }
 
+// TestAutoNeverResolvesAdaptiveColour pins the explicit-only rule: the
+// adaptive xterm-256 mode writes the terminal palette, so nothing but the
+// --color=256-adaptive flag may select it. The sweep covers every detected
+// mode, the NO_COLOR branch, and the Rio compatibility cap, and it checks
+// detection itself, which reports only ColourTrue or ColourXTerm256.
+func TestAutoNeverResolvesAdaptiveColour(t *testing.T) {
+	environs := [][]string{nil, {"TERM=xterm-256color"}, {"NO_COLOR=1"}, {"TERM=xterm", "COLORTERM=truecolor"}}
+	detecteds := []ColourMode{ColourTrue, ColourXTerm256, ColourXTermGrey}
+	compats := []terminalCompatibility{{}, {rio04: true}}
+	for _, environ := range environs {
+		for _, detected := range detecteds {
+			if got := resolveColour("auto", environ, detected); got == ColourXTerm256Adaptive {
+				t.Fatalf("resolveColour(auto, %v, %v) selected the adaptive mode", environ, detected)
+			}
+			for _, compat := range compats {
+				if got := resolveCompatibleColour("auto", environ, detected, compat); got == ColourXTerm256Adaptive {
+					t.Fatalf("resolveCompatibleColour(auto, %v, %v, %+v) selected the adaptive mode", environ, detected, compat)
+				}
+			}
+		}
+		for _, isTTY := range []bool{false, true} {
+			if got := detectColour(environ, isTTY); got == ColourXTerm256Adaptive {
+				t.Fatalf("detectColour(%v, %v) reported the adaptive mode", environ, isTTY)
+			}
+		}
+	}
+}
+
 func TestColourProfileMode(t *testing.T) {
 	cases := []struct {
 		profile colorprofile.Profile
@@ -83,6 +111,8 @@ func TestResolveColour(t *testing.T) {
 		{"flag 256 overrides no_color", "256", []string{"NO_COLOR=1"}, ColourTrue, ColourXTerm256},
 		{"flag 256 overrides detection", "256", nil, ColourTrue, ColourXTerm256},
 		{"flag grey selects exactly", "grey", nil, ColourTrue, ColourXTermGrey},
+		{"flag 256-adaptive selects exactly", "256-adaptive", nil, ColourTrue, ColourXTerm256Adaptive},
+		{"flag 256-adaptive overrides no_color", "256-adaptive", []string{"NO_COLOR=1"}, ColourTrue, ColourXTerm256Adaptive},
 		{"auto no_color key only", "auto", []string{"NO_COLOR"}, ColourTrue, ColourXTermGrey},
 		{"auto no_color present", "auto", []string{"NO_COLOR=1"}, ColourTrue, ColourXTermGrey},
 		{"auto no_color empty", "auto", []string{"NO_COLOR="}, ColourTrue, ColourXTermGrey},
