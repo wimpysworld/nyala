@@ -92,9 +92,10 @@ func blockFrame(t *testing.T, st *State) *image.RGBA {
 }
 
 // TestComposeBlockFrameAttachesAdaptivePalette proves the compose attaches the
-// engine's table in the 256 mode when the OSC 4 probe answered, and attaches
-// none in every other mode or when the probe went unanswered, so only that
-// combination draws through a written palette.
+// colour engine's table in the 256 mode and the luma ramp engine's table in the
+// grey mode when the OSC 4 probe answered, and attaches none in truecolour or
+// when the probe went unanswered, so only those combinations draw through a
+// written palette.
 func TestComposeBlockFrameAttachesAdaptivePalette(t *testing.T) {
 	st, lut := paletteTestState(t, true)
 	src := blockFrame(t, st)
@@ -107,22 +108,41 @@ func TestComposeBlockFrameAttachesAdaptivePalette(t *testing.T) {
 		t.Fatal("adaptive compose attached a table other than the engine's")
 	}
 
-	for _, mode := range []ColourMode{ColourTrue, ColourXTermGrey} {
-		st.Colour = mode
-		if st.ComposeBlockFrame(render.Frame{Img: src}) == nil {
-			t.Fatal("ComposeBlockFrame returned nil")
-		}
-		if st.blockRenderer.PaletteLUT != nil {
-			t.Errorf("mode %d attached a palette table", mode)
-		}
-	}
-
-	unanswered, _ := paletteTestState(t, false)
-	if unanswered.ComposeBlockFrame(render.Frame{Img: src}) == nil {
+	st.Colour = ColourTrue
+	if st.ComposeBlockFrame(render.Frame{Img: src}) == nil {
 		t.Fatal("ComposeBlockFrame returned nil")
 	}
-	if unanswered.blockRenderer.PaletteLUT != nil {
-		t.Error("the 256 mode attached a palette table on an unanswered probe")
+	if st.blockRenderer.PaletteLUT != nil {
+		t.Error("truecolour attached a palette table")
+	}
+
+	// The grey compose fits the luma ramp on this first grey frame, so the
+	// attached table is the one the ramp engine holds after that fit.
+	st.Colour = ColourXTermGrey
+	if st.ComposeBlockFrame(render.Frame{Img: src}) == nil {
+		t.Fatal("ComposeBlockFrame returned nil")
+	}
+	greyLUT := st.greyEngine.LUT
+	if len(greyLUT) == 0 {
+		t.Fatal("the grey compose left the luma ramp engine without a table")
+	}
+	got = st.blockRenderer.PaletteLUT
+	if len(got) != len(greyLUT) || &got[0] != &greyLUT[0] {
+		t.Fatal("grey compose attached a table other than the luma ramp engine's")
+	}
+	if &got[0] == &lut[0] {
+		t.Fatal("grey compose attached the colour engine's table")
+	}
+
+	for _, mode := range []ColourMode{ColourXTerm256, ColourXTermGrey} {
+		unanswered, _ := paletteTestState(t, false)
+		unanswered.Colour = mode
+		if unanswered.ComposeBlockFrame(render.Frame{Img: src}) == nil {
+			t.Fatal("ComposeBlockFrame returned nil")
+		}
+		if unanswered.blockRenderer.PaletteLUT != nil {
+			t.Errorf("mode %d attached a palette table on an unanswered probe", mode)
+		}
 	}
 }
 
@@ -192,7 +212,9 @@ func TestBlockSGRMapsThroughTheAdaptivePalette(t *testing.T) {
 }
 
 // TestBlockSGRRebuildsOnAModeChange proves the cached writer pair follows the
-// colour mode, so a mode change never writes the previous mode's registers.
+// colour mode, so a mode change never writes the previous mode's registers. A
+// cycle to grey on an answered probe maps through the luma ramp table the grey
+// compose fitted; on an unanswered probe it maps through the fixed xterm ramp.
 func TestBlockSGRRebuildsOnAModeChange(t *testing.T) {
 	st, _ := paletteTestState(t, true)
 	src := blockFrame(t, st)
@@ -209,11 +231,30 @@ func TestBlockSGRRebuildsOnAModeChange(t *testing.T) {
 	}
 	fg, _ = st.blockSGR()
 	grey := string(fg(nil, c))
-	if want := string(fgSGRFunc(ColourXTermGrey, nil, false)(nil, c)); grey != want {
+	greyLUT := st.greyEngine.LUT
+	if len(greyLUT) == 0 {
+		t.Fatal("the grey compose left the luma ramp engine without a table")
+	}
+	register := block.PaletteIndex(greyLUT, c)
+	if register < palette.BudgetBase {
+		t.Fatalf("luma ramp table names register %d, below the budget base", register)
+	}
+	if want := string(appendSGR256(nil, fg256Prefix, register)); grey != want {
 		t.Fatalf("grey foreground = %q, want %q", grey, want)
 	}
 	if adaptive == grey {
 		t.Fatal("the adaptive and the grey writers produced the same register, so the rebuild is untested")
+	}
+
+	unanswered, _ := paletteTestState(t, false)
+	unanswered.Colour = ColourXTermGrey
+	if unanswered.ComposeBlockFrame(render.Frame{Img: src}) == nil {
+		t.Fatal("ComposeBlockFrame returned nil")
+	}
+	fg, _ = unanswered.blockSGR()
+	fixed := string(fg(nil, c))
+	if want := string(appendSGR256(nil, fg256Prefix, block.XTermGrey(c))); fixed != want {
+		t.Fatalf("grey foreground on an unanswered probe = %q, want %q", fixed, want)
 	}
 }
 

@@ -164,10 +164,12 @@ type State struct {
 	// paletteQueryOK records that the startup handshake confirmed OSC 4
 	// palette-query support, resolved once by configureBackends. It stays
 	// false under a multiplexer, whose reduced handshake sends no OSC 4
-	// query. ColourXTerm256 reads it: when it is true the mode quantises each
-	// frame to a scene-fitted palette, writes that palette over OSC 4, and maps
-	// cells onto terminal indexes 16..255; when it is false the mode keeps the
-	// canonical xterm-256 table and writes no palette.
+	// query. ColourXTerm256 and ColourXTermGrey read it: when it is true each
+	// mode quantises each frame to a scene-fitted palette (a colour palette for
+	// 256, a luma ramp for grey), writes that palette over OSC 4, and maps cells
+	// onto terminal indexes 16..255; when it is false 256 keeps the canonical
+	// xterm-256 table, grey keeps the fixed xterm greyscale ramp, and neither
+	// writes a palette.
 	paletteQueryOK bool
 
 	// paletteEngine is the shared adaptive-palette engine the 256 mode on a
@@ -175,6 +177,18 @@ type State struct {
 	// alone, and its zero value carries no palette, which draws through the
 	// static xterm-256 table. adaptivePalette puts it into the budget mode.
 	paletteEngine palette.Engine
+
+	// greyEngine is the scene-fitted luma ramp engine the grey mode on a
+	// terminal that answered the OSC 4 probe draws through. Every other mode
+	// leaves it alone, and its zero value carries no ramp, which draws through
+	// the fixed xterm greyscale ramp.
+	greyEngine palette.LumaEngine
+
+	// paletteMode is the colour mode that last wrote OSC 4 registers. The
+	// registers hold one mode's meaning at a time, so a colour cycle between
+	// 256 and grey compares against it to release the registers before the new
+	// mode's engine has fitted anything.
+	paletteMode ColourMode
 
 	// blockRenderer is the Block renderer ComposeBlockFrame configures once per
 	// frame. It is held here rather than built per call because it is the single
@@ -647,30 +661,50 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 
 // updatePalette drives the adaptive palette engine for one composed grid and
 // returns that grid unchanged. It runs inside the compose, so both compose
-// entries and every caller, live and diagnostic, move one palette. Outside
-// ColourXTerm256, or when the terminal answered no OSC 4 palette query, it
-// clears the pending write and does nothing else.
+// entries and every caller, live and diagnostic, move one palette.
+// ColourXTerm256 drives the colour engine and ColourXTermGrey drives the luma
+// ramp engine. Outside those modes, or when the terminal answered no OSC 4
+// palette query, it clears the pending write and does nothing else.
 //
 // The engine's reuse verdict is the gate, never a frame count: a frame the drift
 // test lets keep the retained palette leaves paletteOSC4 empty and therefore
 // writes no palette bytes. A re-quantisation renumbers every register, so the
 // attached table and the cached writer pair both follow it here, before this
-// frame emits a cell.
+// frame emits a cell, and paletteMode records which mode the registers now
+// describe.
 func (s *State) updatePalette(grid *block.Grid) *block.Grid {
 	s.paletteOSC4 = s.paletteOSC4[:0]
-	if grid == nil || s.Colour != ColourXTerm256 || !s.paletteQueryOK {
+	if grid == nil || !s.paletteQueryOK {
 		return grid
 	}
-	src := s.paletteFrame(grid)
-	eng := s.adaptivePalette()
-	sample := eng.Sample(src)
-	if eng.Reuse(src.Bounds(), sample) {
+	switch s.Colour {
+	case ColourXTerm256:
+		src := s.paletteFrame(grid)
+		eng := s.adaptivePalette()
+		sample := eng.Sample(src)
+		if eng.Reuse(src.Bounds(), sample) {
+			return grid
+		}
+		eng.Requantise(src.Bounds(), sample, palette.BudgetColours)
+		s.blockRenderer.PaletteLUT = eng.LUT
+		s.refreshBlockSGR(eng.LUT)
+		s.paletteOSC4 = palette.AppendOSC4(s.paletteOSC4, eng.Palette, eng.Base())
+		s.paletteMode = s.Colour
+	case ColourXTermGrey:
+		src := s.paletteFrame(grid)
+		eng := &s.greyEngine
+		sample := eng.Sample(src)
+		if eng.Reuse(src.Bounds(), sample) {
+			return grid
+		}
+		eng.Requantise(src.Bounds(), sample)
+		s.blockRenderer.PaletteLUT = eng.LUT
+		s.refreshBlockSGR(eng.LUT)
+		s.paletteOSC4 = palette.AppendOSC4(s.paletteOSC4, eng.Palette, eng.Base())
+		s.paletteMode = s.Colour
+	default:
 		return grid
 	}
-	eng.Requantise(src.Bounds(), sample, palette.BudgetColours)
-	s.blockRenderer.PaletteLUT = eng.LUT
-	s.refreshBlockSGR(eng.LUT)
-	s.paletteOSC4 = palette.AppendOSC4(s.paletteOSC4, eng.Palette, eng.Base())
 	return grid
 }
 
@@ -747,18 +781,27 @@ func (s *State) paletteDisturbed() bool {
 	return s.paletteWrites != nil && s.paletteWrites.ever.Load()
 }
 
-// releasePalette returns the bare OSC 104 restore when the adaptive mode wrote
-// registers the terminal no longer needs, and the empty string otherwise. It
-// clears the mid-run gate and drops the retained palette, so a later adaptive
-// frame re-quantises and rewrites the registers the reset discarded. The gate
-// matters: a run that never disturbed the palette must leave the user's theme
-// untouched.
+// releasePalette returns the bare OSC 104 restore when the 256 or grey mode
+// wrote registers the terminal no longer needs, and the empty string otherwise.
+// It clears the mid-run gate and drops both retained palettes, so a later
+// adaptive frame in either mode re-quantises and rewrites the registers the
+// reset discarded. The gate matters: a run that never disturbed the palette
+// must leave the user's theme untouched.
 func (s *State) releasePalette() string {
 	if !s.paletteRecord().live.Swap(false) {
 		return ""
 	}
 	s.paletteEngine.Invalidate()
+	s.greyEngine.Invalidate()
 	return palette.OSC104
+}
+
+// paletteLoading reports whether the current colour mode writes OSC 4
+// registers on this terminal: 256 or grey, on a terminal that answered the
+// palette query. recomposeBlock reads it to decide whether a cycle keeps the
+// registers.
+func (s *State) paletteLoading() bool {
+	return s.paletteQueryOK && (s.Colour == ColourXTerm256 || s.Colour == ColourXTermGrey)
 }
 
 // adaptivePalette returns the adaptive palette engine in the 240-entry budget
@@ -771,15 +814,25 @@ func (s *State) adaptivePalette() *palette.Engine {
 }
 
 // adaptiveLUT returns the RGB555 lookup table the Block path maps cell colours
-// through, or nil when the colour mode is not ColourXTerm256, the terminal
-// answered no OSC 4 palette query, or the engine holds no palette yet. A nil
-// table falls back to the static xterm-256 table inside block.PaletteIndex,
-// which is the correct draw before the first quantisation.
+// through: the colour engine's table in ColourXTerm256 and the luma ramp
+// engine's table in ColourXTermGrey. It returns nil when the colour mode is
+// neither, the terminal answered no OSC 4 palette query, or the mode's engine
+// holds no palette yet. A nil table falls back to the static xterm-256 table
+// inside block.PaletteIndex, which is the correct draw for 256 before the first
+// quantisation; the grey SGR writers guard nil themselves, because grey must
+// never fall back to colour.
 func (s *State) adaptiveLUT() []uint8 {
-	if s.Colour != ColourXTerm256 || !s.paletteQueryOK {
+	if !s.paletteQueryOK {
 		return nil
 	}
-	return s.adaptivePalette().LUT
+	switch s.Colour {
+	case ColourXTerm256:
+		return s.adaptivePalette().LUT
+	case ColourXTermGrey:
+		return s.greyEngine.LUT
+	default:
+		return nil
+	}
 }
 
 // blockSGR returns the foreground and background SGR writers the cell differ
@@ -855,7 +908,11 @@ func appendSGR256(dst []byte, prefix string, idx uint8) []byte {
 // ColourXTerm256 with paletteOK maps through lut, which holds absolute
 // terminal registers; a nil lut falls back to the static xterm-256 table.
 // ColourXTerm256 without paletteOK maps through the static table directly.
-// Every other mode ignores lut and paletteOK.
+// ColourXTermGrey with paletteOK and a non-nil lut maps through lut, the luma
+// ramp registers; without paletteOK, or before the ramp engine has fitted a
+// table, it maps through the fixed xterm greyscale ramp, because a nil lut
+// would fall back to colour inside block.PaletteIndex. Every other mode ignores
+// lut and paletteOK.
 func fgSGRFunc(mode ColourMode, lut []uint8, paletteOK bool) block.SGRFunc {
 	switch mode {
 	case ColourXTerm256:
@@ -868,6 +925,11 @@ func fgSGRFunc(mode ColourMode, lut []uint8, paletteOK bool) block.SGRFunc {
 			return appendSGR256(dst, fg256Prefix, block.XTerm256(c))
 		}
 	case ColourXTermGrey:
+		if paletteOK && lut != nil {
+			return func(dst []byte, c color.RGBA) []byte {
+				return appendSGR256(dst, fg256Prefix, block.PaletteIndex(lut, c))
+			}
+		}
 		return func(dst []byte, c color.RGBA) []byte {
 			return appendSGR256(dst, fg256Prefix, block.XTermGrey(c))
 		}
@@ -883,7 +945,11 @@ func fgSGRFunc(mode ColourMode, lut []uint8, paletteOK bool) block.SGRFunc {
 // ColourXTerm256 with paletteOK maps through lut, which holds absolute
 // terminal registers; a nil lut falls back to the static xterm-256 table.
 // ColourXTerm256 without paletteOK maps through the static table directly.
-// Every other mode ignores lut and paletteOK.
+// ColourXTermGrey with paletteOK and a non-nil lut maps through lut, the luma
+// ramp registers; without paletteOK, or before the ramp engine has fitted a
+// table, it maps through the fixed xterm greyscale ramp, because a nil lut
+// would fall back to colour inside block.PaletteIndex. Every other mode ignores
+// lut and paletteOK.
 func bgSGRFunc(mode ColourMode, lut []uint8, paletteOK bool) block.SGRFunc {
 	switch mode {
 	case ColourXTerm256:
@@ -896,6 +962,11 @@ func bgSGRFunc(mode ColourMode, lut []uint8, paletteOK bool) block.SGRFunc {
 			return appendSGR256(dst, bg256Prefix, block.XTerm256(c))
 		}
 	case ColourXTermGrey:
+		if paletteOK && lut != nil {
+			return func(dst []byte, c color.RGBA) []byte {
+				return appendSGR256(dst, bg256Prefix, block.PaletteIndex(lut, c))
+			}
+		}
 		return func(dst []byte, c color.RGBA) []byte {
 			return appendSGR256(dst, bg256Prefix, block.XTermGrey(c))
 		}
