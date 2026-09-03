@@ -2151,6 +2151,8 @@ func (s *streamSession) cycleBackend(reverse bool) {
 // no frame of its own). changed is false when the cycle was a no-op (every
 // other mode capped) and a no-op skips the repaint. handleKey only dispatches
 // the cycles while Block is the active backend, so this always repaints Block.
+// A colour cycle out of 256 and grey, and a cycle between them, release the
+// OSC 4 registers; a scheme cycle inside one of those modes keeps them.
 func (s *streamSession) recomposeBlock(changed bool) {
 	if !changed {
 		return
@@ -2160,12 +2162,15 @@ func (s *streamSession) recomposeBlock(changed bool) {
 	}
 	var ctl bytes.Buffer
 	ctl.WriteString(sgrReset + clearScreen)
-	// A colour cycle away from 256 on a terminal that answered the OSC 4 probe
-	// leaves the terminal holding registers no later frame writes, so restore
-	// the palette here for the same reason the backend switch does. A cycle that
-	// stays in 256 keeps the registers, because the next frame reuses the
+	// A colour cycle away from 256 and grey on a terminal that answered the
+	// OSC 4 probe leaves the terminal holding registers no later frame writes,
+	// so restore the palette here for the same reason the backend switch does.
+	// A cycle between 256 and grey restores too: the registers hold the old
+	// mode's meaning and the new mode's engine has fitted nothing yet, so the
+	// next frame must re-quantise and rewrite them. A scheme cycle inside one
+	// palette mode keeps the registers, because the next frame reuses the
 	// retained palette and writes none of its own.
-	if s.st.Colour != ColourXTerm256 || !s.st.paletteQueryOK {
+	if !s.st.paletteLoading() || s.st.Colour != s.st.paletteMode {
 		ctl.WriteString(s.st.releasePalette())
 	}
 	s.appendBar(&ctl)

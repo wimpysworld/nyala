@@ -99,16 +99,16 @@ Colour mode precedence is an explicit non-`auto` `--color` value, then `NO_COLOR
 |---|---|---|
 | `truecolor` | 24-bit foreground and background colours. | A truecolour profile or recognised truecolour `COLORTERM` value. |
 | `256` | Canonical xterm palette indexes 16..255, or a scene-fitted 240-entry palette written into indexes 16..255 when the startup probe answered `OSC 4 ; 16 ; ?`. | Every profile below truecolour. |
-| `grey` | The fixed xterm greyscale ramp at indexes 232..255. | Never. |
+| `grey` | The fixed xterm greyscale ramp at indexes 232..255, or a scene-fitted greyscale ramp written into indexes 16..255 when the startup probe answered `OSC 4 ; 16 ; ?`. | Never. |
 
 <kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `grey`, then wraps. Nyala skips modes above the effective terminal capability. An explicit mode can raise a lower detected capability, but a terminal safety rule can still lower it. `NO_COLOR` changes the automatic starting mode only. It does not lower the detected capability for the cycle.
 
-The `256` mode uses the CIEDE2000-nearest canonical xterm colour. `grey` quantises by luma only: it maps the Rec.601 key to the nearest fixed xterm grey.
+The `256` mode uses the CIEDE2000-nearest canonical xterm colour. `grey` quantises by luma only: it maps the Rec.601 key to the nearest grey in its active ramp.
 
-When the startup probe answered `OSC 4 ; 16 ; ?`, the `256` mode fits a 240-entry palette to each Block frame and writes it into indexes 16..255, leaving indexes 0..15 on your theme. When the probe did not answer, the `256` mode keeps the canonical xterm palette. A multiplexer session records unsupported and keeps the canonical palette, so tmux, zellij, GNU screen, and herdr never see a scene-fitted palette. [`docs/BLOCK-MODES.md`](docs/BLOCK-MODES.md) records the full behaviour.
+When the startup probe answered `OSC 4 ; 16 ; ?`, the `256` mode fits a 240-entry palette to each Block frame, and the `grey` mode fits a greyscale ramp to the page. Both modes write the result into indexes 16..255, leaving indexes 0..15 on your theme. When the probe did not answer, the `256` mode keeps the canonical xterm palette and the `grey` mode keeps the fixed xterm greyscale ramp. A multiplexer session records unsupported and keeps those fixed palettes, so tmux, zellij, GNU screen, and herdr never see a scene-fitted palette or ramp. [`docs/BLOCK-MODES.md`](docs/BLOCK-MODES.md) records the full behaviour.
 
 > [!NOTE]
-> The `256` and `grey` outputs use only indexes 16..255, which terminals do not customarily redefine. On an answered probe, the `256` mode redefines those indexes on purpose and restores the terminal palette with bare OSC 104 on exit, on every backend switch, and on a colour cycle to another mode.
+> The `256` and `grey` outputs use only indexes 16..255, which terminals do not customarily redefine. On an answered probe, the `256` and `grey` modes redefine those indexes on purpose and restore the terminal palette with bare OSC 104 on exit, on every backend switch, and on a colour cycle to another mode, including a cycle between `256` and `grey`.
 
 ### Keys
 
