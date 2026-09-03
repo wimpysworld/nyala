@@ -126,7 +126,7 @@ func TestParseURLRequired(t *testing.T) {
 }
 
 func TestParseColorOverrides(t *testing.T) {
-	for _, mode := range []string{"truecolor", "256", "grey"} {
+	for _, mode := range []string{"truecolor", "256", "256-adaptive", "grey"} {
 		cli := parse(t, "--color", mode, "example.com")
 		if string(cli.Color) != mode {
 			t.Errorf("--color %s: Color = %q, want %q", mode, cli.Color, mode)
@@ -152,7 +152,8 @@ func TestParseColorRemovedModes(t *testing.T) {
 }
 
 // TestHelpAdvertisesGreyOnly pins the help surface: the colour flag advertises
-// grey, and neither the gray alias nor the removed ansi-grey name appears.
+// grey and 256-adaptive, and neither the gray alias nor the removed ansi-grey
+// name appears.
 func TestHelpAdvertisesGreyOnly(t *testing.T) {
 	var cli CLI
 	var output bytes.Buffer
@@ -168,8 +169,8 @@ func TestHelpAdvertisesGreyOnly(t *testing.T) {
 	}
 	_, _ = parser.Parse([]string{"--help"})
 	help := strings.Join(strings.Fields(output.String()), " ")
-	if !strings.Contains(help, "256, or grey") {
-		t.Errorf("help is missing the grey colour mode:\n%s", output.String())
+	if !strings.Contains(help, "256, 256-adaptive, or grey") {
+		t.Errorf("help is missing the grey or adaptive colour mode:\n%s", output.String())
 	}
 	if strings.Contains(help, "gray") {
 		t.Errorf("help advertises the gray alias:\n%s", output.String())

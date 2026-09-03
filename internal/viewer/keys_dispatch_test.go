@@ -544,21 +544,39 @@ func TestCycleColour(t *testing.T) {
 		t.Fatalf("reverse cycle = %d, want grey", got)
 	}
 
-	for _, cap := range colourCycle {
-		t.Run(strconv.Itoa(int(cap)), func(t *testing.T) {
-			allowed := colourCycle[cap:]
-			for i, current := range allowed {
-				st.colourCap = cap
-				st.Colour = current
-				if got, want := st.CycleColour(false), allowed[(i+1)%len(allowed)]; got != want {
-					t.Fatalf("cap %d forward from %d = %d, want %d", cap, current, got, want)
+	// The ladder is the cycle order filtered by two gates: the ordered modes at
+	// or below the cap, and the adaptive rung only when the startup handshake
+	// recorded OSC 4 support. The cap ladder itself carries no adaptive rung,
+	// because that mode is appended last in the enum and sits outside the
+	// capability order.
+	for _, paletteOK := range []bool{false, true} {
+		for _, cap := range []ColourMode{ColourTrue, ColourXTerm256, ColourXTermGrey} {
+			t.Run(strconv.Itoa(int(cap))+"/palette"+strconv.FormatBool(paletteOK), func(t *testing.T) {
+				var allowed []ColourMode
+				for _, mode := range colourCycle {
+					switch {
+					case mode == ColourXTerm256Adaptive:
+						if paletteOK {
+							allowed = append(allowed, mode)
+						}
+					case mode >= cap:
+						allowed = append(allowed, mode)
+					}
 				}
-				st.Colour = current
-				if got, want := st.CycleColour(true), allowed[(i-1+len(allowed))%len(allowed)]; got != want {
-					t.Fatalf("cap %d reverse from %d = %d, want %d", cap, current, got, want)
+				for i, current := range allowed {
+					st.paletteQueryOK = paletteOK
+					st.colourCap = cap
+					st.Colour = current
+					if got, want := st.CycleColour(false), allowed[(i+1)%len(allowed)]; got != want {
+						t.Fatalf("cap %d palette %t forward from %d = %d, want %d", cap, paletteOK, current, got, want)
+					}
+					st.Colour = current
+					if got, want := st.CycleColour(true), allowed[(i-1+len(allowed))%len(allowed)]; got != want {
+						t.Fatalf("cap %d palette %t reverse from %d = %d, want %d", cap, paletteOK, current, got, want)
+					}
 				}
-			}
-		})
+			})
+		}
 	}
 }
 
@@ -572,11 +590,25 @@ func TestDegradedColourModesUseTheirWriters(t *testing.T) {
 		{ColourXTermGrey, "\x1b[38;5;255m", "\x1b[48;5;255m"},
 	}
 	for _, tc := range cases {
-		if got := string(fgSGRFunc(tc.mode)(nil, c)); got != tc.wantFG {
+		if got := string(fgSGRFunc(tc.mode, nil)(nil, c)); got != tc.wantFG {
 			t.Errorf("mode %d foreground = %q, want %q", tc.mode, got, tc.wantFG)
 		}
-		if got := string(bgSGRFunc(tc.mode)(nil, c)); got != tc.wantBG {
+		if got := string(bgSGRFunc(tc.mode, nil)(nil, c)); got != tc.wantBG {
 			t.Errorf("mode %d background = %q, want %q", tc.mode, got, tc.wantBG)
+		}
+	}
+
+	// With no palette table attached the adaptive mode writes the static
+	// xterm-256 indexes byte for byte, which is the draw before the first
+	// quantisation.
+	for _, sample := range []color.RGBA{c, {R: 12, G: 200, B: 91, A: 255}, {A: 255}} {
+		fg := string(fgSGRFunc(ColourXTerm256Adaptive, nil)(nil, sample))
+		if want := string(fgSGRFunc(ColourXTerm256, nil)(nil, sample)); fg != want {
+			t.Errorf("adaptive foreground for %v = %q, want %q", sample, fg, want)
+		}
+		bg := string(bgSGRFunc(ColourXTerm256Adaptive, nil)(nil, sample))
+		if want := string(bgSGRFunc(ColourXTerm256, nil)(nil, sample)); bg != want {
+			t.Errorf("adaptive background for %v = %q, want %q", sample, bg, want)
 		}
 	}
 }

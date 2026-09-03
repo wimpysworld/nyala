@@ -268,7 +268,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	restoreTerminal := func() {
 		restoreOnce.Do(func() {
 			drawn := session != nil && session.firstDrawn.Load()
-			_, _ = io.WriteString(tty, exitTerminalWithTitle(st.Rows, drawn, st.kittyKeyboard, titlePushed.Load(), st.compat.titlePopIgnored))
+			_, _ = io.WriteString(tty, exitTerminalWithTitle(st.Rows, drawn, st.kittyKeyboard, titlePushed.Load(), st.paletteDisturbed(), st.compat.titlePopIgnored))
 			restore()
 		})
 	}
@@ -2121,6 +2121,13 @@ func (s *streamSession) cycleBackend(reverse bool) {
 			s.diff.Reset()
 		}
 		ctl.WriteString(sgrReset + clearScreen)
+		// The new backend names none of the adaptive registers, so restore the
+		// terminal palette in the same buffer. The reset follows the erase, so no
+		// cell is on screen while the registers change, and precedes the bar,
+		// which then paints with the restored theme registers. A stint that
+		// returns to Block re-quantises and rewrites its registers, because
+		// releasePalette drops the retained palette with the record.
+		ctl.WriteString(s.st.releasePalette())
 		s.appendBar(&ctl)
 	}
 	if ctl.Len() > 0 {
@@ -2153,6 +2160,14 @@ func (s *streamSession) recomposeBlock(changed bool) {
 	}
 	var ctl bytes.Buffer
 	ctl.WriteString(sgrReset + clearScreen)
+	// A colour cycle out of the adaptive mode leaves the terminal holding
+	// registers no later frame writes, so restore the palette here for the same
+	// reason the backend switch does. A cycle that stays in the adaptive mode
+	// keeps the registers, because the next frame reuses the retained palette and
+	// writes none of its own.
+	if s.st.Colour != ColourXTerm256Adaptive {
+		ctl.WriteString(s.st.releasePalette())
+	}
 	s.appendBar(&ctl)
 	_ = s.emitControl(ctl.Bytes())
 	s.ctl.submit(switchBackendOp(s.st.Backend))

@@ -475,11 +475,11 @@ func TestRenderReusesFrameScratchAndReplacesItOnResize(t *testing.T) {
 		t.Fatal(err)
 	}
 	rgba, paletted := r.enc.rgba, r.enc.paletted
-	if rgba == nil || paletted == nil || len(r.enc.lut) != 1<<15 {
+	if rgba == nil || paletted == nil || len(r.enc.LUT) != 1<<15 {
 		t.Fatal("renderer did not retain complete frame scratch")
 	}
-	if cap(rgba.Pix) != 32*18*4 || cap(paletted.Pix) != 32*18 || cap(r.enc.lut) != 1<<15 {
-		t.Fatalf("retained capacities = RGBA %d, Paletted %d, LUT %d", cap(rgba.Pix), cap(paletted.Pix), cap(r.enc.lut))
+	if cap(rgba.Pix) != 32*18*4 || cap(paletted.Pix) != 32*18 || cap(r.enc.LUT) != 1<<15 {
+		t.Fatalf("retained capacities = RGBA %d, Paletted %d, LUT %d", cap(rgba.Pix), cap(paletted.Pix), cap(r.enc.LUT))
 	}
 	if err := r.Render(frame, &second); err != nil {
 		t.Fatal(err)

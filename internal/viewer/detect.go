@@ -43,6 +43,11 @@ type probeResult struct {
 	// PointerShapes maps each queried pointer-shape name to whether the
 	// terminal supports it. It is meaningful only when PointerShapeOK is true.
 	PointerShapes map[string]bool
+
+	// PaletteQueryOK records that the terminal answered the OSC 4 palette
+	// query for the probed entry with a colour this package could parse. False
+	// means the terminal carries no palette support Nyala can rely on.
+	PaletteQueryOK bool
 }
 
 // pointerShapeNames is the full kitty pointer-shape list Nyala maps, in the
@@ -83,6 +88,21 @@ const osc11Prefix = "\x1b]11;"
 // carries no "\x1b[?", so it can never trip the DA1 fence early.
 const osc22Prefix = "\x1b]22;"
 
+// osc4Prefix introduces the OSC 4 palette query and its reply. Like OSC 11 and
+// OSC 22 it carries no "\x1b[?", so it can never trip the DA1 fence early.
+const osc4Prefix = "\x1b]4;"
+
+// osc4ProbeIndex is the single palette entry the handshake asks about. One
+// index keeps the reply short and bounded, and index 16 is the first entry of
+// the adaptive range 16..255, so a terminal that answers proves it can address
+// that range rather than only the sixteen theme colours.
+const osc4ProbeIndex = "16"
+
+// paletteQuery is the OSC 4 palette query: the probe index, then "?", ended by
+// ST. The terminal answers with the same index and the entry's current
+// XParseColor specification.
+const paletteQuery = osc4Prefix + osc4ProbeIndex + ";?\x1b\\"
+
 // pointerShapeQuery builds the OSC 22 capability query: "?" then the
 // comma-separated pointer-shape names, ended by ST. The terminal answers with
 // one flag per queried name, paired by position.
@@ -113,7 +133,7 @@ const probePollTimeout = 120 * time.Millisecond
 // shared-memory object holding a 1x1 f=24 pixel, the three cell-size queries,
 // the XTVERSION identity query, the kitty keyboard-protocol flags query, the
 // OSC 11 background-colour query, the OSC 22 pointer-shape capability query,
-// then the DA1 fence. The kitty queries store
+// the OSC 4 palette query, then the DA1 fence. The kitty queries store
 // nothing (a=q); DA1 is last so its reply marks the end of the batch.
 // Terminals that ignore a query stay silent, and the DA1 fence still bounds
 // the read.
@@ -139,6 +159,10 @@ func queryBytes(shmName string) []byte {
 	// goroutine exists, so the reply drains in readUntilDA1 rather than
 	// reaching the page as typed text.
 	b.WriteString(pointerShapeQuery())
+	// The OSC 4 palette query rides ahead of the DA1 fence for the same reason
+	// as OSC 11 and OSC 22, and its reply carries no "\x1b[?", so it cannot end
+	// the read early.
+	b.WriteString(paletteQuery)
 	b.WriteString(ansi.RequestPrimaryDeviceAttributes)
 	return b.Bytes()
 }
@@ -153,7 +177,9 @@ func queryBytes(shmName string) []byte {
 // terminal as it was rather than as it is. It carries no OSC 22 pointer-shape
 // query either, matching the OSC 11 policy: a multiplexer sits between Nyala
 // and the terminal, so multiplexer sessions never send OSC 22 and pointer
-// shapes stay undetected there.
+// shapes stay undetected there. It carries no OSC 4 palette query either, for
+// the same reason as OSC 11 and OSC 22: a multiplexer sits between Nyala and
+// the terminal, so multiplexer sessions record no palette support.
 func reducedQueryBytes() []byte {
 	var b bytes.Buffer
 	b.WriteString("\x1b[16t")
@@ -217,6 +243,7 @@ func probeTerminal(tty *os.File, cols, rows int) probeResult {
 	res.TermID = parseXTVersion(buf)
 	res.BackgroundDark, res.BackgroundOK = parseBackgroundDark(buf)
 	res.PointerShapes, res.PointerShapeOK = parsePointerShapes(buf)
+	res.PaletteQueryOK = parsePaletteQuery(buf)
 	if px, ok := parseCellPixels(buf, cols, rows); ok {
 		res.cellPx = px
 		res.cellPxOK = true
@@ -447,6 +474,40 @@ func parsePointerShapes(buf []byte) (map[string]bool, bool) {
 		shapes[name] = bytes.Equal(flags[n], []byte("1"))
 	}
 	return shapes, true
+}
+
+// parsePaletteQuery reports whether the terminal answered the OSC 4 palette
+// query for the probed entry. The reply is "OSC 4 ; <index> ; <spec>" ended by
+// BEL or ST, where spec is an XParseColor string. The parser requires the
+// echoed index to equal osc4ProbeIndex: the match costs one comparison and is
+// the safer read, because a reply naming another entry proves nothing about the
+// entry Nyala asked about. It returns a verdict alone and discards the colour,
+// because the query is read-only on the terminal and no consumer wants the
+// entry's current value. It reports false when the terminal stayed silent,
+// echoed another index, answered without a terminator, or answered with a spec
+// this package cannot read, matching the parseBackgroundDark polarity. The
+// probe runs before the key reader goroutine exists, so the reply drains in
+// readUntilDA1.
+func parsePaletteQuery(buf []byte) bool {
+	i := bytes.Index(buf, []byte(osc4Prefix))
+	if i < 0 {
+		return false
+	}
+	body := buf[i+len(osc4Prefix):]
+	echo := []byte(osc4ProbeIndex + ";")
+	if !bytes.HasPrefix(body, echo) {
+		return false
+	}
+	spec := body[len(echo):]
+	end := bytes.IndexAny(spec, "\x07\x1b")
+	if end < 0 {
+		return false
+	}
+	if spec[end] == '\x1b' && (end+1 >= len(spec) || spec[end+1] != '\\') {
+		return false
+	}
+	_, _, _, ok := parseXColour(spec[:end])
+	return ok
 }
 
 // parseXColour parses an XParseColor specification into red, green, and blue

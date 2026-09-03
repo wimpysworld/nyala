@@ -20,3 +20,22 @@ U+2580, U+2584, U+258C, U+2590, and the full block U+2588.
 | Terminal | Version | Font path | Multiplexer | Mode | Result |
 | --- | --- | --- | --- | --- | --- |
 | KMSCON | unrecorded | default | none | Quadrant scheme | Renders correctly; owner-tested 2026-09-02 |
+
+## OSC 4 palette support
+
+The `256-adaptive` colour mode writes a scene-fitted palette into indexes
+16..255 with OSC 4 and restores the terminal palette with bare OSC 104. Support
+is the startup probe's verdict: the terminal must answer `OSC 4 ; 16 ; ?`. A
+`TERM` value, a terminfo entry, and another terminal's behaviour are not proof
+that a terminal accepts a written palette and restores it.
+
+| Terminal | Version | Font path | Multiplexer | Mode | Result |
+| --- | --- | --- | --- | --- | --- |
+
+The table is empty because no terminal is recorded yet. The mode joins
+`--color=auto` only once this table carries evidence. Until then
+`--color=256-adaptive` is the one way to select it.
+
+The reduced multiplexer handshake sends no OSC 4 query, so tmux, zellij, GNU
+screen, and herdr sessions record unsupported. GNU screen drops OSC 4. The
+Linux console has 16 palette entries and cannot use the mode.

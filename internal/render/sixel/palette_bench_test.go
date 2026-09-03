@@ -27,6 +27,7 @@ import (
 	xdraw "golang.org/x/image/draw"
 
 	"github.com/wimpysworld/nyala/internal/metrics"
+	paletteengine "github.com/wimpysworld/nyala/internal/palette"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/renderdecode"
 )
@@ -309,11 +310,11 @@ func encodeCombinedBench(enc *opaqueEncoder, img image.Image, arm combinedBenchA
 		return stages, fmt.Errorf("unsupported benchmark image type %T", img)
 	}
 	start := time.Now()
-	palette := samplePalette(rgba, colours)
+	palette := paletteengine.SamplePalette(rgba, colours)
 	stages.palette = time.Since(start)
 	paletted := image.NewPaletted(rgba.Bounds(), palette)
 	start = time.Now()
-	lut := newPaletteLUT(palette)
+	lut := paletteengine.NewLUT(palette)
 	stages.lut = time.Since(start)
 	start = time.Now()
 	if arm.parallelMapping {
@@ -419,8 +420,8 @@ func rotateCombinedFixtures(values []string, run int) []string {
 
 func BenchmarkRGB555Mapping(b *testing.B) {
 	src := loadPaletteBenchFrame(b, "../../../testdata/linuxmatters.png", paletteBenchSize{w: 1920, h: 1080})
-	palette := samplePalette(src, paletteColours)
-	lut := newPaletteLUT(palette)
+	palette := paletteengine.SamplePalette(src, paletteColours)
+	lut := paletteengine.NewLUT(palette)
 	dst := image.NewPaletted(src.Bounds(), palette)
 	bounds := src.Bounds()
 	for _, arm := range []struct {
@@ -568,7 +569,7 @@ func (e *paletteBenchEncoder) encode(src *image.RGBA) ([]byte, time.Duration, ti
 	}
 	switch e.arm.kind {
 	case "serial":
-		palette = samplePalette(src, paletteColours)
+		palette = paletteengine.SamplePalette(src, paletteColours)
 	case "64k":
 		palette = samplePaletteBudget(src, 1<<16)
 	case "goquant":
@@ -582,7 +583,7 @@ func (e *paletteBenchEncoder) encode(src *image.RGBA) ([]byte, time.Duration, ti
 	start = time.Now()
 	if palette != nil {
 		paletted.Palette = palette
-		lut := newPaletteLUT(palette)
+		lut := paletteengine.NewLUT(palette)
 		if e.arm.kind == "serial" {
 			lut = serialPaletteLUT(palette)
 		}

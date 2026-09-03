@@ -132,6 +132,10 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 	// so multiplexer sessions keep the terminal's own pointer.
 	st.pointerShapeOK = res.PointerShapeOK
 	st.pointerShapes = res.PointerShapes
+	// The palette-query capability rides the full handshake only, for the same
+	// reason as the pointer shapes above: the reduced handshake sends no OSC 4
+	// query, so multiplexer sessions record no palette support.
+	st.paletteQueryOK = res.PaletteQueryOK
 
 	st.SetEnabled(enabledBackends(res, st.compat))
 	return nil

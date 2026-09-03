@@ -131,10 +131,21 @@ func resolveCompatibleColour(flag string, environ []string, detected ColourMode,
 // real TTY the cap is floored at xterm-256, the mode every profile now
 // starts at or above. A non-TTY keeps its detected cap, so piped output
 // never gains colour modes.
+//
+// ColourXTerm256Adaptive is appended last in the enum so the existing values
+// keep their numbers, so the numeric order sorts it as the least capable mode.
+// That order is wrong: the adaptive mode needs a 256-colour terminal, exactly
+// like ColourXTerm256. Renumbering the enum would move every value below
+// ColourTrue, so the comparison reads the adaptive mode as ColourXTerm256
+// instead and the cap never holds the adaptive value. CycleColour gates the
+// adaptive rung on the OSC 4 palette query rather than on this cap.
 func resolveColourCapability(flag string, detected ColourMode, compat terminalCompatibility, isTTY bool) ColourMode {
 	cap := detected
 	if flag != "auto" {
 		explicit := resolveColour(flag, nil, detected)
+		if explicit == ColourXTerm256Adaptive {
+			explicit = ColourXTerm256
+		}
 		if explicit < cap {
 			cap = explicit
 		}
@@ -165,10 +176,18 @@ func (s *State) validateForcedBackend(mode string) error {
 
 // validateColourCompatibility rejects explicit truecolour on affected Rio
 // releases regardless of the starting backend. Alt+R cycles every supported
-// backend, so truecolour Block frames are always reachable at runtime.
+// backend, so truecolour Block frames are always reachable at runtime. It also
+// rejects the explicit adaptive mode when the startup handshake recorded no
+// OSC 4 palette-query answer, so the session fails before the first paint
+// rather than drawing against a palette the terminal never took. The reduced
+// multiplexer handshake sends no OSC 4 query, so tmux, zellij, GNU screen, and
+// herdr sessions are rejected too.
 func (s *State) validateColourCompatibility(colourFlag string) error {
 	if s.compat.rio04 && colourFlag == "truecolor" {
 		return fmt.Errorf("viewer: Rio 0.4.x cannot use truecolour Block rendering; use --color=256 or --color=grey")
+	}
+	if colourFlag == "256-adaptive" && !s.paletteQueryOK {
+		return fmt.Errorf("viewer: this terminal did not answer the OSC 4 palette query, so it cannot use adaptive 256-colour rendering; use --color=256 or --color=truecolor")
 	}
 	return nil
 }

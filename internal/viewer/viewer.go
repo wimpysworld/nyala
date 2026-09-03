@@ -18,11 +18,13 @@ import (
 	"io"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 	"unicode/utf8"
 
 	emmb64 "github.com/emmansun/base64"
 	"github.com/wimpysworld/nyala/internal/cellraster"
 	"github.com/wimpysworld/nyala/internal/metrics"
+	"github.com/wimpysworld/nyala/internal/palette"
 	"github.com/wimpysworld/nyala/internal/pngdecode"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
@@ -57,6 +59,13 @@ const (
 	ColourXTerm256
 	// ColourXTermGrey maps block colours onto the xterm greyscale ramp.
 	ColourXTermGrey
+	// ColourXTerm256Adaptive quantises each block frame to its own 240-entry
+	// palette, writes that palette over OSC 4, and maps cells onto terminal
+	// indexes 16..255. It is appended after ColourXTermGrey so the existing
+	// values keep their numbers; it is therefore outside the
+	// highest-capability-first order the cap comparisons read, and
+	// resolveColourCapability and CycleColour both special-case it.
+	ColourXTerm256Adaptive
 )
 
 // State is the viewer's render and backend state. Cols and Rows are the terminal
@@ -158,6 +167,55 @@ type State struct {
 	// false under a multiplexer, whose reduced handshake sends no OSC 22
 	// query, so those sessions never write a pointer-shape sequence.
 	pointerShapeOK bool
+
+	// paletteQueryOK records that the startup handshake confirmed OSC 4
+	// palette-query support, resolved once by configureBackends. It stays
+	// false under a multiplexer, whose reduced handshake sends no OSC 4
+	// query. No caller reads it yet: the adaptive 256-colour mode will gate
+	// its selection on it.
+	paletteQueryOK bool
+
+	// paletteEngine is the shared adaptive-palette engine the
+	// ColourXTerm256Adaptive mode draws through. Every other mode leaves it
+	// alone, and its zero value carries no palette, which draws through the
+	// static xterm-256 table. adaptivePalette puts it into the budget mode.
+	paletteEngine palette.Engine
+
+	// blockRenderer is the Block renderer ComposeBlockFrame configures once per
+	// frame. It is held here rather than built per call because it is the single
+	// point where the adaptive palette attaches: both compose entries take it by
+	// value, and blockSGR reads its table back, so one frame's cells and its
+	// registers always come from one palette.
+	blockRenderer block.Renderer
+
+	// paletteOSC4 is the OSC 4 palette write the last compose produced, as a run
+	// of short sequences. It is empty whenever that compose reused the retained
+	// palette, so a reused-palette frame writes no palette bytes at all.
+	// renderBlock drains it into the frame buffer ahead of the cells.
+	paletteOSC4 []byte
+
+	// paletteSrc is the reusable palette sample the adaptive engine quantises:
+	// one pixel per composed cell colour. It is reallocated only when the grid
+	// changes size.
+	paletteSrc *image.RGBA
+
+	// paletteWritten records that a frame wrote OSC 4 registers the terminal
+	// still holds, so the teardown, a backend switch, and a colour cycle out of
+	// the adaptive mode all write the bare OSC 104 restore. It is atomic because
+	// the fatal-signal watcher goroutine reads it through restoreTerminal while
+	// the producer goroutine writes it, and it is a pointer because NewState
+	// returns a State by value and an atomic.Bool cannot be copied. NewState
+	// allocates it, so every production State carries the record before any
+	// goroutine starts; paletteRecord covers a zero-value State.
+	paletteWritten *atomic.Bool
+
+	// fgSGR and bgSGR are the cached SGR writer pair the differ folds into its
+	// reused per-frame buffer. sgrColour and sgrLUT record what the pair was
+	// built from. The adaptive writers close over the palette table, so the pair
+	// is rebuilt on a colour-mode change or a new table, never per frame.
+	fgSGR, bgSGR block.SGRFunc
+	sgrColour    ColourMode
+	sgrLUT       []uint8
 
 	// pointerShapes maps each queried pointer-shape name to whether the
 	// terminal supports it. It is meaningful only when pointerShapeOK is
@@ -261,14 +319,15 @@ func (s *State) SetDiff(d *block.GridDiff) {
 // the best available backend, and sets the real cell size after the handshake.
 func NewState(cols, rows int) State {
 	return State{
-		Backend:   BackendBlock,
-		Scheme:    block.SchemeQuadrant,
-		Colour:    ColourTrue,
-		colourCap: ColourTrue,
-		Cols:      cols,
-		Rows:      rows,
-		Enabled:   []Backend{BackendKitty, BackendSixel, BackendBlock},
-		cellPx:    cellPx{W: cellraster.CellPxW, H: cellraster.CellPxH},
+		Backend:        BackendBlock,
+		Scheme:         block.SchemeQuadrant,
+		Colour:         ColourTrue,
+		colourCap:      ColourTrue,
+		Cols:           cols,
+		Rows:           rows,
+		Enabled:        []Backend{BackendKitty, BackendSixel, BackendBlock},
+		cellPx:         cellPx{W: cellraster.CellPxW, H: cellraster.CellPxH},
+		paletteWritten: &atomic.Bool{},
 	}
 }
 
@@ -338,14 +397,22 @@ func (s *State) CycleScheme(reverse bool) block.Scheme {
 }
 
 // colourCycle is the Alt+C block colour mode cycle order, highest capability
-// first. CycleColour skips modes above the effective terminal cap.
-var colourCycle = []ColourMode{ColourTrue, ColourXTerm256, ColourXTermGrey}
+// first. CycleColour skips modes above the effective terminal cap. The adaptive
+// mode sits beside xterm-256 by hand, because its enum value is appended last
+// and so carries no ordering of its own.
+var colourCycle = []ColourMode{ColourTrue, ColourXTerm256, ColourXTerm256Adaptive, ColourXTermGrey}
 
 // CycleColour steps through the colour ladder and returns the new mode. It
-// skips modes above the effective capability cap. The stream dispatcher drops
-// the cycle while a graphics backend draws.
+// skips modes above the effective capability cap. The adaptive mode is gated on
+// the startup OSC 4 palette query instead of the cap: a terminal that answered
+// no query cannot take a written palette, so the cycle must never land on a
+// mode that cannot draw. The stream dispatcher drops the cycle while a graphics
+// backend draws.
 func (s *State) CycleColour(reverse bool) ColourMode {
 	s.Colour = cycleValue(colourCycle, s.Colour, reverse, func(m ColourMode) bool {
+		if m == ColourXTerm256Adaptive {
+			return s.paletteQueryOK
+		}
 		return m >= s.colourCap
 	})
 	return s.Colour
@@ -534,7 +601,20 @@ func (s *State) renderBlock(src image.Image, text []render.GlyphRun, w io.Writer
 	if s.Colour == ColourTrue {
 		err = s.diff.EmitTrueColour(bw, *grid)
 	} else {
-		err = s.diff.Emit(bw, *grid, fgSGRFunc(s.Colour), bgSGRFunc(s.Colour))
+		// The registers must reach the terminal before the cells that name them.
+		// The palette write, the differ reset, and the full repaint therefore go
+		// into this one frame buffer in that order; a palette write in a later
+		// buffer would draw this frame's cells in the previous frame's colours.
+		// The reset is what makes the repaint full: every register changed
+		// meaning, so no retained cell still matches the terminal.
+		if ctl := s.pendingPaletteWrite(); ctl != nil {
+			if _, werr := bw.Write(ctl); werr != nil {
+				return werr
+			}
+			s.diff.Reset()
+		}
+		fg, bg := s.blockSGR()
+		err = s.diff.Emit(bw, *grid, fg, bg)
 	}
 	if err != nil {
 		return err
@@ -552,7 +632,10 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 		return nil
 	}
 	rows := engineRows(s.Rows)
-	br := block.Renderer{Cols: s.Cols, Rows: rows, Scheme: s.Scheme}
+	// Attaching the palette here, on the one renderer both compose entries take,
+	// is what keeps the RGBA entry and the native YCbCr entry on one palette.
+	br := &s.blockRenderer
+	*br = block.Renderer{Cols: s.Cols, Rows: rows, Scheme: s.Scheme, PaletteLUT: s.adaptiveLUT()}
 	pxW, pxH := schemePixels(s.Scheme, s.Cols, rows)
 	if pxW <= 0 || pxH <= 0 {
 		return nil
@@ -561,10 +644,164 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 	_, nativeYCbCr := frame.Img.(*image.YCbCr)
 	srcW, srcH := frame.Img.Bounds().Dx(), frame.Img.Bounds().Dy()
 	if nativeYCbCr && pxW <= srcW && pxH <= srcH && (pxW < srcW || pxH < srcH) {
-		return s.scratch.compose.ComposeYCbCrInto(&br, &s.scratch.out, frame, s.scratch.pool)
+		return s.updatePalette(s.scratch.compose.ComposeYCbCrInto(br, &s.scratch.out, frame, s.scratch.pool))
 	}
 	frame.Img = s.scratch.downscale.DownscaleInto(s.scratch.downscaleDst(pxW, pxH), frame.Img, s.scratch.pool)
-	return s.scratch.compose.ComposeInto(&br, &s.scratch.out, frame, s.scratch.pool)
+	return s.updatePalette(s.scratch.compose.ComposeInto(br, &s.scratch.out, frame, s.scratch.pool))
+}
+
+// updatePalette drives the adaptive palette engine for one composed grid and
+// returns that grid unchanged. It runs inside the compose, so both compose
+// entries and every caller, live and diagnostic, move one palette. Outside
+// ColourXTerm256Adaptive it clears the pending write and does nothing else.
+//
+// The engine's reuse verdict is the gate, never a frame count: a frame the drift
+// test lets keep the retained palette leaves paletteOSC4 empty and therefore
+// writes no palette bytes. A re-quantisation renumbers every register, so the
+// attached table and the cached writer pair both follow it here, before this
+// frame emits a cell.
+func (s *State) updatePalette(grid *block.Grid) *block.Grid {
+	s.paletteOSC4 = s.paletteOSC4[:0]
+	if grid == nil || s.Colour != ColourXTerm256Adaptive {
+		return grid
+	}
+	src := s.paletteFrame(grid)
+	eng := s.adaptivePalette()
+	sample := eng.Sample(src)
+	if eng.Reuse(src.Bounds(), sample) {
+		return grid
+	}
+	eng.Requantise(src.Bounds(), sample, palette.BudgetColours)
+	s.blockRenderer.PaletteLUT = eng.LUT
+	s.refreshBlockSGR(eng.LUT)
+	s.paletteOSC4 = palette.AppendOSC4(s.paletteOSC4, eng.Palette, eng.Base())
+	return grid
+}
+
+// paletteFrame writes the composed grid's colours into the reusable palette
+// sample and returns it: one pixel per cell colour, the foreground at an even
+// column and the background at the odd column beside it. The grid holds exactly
+// the colours the terminal draws, so quantising it needs no second compose and
+// serves the native YCbCr entry, which leaves no RGBA frame behind, as well as
+// the RGBA entry. The sample is 2*Cols wide and Rows tall, so a resize changes
+// its bounds and the engine drops the palette built for the old geometry.
+func (s *State) paletteFrame(grid *block.Grid) *image.RGBA {
+	bounds := image.Rect(0, 0, grid.Cols*2, grid.Rows)
+	if s.paletteSrc == nil || s.paletteSrc.Bounds() != bounds {
+		s.paletteSrc = image.NewRGBA(bounds)
+	}
+	pix := s.paletteSrc.Pix
+	for row := range grid.Rows {
+		offset := s.paletteSrc.PixOffset(0, row)
+		for col := range grid.Cols {
+			c := grid.At(col, row)
+			pix[offset], pix[offset+1], pix[offset+2], pix[offset+3] = c.FG.R, c.FG.G, c.FG.B, 0xff
+			pix[offset+4], pix[offset+5], pix[offset+6], pix[offset+7] = c.BG.R, c.BG.G, c.BG.B, 0xff
+			offset += 8
+		}
+	}
+	return s.paletteSrc
+}
+
+// pendingPaletteWrite returns the OSC 4 bytes the last compose produced,
+// or nil when that compose reused the retained palette. It records that the
+// terminal now holds written registers, which is what releasePalette and the
+// teardown read. The next compose rewrites the buffer, so the caller must write
+// the bytes before it composes again.
+func (s *State) pendingPaletteWrite() []byte {
+	if len(s.paletteOSC4) == 0 {
+		return nil
+	}
+	s.paletteRecord().Store(true)
+	return s.paletteOSC4
+}
+
+// paletteRecord returns the shared OSC 4 write record, allocating it for a
+// zero-value State. Only the draw goroutine calls it, so the lazy allocation
+// never races the fatal-signal watcher, which reads through paletteDisturbed.
+func (s *State) paletteRecord() *atomic.Bool {
+	if s.paletteWritten == nil {
+		s.paletteWritten = &atomic.Bool{}
+	}
+	return s.paletteWritten
+}
+
+// paletteDisturbed reports whether a frame wrote OSC 4 registers the terminal
+// still holds. The teardown reads it, so it is safe on any goroutine and on a
+// State that never drew a frame.
+func (s *State) paletteDisturbed() bool {
+	return s.paletteWritten != nil && s.paletteWritten.Load()
+}
+
+// releasePalette returns the bare OSC 104 restore when the adaptive mode wrote
+// registers the terminal no longer needs, and the empty string otherwise. It
+// clears the record and drops the retained palette, so a later adaptive frame
+// re-quantises and rewrites the registers the reset discarded. The gate matters:
+// a run that never disturbed the palette must leave the user's theme untouched.
+func (s *State) releasePalette() string {
+	if !s.paletteRecord().Swap(false) {
+		return ""
+	}
+	s.paletteEngine.Invalidate()
+	return palette.OSC104
+}
+
+// adaptivePalette returns the adaptive palette engine in the 240-entry budget
+// mode, which is what a terminal needs: registers 0..15 keep the user's theme
+// and the engine writes 16..255 only. SetBudget is idempotent, so the repeat
+// call costs one comparison.
+func (s *State) adaptivePalette() *palette.Engine {
+	s.paletteEngine.SetBudget(true)
+	return &s.paletteEngine
+}
+
+// adaptiveLUT returns the RGB555 lookup table the Block path maps cell colours
+// through, or nil when the colour mode is not ColourXTerm256Adaptive or the
+// engine holds no palette yet. A nil table falls back to the static xterm-256
+// table inside block.PaletteIndex, which is the correct draw before the first
+// quantisation.
+func (s *State) adaptiveLUT() []uint8 {
+	if s.Colour != ColourXTerm256Adaptive {
+		return nil
+	}
+	return s.adaptivePalette().LUT
+}
+
+// blockSGR returns the foreground and background SGR writers the cell differ
+// uses for the current colour mode, rebuilding the pair only when the mode or
+// the attached palette table changes. The adaptive writers close over the
+// palette table, so a per-frame rebuild would allocate on the frame path; every
+// other mode returns a capture-free literal. It reads the table off
+// blockRenderer, which ComposeBlockFrame attaches before the writers run, so a
+// frame's cells and its registers describe one palette.
+func (s *State) blockSGR() (fg, bg block.SGRFunc) {
+	lut := s.blockRenderer.PaletteLUT
+	if s.fgSGR == nil || s.sgrColour != s.Colour || !sameTable(s.sgrLUT, lut) {
+		s.refreshBlockSGR(lut)
+	}
+	return s.fgSGR, s.bgSGR
+}
+
+// refreshBlockSGR rebuilds the cached SGR writer pair from the current colour
+// mode and the given palette table. It is the explicit rebuild point: a
+// requantisation that hands the Block path a new table calls it, and blockSGR
+// calls it whenever it finds the cached pair stale.
+func (s *State) refreshBlockSGR(lut []uint8) {
+	s.sgrColour = s.Colour
+	s.sgrLUT = lut
+	s.fgSGR = fgSGRFunc(s.Colour, lut)
+	s.bgSGR = bgSGRFunc(s.Colour, lut)
+}
+
+// sameTable reports whether two palette tables are the same slice: equal length
+// and, when non-empty, one backing array. The engine rebuilds its table in
+// place, so a captured slice stays correct across a requantisation and only a
+// new slice header needs a rebuilt writer pair.
+func sameTable(a, b []uint8) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return len(a) == 0 || &a[0] == &b[0]
 }
 
 // releaseFrame returns a frame's pooled pixel plane to the engine, if any. The
@@ -596,11 +833,18 @@ func appendSGR256(dst []byte, prefix string, idx uint8) []byte {
 	return append(dst, 'm')
 }
 
-// fgSGRFunc binds a colour mode into a block.SGRFunc for the cell differ, so the
-// differ stays colour-mode neutral while reusing the viewer's fg SGR rules. Each
-// mode appends into the differ's reused buffer, so no per-cell string allocates.
-func fgSGRFunc(mode ColourMode) block.SGRFunc {
+// fgSGRFunc binds a colour mode and an adaptive palette table into a
+// block.SGRFunc for the cell differ, so the differ stays colour-mode neutral
+// while reusing the viewer's fg SGR rules. Each mode appends into the differ's
+// reused buffer, so no per-cell string allocates. ColourXTerm256Adaptive maps
+// through lut, which holds absolute terminal registers; a nil lut falls back to
+// the static xterm-256 table. Every other mode ignores lut.
+func fgSGRFunc(mode ColourMode, lut []uint8) block.SGRFunc {
 	switch mode {
+	case ColourXTerm256Adaptive:
+		return func(dst []byte, c color.RGBA) []byte {
+			return appendSGR256(dst, fg256Prefix, block.PaletteIndex(lut, c))
+		}
 	case ColourXTerm256:
 		return func(dst []byte, c color.RGBA) []byte {
 			return appendSGR256(dst, fg256Prefix, block.XTerm256(c))
@@ -614,11 +858,18 @@ func fgSGRFunc(mode ColourMode) block.SGRFunc {
 	}
 }
 
-// bgSGRFunc binds a colour mode into a block.SGRFunc for the cell differ, so the
-// differ stays colour-mode neutral while reusing the viewer's bg SGR rules. Each
-// mode appends into the differ's reused buffer, so no per-cell string allocates.
-func bgSGRFunc(mode ColourMode) block.SGRFunc {
+// bgSGRFunc binds a colour mode and an adaptive palette table into a
+// block.SGRFunc for the cell differ, so the differ stays colour-mode neutral
+// while reusing the viewer's bg SGR rules. Each mode appends into the differ's
+// reused buffer, so no per-cell string allocates. ColourXTerm256Adaptive maps
+// through lut, which holds absolute terminal registers; a nil lut falls back to
+// the static xterm-256 table. Every other mode ignores lut.
+func bgSGRFunc(mode ColourMode, lut []uint8) block.SGRFunc {
 	switch mode {
+	case ColourXTerm256Adaptive:
+		return func(dst []byte, c color.RGBA) []byte {
+			return appendSGR256(dst, bg256Prefix, block.PaletteIndex(lut, c))
+		}
 	case ColourXTerm256:
 		return func(dst []byte, c color.RGBA) []byte {
 			return appendSGR256(dst, bg256Prefix, block.XTerm256(c))
@@ -757,8 +1008,16 @@ func enterTerminalModes(kittyKeyboard bool) string {
 // position, so a startup failure does not displace terminal content. The title
 // pop is emitted only when titlePushed records that enterTerminalModes wrote
 // the matching push, because the title stack is shared: an unmatched pop would
-// discard the entry an outer application, such as tmux, saved.
-func exitTerminal(rows int, drawn, kittyKeyboard, titlePushed bool) string {
+// discard the entry an outer application, such as tmux, saved. The palette
+// restore is emitted only when paletteWritten records that the adaptive colour
+// mode set OSC 4 registers, so a run that never disturbed the palette leaves the
+// user's theme untouched.
+//
+// The palette restore lives here, beside the other unconditional resets, rather
+// than in exitTerminalWithTitle, which owns one thing: the title-pop fallback.
+// Every teardown, including the fatal-signal path, goes through this function,
+// so one addition covers them all.
+func exitTerminal(rows int, drawn, kittyKeyboard, titlePushed, paletteWritten bool) string {
 	const reset = "\x1b[0m"
 	restore := disableMouseReporting + disableBracketedPaste
 	if kittyKeyboard {
@@ -773,6 +1032,13 @@ func exitTerminal(rows int, drawn, kittyKeyboard, titlePushed bool) string {
 	// was never set is harmless, and every exit path including a fatal signal
 	// must clear it.
 	restore += progressClear
+	// Restore the terminal palette when the adaptive colour mode wrote OSC 4
+	// registers. WezTerm holds the written colours until a reset arrives, so an
+	// exit without this write leaves the shell drawing in the last page's
+	// registers; the write is not a WezTerm workaround, it pairs every OSC 4.
+	if paletteWritten {
+		restore += palette.OSC104
+	}
 	if !drawn || rows <= 0 {
 		return reset + restore
 	}
@@ -785,8 +1051,8 @@ func exitTerminal(rows int, drawn, kittyKeyboard, titlePushed bool) string {
 // non-empty string because an empty OSC 0 payload resets to the terminal
 // default title, not the title saved by the push. The fallback is tied to the
 // pop: when no push was written, there is no pop and no neutral title either.
-func exitTerminalWithTitle(rows int, drawn, kittyKeyboard, titlePushed, titlePopIgnored bool) string {
-	out := exitTerminal(rows, drawn, kittyKeyboard, titlePushed)
+func exitTerminalWithTitle(rows int, drawn, kittyKeyboard, titlePushed, paletteWritten, titlePopIgnored bool) string {
+	out := exitTerminal(rows, drawn, kittyKeyboard, titlePushed, paletteWritten)
 	if titlePushed && titlePopIgnored {
 		out += setTitle("terminal")
 	}

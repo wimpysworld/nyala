@@ -106,7 +106,7 @@ func TestCatchingSIGINTLeavesCtrlCOnTheKeyPath(t *testing.T) {
 // composes no teardown of its own.
 func TestSignalTeardownResetsTheModesItEnabled(t *testing.T) {
 	for _, kitty := range []bool{false, true} {
-		teardown := exitTerminal(24, true, kitty, true)
+		teardown := exitTerminal(24, true, kitty, true, false)
 		for _, off := range []string{disableMouseReporting, disableBracketedPaste} {
 			if !strings.Contains(teardown, off) {
 				t.Errorf("the signal teardown (kitty=%v) does not emit %q", kitty, off)

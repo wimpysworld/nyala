@@ -155,13 +155,109 @@ func TestColourCapability(t *testing.T) {
 		{"TTY keeps auto 256", "auto", ColourXTerm256, terminalCompatibility{}, true, ColourXTerm256},
 		{"TTY keeps auto true", "auto", ColourTrue, terminalCompatibility{}, true, ColourTrue},
 		{"Rio TTY floor stays at 256", "auto", ColourXTerm256, terminalCompatibility{rio04: true}, true, ColourXTerm256},
+		// The adaptive mode is appended last in the enum, so the numeric order
+		// sorts it below greyscale. resolveColourCapability reads it as
+		// ColourXTerm256 instead, so it neither lowers a truecolour cap nor
+		// raises a 256 cap, and the cap never holds the adaptive value itself.
+		{"explicit adaptive keeps a 256 cap", "256-adaptive", ColourXTerm256, terminalCompatibility{}, true, ColourXTerm256},
+		{"explicit adaptive keeps a true cap", "256-adaptive", ColourTrue, terminalCompatibility{}, false, ColourTrue},
+		{"Rio explicit adaptive caps at 256", "256-adaptive", ColourTrue, terminalCompatibility{rio04: true}, false, ColourXTerm256},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := resolveColourCapability(c.flag, c.detected, c.compat, c.isTTY); got != c.want {
+			got := resolveColourCapability(c.flag, c.detected, c.compat, c.isTTY)
+			if got != c.want {
 				t.Fatalf("cap = %v, want %v", got, c.want)
 			}
+			if got == ColourXTerm256Adaptive {
+				t.Fatalf("cap = %v, want a mode outside the adaptive rung", got)
+			}
 		})
+	}
+}
+
+// TestAdaptiveColourFlagReachesState pins the flag-to-mode path: the explicit
+// --color=256-adaptive value resolves to ColourXTerm256Adaptive and lands on
+// State.Colour, while the cap stays on the ordered ladder.
+func TestAdaptiveColourFlagReachesState(t *testing.T) {
+	st := NewState(80, 24)
+	st.configureColour("256-adaptive", nil, ColourXTerm256, true)
+	if st.Colour != ColourXTerm256Adaptive {
+		t.Fatalf("adaptive state colour = %v, want %v", st.Colour, ColourXTerm256Adaptive)
+	}
+	if st.colourCap != ColourXTerm256 {
+		t.Fatalf("adaptive state cap = %v, want %v", st.colourCap, ColourXTerm256)
+	}
+
+	// NO_COLOR is an auto-only rule, so an explicit adaptive request survives it.
+	st.configureColour("256-adaptive", []string{"NO_COLOR=1"}, ColourXTerm256, true)
+	if st.Colour != ColourXTerm256Adaptive {
+		t.Fatalf("adaptive with NO_COLOR = %v, want %v", st.Colour, ColourXTerm256Adaptive)
+	}
+}
+
+// TestAdaptiveColourStartupValidation pins the fail-fast gate. Startup rejects
+// the explicit adaptive mode before the first paint when the handshake
+// recorded no OSC 4 palette-query answer, and the error names the working
+// alternatives. A recorded answer admits the mode, and no other colour flag is
+// affected by the palette verdict.
+func TestAdaptiveColourStartupValidation(t *testing.T) {
+	st := NewState(80, 24)
+	err := st.validateColourCompatibility("256-adaptive")
+	if err == nil {
+		t.Fatal("adaptive on an unsupported terminal: want an error, got nil")
+	}
+	for _, want := range []string{"OSC 4", "--color=256", "--color=truecolor"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("adaptive error %q is missing %q", err.Error(), want)
+		}
+	}
+
+	st.paletteQueryOK = true
+	if err := st.validateColourCompatibility("256-adaptive"); err != nil {
+		t.Fatalf("adaptive on a supported terminal rejected: %v", err)
+	}
+
+	unsupported := NewState(80, 24)
+	for _, colour := range []string{"auto", "truecolor", "256", "grey"} {
+		if err := unsupported.validateColourCompatibility(colour); err != nil {
+			t.Fatalf("colour %s rejected on an unsupported terminal: %v", colour, err)
+		}
+	}
+}
+
+// TestCycleColourGatesAdaptiveOnPaletteQuery pins the Alt+C rung: the adaptive
+// mode is offered only when the startup handshake recorded OSC 4 support, so
+// the cycle never lands on a mode that cannot draw. The rung sits beside
+// xterm-256, so a supported terminal steps true -> 256 -> adaptive -> grey.
+func TestCycleColourGatesAdaptiveOnPaletteQuery(t *testing.T) {
+	st := NewState(80, 24)
+	st.configureColour("auto", nil, ColourTrue, true)
+	for step := range 2 * len(colourCycle) {
+		if got := st.CycleColour(false); got == ColourXTerm256Adaptive {
+			t.Fatalf("forward cycle step %d landed on the adaptive mode with no palette query", step)
+		}
+	}
+	for step := range 2 * len(colourCycle) {
+		if got := st.CycleColour(true); got == ColourXTerm256Adaptive {
+			t.Fatalf("reverse cycle step %d landed on the adaptive mode with no palette query", step)
+		}
+	}
+
+	ok := NewState(80, 24)
+	ok.configureColour("auto", nil, ColourTrue, true)
+	ok.paletteQueryOK = true
+	forward := []ColourMode{ColourXTerm256, ColourXTerm256Adaptive, ColourXTermGrey, ColourTrue}
+	for i, want := range forward {
+		if got := ok.CycleColour(false); got != want {
+			t.Fatalf("forward cycle step %d = %v, want %v", i, got, want)
+		}
+	}
+	reverse := []ColourMode{ColourXTermGrey, ColourXTerm256Adaptive, ColourXTerm256, ColourTrue}
+	for i, want := range reverse {
+		if got := ok.CycleColour(true); got != want {
+			t.Fatalf("reverse cycle step %d = %v, want %v", i, got, want)
+		}
 	}
 }
 

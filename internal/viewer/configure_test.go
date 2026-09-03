@@ -11,7 +11,7 @@ import (
 // handshake at all. Both probes write their query batch to the tty as a first
 // act, so a tty file left empty after the call proves neither ran. A non-mux
 // baseline proves the same file path does carry a write when the handshake
-// runs.
+// runs. With no handshake, paletteQueryOK must stay false.
 func TestConfigureBackendsSkipsHandshakeUnderScreenAndHerdr(t *testing.T) {
 	cases := []struct {
 		name string
@@ -39,6 +39,9 @@ func TestConfigureBackendsSkipsHandshakeUnderScreenAndHerdr(t *testing.T) {
 			if n := ttyByteCount(t, tty); n != 0 {
 				t.Fatalf("handshake wrote %d bytes; no probe must run", n)
 			}
+			if st.paletteQueryOK {
+				t.Fatal("paletteQueryOK = true; no handshake ran, so no OSC 4 query was sent")
+			}
 		})
 	}
 }
@@ -49,7 +52,8 @@ func TestConfigureBackendsSkipsHandshakeUnderScreenAndHerdr(t *testing.T) {
 // block only: an unanswered DA1 must never enable Sixel. The Sixel budget
 // must stay unarmed too: with no XTVERSION reply the tmux version gate
 // fails, so resolveTmuxSixelBudget (which would arm at least the 900 KB
-// fallback, and mutates the tmux server on 3.6+) must never run.
+// fallback, and mutates the tmux server on 3.6+) must never run. The batch
+// carries no OSC 4 palette query either, so paletteQueryOK must stay false.
 func TestConfigureBackendsReducedHandshakeUnderTmuxAndZellij(t *testing.T) {
 	cases := []struct {
 		name string
@@ -83,6 +87,12 @@ func TestConfigureBackendsReducedHandshakeUnderTmuxAndZellij(t *testing.T) {
 			}
 			if bytes.Contains(wrote, []byte("\x1b_G")) {
 				t.Fatalf("reduced handshake carried a Kitty APC probe: %q", wrote)
+			}
+			if bytes.Contains(wrote, []byte("\x1b]4;")) {
+				t.Fatalf("reduced handshake carried an OSC 4 palette query: %q", wrote)
+			}
+			if st.paletteQueryOK {
+				t.Fatal("paletteQueryOK = true; the reduced handshake sends no OSC 4 query")
 			}
 		})
 	}
