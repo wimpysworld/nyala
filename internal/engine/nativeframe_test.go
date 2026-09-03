@@ -98,7 +98,7 @@ func TestFrameDecodeErrorsExposeStableContext(t *testing.T) {
 	corruptPNG := append(append([]byte(nil), pngSignature...), payloadMarker...)
 	unsupportedPNG := unsupportedFramePNG(t)
 	corruptJPEG := append([]byte{0xff, 0xd8, 0xff, 0xdb, 0x00}, payloadMarker...)
-	unsupportedJPEG := unsupportedSequentialJPEG(t)
+	unsupportedJPEG := unsupportedBaselineScanJPEG(t)
 	e := &ChromiumEngine{backend: backendSixel}
 	_, corruptPNGError := pngdecode.Decode(bytes.NewReader(corruptPNG))
 	_, unsupportedPNGError := pngdecode.Decode(bytes.NewReader(unsupportedPNG))
@@ -226,7 +226,7 @@ func TestDecodePoolDropsUnsupportedJPEGWithoutFallbackFrame(t *testing.T) {
 	}
 	rawQ, frames, stop := drivePool(t, e, 1)
 	defer stop()
-	payload := base64.StdEncoding.EncodeToString(unsupportedSequentialJPEG(t))
+	payload := base64.StdEncoding.EncodeToString(unsupportedBaselineScanJPEG(t))
 	e.ingest.record(time.Unix(0, 0))
 	rawQ.put(seqRawFrame{seq: 1, data: payload})
 	waitDecodeDrop(t, e.ingest)
