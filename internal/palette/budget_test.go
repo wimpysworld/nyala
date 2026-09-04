@@ -130,7 +130,10 @@ func TestBudgetModeSwitchRebasesRetainedState(t *testing.T) {
 	if engine.Reuse(frame.Bounds(), engine.Sample(frame)) {
 		t.Fatal("a mode change reused a palette built for the previous register base")
 	}
-	requantise(t, &engine, frame)
+	result := engine.Requantise(frame.Bounds(), engine.Sample(frame), fullColours)
+	if result.PriorValid || result.ExactNoOp {
+		t.Fatalf("mode-change result = %+v, want no valid prior state", result)
+	}
 	if len(engine.Palette) > BudgetColours {
 		t.Fatalf("palette entries after the switch = %d, want at most %d", len(engine.Palette), BudgetColours)
 	}

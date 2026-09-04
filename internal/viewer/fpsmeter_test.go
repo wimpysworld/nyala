@@ -335,6 +335,62 @@ func TestFPSMeterSummaryReportsZeroDecodeDrops(t *testing.T) {
 	}
 }
 
+func TestFPSMeterSummaryIncludesPaletteMetricsOnOneLine(t *testing.T) {
+	base := time.Unix(0, 0)
+	m := &fpsMeter{window: time.Second, start: base}
+	m.tick(base, true)
+	m.palette.record(true, completePaletteObservation(), 600)
+	m.tick(base.Add(2*time.Second), true)
+	m.palette.record(true, paletteFrameObservation{paletteChecks: 1, paletteCheckMS: 0.4}, 400)
+
+	var b strings.Builder
+	m.printSummary(&b)
+	out := b.String()
+	if strings.Count(out, "\n") != 1 {
+		t.Fatalf("summary wrote %d lines, want 1: %q", strings.Count(out, "\n"), out)
+	}
+	for _, want := range []string{
+		"palette_checks=2", "palette_reuse_failures=1", "palette_noop_refits=1",
+		"palette_changed_entries=2", "palette_updates=1", "palette_updates_per_s=0.5",
+		"palette_osc_entries=16", "palette_osc_sequences=3", "palette_osc_bytes=384",
+		"palette_osc_bytes_per_s=192.0", "palette_full_repaints=1",
+		"out_bytes=1000", "out_bytes_per_s=500.0",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary %q does not contain %q", out, want)
+		}
+	}
+	for _, field := range []string{
+		"palette_checks=", "palette_reuse_failures=", "palette_updates=",
+		"palette_osc_bytes=", "palette_full_repaints=", "out_bytes=",
+	} {
+		if got := strings.Count(out, field); got != 1 {
+			t.Errorf("summary contains %q %d times, want once: %q", field, got, out)
+		}
+	}
+}
+
+func TestFPSMeterSummaryPaletteRatesAreZeroForTheGateFrame(t *testing.T) {
+	base := time.Unix(0, 0)
+	m := &fpsMeter{window: time.Second, start: base}
+	m.tick(base, true)
+	m.palette.record(m.gated, paletteFrameObservation{
+		paletteChecks:   1,
+		paletteUpdates:  1,
+		paletteOSCBytes: 90,
+	}, 120)
+
+	var b strings.Builder
+	m.printSummary(&b)
+	for _, want := range []string{
+		"palette_updates_per_s=0.0", "palette_osc_bytes_per_s=0.0", "out_bytes_per_s=0.0",
+	} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("zero-wall summary %q does not contain %q", b.String(), want)
+		}
+	}
+}
+
 func TestPrintStreamSummaryReportsDecodeDropsWithoutFPS(t *testing.T) {
 	ingest := fakeIngest{stats: render.IngestStats{
 		DecodeDrops: 2, DecodeLatestError: "jpeg decode: invalid marker",

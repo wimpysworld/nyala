@@ -331,10 +331,86 @@ func TestLumaReuseSceneChangeRequantises(t *testing.T) {
 func TestLumaReuseGeometryChangeInvalidates(t *testing.T) {
 	t.Parallel()
 	var engine LumaEngine
-	driveLumaFrame(&engine, lumaGradient(192))
-	driveLumaFrame(&engine, lumaGradient(180))
+	first := lumaGradient(192)
+	second := lumaGradient(180)
+	driveLumaFrame(&engine, first)
+	sample := engine.Sample(second)
+	if engine.Reuse(second.Bounds(), sample) {
+		t.Fatal("a geometry change reused the retained ramp")
+	}
+	result := engine.Requantise(second.Bounds(), sample)
+	if result.PriorValid || result.ExactNoOp {
+		t.Fatalf("geometry-change result = %+v, want no valid prior state", result)
+	}
 	if engine.RequantCount != 2 {
 		t.Fatalf("RequantCount = %d, want 2 (a geometry change must re-fit)", engine.RequantCount)
+	}
+}
+
+func TestLumaRequantiseReportsExactNoOpAndKeepsBytes(t *testing.T) {
+	t.Parallel()
+	img := lumaGradient(192)
+	var engine LumaEngine
+	sample := engine.Sample(img)
+	first := engine.Requantise(img.Bounds(), sample)
+	if first.PriorValid || first.LengthEqual || first.PaletteEqual || first.LUTEqual || first.ExactNoOp {
+		t.Fatalf("initial result = %+v, want no prior equality", first)
+	}
+	wantPalette := slices.Clone(AppendOSC4(nil, engine.Palette, engine.Base()))
+	wantLUT := slices.Clone(engine.LUT)
+
+	result := engine.Requantise(img.Bounds(), sample)
+	if !result.PriorValid || !result.LengthEqual || !result.PaletteEqual || !result.LUTEqual || !result.ExactNoOp {
+		t.Fatalf("second result = %+v, want exact no-op", result)
+	}
+	if result.ChangedEntries != 0 {
+		t.Fatalf("second ChangedEntries = %d, want 0", result.ChangedEntries)
+	}
+	if got := AppendOSC4(nil, engine.Palette, engine.Base()); !slices.Equal(got, wantPalette) {
+		t.Fatal("an equal re-fit changed the emitted palette bytes")
+	}
+	if !slices.Equal(engine.LUT, wantLUT) {
+		t.Fatal("an equal re-fit changed the LUT bytes")
+	}
+
+	engine.LUT[123] ^= 1
+	result = engine.Requantise(img.Bounds(), sample)
+	if !result.PaletteEqual || result.LUTEqual || result.ExactNoOp {
+		t.Fatalf("LUT-change result = %+v", result)
+	}
+	if !slices.Equal(engine.LUT, wantLUT) {
+		t.Fatal("the re-fit did not restore the expected LUT bytes")
+	}
+}
+
+func TestLumaRequantiseReportsOneChangedEntry(t *testing.T) {
+	t.Parallel()
+	before := greyImage(1, 8, func(int) uint8 { return 40 })
+	after := greyImage(1, 8, func(int) uint8 { return 200 })
+	var engine LumaEngine
+	engine.Requantise(before.Bounds(), engine.Sample(before))
+	result := engine.Requantise(after.Bounds(), engine.Sample(after))
+	if !result.PriorValid || !result.LengthEqual || result.PaletteEqual || !result.LUTEqual || result.ExactNoOp {
+		t.Fatalf("changed-level result = %+v", result)
+	}
+	if result.ChangedEntries != 1 {
+		t.Fatalf("ChangedEntries = %d, want 1", result.ChangedEntries)
+	}
+}
+
+func TestLumaRequantiseAfterInvalidationIsNotNoOp(t *testing.T) {
+	t.Parallel()
+	img := lumaGradient(192)
+	var engine LumaEngine
+	sample := engine.Sample(img)
+	engine.Requantise(img.Bounds(), sample)
+	engine.Invalidate()
+	result := engine.Requantise(img.Bounds(), sample)
+	if result.PriorValid || result.LengthEqual || result.PaletteEqual || result.LUTEqual || result.ExactNoOp {
+		t.Fatalf("invalidated result = %+v, want no prior equality", result)
+	}
+	if result.ChangedEntries != len(engine.Palette) {
+		t.Fatalf("ChangedEntries = %d, want %d", result.ChangedEntries, len(engine.Palette))
 	}
 }
 

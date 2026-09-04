@@ -129,16 +129,22 @@ func (e *LumaEngine) Reuse(bounds image.Rectangle, sample *image.RGBA) bool {
 
 // Requantise fits the ramp to the luma histogram of the sample, freezes levels
 // that moved by no more than LumaFreezeMaxDelta, rebuilds the LUT and Palette,
-// and records the new drift baseline and geometry.
-func (e *LumaEngine) Requantise(bounds image.Rectangle, sample *image.RGBA) {
+// and records the new drift baseline and geometry. It returns a comparison with
+// the prior valid state after it records the new state.
+func (e *LumaEngine) Requantise(bounds image.Rectangle, sample *image.RGBA) RefitResult {
+	priorValid := e.valid
 	e.previous = e.previous[:0]
-	if e.valid {
+	if priorValid {
 		e.previous = append(e.previous, e.levels...)
 	}
 	e.histogram(sample)
 	e.fit()
 	e.levels = FreezeSubJNDLevels(e.levels, e.previous)
-	e.LUT = BuildLumaLUT(e.LUT, e.levels, e.Base())
+	result := compareLumaRefit(priorValid, e.previous, e.levels)
+	var lutEqual bool
+	e.LUT, lutEqual = buildLumaLUT(e.LUT, e.levels, e.Base())
+	result.LUTEqual = priorValid && lutEqual
+	result.ExactNoOp = result.PaletteEqual && result.LUTEqual
 	e.Palette = e.Palette[:0]
 	for _, v := range e.levels {
 		e.Palette = append(e.Palette, greyColours[v])
@@ -147,6 +153,22 @@ func (e *LumaEngine) Requantise(bounds image.Rectangle, sample *image.RGBA) {
 	e.bounds = bounds
 	e.valid = true
 	e.RequantCount++
+	return result
+}
+
+func compareLumaRefit(priorValid bool, previous, current []uint8) RefitResult {
+	result := RefitResult{
+		PriorValid:  priorValid,
+		LengthEqual: priorValid && len(current) == len(previous),
+	}
+	result.PaletteEqual = result.LengthEqual
+	for i, level := range current {
+		if i >= len(previous) || level != previous[i] {
+			result.ChangedEntries++
+			result.PaletteEqual = false
+		}
+	}
+	return result
 }
 
 // histogram counts the sample pixels at each 8-bit luma value into hist.
@@ -248,6 +270,13 @@ func FreezeSubJNDLevels(levels, previous []uint8) []uint8 {
 // table holds absolute terminal register numbers; base+len(levels) must not
 // exceed 256.
 func BuildLumaLUT(lut []uint8, levels []uint8, base int) []uint8 {
+	lut, _ = buildLumaLUT(lut, levels, base)
+	return lut
+}
+
+// buildLumaLUT has the same allocation and output behaviour as BuildLumaLUT.
+// It also reports whether the complete overwritten table equals the input.
+func buildLumaLUT(lut []uint8, levels []uint8, base int) ([]uint8, bool) {
 	var nearest [lumaLevels]uint8
 	for v := range nearest {
 		best, bestDistance := 0, lumaLevels
@@ -263,8 +292,10 @@ func BuildLumaLUT(lut []uint8, levels []uint8, base int) []uint8 {
 		}
 		nearest[v] = uint8(best) //nolint:gosec // base+len(levels) is bounded by 256.
 	}
+	equal := len(lut) == 1<<15
 	if cap(lut) < 1<<15 {
 		lut = make([]uint8, 1<<15)
+		equal = false
 	}
 	lut = lut[:1<<15]
 	register := uint8(base) //nolint:gosec // base+len(levels) is bounded by 256.
@@ -272,9 +303,13 @@ func BuildLumaLUT(lut []uint8, levels []uint8, base int) []uint8 {
 		r := uint8(i>>10&31<<3 | 4) //nolint:gosec // A 15-bit LUT index bounds this to 252.
 		g := uint8(i>>5&31<<3 | 4)  //nolint:gosec // A 15-bit LUT index bounds this to 252.
 		b := uint8(i&31<<3 | 4)     //nolint:gosec // A 15-bit LUT index bounds this to 252.
-		lut[i] = register + nearest[Luma8(r, g, b)]
+		value := register + nearest[Luma8(r, g, b)]
+		if equal && lut[i] != value {
+			equal = false
+		}
+		lut[i] = value
 	}
-	return lut
+	return lut, equal
 }
 
 // LumaMappingError returns the mean squared luma error, in 8-bit luma units

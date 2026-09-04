@@ -260,6 +260,49 @@ func TestRenderBlockGreyReusedRampWritesNoPaletteBytes(t *testing.T) {
 	}
 }
 
+// TestRenderBlockExactGreyRefitKeepsTheCellDiff proves that an exact ramp
+// refit emits no palette bytes and keeps the retained cell differ.
+func TestRenderBlockExactGreyRefitKeepsTheCellDiff(t *testing.T) {
+	st := greyTestState(true)
+	lut := make([]uint8, 1<<15)
+	for i := range lut {
+		lut[i] = palette.BudgetBase
+	}
+	colours := color.Palette{color.RGBA{R: 97, G: 97, B: 97, A: 0xff}}
+	st.blockRenderer.PaletteLUT = lut
+	st.refreshBlockSGR(lut)
+	st.paletteMode = ColourTrue
+	base := block.Cell{Glyph: ' ', FG: color.RGBA{R: 97, G: 97, B: 97, A: 0xff}, BG: color.RGBA{A: 0xff}}
+	first := block.Grid{Cols: 2, Rows: 2, Cells: []block.Cell{base, base, base, base}}
+	if err := st.diff.Emit(io.Discard, first, st.fgSGR, st.bgSGR); err != nil {
+		t.Fatalf("Emit for the first grid: %v", err)
+	}
+	st.publishPaletteRefit(palette.RefitResult{
+		PriorValid: true, LengthEqual: true, PaletteEqual: true, LUTEqual: true, ExactNoOp: true,
+	}, lut, colours, palette.BudgetBase)
+	if ctl := st.pendingPaletteWrite(); ctl != nil {
+		t.Fatalf("the exact ramp refit queued %d OSC 4 bytes", len(ctl))
+	}
+
+	changed := first
+	changed.Cells = append([]block.Cell(nil), first.Cells...)
+	changed.Cells[0].Text = "B"
+	var out bytes.Buffer
+	fg, bg := st.blockSGR()
+	if err := st.diff.Emit(&out, changed, fg, bg); err != nil {
+		t.Fatalf("Emit for the changed grid: %v", err)
+	}
+	if !strings.Contains(out.String(), "B") {
+		t.Fatal("the changed frame emitted no cell diff")
+	}
+	if strings.Contains(out.String(), "\x1b[2;1H") {
+		t.Fatal("the exact ramp refit reset the differ and repainted the second row")
+	}
+	if st.paletteMode != ColourTrue {
+		t.Fatalf("paletteMode = %d after the exact refit, want %d", st.paletteMode, ColourTrue)
+	}
+}
+
 // TestRenderBlockGreySmallLumaDriftReusesTheRamp proves a small luma shift keeps
 // the retained ramp: a +1 shift over the whole frame, then a +2 shift on one
 // region, each write no palette bytes after the first frame. A ramp that

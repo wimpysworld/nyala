@@ -20,19 +20,30 @@ func NewLUT(palette color.Palette) []uint8 {
 // across WorkerCount goroutines; the split changes the work per goroutine,
 // never the result.
 func BuildLUT(lut []uint8, palette color.Palette, base int) []uint8 {
+	lut, _ = buildLUT(lut, palette, base)
+	return lut
+}
+
+// buildLUT has the same allocation and output behaviour as BuildLUT. It also
+// reports whether the complete overwritten table equals the input table.
+func buildLUT(lut []uint8, palette color.Palette, base int) ([]uint8, bool) {
 	var pr, pg, pb [256]int32
 	for i, colour := range palette {
 		r, g, b, _ := colour.RGBA()
 		pr[i], pg[i], pb[i] = int32(r>>8), int32(g>>8), int32(b>>8)
 	}
-	if len(lut) != 1<<15 || cap(lut) != 1<<15 {
+	equal := len(lut) == 1<<15 && cap(lut) == 1<<15
+	if !equal {
 		lut = make([]uint8, 1<<15)
 	}
+	compare := equal
 	workers := WorkerCount()
+	var workerEqual [4]bool
 	var wg sync.WaitGroup
 	for worker := range workers {
 		lo, hi := len(lut)*worker/workers, len(lut)*(worker+1)/workers
 		wg.Go(func() {
+			equal := true
 			for i := lo; i < hi; i++ {
 				r := int32(i>>10&31<<3 | 4) //nolint:gosec // A 15-bit LUT index bounds this to 252.
 				g := int32(i>>5&31<<3 | 4)  //nolint:gosec // A 15-bit LUT index bounds this to 252.
@@ -44,12 +55,20 @@ func BuildLUT(lut []uint8, palette color.Palette, base int) []uint8 {
 						best, bestDistance = j, distance
 					}
 				}
-				lut[i] = uint8(base + best) //nolint:gosec // base+len(palette) is bounded by 256.
+				register := uint8(base + best) //nolint:gosec // base+len(palette) is bounded by 256.
+				if compare && lut[i] != register {
+					equal = false
+				}
+				lut[i] = register
 			}
+			workerEqual[worker] = equal
 		})
 	}
 	wg.Wait()
-	return lut
+	for worker := range workers {
+		equal = equal && workerEqual[worker]
+	}
+	return lut, equal
 }
 
 // WorkerCount returns the shared goroutine budget for palette and backend

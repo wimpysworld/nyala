@@ -1947,15 +1947,54 @@ suite.
 
 ## Performance envelope
 
-`NYALA_FPS_TIMING` is the live instrument. It separates In, stamped at
-receive before any drop, from Out, stamped at draw. Under the pipelined
-writer, `out_write` measures the terminal's ingest rate, not Nyala work. A
-gap between the In and Out counts is the latest-wins coalescer working, not
-loss. Go benchmarks report the median of five `-benchmem` samples on a
-pinned host; the controlled backend sweep reports the median of six
-independent process p90s. The internal rendering test drives the
-production `RenderStreamFrame` path into a counting writer, so it measures
-Nyala's byte generation and excludes the terminal.
+`NYALA_FPS_TIMING` is the live instrument and the only control for all values
+in its one-line quit summary. It separates In, stamped at receive before any
+drop, from Out, stamped at draw. Under the pipelined writer, `out_write`
+measures the buffer flush to the PTY. It ends when the PTY accepts the bytes,
+not when the terminal parses, paints, or presents them. A gap between the In
+and Out counts is the latest-wins coalescer working, not loss. Go benchmarks
+report the median of five `-benchmem` samples on a pinned host; the controlled
+backend sweep reports the median of six independent process p90s. The internal
+rendering test drives the production `RenderStreamFrame` path into a counting
+writer, so it measures Nyala's byte generation and excludes the terminal.
+
+The palette and output-byte aggregates use the same post-FCP gate as the Out
+statistics. They include the frame that opens the gate and exclude all earlier
+work. Their rates use the post-FCP output wall time; a zero wall time gives a
+zero rate. `out_bytes` counts each complete assembled frame after Nyala adds the
+bar and the optional synchronised-output suffix. It therefore includes all
+frame-control bytes that the writer receives.
+
+The palette fields cover the adaptive Block `256` and `grey` paths:
+
+| Field | Meaning |
+| --- | --- |
+| `palette_checks` | Frames that build a palette sample and run the reuse check. |
+| `palette_reuse_failures` | Checks that continue into a refit. Each failure starts one refit. |
+| `palette_length_equal_refits` | Refits whose active length equals the prior valid palette length. |
+| `palette_equal_refits` | Refits whose active length and ordered emitted 8-bit RGB entries equal the prior valid palette. |
+| `palette_lut_equal_refits` | Refits whose complete RGB555 LUT equals the prior valid LUT. |
+| `palette_noop_refits` | Refits that have equal active length, emitted palette, and complete LUT. |
+| `palette_changed_entries` | New active register positions plus active positions whose emitted RGB changed, excluding a removed old tail. |
+| `palette_updates` | Refits that emit the complete current palette through OSC 4. |
+| `palette_osc_entries` | Total palette entries passed to `AppendOSC4`. |
+| `palette_osc_sequences` | Total portable OSC 4 sequences after applying `MaxOSC4Entries`. |
+| `palette_osc_bytes` | Total bytes that `AppendOSC4` generates. |
+| `palette_full_repaints` | Full repaints caused by an emitted palette update, excluding first-draw and resize clears. |
+| `out_bytes` | Total bytes in the complete assembled frames. |
+| `palette_updates_per_s` | `palette_updates` divided by the post-FCP output wall time. |
+| `palette_osc_bytes_per_s` | `palette_osc_bytes` divided by the post-FCP output wall time. |
+| `out_bytes_per_s` | `out_bytes` divided by the post-FCP output wall time. |
+| `palette_check_mean_ms`, `palette_check_p90_ms`, `palette_check_max_ms` | Sample construction and reuse-check time per palette check. |
+| `palette_fit_mean_ms`, `palette_fit_p90_ms`, `palette_fit_max_ms` | Quantisation, hysteresis, LUT rebuild, and fresh-baseline time per reuse failure. |
+| `palette_osc_mean_ms`, `palette_osc_p90_ms`, `palette_osc_max_ms` | `AppendOSC4` time per emitted palette update. |
+
+Duration p90 values use nearest rank, `ceil(0.9*n)-1`, and the summary sorts
+samples only at quit. An exact no-op requires a valid palette before the refit,
+an equal active length and emitted palette, and an equal complete LUT. The refit
+still pays the complete fit cost and keeps its fresh engine baseline, bounds,
+palette, and LUT. It emits no OSC 4, does not reset the cell diff, and causes no
+palette full repaint.
 
 Twice, a 5-10x stage optimisation moved the frame rate by zero because the
 wall sat elsewhere. So the rule is the end-to-end budget, 16.67 ms per

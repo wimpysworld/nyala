@@ -3,10 +3,21 @@ package palette
 import (
 	"image"
 	"image/color"
+	"slices"
 	"testing"
 
 	"github.com/wimpysworld/nyala/internal/metrics"
 )
+
+func solidFrame(c color.RGBA) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	for y := range 8 {
+		for x := range 8 {
+			img.SetRGBA(x, y, c)
+		}
+	}
+	return img
+}
 
 // paletteColours is the register budget the backends quantise to: 256 minus the
 // reserved transparent register.
@@ -86,10 +97,118 @@ func TestPaletteReuseSceneChangeRequantises(t *testing.T) {
 func TestPaletteReuseGeometryChangeInvalidates(t *testing.T) {
 	t.Parallel()
 	var engine Engine
-	driveFrame(&engine, reuseGradient(128))
-	driveFrame(&engine, reuseGradient(120))
+	first := reuseGradient(128)
+	second := reuseGradient(120)
+	driveFrame(&engine, first)
+	sample := engine.Sample(second)
+	if engine.Reuse(second.Bounds(), sample) {
+		t.Fatal("a geometry change reused the retained palette")
+	}
+	result := engine.Requantise(second.Bounds(), sample, paletteColours)
+	if result.PriorValid || result.ExactNoOp {
+		t.Fatalf("geometry-change result = %+v, want no valid prior state", result)
+	}
 	if engine.RequantCount != 2 {
 		t.Fatalf("RequantCount = %d, want 2 (a geometry change must re-quantise)", engine.RequantCount)
+	}
+}
+
+func TestRequantiseReportsExactNoOpAndKeepsBytes(t *testing.T) {
+	t.Parallel()
+	img := reuseGradient(128)
+	var engine Engine
+	sample := engine.Sample(img)
+	first := engine.Requantise(img.Bounds(), sample, paletteColours)
+	if first.PriorValid || first.LengthEqual || first.PaletteEqual || first.LUTEqual || first.ExactNoOp {
+		t.Fatalf("initial result = %+v, want no prior equality", first)
+	}
+	if first.ChangedEntries != len(engine.Palette) {
+		t.Fatalf("initial ChangedEntries = %d, want %d", first.ChangedEntries, len(engine.Palette))
+	}
+	wantPalette := slices.Clone(AppendOSC4(nil, engine.Palette, engine.Base()))
+	wantLUT := slices.Clone(engine.LUT)
+
+	result := engine.Requantise(img.Bounds(), sample, paletteColours)
+	if !result.PriorValid || !result.LengthEqual || !result.PaletteEqual || !result.LUTEqual || !result.ExactNoOp {
+		t.Fatalf("second result = %+v, want exact no-op", result)
+	}
+	if result.ChangedEntries != 0 {
+		t.Fatalf("second ChangedEntries = %d, want 0", result.ChangedEntries)
+	}
+	if got := AppendOSC4(nil, engine.Palette, engine.Base()); !slices.Equal(got, wantPalette) {
+		t.Fatal("an equal re-fit changed the emitted palette bytes")
+	}
+	if !slices.Equal(engine.LUT, wantLUT) {
+		t.Fatal("an equal re-fit changed the LUT bytes")
+	}
+}
+
+func TestRequantiseReportsOneChangedEntry(t *testing.T) {
+	t.Parallel()
+	black := solidFrame(color.RGBA{A: 0xff})
+	white := solidFrame(color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff})
+	var engine Engine
+	engine.Requantise(black.Bounds(), engine.Sample(black), 2)
+	result := engine.Requantise(white.Bounds(), engine.Sample(white), 2)
+	if !result.PriorValid || !result.LengthEqual || result.PaletteEqual || !result.LUTEqual || result.ExactNoOp {
+		t.Fatalf("changed-colour result = %+v", result)
+	}
+	if result.ChangedEntries != 1 {
+		t.Fatalf("ChangedEntries = %d, want 1", result.ChangedEntries)
+	}
+}
+
+func TestRequantiseReportsLUTDifference(t *testing.T) {
+	t.Parallel()
+	img := reuseGradient(128)
+	var engine Engine
+	sample := engine.Sample(img)
+	engine.Requantise(img.Bounds(), sample, paletteColours)
+	engine.LUT[123] ^= 1
+	result := engine.Requantise(img.Bounds(), sample, paletteColours)
+	if !result.PaletteEqual || result.LUTEqual || result.ExactNoOp {
+		t.Fatalf("LUT-change result = %+v", result)
+	}
+}
+
+func TestRequantiseAfterInvalidationIsNotNoOp(t *testing.T) {
+	t.Parallel()
+	img := reuseGradient(128)
+	var engine Engine
+	sample := engine.Sample(img)
+	engine.Requantise(img.Bounds(), sample, paletteColours)
+	engine.Invalidate()
+	result := engine.Requantise(img.Bounds(), sample, paletteColours)
+	if result.PriorValid || result.LengthEqual || result.PaletteEqual || result.LUTEqual || result.ExactNoOp {
+		t.Fatalf("invalidated result = %+v, want no prior equality", result)
+	}
+	if result.ChangedEntries != len(engine.Palette) {
+		t.Fatalf("ChangedEntries = %d, want %d", result.ChangedEntries, len(engine.Palette))
+	}
+}
+
+func TestComparePaletteRefitUsesEmittedRGBAndActiveLength(t *testing.T) {
+	t.Parallel()
+	previous := color.Palette{
+		color.RGBA64{R: 0x1200, G: 0x3400, B: 0x5600, A: 0xffff},
+		color.RGBA64{R: 0x7800, G: 0x9a00, B: 0xbc00, A: 0xffff},
+	}
+	current := color.Palette{
+		color.RGBA64{R: 0x12ff, G: 0x34ff, B: 0x56ff, A: 0xff00},
+		color.RGBA64{R: 0x7800, G: 0x9a00, B: 0xbd00, A: 0xffff},
+	}
+	changed := comparePaletteRefit(true, previous, current)
+	if !changed.LengthEqual || changed.PaletteEqual || changed.ChangedEntries != 1 {
+		t.Fatalf("emitted-RGB result = %+v, want one changed entry", changed)
+	}
+
+	removed := comparePaletteRefit(true, previous, current[:1])
+	if removed.LengthEqual || removed.PaletteEqual || removed.ChangedEntries != 0 {
+		t.Fatalf("removed-tail result = %+v, want unequal length and no changed active entries", removed)
+	}
+	added := comparePaletteRefit(true, previous[:1], previous)
+	if added.LengthEqual || added.PaletteEqual || added.ChangedEntries != 1 {
+		t.Fatalf("added-entry result = %+v, want unequal length and one changed active entry", added)
 	}
 }
 

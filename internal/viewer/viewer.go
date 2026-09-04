@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	emmb64 "github.com/emmansun/base64"
@@ -198,10 +199,19 @@ type State struct {
 	blockRenderer block.Renderer
 
 	// paletteOSC4 is the OSC 4 palette write the last compose produced, as a run
-	// of short sequences. It is empty whenever that compose reused the retained
-	// palette, so a reused-palette frame writes no palette bytes at all.
+	// of short sequences. It is empty when that compose reused the retained
+	// palette or completed an exact re-fit, so that frame writes no palette bytes.
 	// renderBlock drains it into the frame buffer ahead of the cells.
 	paletteOSC4 []byte
+
+	// paletteTiming arms palette work timing for one private stream render.
+	// paletteObservation carries that render's counters back to streamSession
+	// on the producer goroutine. RenderStreamFrame leaves timing off, so public
+	// rendering and diagnostics read no clocks. paletteNow is a private clock
+	// seam for tests; nil selects time.Now.
+	paletteTiming      bool
+	paletteObservation paletteFrameObservation
+	paletteNow         func() time.Time
 
 	// paletteSrc is the reusable palette sample the adaptive engine quantises:
 	// one pixel per composed cell colour. It is reallocated only when the grid
@@ -470,14 +480,16 @@ func (s *State) Resize(cols, rows int) {
 // one guard covers both the block and the graphics paths, so neither downscales to
 // a zero extent.
 func (s *State) RenderStreamFrame(frame render.Frame, w io.Writer) error {
-	return s.renderStreamFrame(frame, w, false)
+	return s.renderStreamFrame(frame, w, false, false)
 }
 
 // renderStreamFrame draws a live frame and optionally places a Kitty page image
-// below terminal text. The option follows the armed fps meter separately from
-// FPS measurement, so public rendering, diagnostics, and non-FPS output retain
-// normal placement.
-func (s *State) renderStreamFrame(frame render.Frame, w io.Writer, kittyBelowText bool) error {
+// below terminal text. paletteTiming records adaptive palette work for the
+// stream meter. Public rendering and diagnostics leave both private options off.
+func (s *State) renderStreamFrame(frame render.Frame, w io.Writer, kittyBelowText, paletteTiming bool) error {
+	s.paletteObservation = paletteFrameObservation{}
+	s.paletteTiming = paletteTiming
+	defer func() { s.paletteTiming = false }()
 	// The frame's pooled pixel plane, when present, returns to the engine on
 	// every exit: painted, copied into shared memory, or dropped. Release is
 	// nil-safe and exactly-once, so non-plane frames pay only a nil check.
@@ -614,13 +626,16 @@ func (s *State) renderBlock(src image.Image, text []render.GlyphRun, w io.Writer
 		// The palette write, the differ reset, and the full repaint therefore go
 		// into this one frame buffer in that order; a palette write in a later
 		// buffer would draw this frame's cells in the previous frame's colours.
-		// The reset is what makes the repaint full: every register changed
-		// meaning, so no retained cell still matches the terminal.
+		// The reset makes the repaint full. The differ does not track which
+		// retained cells use a register whose meaning changed.
 		if ctl := s.pendingPaletteWrite(); ctl != nil {
 			if _, werr := bw.Write(ctl); werr != nil {
 				return werr
 			}
 			s.diff.Reset()
+			if s.paletteTiming {
+				s.paletteObservation.paletteFullRepaints = 1
+			}
 		}
 		fg, bg := s.blockSGR()
 		err = s.diff.Emit(bw, *grid, fg, bg)
@@ -668,10 +683,9 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 //
 // The engine's reuse verdict is the gate, never a frame count: a frame the drift
 // test lets keep the retained palette leaves paletteOSC4 empty and therefore
-// writes no palette bytes. A re-quantisation renumbers every register, so the
-// attached table and the cached writer pair both follow it here, before this
-// frame emits a cell, and paletteMode records which mode the registers now
-// describe.
+// writes no palette bytes. An exact completed re-fit does the same. Every other
+// re-fit can renumber registers, so its table and cached writers update before
+// the frame emits cells. paletteMode then records the register mode.
 func (s *State) updatePalette(grid *block.Grid) *block.Grid {
 	s.paletteOSC4 = s.paletteOSC4[:0]
 	if grid == nil || !s.paletteQueryOK {
@@ -679,33 +693,120 @@ func (s *State) updatePalette(grid *block.Grid) *block.Grid {
 	}
 	switch s.Colour {
 	case ColourXTerm256:
+		var checkStart time.Time
+		if s.paletteTiming {
+			checkStart = s.paletteTimeNow()
+		}
 		src := s.paletteFrame(grid)
 		eng := s.adaptivePalette()
 		sample := eng.Sample(src)
-		if eng.Reuse(src.Bounds(), sample) {
+		reuse := eng.Reuse(src.Bounds(), sample)
+		if s.paletteTiming {
+			s.paletteObservation.paletteChecks = 1
+			s.paletteObservation.paletteCheckMS = paletteMSSince(checkStart, s.paletteTimeNow())
+		}
+		if reuse {
 			return grid
 		}
-		eng.Requantise(src.Bounds(), sample, palette.BudgetColours)
-		s.blockRenderer.PaletteLUT = eng.LUT
-		s.refreshBlockSGR(eng.LUT)
-		s.paletteOSC4 = palette.AppendOSC4(s.paletteOSC4, eng.Palette, eng.Base())
-		s.paletteMode = s.Colour
+		var fitStart time.Time
+		if s.paletteTiming {
+			s.paletteObservation.paletteReuseFailures = 1
+			fitStart = s.paletteTimeNow()
+		}
+		result := eng.Requantise(src.Bounds(), sample, palette.BudgetColours)
+		if s.paletteTiming {
+			s.paletteObservation.paletteFitMS = paletteMSSince(fitStart, s.paletteTimeNow())
+			s.observePaletteRefit(result)
+		}
+		s.publishPaletteRefit(result, eng.LUT, eng.Palette, eng.Base())
 	case ColourXTermGrey:
+		var checkStart time.Time
+		if s.paletteTiming {
+			checkStart = s.paletteTimeNow()
+		}
 		src := s.paletteFrame(grid)
 		eng := &s.greyEngine
 		sample := eng.Sample(src)
-		if eng.Reuse(src.Bounds(), sample) {
+		reuse := eng.Reuse(src.Bounds(), sample)
+		if s.paletteTiming {
+			s.paletteObservation.paletteChecks = 1
+			s.paletteObservation.paletteCheckMS = paletteMSSince(checkStart, s.paletteTimeNow())
+		}
+		if reuse {
 			return grid
 		}
-		eng.Requantise(src.Bounds(), sample)
-		s.blockRenderer.PaletteLUT = eng.LUT
-		s.refreshBlockSGR(eng.LUT)
-		s.paletteOSC4 = palette.AppendOSC4(s.paletteOSC4, eng.Palette, eng.Base())
-		s.paletteMode = s.Colour
+		var fitStart time.Time
+		if s.paletteTiming {
+			s.paletteObservation.paletteReuseFailures = 1
+			fitStart = s.paletteTimeNow()
+		}
+		result := eng.Requantise(src.Bounds(), sample)
+		if s.paletteTiming {
+			s.paletteObservation.paletteFitMS = paletteMSSince(fitStart, s.paletteTimeNow())
+			s.observePaletteRefit(result)
+		}
+		s.publishPaletteRefit(result, eng.LUT, eng.Palette, eng.Base())
 	default:
 		return grid
 	}
 	return grid
+}
+
+// publishPaletteRefit attaches a completed re-fit to the current frame. An
+// exact re-fit keeps the terminal-held palette, its indexed writers and the
+// retained cell diff. Every other re-fit publishes the complete palette.
+func (s *State) publishPaletteRefit(result palette.RefitResult, lut []uint8, colours color.Palette, base int) {
+	s.blockRenderer.PaletteLUT = lut
+	if result.ExactNoOp {
+		return
+	}
+	s.refreshBlockSGR(lut)
+	before := len(s.paletteOSC4)
+	var oscStart time.Time
+	if s.paletteTiming {
+		oscStart = s.paletteTimeNow()
+	}
+	s.paletteOSC4 = palette.AppendOSC4(s.paletteOSC4, colours, base)
+	if s.paletteTiming {
+		s.paletteObservation.paletteOSCMS = paletteMSSince(oscStart, s.paletteTimeNow())
+		if oscBytes := len(s.paletteOSC4) - before; oscBytes > 0 {
+			entries := len(colours)
+			s.paletteObservation.paletteUpdates = 1
+			s.paletteObservation.paletteOSCEntries = int64(entries)
+			s.paletteObservation.paletteOSCSequences = int64((entries + palette.MaxOSC4Entries - 1) / palette.MaxOSC4Entries)
+			s.paletteObservation.paletteOSCBytes = int64(oscBytes)
+		}
+	}
+	s.paletteMode = s.Colour
+}
+
+// observePaletteRefit copies one completed engine result into the current
+// frame observation. The caller invokes it only while palette timing is armed.
+func (s *State) observePaletteRefit(result palette.RefitResult) {
+	if result.LengthEqual {
+		s.paletteObservation.paletteLengthEqualRefits = 1
+	}
+	if result.PaletteEqual {
+		s.paletteObservation.paletteEqualRefits = 1
+	}
+	if result.LUTEqual {
+		s.paletteObservation.paletteLUTEqualRefits = 1
+	}
+	if result.ExactNoOp {
+		s.paletteObservation.paletteNoOpRefits = 1
+	}
+	s.paletteObservation.paletteChangedEntries = int64(result.ChangedEntries)
+}
+
+func (s *State) paletteTimeNow() time.Time {
+	if s.paletteNow != nil {
+		return s.paletteNow()
+	}
+	return time.Now()
+}
+
+func paletteMSSince(start, end time.Time) float64 {
+	return float64(end.Sub(start)) / float64(time.Millisecond)
 }
 
 // paletteFrame writes the composed grid's colours into the reusable palette
