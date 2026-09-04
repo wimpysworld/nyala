@@ -102,6 +102,129 @@ func blockFrame(t *testing.T, st *State) *image.RGBA {
 	return paletteTestImage(pxW, pxH)
 }
 
+// TestTogglePalettePolicyRGB proves that adaptive is the default RGB policy,
+// that the toggle restores a live terminal palette without clearing the exit
+// record, and that the first frame after re-entry fits and writes a palette.
+func TestTogglePalettePolicyRGB(t *testing.T) {
+	st, _ := paletteTestState(t, true)
+	src := blockFrame(t, st)
+	var first bytes.Buffer
+	if err := st.RenderStreamFrame(render.Frame{Img: src}, &first); err != nil {
+		t.Fatalf("RenderStreamFrame for the adaptive frame: %v", err)
+	}
+	if !st.adaptivePaletteSelected() || !st.adaptivePaletteActive() {
+		t.Fatal("a new RGB state did not select and activate the adaptive policy")
+	}
+	if !strings.Contains(first.String(), osc4Introducer) {
+		t.Fatal("the initial adaptive frame wrote no palette")
+	}
+
+	before := st.paletteEngine.RequantCount
+	changed, control := st.togglePalettePolicy()
+	if !changed || control != palette.OSC104 {
+		t.Fatalf("toggle to static = (%t, %q), want (true, %q)", changed, control, palette.OSC104)
+	}
+	if st.adaptivePaletteSelected() || st.adaptivePaletteActive() || !st.paletteQueryOK {
+		t.Fatal("the static selection changed the capability or kept adaptive RGB active")
+	}
+	if !st.paletteDisturbed() {
+		t.Fatal("the static selection cleared the sticky exit restore record")
+	}
+	if again := st.releasePalette(); again != "" {
+		t.Fatalf("a second palette release = %q, want empty", again)
+	}
+	if got := exitTerminal(24, true, false, true, st.paletteDisturbed()); !strings.Contains(got, palette.OSC104) {
+		t.Fatalf("exit after the runtime restore = %q, missing %q", got, palette.OSC104)
+	}
+
+	st.diff.Reset()
+	var static bytes.Buffer
+	if err := st.renderStreamFrame(render.Frame{Img: src}, &static, false, true); err != nil {
+		t.Fatalf("renderStreamFrame for the static frame: %v", err)
+	}
+	if strings.Contains(static.String(), osc4Introducer) {
+		t.Fatal("the static RGB frame wrote a palette")
+	}
+	if st.blockRenderer.PaletteLUT != nil {
+		t.Fatal("the static RGB frame attached an adaptive palette table")
+	}
+	fg, _ := st.blockSGR()
+	c := color.RGBA{R: 12, G: 200, B: 91, A: 0xff}
+	if got, want := string(fg(nil, c)), string(appendSGR256(nil, fg256Prefix, block.XTerm256(c))); got != want {
+		t.Fatalf("static RGB foreground = %q, want %q", got, want)
+	}
+	if st.paletteEngine.RequantCount != before {
+		t.Fatalf("static RequantCount = %d, want %d", st.paletteEngine.RequantCount, before)
+	}
+	if st.paletteObservation != (paletteFrameObservation{}) {
+		t.Fatalf("static palette metrics = %+v, want zero", st.paletteObservation)
+	}
+
+	changed, control = st.togglePalettePolicy()
+	if !changed || control != "" {
+		t.Fatalf("toggle to adaptive = (%t, %q), want (true, empty)", changed, control)
+	}
+	var refit bytes.Buffer
+	if err := st.RenderStreamFrame(render.Frame{Img: src}, &refit); err != nil {
+		t.Fatalf("RenderStreamFrame for the re-entered adaptive frame: %v", err)
+	}
+	if st.paletteEngine.RequantCount != before+1 {
+		t.Fatalf("re-entered RequantCount = %d, want %d", st.paletteEngine.RequantCount, before+1)
+	}
+	if !strings.Contains(refit.String(), osc4Introducer) {
+		t.Fatal("the first re-entered adaptive frame wrote no palette")
+	}
+}
+
+// TestTogglePalettePolicyRejectsUnsupportedContexts proves that the preference
+// stays unchanged without the capability, outside Block, and in truecolour.
+func TestTogglePalettePolicyRejectsUnsupportedContexts(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prepare func(*State)
+	}{
+		{"palette query unavailable", func(st *State) { st.paletteQueryOK = false }},
+		{"graphics backend", func(st *State) { st.Backend = BackendSixel }},
+		{"truecolour", func(st *State) { st.Colour = ColourTrue }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := NewState(20, 11)
+			st.Colour = ColourXTerm256
+			st.paletteQueryOK = true
+			tc.prepare(&st)
+			changed, control := st.togglePalettePolicy()
+			if changed || control != "" || st.staticPaletteSelected {
+				t.Fatalf("unsupported toggle = (%t, %q), static selected = %t", changed, control, st.staticPaletteSelected)
+			}
+		})
+	}
+}
+
+// TestStaticPalettePreferenceSurvivesOtherStateChanges proves that colour and
+// backend cycles, resize, and palette restore do not reset the selection.
+func TestStaticPalettePreferenceSurvivesOtherStateChanges(t *testing.T) {
+	st, _ := paletteTestState(t, true)
+	if changed, _ := st.togglePalettePolicy(); !changed {
+		t.Fatal("the supported toggle did not select static")
+	}
+	st.SetEnabled([]Backend{BackendBlock, BackendSixel})
+	st.CycleBackend()
+	st.CycleBackend()
+	st.Resize(30, 15)
+	st.CycleColour(false)
+	st.CycleColour(false)
+	_ = st.releasePalette()
+	session := streamSession{eng: &switchOpEngine{}, st: st}
+	session.handleKey(keyEvent{act: actionReload})
+	if !st.staticPaletteSelected {
+		t.Fatal("another state change reset the static palette preference")
+	}
+	st.Colour = ColourXTerm256
+	if st.adaptivePaletteSelected() {
+		t.Fatal("RGB became adaptive after the state changes")
+	}
+}
+
 // TestComposeBlockFrameAttachesAdaptivePalette proves the compose attaches the
 // colour engine's table in the 256 mode and the luma ramp engine's table in the
 // grey mode when the OSC 4 probe answered, and attaches none in truecolour or

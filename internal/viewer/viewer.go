@@ -163,26 +163,23 @@ type State struct {
 	pointerShapeOK bool
 
 	// paletteQueryOK records that the startup handshake confirmed OSC 4
-	// palette-query support, resolved once by configureBackends. It stays
-	// false under a multiplexer, whose reduced handshake sends no OSC 4
-	// query. ColourXTerm256 and ColourXTermGrey read it: when it is true each
-	// mode quantises each frame to a scene-fitted palette (a colour palette for
-	// 256, a luma ramp for grey), writes that palette over OSC 4, and maps cells
-	// onto terminal indexes 16..255; when it is false 256 keeps the canonical
-	// xterm-256 table, grey keeps the fixed xterm greyscale ramp, and neither
-	// writes a palette.
+	// palette-query support. configureBackends resolves it once, and runtime
+	// palette selection does not change it.
 	paletteQueryOK bool
 
-	// paletteEngine is the shared adaptive-palette engine the 256 mode on a
-	// terminal that answered the OSC 4 probe draws through. Every other mode leaves it
-	// alone, and its zero value carries no palette, which draws through the
-	// static xterm-256 table. adaptivePalette puts it into the budget mode.
+	// staticPaletteSelected records the runtime Block palette policy. Its false
+	// zero value selects adaptive palettes. The selection stays set across all
+	// other runtime state changes.
+	staticPaletteSelected bool
+
+	// paletteEngine is the shared adaptive-palette engine for the 256 mode.
+	// Inactive modes leave it alone, and its zero value carries no palette.
+	// adaptivePalette puts it into the budget mode.
 	paletteEngine palette.Engine
 
-	// greyEngine is the scene-fitted luma ramp engine the grey mode on a
-	// terminal that answered the OSC 4 probe draws through. Every other mode
-	// leaves it alone, and its zero value carries no ramp, which draws through
-	// the fixed xterm greyscale ramp.
+	// greyEngine is the scene-fitted luma ramp engine for the grey mode.
+	// Inactive modes leave it alone. Its zero value carries no ramp, which draws
+	// through the fixed xterm greyscale ramp.
 	greyEngine palette.LumaEngine
 
 	// paletteMode is the colour mode that last wrote OSC 4 registers. The
@@ -426,15 +423,45 @@ var colourCycle = []ColourMode{ColourTrue, ColourXTerm256, ColourXTermGrey}
 
 // CycleColour steps through the colour ladder and returns the new mode. It
 // skips modes above the effective capability cap. The 256 rung draws a
-// scene-fitted palette only when the startup OSC 4 palette query answered, and
-// the canonical xterm-256 table otherwise, so the cycle never lands on a mode
-// that cannot draw. The stream dispatcher drops the cycle while a graphics
-// backend draws.
+// scene-fitted palette only when the adaptive policy is active, and the
+// canonical xterm-256 table otherwise. The stream dispatcher drops the cycle
+// while a graphics backend draws.
 func (s *State) CycleColour(reverse bool) ColourMode {
 	s.Colour = cycleValue(colourCycle, s.Colour, reverse, func(m ColourMode) bool {
 		return m >= s.colourCap
 	})
 	return s.Colour
+}
+
+// adaptivePaletteSelected reports the selected Block palette policy. The
+// terminal capability does not change this preference.
+func (s *State) adaptivePaletteSelected() bool {
+	return !s.staticPaletteSelected &&
+		(s.Colour == ColourXTerm256 || s.Colour == ColourXTermGrey)
+}
+
+// adaptivePaletteActive reports whether the current Block mode can use the
+// selected adaptive palette policy.
+func (s *State) adaptivePaletteActive() bool {
+	return s.adaptivePaletteSelected() && s.paletteQueryOK && s.Backend == BackendBlock
+}
+
+// togglePalettePolicy changes the selected Block palette policy when the
+// active mode supports adaptive palettes. The returned control restores the
+// terminal palette when the selection changes to static.
+func (s *State) togglePalettePolicy() (changed bool, control string) {
+	if !s.paletteQueryOK || s.Backend != BackendBlock ||
+		(s.Colour != ColourXTerm256 && s.Colour != ColourXTermGrey) {
+		return false, ""
+	}
+	s.staticPaletteSelected = !s.staticPaletteSelected
+	s.paletteOSC4 = s.paletteOSC4[:0]
+	if s.staticPaletteSelected {
+		return true, s.releasePalette()
+	}
+	s.paletteEngine.Invalidate()
+	s.greyEngine.Invalidate()
+	return true, ""
 }
 
 // cycleValue steps current through cycle (backwards when reverse), skipping
@@ -678,8 +705,8 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 // returns that grid unchanged. It runs inside the compose, so both compose
 // entries and every caller, live and diagnostic, move one palette.
 // ColourXTerm256 drives the colour engine and ColourXTermGrey drives the luma
-// ramp engine. Outside those modes, or when the terminal answered no OSC 4
-// palette query, it clears the pending write and does nothing else.
+// ramp engine. When the adaptive policy is inactive, it clears the pending
+// write and does nothing else.
 //
 // The engine's reuse verdict is the gate, never a frame count: a frame the drift
 // test lets keep the retained palette leaves paletteOSC4 empty and therefore
@@ -688,7 +715,7 @@ func (s *State) ComposeBlockFrame(frame render.Frame) *block.Grid {
 // the frame emits cells. paletteMode then records the register mode.
 func (s *State) updatePalette(grid *block.Grid) *block.Grid {
 	s.paletteOSC4 = s.paletteOSC4[:0]
-	if grid == nil || !s.paletteQueryOK {
+	if grid == nil || !s.adaptivePaletteActive() {
 		return grid
 	}
 	switch s.Colour {
@@ -897,12 +924,11 @@ func (s *State) releasePalette() string {
 	return palette.OSC104
 }
 
-// paletteLoading reports whether the current colour mode writes OSC 4
-// registers on this terminal: 256 or grey, on a terminal that answered the
-// palette query. recomposeBlock reads it to decide whether a cycle keeps the
+// paletteLoading reports whether the current Block mode writes OSC 4
+// registers. recomposeBlock reads it to decide whether a cycle keeps the
 // registers.
 func (s *State) paletteLoading() bool {
-	return s.paletteQueryOK && (s.Colour == ColourXTerm256 || s.Colour == ColourXTermGrey)
+	return s.adaptivePaletteActive()
 }
 
 // adaptivePalette returns the adaptive palette engine in the 240-entry budget
@@ -917,13 +943,12 @@ func (s *State) adaptivePalette() *palette.Engine {
 // adaptiveLUT returns the RGB555 lookup table the Block path maps cell colours
 // through: the colour engine's table in ColourXTerm256 and the luma ramp
 // engine's table in ColourXTermGrey. It returns nil when the colour mode is
-// neither, the terminal answered no OSC 4 palette query, or the mode's engine
-// holds no palette yet. A nil table falls back to the static xterm-256 table
-// inside block.PaletteIndex, which is the correct draw for 256 before the first
-// quantisation; the grey SGR writers guard nil themselves, because grey must
-// never fall back to colour.
+// neither, the adaptive policy is inactive, or the mode's engine holds no
+// palette yet. A nil table falls back to the static xterm-256 table inside
+// block.PaletteIndex. The grey SGR writers guard nil themselves, because grey
+// must never fall back to colour.
 func (s *State) adaptiveLUT() []uint8 {
-	if !s.paletteQueryOK {
+	if !s.adaptivePaletteActive() {
 		return nil
 	}
 	switch s.Colour {
@@ -958,8 +983,9 @@ func (s *State) blockSGR() (fg, bg block.SGRFunc) {
 func (s *State) refreshBlockSGR(lut []uint8) {
 	s.sgrColour = s.Colour
 	s.sgrLUT = lut
-	s.fgSGR = fgSGRFunc(s.Colour, lut, s.paletteQueryOK)
-	s.bgSGR = bgSGRFunc(s.Colour, lut, s.paletteQueryOK)
+	adaptive := s.adaptivePaletteActive()
+	s.fgSGR = fgSGRFunc(s.Colour, lut, adaptive)
+	s.bgSGR = bgSGRFunc(s.Colour, lut, adaptive)
 }
 
 // sameTable reports whether two palette tables are the same slice: equal length

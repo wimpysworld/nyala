@@ -209,6 +209,40 @@ func TestEditModeLifecycle(t *testing.T) {
 	}
 }
 
+// TestPaletteToggleKeepsBarModeOwnership checks that Edit, menu, and find keep
+// Alt+P. These modes do not change the palette policy or clear the page.
+func TestPaletteToggleKeepsBarModeOwnership(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		enter func(*streamSession)
+		mode  barMode
+	}{
+		{"Edit", func(s *streamSession) { s.enterEdit() }, barModeEdit},
+		{"menu", func(s *streamSession) { s.enterMenu() }, barModeMenu},
+		{"find", func(s *streamSession) { s.enterFind() }, barModeFind},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, st := modeSession(t, streamTestEngine{currentURL: "https://example.org/"})
+			st.Backend = BackendBlock
+			st.Colour = ColourXTerm256
+			st.paletteQueryOK = true
+			tc.enter(s)
+			if s.barMode != tc.mode {
+				t.Fatalf("mode after entry = %d, want %d", s.barMode, tc.mode)
+			}
+			out := s.tty.(*bytes.Buffer)
+			out.Reset()
+
+			s.handleKey(keyEvent{act: actionTogglePalette})
+
+			if st.staticPaletteSelected || s.barMode != tc.mode || strings.Contains(out.String(), clearScreen) {
+				t.Fatalf("Alt+P escaped %s: static %t, mode %d, output %q",
+					tc.name, st.staticPaletteSelected, s.barMode, out.String())
+			}
+		})
+	}
+}
+
 // TestEditModeRefusesDotlessCommit pins the schemeless refusal: a dotless
 // line does not navigate and the editor stays open; Esc then cancels without
 // navigating and restores the cursor and paste modes.

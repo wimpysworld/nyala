@@ -97,6 +97,8 @@ const (
 	actionCycleColour
 	// actionCycleColourReverse cycles the Block colour mode backwards (Alt+Shift+C).
 	actionCycleColourReverse
+	// actionTogglePalette toggles the Block palette policy (Alt+P).
+	actionTogglePalette
 	// actionEditURL enters the bar's URL edit mode (Ctrl+L).
 	actionEditURL
 	// actionOpenFind enters the bar's find mode (Ctrl+F, the desktop-browser
@@ -181,6 +183,8 @@ func altKeyAction(b byte) (keyAction, bool) {
 		return actionCycleColour, true
 	case 'C':
 		return actionCycleColourReverse, true
+	case 'p', 'P':
+		return actionTogglePalette, true
 	case 'f':
 		return actionOpenMenu, true
 	case 'w':

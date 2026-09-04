@@ -63,7 +63,7 @@ func (s *State) capabilitySnapshot(version, browser string, webgl render.WebGLSt
 		Sixel:          backendState(s.Enabled, BackendSixel),
 		Sextant:        boolState(s.sextantOK),
 		KittyTransport: s.kittyTransport,
-		Colour:         capabilityColour{Mode: s.Colour, Adaptive: s.paletteQueryOK},
+		Colour:         capabilityColour{Mode: s.Colour, Adaptive: s.adaptivePaletteSelected()},
 		WebGL:          webgl,
 	}
 }

@@ -23,15 +23,22 @@ U+2580, U+2584, U+258C, U+2590, and the full block U+2588.
 
 ## OSC 4 palette support
 
-The `256` and `grey` colour modes select their palette technique automatically
-from the startup probe's verdict. When the terminal answered `OSC 4 ; 16 ; ?`,
-`256` writes a scene-fitted palette and `grey` writes a scene-fitted greyscale
-ramp into indexes 16..255 with OSC 4, and both modes restore the terminal
-palette with bare OSC 104. When the terminal did not answer, `256` keeps the
-canonical xterm palette and `grey` keeps the fixed xterm greyscale ramp at
-indexes 232..255. A `TERM` value, a terminfo entry, and another terminal's
-behaviour are not proof that a terminal accepts a written palette and restores
-it.
+The default palette policy is adaptive. The `256` and `grey` colour modes use
+adaptive palettes when the startup probe confirms palette control.
+<kbd>Alt</kbd>+<kbd>P</kbd> selects a static palette for comparison or when
+palette updates are slow on the current terminal path. The key works only while
+Block is active in `256` or `grey` mode and the probe confirmed support. It does
+nothing in every other context. The selection lasts for the current Nyala
+process.
+
+When the terminal answered `OSC 4 ; 16 ; ?`, adaptive `256` writes a
+scene-fitted palette and adaptive `grey` writes a scene-fitted greyscale ramp
+into indexes 16..255 with OSC 4. Static `256` uses the canonical xterm palette,
+and static `grey` uses the fixed xterm greyscale ramp at indexes 232..255. Both
+adaptive modes restore the terminal palette with bare OSC 104. When the terminal
+did not answer, Nyala uses the static palettes and the key has no effect. A
+`TERM` value, a terminfo entry, and another terminal's behaviour are not proof
+that a terminal accepts a written palette and restores it.
 
 | Terminal | Version | Font path | Multiplexer | Mode | Result |
 | --- | --- | --- | --- | --- | --- |
