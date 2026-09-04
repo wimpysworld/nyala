@@ -28,8 +28,9 @@ adaptive palettes when the startup probe confirms palette control.
 <kbd>Alt</kbd>+<kbd>P</kbd> selects a static palette for comparison or when
 palette updates are slow on the current terminal path. The key works only while
 Block is active in `256` or `grey` mode and the probe confirmed support. It does
-nothing in every other context. The selection lasts for the current Nyala
-process.
+nothing when one of these conditions is false. The active navigation-bar mode
+does not change this gate, so the key works in chrome, URL edit, find, menu, and
+About modes. The selection lasts for the current Nyala process.
 
 When the terminal answered `OSC 4 ; 16 ; ?`, adaptive `256` writes a
 scene-fitted palette and adaptive `grey` writes a scene-fitted greyscale ramp

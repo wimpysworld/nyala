@@ -149,6 +149,12 @@ Nyala confirms palette control with the startup `OSC 4 ; 16 ; ?` probe. Adaptive
 
 Notes:
 
+- Every registered Alt binding works in every navigation-bar mode: chrome, URL
+  edit, find, menu, and About. Render changes keep the current mode and repaint
+  its row. <kbd>Alt</kbd>+<kbd>F</kbd> replaces it with the menu.
+  <kbd>Alt</kbd>+<kbd>W</kbd> and the three Alt navigation bindings close it.
+  Closing find also clears its highlights. The rendering and capability gates
+  in the table still apply.
 - Typing goes to the page, so plain `q` does not quit. Use `Ctrl+Q`. Chromium decides what each key does, which is why `Space` types in a focused field and scrolls the page otherwise, and why the arrows, `Home`, `End`, `PgUp`, and `PgDn` move the caret in a focused field and scroll the page when nothing is focused.
 - A paste arrives as one unit, up to 1 MiB, so a pasted newline never submits a form by accident. Inside the URL editor and the find field the paste lands there instead. Paste into the page with no field focused and the bar says the paste was discarded, because Chromium drops it.
 - Select page text by dragging, double-clicking a word, triple-clicking a line, or pressing `Ctrl+A`. Chromium decides what `Ctrl+A` takes: the focused field's text, or the whole page. Inside the URL editor and the find field it keeps its readline meaning and moves to the line start. Selecting copies nothing; `Alt+W` or the ☰ menu's Copy sends it to the clipboard over OSC 52. Selections over 74,994 bytes are refused rather than truncated, so a silent half-copy cannot happen. `Shift`-drag is still your terminal's own selection.

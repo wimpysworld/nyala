@@ -151,14 +151,13 @@ func modeSession(t *testing.T, eng streamTestEngine) (*streamSession, *State) {
 
 // TestEditModeLifecycle pins the URL editor lifecycle: Ctrl+L enters edit
 // mode prefilled with the current URL and enables bracketed paste and the
-// cursor, every key routes to the editor (Alt chords included, so nothing
-// reaches CDP), Enter applies the schemeless rule and navigates, and a
-// refused commit keeps the editor open.
+// cursor, text and edit keys route to the editor, Enter applies the schemeless
+// rule and navigates, and a refused commit keeps the editor open.
 func TestEditModeLifecycle(t *testing.T) {
 	var opened []string
 	var sent []string
 	var backends []string
-	s, st := modeSession(t, streamTestEngine{
+	s, _ := modeSession(t, streamTestEngine{
 		currentURL: "https://example.org/",
 		openURL:    func(u string) { opened = append(opened, u) },
 		sendKey:    func(code string) { sent = append(sent, code) },
@@ -184,12 +183,9 @@ func TestEditModeLifecycle(t *testing.T) {
 		t.Fatalf("edit entry toggled the session paste mode: %q", out)
 	}
 
-	// All input routes to the editor: an Alt chord cycles nothing and a
-	// scroll key forwards nothing.
-	startBackend := st.Backend
-	s.handleKey(keyEvent{act: actionCycleBackend})
+	// A page scroll key still belongs to the editor and forwards nothing.
 	s.handleKey(keyEvent{scroll: ScrollUp})
-	if st.Backend != startBackend || len(backends) != 0 || len(sent) != 0 {
+	if len(backends) != 0 || len(sent) != 0 {
 		t.Fatalf("edit mode leaked input: backends %v, keys %v", backends, sent)
 	}
 
@@ -209,8 +205,8 @@ func TestEditModeLifecycle(t *testing.T) {
 	}
 }
 
-// TestPaletteToggleKeepsBarModeOwnership checks that Edit, menu, and find keep
-// Alt+P. These modes do not change the palette policy or clear the page.
+// TestPaletteToggleKeepsBarModeOwnership checks that Alt+P changes the palette
+// policy while Edit, menu, and find keep ownership of the bar.
 func TestPaletteToggleKeepsBarModeOwnership(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -222,7 +218,9 @@ func TestPaletteToggleKeepsBarModeOwnership(t *testing.T) {
 		{"find", func(s *streamSession) { s.enterFind() }, barModeFind},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, st := modeSession(t, streamTestEngine{currentURL: "https://example.org/"})
+			eng := streamTestEngine{currentURL: "https://example.org/"}
+			s, st := modeSession(t, eng)
+			s.ctl = &control{eng: eng, work: make(chan func(Engine), 1)}
 			st.Backend = BackendBlock
 			st.Colour = ColourXTerm256
 			st.paletteQueryOK = true
@@ -235,8 +233,8 @@ func TestPaletteToggleKeepsBarModeOwnership(t *testing.T) {
 
 			s.handleKey(keyEvent{act: actionTogglePalette})
 
-			if st.staticPaletteSelected || s.barMode != tc.mode || strings.Contains(out.String(), clearScreen) {
-				t.Fatalf("Alt+P escaped %s: static %t, mode %d, output %q",
+			if !st.staticPaletteSelected || s.barMode != tc.mode || !strings.Contains(out.String(), clearScreen) {
+				t.Fatalf("Alt+P did not update %s in place: static %t, mode %d, output %q",
 					tc.name, st.staticPaletteSelected, s.barMode, out.String())
 			}
 		})

@@ -452,6 +452,219 @@ func TestHandleKeyForwardsNav(t *testing.T) {
 	}
 }
 
+// TestGlobalAltBindingsAcrossBarModes checks each registered Alt binding through
+// the legacy and Kitty decoders in chrome, About, edit, find, and menu modes.
+func TestGlobalAltBindingsAcrossBarModes(t *testing.T) {
+	bindings := []struct {
+		name   string
+		legacy string
+		kitty  string
+		action keyAction
+	}{
+		{"backend forward", "\x1br", "\x1b[114;3u", actionCycleBackend},
+		{"backend reverse", "\x1bR", "\x1b[114;4u", actionCycleBackendReverse},
+		{"blocks forward", "\x1bb", "\x1b[98;3u", actionCycleBlocks},
+		{"blocks reverse", "\x1bB", "\x1b[98;4u", actionCycleBlocksReverse},
+		{"colour forward", "\x1bc", "\x1b[99;3u", actionCycleColour},
+		{"colour reverse", "\x1bC", "\x1b[99;4u", actionCycleColourReverse},
+		{"palette", "\x1bp", "\x1b[112;3u", actionTogglePalette},
+		{"menu", "\x1bf", "\x1b[102;3u", actionOpenMenu},
+		{"copy", "\x1bw", "\x1b[119;3u", actionCopySelection},
+		// Kitty uses the same modified CSI form as legacy terminals for these
+		// functional keys when disambiguate-only mode is active.
+		{"back", "\x1b[1;3D", "\x1b[1;3D", actionBack},
+		{"forward", "\x1b[1;3C", "\x1b[1;3C", actionForward},
+		{"home", "\x1b[1;3H", "\x1b[1;3H", actionOpenHome},
+	}
+	modes := []struct {
+		name string
+		mode barMode
+	}{
+		{"chrome", barModeChrome},
+		{"About", barModeAbout},
+		{"edit", barModeEdit},
+		{"find", barModeFind},
+		{"menu", barModeMenu},
+	}
+
+	for _, binding := range bindings {
+		for _, source := range []struct {
+			name string
+			in   string
+		}{
+			{"legacy", binding.legacy},
+			{"Kitty", binding.kitty},
+		} {
+			events := collectEvents(t, source.in)
+			if len(events) != 1 || events[0].act != binding.action {
+				t.Fatalf("%s %s decoded as %+v, want action %d", source.name, binding.name, events, binding.action)
+			}
+			for _, mode := range modes {
+				t.Run(binding.name+"/"+source.name+"/"+mode.name, func(t *testing.T) {
+					var navs []NavAction
+					findClears := 0
+					eng := streamTestEngine{
+						sendNav:   func(a NavAction) { navs = append(navs, a) },
+						findClear: func() { findClears++ },
+						selection: func() (string, bool) { return "selected", false },
+					}
+					st := NewState(80, 24)
+					st.SetEnabled([]Backend{BackendBlock, BackendKitty})
+					st.sextantOK = true
+					st.Colour = ColourXTerm256
+					st.paletteQueryOK = true
+					s := dispatchSession(eng, &st)
+					s.version = "dev"
+					s.ctl = &control{eng: eng, work: make(chan func(Engine), 1)}
+					s.barMode = mode.mode
+					s.menuSel = 2
+					if mode.mode == barModeEdit || mode.mode == barModeFind {
+						s.editor = newURLEditor("needle")
+					}
+					if mode.mode == barModeFind {
+						s.findQuery = "needle"
+					}
+
+					if quit := s.handleKey(events[0]); quit {
+						t.Fatal("Alt binding requested quit")
+					}
+
+					wantMode := mode.mode
+					switch binding.action {
+					case actionOpenMenu:
+						wantMode = barModeMenu
+						if s.menuSel != 0 {
+							t.Fatalf("menu selection = %d, want 0", s.menuSel)
+						}
+					case actionCopySelection:
+						wantMode = barModeChrome
+						if s.signal != "Copied 8 bytes" {
+							t.Fatalf("copy signal = %q", s.signal)
+						}
+					case actionBack, actionForward, actionOpenHome:
+						wantMode = barModeChrome
+						wantNav := map[keyAction]NavAction{
+							actionBack: NavBack, actionForward: NavForward, actionOpenHome: NavHome,
+						}[binding.action]
+						if len(navs) != 1 || navs[0] != wantNav {
+							t.Fatalf("navigation calls = %v, want [%v]", navs, wantNav)
+						}
+					case actionCycleBackend, actionCycleBackendReverse:
+						if st.Backend != BackendKitty {
+							t.Fatalf("backend = %v, want Kitty", st.Backend)
+						}
+					case actionCycleBlocks, actionCycleBlocksReverse:
+						if st.Scheme != block.SchemeSextant {
+							t.Fatalf("scheme = %v, want sextant", st.Scheme)
+						}
+					case actionCycleColour:
+						if st.Colour != ColourXTermGrey {
+							t.Fatalf("colour = %v, want grey", st.Colour)
+						}
+					case actionCycleColourReverse:
+						if st.Colour != ColourTrue {
+							t.Fatalf("colour = %v, want true colour", st.Colour)
+						}
+					case actionTogglePalette:
+						if !st.staticPaletteSelected {
+							t.Fatal("palette policy stayed adaptive")
+						}
+					}
+					if s.barMode != wantMode {
+						t.Fatalf("bar mode = %d, want %d", s.barMode, wantMode)
+					}
+					closesMode := binding.action == actionOpenMenu || binding.action == actionCopySelection ||
+						binding.action == actionBack || binding.action == actionForward || binding.action == actionOpenHome
+					wantClears := 0
+					if mode.mode == barModeFind && closesMode {
+						wantClears = 1
+					}
+					if findClears != wantClears {
+						t.Fatalf("find clears = %d, want %d", findClears, wantClears)
+					}
+					if closesMode && (mode.mode == barModeEdit || mode.mode == barModeFind) && s.editor != nil {
+						t.Fatal("closed text mode kept its editor")
+					}
+					if !closesMode && !strings.Contains(s.tty.(*bytes.Buffer).String(), "\x1b[24;1H") {
+						t.Fatal("render action did not repaint the current bar row")
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestUnboundAltHandlingAcrossBarModes keeps the two decoder fallbacks. A
+// legacy Alt+Z passes through as Escape then text, while Kitty drops its report.
+func TestUnboundAltHandlingAcrossBarModes(t *testing.T) {
+	legacy := collectEvents(t, "\x1bz")
+	if len(legacy) != 2 || legacy[0].b != keyEsc || legacy[1].b != 'z' {
+		t.Fatalf("legacy Alt+Z = %+v, want Escape then z", legacy)
+	}
+	if kitty := collectEvents(t, "\x1b[122;3u"); len(kitty) != 0 {
+		t.Fatalf("Kitty Alt+Z = %+v, want no event", kitty)
+	}
+
+	for _, mode := range []barMode{barModeChrome, barModeAbout, barModeEdit, barModeFind, barModeMenu} {
+		var keys, text []string
+		findClears := 0
+		st := NewState(80, 24)
+		s := dispatchSession(streamTestEngine{
+			sendKey:   func(code string) { keys = append(keys, code) },
+			sendText:  func(value string) { text = append(text, value) },
+			findClear: func() { findClears++ },
+		}, &st)
+		s.barMode = mode
+		if mode == barModeEdit || mode == barModeFind {
+			s.editor = newURLEditor("value")
+		}
+		for _, ev := range legacy {
+			s.handleKey(ev)
+		}
+
+		if s.barMode != barModeChrome || len(text) != 1 || text[0] != "z" {
+			t.Fatalf("mode %d legacy passthrough left mode %d, keys %v, text %q", mode, s.barMode, keys, text)
+		}
+		wantKeys := 0
+		if mode == barModeChrome {
+			wantKeys = 1
+		}
+		if len(keys) != wantKeys || wantKeys == 1 && keys[0] != "Escape" {
+			t.Fatalf("mode %d forwarded keys %v, want %d Escape keys", mode, keys, wantKeys)
+		}
+		wantClears := 0
+		if mode == barModeFind {
+			wantClears = 1
+		}
+		if findClears != wantClears {
+			t.Fatalf("mode %d find clears = %d, want %d", mode, findClears, wantClears)
+		}
+	}
+}
+
+// TestGlobalAltNavigationClosesFindBeforeNavigation checks the lifecycle order:
+// the viewer clears find state before it sends the navigation request.
+func TestGlobalAltNavigationClosesFindBeforeNavigation(t *testing.T) {
+	var calls []string
+	st := NewState(80, 24)
+	s := dispatchSession(streamTestEngine{
+		findClear: func() { calls = append(calls, "clear") },
+		sendNav:   func(NavAction) { calls = append(calls, "navigate") },
+	}, &st)
+	s.barMode = barModeFind
+	s.editor = newURLEditor("needle")
+	s.findQuery = "needle"
+
+	s.handleKey(keyEvent{act: actionBack})
+
+	if strings.Join(calls, ",") != "clear,navigate" {
+		t.Fatalf("calls = %v, want [clear navigate]", calls)
+	}
+	if s.barMode != barModeChrome || s.editor != nil || s.findQuery != "" {
+		t.Fatalf("find state stayed open: mode %d, editor %v, query %q", s.barMode, s.editor, s.findQuery)
+	}
+}
+
 // TestHandleKeyQuit pins the quit policy: Ctrl+Q quits and Ctrl+C stays as the
 // interrupt fallback, while plain q is inert (printable keys stay free for
 // future page form input) and reaches no engine seam.

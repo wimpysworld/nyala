@@ -344,21 +344,18 @@ func TestHandleMouseAboutClose(t *testing.T) {
 }
 
 // TestAboutModeOwnsPageInput pins that About swallows page input: printable
-// bytes, runes, pastes, scroll keys, Delete, and the backend cycle chord
-// reach nothing and change nothing while About is open, Esc closes it, a
-// page-row press closes it without forwarding, and page input flows again
-// once it is closed.
+// bytes, runes, pastes, scroll keys, and Delete reach nothing while About is
+// open. Esc closes it, a page-row press closes it without forwarding, and page
+// input flows again once it is closed.
 func TestAboutModeOwnsPageInput(t *testing.T) {
 	var sent, text, backends []string
 	var forwarded []MouseEvent
-	s, st := modeSession(t, streamTestEngine{
+	s, _ := modeSession(t, streamTestEngine{
 		sendKey:    func(code string) { sent = append(sent, code) },
 		sendText:   func(t string) { text = append(text, t) },
 		setBackend: func(name string) { backends = append(backends, name) },
 		sendMouse:  func(ev MouseEvent) { forwarded = append(forwarded, ev) },
 	})
-	startBackend := st.Backend
-
 	s.enterAbout()
 	for _, ev := range []keyEvent{
 		{b: 'a'},
@@ -367,7 +364,6 @@ func TestAboutModeOwnsPageInput(t *testing.T) {
 		{scroll: ScrollUp},
 		{scroll: ScrollHome},
 		{act: actionDelete},
-		{act: actionCycleBackend},
 		{b: keyTab},
 		{b: keyEnter},
 	} {
@@ -378,7 +374,7 @@ func TestAboutModeOwnsPageInput(t *testing.T) {
 			t.Fatalf("key %+v left About: mode %d", ev, s.barMode)
 		}
 	}
-	if len(sent) != 0 || len(text) != 0 || len(backends) != 0 || st.Backend != startBackend {
+	if len(sent) != 0 || len(text) != 0 || len(backends) != 0 {
 		t.Fatalf("About leaked input: keys %v, text %q, backends %v", sent, text, backends)
 	}
 
