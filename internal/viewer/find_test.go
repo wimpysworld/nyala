@@ -221,7 +221,7 @@ func TestRenderBarFindNarrowRow(t *testing.T) {
 // clears the search and restores chrome.
 func TestFindModeLifecycle(t *testing.T) {
 	var c findCalls
-	s, st := findSession(t, &c)
+	s, _ := findSession(t, &c)
 
 	if quit := s.handleKey(keyEvent{b: keyCtrlF}); quit {
 		t.Fatal("Ctrl+F quit")
@@ -240,15 +240,9 @@ func TestFindModeLifecycle(t *testing.T) {
 		t.Fatalf("find entry toggled the session paste mode: %q", out)
 	}
 
-	// Every key belongs to the field: an Alt chord cycles nothing, and typing
-	// reaches the query rather than the page.
-	startBackend := st.Backend
-	s.handleKey(keyEvent{act: actionCycleBackend})
+	// Typed text reaches the query rather than the page.
 	for _, b := range []byte("needle") {
 		s.handleKey(keyEvent{b: b})
-	}
-	if st.Backend != startBackend {
-		t.Fatalf("find mode leaked an Alt chord: backend %v", st.Backend)
 	}
 	if len(c.page) != 0 {
 		t.Fatalf("find mode leaked input to the page: %v", c.page)

@@ -308,6 +308,19 @@ func (s *streamSession) leaveMode() {
 	s.repaintBar()
 }
 
+// closeBarModeForAction closes the active temporary bar mode before a global
+// action needs the chrome row. Closing find also clears its page highlights.
+func (s *streamSession) closeBarModeForAction() {
+	switch s.barMode {
+	case barModeEdit:
+		s.leaveEdit()
+	case barModeFind:
+		s.leaveFind()
+	case barModeMenu, barModeAbout:
+		s.leaveMode()
+	}
+}
+
 // exitBarModeIfHidden restores chrome mode when a resize left the terminal
 // with no bar row: a mode that cannot draw must not keep swallowing keys as
 // an invisible modal. Leaving edit or find mode also hides the cursor again,
@@ -392,10 +405,10 @@ func editorKey(e *urlEditor, ev keyEvent) bool {
 	return true
 }
 
-// handleEditKey routes one key to the URL editor. While editing, every key
+// handleEditKey routes one non-global key to the URL editor. While editing, every key
 // belongs to the editor: the shared field path takes the text and edit keys,
-// Enter commits through the schemeless rule, and Esc cancels. Alt chords and
-// page keys are swallowed so nothing reaches CDP; only the quit keys keep their
+// Enter commits through the schemeless rule, and Esc cancels. Unbound Alt chords
+// and page keys are swallowed so nothing reaches CDP; only the quit keys keep their
 // meaning, so a wedged session can never trap the user.
 func (s *streamSession) handleEditKey(ev keyEvent) (quit bool) {
 	if !editorKey(s.editor, ev) {
@@ -442,19 +455,9 @@ func (s *streamSession) handleMenuKey(ev keyEvent) (quit bool) {
 	return false
 }
 
-// handleAboutKey routes one key in About mode: Alt+C cycles the Block colour
-// mode, Alt+P toggles the Block palette policy, and both repaint the live
-// capability label. Esc closes back to chrome, and every other key except the
-// quit keys is swallowed.
+// handleAboutKey routes one non-global key in About mode. Esc closes back to
+// chrome, and every other key except the quit keys is swallowed.
 func (s *streamSession) handleAboutKey(ev keyEvent) (quit bool) {
-	if ev.act == actionCycleColour || ev.act == actionCycleColourReverse {
-		s.cycleColour(ev.act == actionCycleColourReverse)
-		return false
-	}
-	if ev.act == actionTogglePalette {
-		s.togglePalettePolicy()
-		return false
-	}
 	if ev.scroll != ScrollNone || ev.act != actionNone || ev.r != 0 || ev.paste != "" {
 		return false
 	}

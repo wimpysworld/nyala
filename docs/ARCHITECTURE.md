@@ -621,9 +621,9 @@ be selected without a drag across it. It forwards as a key stroke rather than a
 viewer command, so Chromium arbitrates it the way it does Space and the caret
 keys: the focused field's text, or the whole document when nothing holds focus.
 The byte keeps its readline meaning inside the URL editor and the find field,
-which claim every key before chrome mode sees one, and a Kitty key report for it
-normalises back to that byte at the single decode point, so both paths behave
-alike.
+which claim all input except registered Alt bindings before chrome mode sees
+it. A Kitty key report for it normalises back to that byte at the single decode
+point, so both paths behave alike.
 Copying is explicit, on Alt+W or the menu's Copy item, and nothing reaches the
 clipboard until then. Alt+W is the Emacs kill-ring-save chord and was unbound.
 The alternatives were all taken or ambiguous: Ctrl+C quits, Ctrl+Shift+C is
@@ -1709,8 +1709,9 @@ arrows, Home, End, Delete, Backspace) over a rune slice with a horizontal
 viewport. Enter commits; schemeless input with a dot gains `https://`, and
 only http, https, and file schemes pass, so a committed `javascript:` URL can
 never execute in the page origin. Esc cancels; a lone Esc is told apart from
-an escape sequence by the buffered-byte check on the reader. A focus flag
-routes every key, and any paste, to the editor and none to CDP while editing. A
+an escape sequence by the buffered-byte check on the reader. Registered Alt
+bindings run first. A focus flag routes every other key, and any paste, to the
+editor and none to CDP while editing. A
 bar-row press places the caret at the clicked cell, walking the visible runes by
 `go-runewidth` width from the viewport offset, so a wide or ambiguous-width
 glyph counts the cells it really occupies. The cursor is a rune index
@@ -1789,8 +1790,9 @@ a probe result. The terminal field is omitted when the handshake gave no
 XTVERSION identity, and the browser field when the engine has no version. The
 `256` mode reads `240 Adaptive` or `240 Static`. The grey mode reads `240
 Shades` or `24 Shades`. These labels show the selected palette policy without
-protocol terms. <kbd>Alt</kbd>+<kbd>C</kbd> and <kbd>Alt</kbd>+<kbd>P</kbd> update
-the label while About stays open. The row
+protocol terms. Registered Alt render bindings repaint the row while About
+stays open. Alt+C and Alt+P update the colour label when their gates permit a
+change. The row
 keeps the bar's `│` separator rather than the ASCII `|` of the original mock-up,
 because the About row shares the chrome row's framing.
 
@@ -1827,26 +1829,34 @@ own before it. When no field fits, the row is ` … │ ✕ `, and a terminal
 narrower than seven cells falls back to `closeAnchoredRow`, which keeps only
 whole spans and drops the ellipsis before the close. The `✓` and `✗` glyphs are coloured green and red as a hint added
 after layout, so the glyph carries the meaning alone: `ColourXTermGrey` writes
-no colour SGR and the row still reads. <kbd>Esc</kbd> closes back to chrome, the
-quit keys quit, <kbd>Alt</kbd>+<kbd>C</kbd> cycles colour, and
-<kbd>Alt</kbd>+<kbd>P</kbd> toggles the palette policy. The row swallows every
-other key.
+no colour SGR and the row still reads. <kbd>Esc</kbd> closes back to chrome, and
+the quit keys quit. The row swallows page input and other unbound keys, but no
+registered Alt binding.
 
 ### Key bindings and text input
 
-Chrome-mode key bindings live in `internal/viewer/keys.go`. Rendering:
+Key bindings live in `internal/viewer/keys.go`. Every registered Alt binding
+runs before the active navigation-bar mode handles other input, so each one
+works in chrome, URL edit, find, menu, and About modes. Rendering:
 <kbd>Alt</kbd>+<kbd>R</kbd> and <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>
 cycle the backend, <kbd>Alt</kbd>+<kbd>B</kbd> and
 <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> cycle the Block scheme,
 <kbd>Alt</kbd>+<kbd>C</kbd> and <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd>
 cycle colour, and <kbd>Alt</kbd>+<kbd>P</kbd> toggles the Block palette policy.
-Navigation: Alt+Left and Alt+Right step history, Alt+Home opens the launch URL,
-Ctrl+R and F5 reload.
-Chrome: Ctrl+L edits the URL, Ctrl+F opens find, Alt+F opens the menu, Ctrl+A
-selects the page, Alt+W copies the page selection, Ctrl+Q or Ctrl+C quits. Page keys: Tab, Shift+Tab,
+Navigation: Alt+Left and Alt+Right step history, and Alt+Home opens the launch
+URL. In chrome, Ctrl+R and F5 reload, Ctrl+L edits the URL, Ctrl+F opens find,
+and Ctrl+A selects the page. Alt+F opens the menu, and Alt+W copies the page
+selection. Ctrl+Q or Ctrl+C quits from every mode. Page keys: Tab, Shift+Tab,
 and Enter forward for focus traversal and activation, the arrows, Home, End,
 PageUp, and PageDown forward for the caret and page scrolling, and every
 unbound printable key, Backspace, Delete, and Escape forward as page text input.
+
+Render actions keep the active bar mode and repaint its row. Alt+F closes the
+active mode and opens the menu. Alt+W closes a temporary mode so the chrome row
+can report the copy result. Alt+Left, Alt+Right, and Alt+Home close a temporary
+mode before navigation. When they close find, they clear its page highlights
+first. The Block-only render cycles and the Alt+P capability checks still apply
+in every bar mode.
 
 The Kitty keyboard protocol is an enabler for find-in-page, which needs
 Shift+Enter for its previous-match step; legacy terminal encoding has no signal

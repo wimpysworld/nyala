@@ -1925,10 +1925,9 @@ func (s *streamSession) dispatchMouse(ev MouseEvent) {
 }
 
 // handleKey forwards one key to the engine or handles the viewer hotkeys and
-// reports whether the user asked to quit. A non-chrome bar mode owns the
-// whole keyboard first: the URL editor and the find field take every key
-// including the Alt chords, and the menu and About rows take their navigation
-// keys, so nothing leaks to CDP while a mode is open. In chrome, a scroll key
+// reports whether the user asked to quit. The viewer handles every registered
+// Alt chord before the active bar mode. Other keys belong to a non-chrome bar
+// mode first, so nothing leaks to CDP while a mode is open. In chrome, a scroll key
 // forwards its code (the engine owns the offset); Tab, Shift+Tab, and Enter
 // forward to the page as full key strokes for native focus traversal and
 // activation; Ctrl+L opens the URL editor, Ctrl+F the find field, and Alt+F the
@@ -1945,6 +1944,13 @@ func (s *streamSession) dispatchMouse(ev MouseEvent) {
 // the page only when no bar mode claimed it. A paste forwards as one unit to
 // the focused element, the parser having already bounded and assembled it.
 func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
+	act := ev.act
+	if act == actionNone {
+		act = byteKeyAction(ev.b)
+	}
+	if globalAltAction(act) {
+		return s.handleAction(act)
+	}
 	switch s.barMode {
 	case barModeEdit:
 		return s.handleEditKey(ev)
@@ -1967,15 +1973,32 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		s.forwardKey(scrollKeyCode(ev.scroll))
 		return false
 	}
-	act := ev.act
-	if act == actionNone {
-		act = byteKeyAction(ev.b)
+	if act == actionNone && printableByte(ev.b) {
+		s.forwardText(string(rune(ev.b)))
+		return false
 	}
+	return s.handleAction(act)
+}
+
+// globalAltAction reports whether act is one of the viewer's registered Alt
+// bindings. These actions run before a bar mode handles the remaining input.
+func globalAltAction(act keyAction) bool {
 	switch act {
-	case actionNone:
-		if printableByte(ev.b) {
-			s.forwardText(string(rune(ev.b)))
-		}
+	case actionBack, actionForward, actionOpenHome,
+		actionCycleBackend, actionCycleBackendReverse,
+		actionCycleBlocks, actionCycleBlocksReverse,
+		actionCycleColour, actionCycleColourReverse,
+		actionTogglePalette, actionOpenMenu, actionCopySelection:
+		return true
+	default:
+		return false
+	}
+}
+
+// handleAction runs one recognised viewer action and reports whether it asks
+// the session to quit. Both chrome input and global Alt input use this path.
+func (s *streamSession) handleAction(act keyAction) (quit bool) {
+	switch act {
 	case actionQuit:
 		return true
 	case actionEditURL:
@@ -1988,10 +2011,12 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		s.enterFind()
 		s.maybeEmitPointerShape()
 	case actionOpenMenu:
+		s.closeBarModeForAction()
 		s.enterMenu()
 		s.maybeEmitPointerShape()
 	case actionCopySelection:
 		s.copySelection()
+		s.closeBarModeForAction()
 	case actionSelectAll:
 		s.forwardKey("SelectAll")
 	case actionFocusNext:
@@ -2009,10 +2034,13 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 	case actionReload:
 		s.forwardNav(NavReload)
 	case actionBack:
+		s.closeBarModeForAction()
 		s.forwardNav(NavBack)
 	case actionForward:
+		s.closeBarModeForAction()
 		s.forwardNav(NavForward)
 	case actionOpenHome:
+		s.closeBarModeForAction()
 		s.forwardNav(NavHome)
 	case actionCycleBackend:
 		s.cycleBackend(false)
