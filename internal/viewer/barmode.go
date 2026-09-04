@@ -442,9 +442,14 @@ func (s *streamSession) handleMenuKey(ev keyEvent) (quit bool) {
 	return false
 }
 
-// handleAboutKey routes one key in About mode: Esc closes back to chrome and
+// handleAboutKey routes one key in About mode: Alt+C cycles the Block colour
+// mode and repaints the live capability label, Esc closes back to chrome, and
 // everything else except the quit keys is swallowed.
 func (s *streamSession) handleAboutKey(ev keyEvent) (quit bool) {
+	if ev.act == actionCycleColour || ev.act == actionCycleColourReverse {
+		s.cycleColour(ev.act == actionCycleColourReverse)
+		return false
+	}
 	if ev.scroll != ScrollNone || ev.act != actionNone || ev.r != 0 || ev.paste != "" {
 		return false
 	}

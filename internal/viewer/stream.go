@@ -2025,11 +2025,7 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		before := s.st.Scheme
 		s.recomposeBlock(s.st.CycleScheme(act == actionCycleBlocksReverse) != before)
 	case actionCycleColour, actionCycleColourReverse:
-		if s.st.Backend != BackendBlock {
-			break
-		}
-		before := s.st.Colour
-		s.recomposeBlock(s.st.CycleColour(act == actionCycleColourReverse) != before)
+		s.cycleColour(act == actionCycleColourReverse)
 	}
 	return false
 }
@@ -2146,6 +2142,16 @@ func (s *streamSession) cycleBackend(reverse bool) {
 	// Cycle the backend off the consumer loop: the engine restart runs on the
 	// control goroutine so a slow restartStream cannot freeze draw or quit.
 	s.ctl.submit(switchBackendOp(s.st.Backend))
+}
+
+// cycleColour changes the Block colour mode and recomposes the current view.
+// Graphics backends keep the current Block mode unchanged.
+func (s *streamSession) cycleColour(reverse bool) {
+	if s.st.Backend != BackendBlock {
+		return
+	}
+	before := s.st.Colour
+	s.recomposeBlock(s.st.CycleColour(reverse) != before)
 }
 
 // recomposeBlock repaints the live Block view after a scheme or colour cycle
