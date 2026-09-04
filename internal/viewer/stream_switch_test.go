@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wimpysworld/nyala/internal/palette"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
@@ -236,5 +237,160 @@ func TestTabSwitchEmitsNoClearWhenBackendUnchanged(t *testing.T) {
 	s.handleKey(keyEvent{act: actionCycleBackend})
 	if out.Len() != 0 {
 		t.Fatalf("same-backend Tab wrote %q, want nothing", out.String())
+	}
+}
+
+// TestAltPTogglesAndRecomposesBlock checks both palette-policy directions in
+// the RGB and grey modes. Each change clears before the current bar, restarts
+// Block, and makes the first adaptive frame fit and write its palette first.
+func TestAltPTogglesAndRecomposesBlock(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state func(*testing.T) (*State, *image.RGBA)
+		count func(*State) int
+	}{
+		{
+			name: "RGB",
+			state: func(t *testing.T) (*State, *image.RGBA) {
+				st, _ := paletteTestState(t, true)
+				return st, blockFrame(t, st)
+			},
+			count: func(st *State) int { return st.paletteEngine.RequantCount },
+		},
+		{
+			name: "grey",
+			state: func(t *testing.T) (*State, *image.RGBA) {
+				st := greyTestState(true)
+				return st, greyTestImage(t, st)
+			},
+			count: func(st *State) int { return st.greyEngine.RequantCount },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, src := tc.state(t)
+			if err := st.RenderStreamFrame(render.Frame{Img: src}, io.Discard); err != nil {
+				t.Fatalf("seed the adaptive frame: %v", err)
+			}
+			beforeRefit := tc.count(st)
+			eng := &switchOpEngine{}
+			done := make(chan struct{})
+			defer close(done)
+			out := &bytes.Buffer{}
+			s := &streamSession{eng: eng, st: st, tty: out, ctl: newControl(eng, done), diff: st.diff}
+
+			s.handleKey(keyEvent{act: actionTogglePalette})
+			if !st.staticPaletteSelected {
+				t.Fatal("Alt+P did not select the static palette")
+			}
+			prefix := sgrReset + clearScreen + palette.OSC104
+			got := out.String()
+			if !strings.HasPrefix(got, prefix) {
+				t.Fatalf("static toggle output = %q, want prefix %q", got, prefix)
+			}
+			barAt := strings.Index(got, fmt.Sprintf("\x1b[%d;1H", st.Rows))
+			if barAt < len(prefix) {
+				t.Fatalf("static toggle bar precedes the palette release: %q", got)
+			}
+			wantCalls := []string{"SetBackend(block)"}
+			if !waitFor(2*time.Second, func() bool { return reflect.DeepEqual(eng.calls(), wantCalls) }) {
+				t.Fatalf("calls after the static toggle = %v, want %v", eng.calls(), wantCalls)
+			}
+
+			var static bytes.Buffer
+			if err := st.RenderStreamFrame(render.Frame{Img: src}, &static); err != nil {
+				t.Fatalf("render the static frame: %v", err)
+			}
+			if static.Len() == 0 {
+				t.Fatal("the static toggle did not reset the Block differ")
+			}
+
+			out.Reset()
+			s.handleKey(keyEvent{act: actionTogglePalette})
+			if st.staticPaletteSelected {
+				t.Fatal("the second Alt+P did not select the adaptive palette")
+			}
+			got = out.String()
+			if !strings.HasPrefix(got, sgrReset+clearScreen) || strings.Contains(got, palette.OSC104) {
+				t.Fatalf("adaptive toggle output = %q, want reset and clear without OSC 104", got)
+			}
+			wantCalls = append(wantCalls, "SetBackend(block)")
+			if !waitFor(2*time.Second, func() bool { return reflect.DeepEqual(eng.calls(), wantCalls) }) {
+				t.Fatalf("calls after both toggles = %v, want %v", eng.calls(), wantCalls)
+			}
+
+			var adaptive bytes.Buffer
+			if err := st.RenderStreamFrame(render.Frame{Img: src}, &adaptive); err != nil {
+				t.Fatalf("render the first adaptive frame: %v", err)
+			}
+			if !strings.HasPrefix(adaptive.String(), osc4Introducer) {
+				t.Fatalf("first adaptive frame did not write its palette before cells: %q", adaptive.String())
+			}
+			if gotCount := tc.count(st); gotCount != beforeRefit+1 {
+				t.Fatalf("adaptive fit count = %d, want %d", gotCount, beforeRefit+1)
+			}
+		})
+	}
+}
+
+// TestAltPRapidDoubleToggle keeps the second press when the first restart is
+// still pending. The final policy is adaptive and each change repaints once.
+func TestAltPRapidDoubleToggle(t *testing.T) {
+	st, _ := paletteTestState(t, true)
+	if err := st.RenderStreamFrame(render.Frame{Img: blockFrame(t, st)}, io.Discard); err != nil {
+		t.Fatalf("seed the adaptive frame: %v", err)
+	}
+	eng := &switchOpEngine{}
+	done := make(chan struct{})
+	defer close(done)
+	out := &bytes.Buffer{}
+	s := &streamSession{eng: eng, st: st, tty: out, ctl: newControl(eng, done), diff: st.diff}
+
+	s.handleKey(keyEvent{act: actionTogglePalette})
+	s.handleKey(keyEvent{act: actionTogglePalette})
+
+	if st.staticPaletteSelected {
+		t.Fatal("a rapid double toggle did not return to adaptive")
+	}
+	if got := strings.Count(out.String(), sgrReset+clearScreen); got != 2 {
+		t.Fatalf("rapid double toggle repaints = %d, want 2", got)
+	}
+	if got := strings.Count(out.String(), palette.OSC104); got != 1 {
+		t.Fatalf("rapid double toggle palette releases = %d, want 1", got)
+	}
+	if !waitFor(2*time.Second, func() bool { return len(eng.calls()) > 0 }) {
+		t.Fatal("rapid double toggle scheduled no Block restart")
+	}
+}
+
+// TestAltPPaletteToggleUnsupportedIsSilent checks every runtime gate. A
+// rejected toggle changes no policy, emits no bytes, and schedules no restart.
+func TestAltPPaletteToggleUnsupportedIsSilent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prepare func(*State)
+	}{
+		{"without OSC 4", func(st *State) { st.paletteQueryOK = false }},
+		{"outside Block", func(st *State) { st.Backend = BackendSixel }},
+		{"in truecolour", func(st *State) { st.Colour = ColourTrue }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := NewState(8, 4)
+			st.Backend = BackendBlock
+			st.Colour = ColourXTerm256
+			st.paletteQueryOK = true
+			tc.prepare(&st)
+			eng := &switchOpEngine{}
+			done := make(chan struct{})
+			defer close(done)
+			out := &bytes.Buffer{}
+			s := &streamSession{eng: eng, st: &st, tty: out, ctl: newControl(eng, done)}
+
+			s.handleKey(keyEvent{act: actionTogglePalette})
+
+			if st.staticPaletteSelected || out.Len() != 0 || len(eng.calls()) != 0 {
+				t.Fatalf("unsupported Alt+P changed state or output: static %t, output %q, calls %v",
+					st.staticPaletteSelected, out.String(), eng.calls())
+			}
+		})
 	}
 }

@@ -988,6 +988,38 @@ xterm greyscale level, with indexes fixed to 232..255. The canonical levels are
 8 through 238 in steps of 10. An exact midpoint selects the lighter grey.
 Values outside that range clamp to its endpoints.
 
+Block palette handling keeps capability, selection, and register state
+separate. `paletteQueryOK` is the startup capability verdict and never changes
+at runtime. `staticPaletteSelected` is the session policy, with its false zero
+value selecting adaptive palettes. The live and ever-written bits in
+`paletteWriteRecord` track whether a restore is due now and whether teardown
+must restore again.
+
+`adaptivePaletteActive()` combines the selected policy with the capability
+verdict, the active Block backend, and either `ColourXTerm256` or
+`ColourXTermGrey`. <kbd>Alt</kbd>+<kbd>P</kbd> changes the policy only when all
+three gates allow it. Every unsupported context leaves the policy, terminal
+output, and engine restart queue unchanged.
+
+The policy belongs to `State`, separate from the current colour mode, glyph
+scheme, backend, page, and terminal size. <kbd>Alt</kbd>+<kbd>C</kbd>,
+<kbd>Alt</kbd>+<kbd>B</kbd>, <kbd>Alt</kbd>+<kbd>R</kbd>, reload, and resize keep
+the policy. Nyala does not save the policy, so each process starts adaptive.
+When the capability gate is closed, the static palette path remains active even
+though the selected policy is adaptive.
+
+An <kbd>Alt</kbd>+<kbd>P</kbd> transition follows the same ordered repaint path
+as the Block cycles. First, `togglePalettePolicy()` changes the policy and
+clears any pending palette write. A transition to static calls
+`releasePalette()`. That function invalidates both adaptive engines and returns
+a bare OSC 104 only when adaptive registers are live. `recomposeBlock()` then
+resets the cell diff and emits the SGR reset, screen
+clear, optional OSC 104, and current bar in that order. It finally queues a
+same-backend restart. A transition to adaptive invalidates both engines, emits
+the reset, clear, and bar without OSC 104, then restarts Block. The first new
+frame fits and writes its palette before it emits cells. The ever-written bit
+stays set, so teardown restores again after any adaptive write.
+
 Precedence is `--color` flag, then `NO_COLOR`, then detection
 (`resolveColour`). The flag accepts
 `auto|truecolor|256|grey`. Explicit choices map to
@@ -1745,18 +1777,22 @@ Nyala dev │ Chrome 150 │ Kitty 0.4.0 │ ✓ Kitty (shm) │ ✗ Sixel │ �
 ```
 
 Every field formats from one `capabilitySnapshot`, built in
-`internal/viewer/capability.go` from the state `configureBackends` resolved:
-`State.Enabled`, the resolved Kitty transport, the sextant gate, the colour
-mode, the stored handshake identity, the engine's browser version, and the
-engine's WebGL state. The fields show effective decisions, not raw probe
-evidence, so a backend that the multiplexer rule or the compatibility list
+`internal/viewer/capability.go` from configured state and the current palette
+policy: `State.Enabled`, the resolved Kitty transport, the sextant gate, the
+colour mode, the selected palette policy, the stored handshake identity, the
+engine's browser version, and the engine's WebGL state. The fields show the
+selected policy and effective decisions, not raw probe evidence. A backend
+that the multiplexer rule or the compatibility list
 blocked reads `✗` even when the terminal answered the probe. `?` is reserved
 for unknown runtime state, which today is only the WebGL tier before or without
 a probe result. The terminal field is omitted when the handshake gave no
 XTVERSION identity, and the browser field when the engine has no version. The
-grey colour mode reads `Greyscale`. The row keeps the bar's `│` separator
-rather than the ASCII `|` of the original mock-up, because the About row shares
-the chrome row's framing.
+`256` mode reads `240 Adaptive` or `240 Static`. The grey mode reads `240
+Shades` or `24 Shades`. These labels show the selected palette policy without
+protocol terms. <kbd>Alt</kbd>+<kbd>C</kbd> and <kbd>Alt</kbd>+<kbd>P</kbd> update
+the label while About stays open. The row
+keeps the bar's `│` separator rather than the ASCII `|` of the original mock-up,
+because the About row shares the chrome row's framing.
 
 The WebGL probe runs once in `startSession`, after the browser version fetch
 and while the page is still `about:blank`, under a two-second timeout. Context
@@ -1791,15 +1827,21 @@ own before it. When no field fits, the row is ` … │ ✕ `, and a terminal
 narrower than seven cells falls back to `closeAnchoredRow`, which keeps only
 whole spans and drops the ellipsis before the close. The `✓` and `✗` glyphs are coloured green and red as a hint added
 after layout, so the glyph carries the meaning alone: `ColourXTermGrey` writes
-no colour SGR and the row still reads. Input ownership is unchanged: Esc
-closes back to chrome, the quit keys quit, and everything else is swallowed.
+no colour SGR and the row still reads. <kbd>Esc</kbd> closes back to chrome, the
+quit keys quit, <kbd>Alt</kbd>+<kbd>C</kbd> cycles colour, and
+<kbd>Alt</kbd>+<kbd>P</kbd> toggles the palette policy. The row swallows every
+other key.
 
 ### Key bindings and text input
 
-Chrome-mode key bindings live in `internal/viewer/keys.go`. Rendering: Alt+R
-and Alt+Shift+R cycle the backend, Alt+B and Alt+Shift+B cycle the Block
-scheme, Alt+C and Alt+Shift+C cycle colour. Navigation: Alt+Left and
-Alt+Right step history, Alt+Home opens the launch URL, Ctrl+R and F5 reload.
+Chrome-mode key bindings live in `internal/viewer/keys.go`. Rendering:
+<kbd>Alt</kbd>+<kbd>R</kbd> and <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd>
+cycle the backend, <kbd>Alt</kbd>+<kbd>B</kbd> and
+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> cycle the Block scheme,
+<kbd>Alt</kbd>+<kbd>C</kbd> and <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd>
+cycle colour, and <kbd>Alt</kbd>+<kbd>P</kbd> toggles the Block palette policy.
+Navigation: Alt+Left and Alt+Right step history, Alt+Home opens the launch URL,
+Ctrl+R and F5 reload.
 Chrome: Ctrl+L edits the URL, Ctrl+F opens find, Alt+F opens the menu, Ctrl+A
 selects the page, Alt+W copies the page selection, Ctrl+Q or Ctrl+C quits. Page keys: Tab, Shift+Tab,
 and Enter forward for focus traversal and activation, the arrows, Home, End,

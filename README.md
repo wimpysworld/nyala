@@ -98,17 +98,19 @@ Colour mode precedence is an explicit non-`auto` `--color` value, then `NO_COLOR
 | Mode | Block output | Automatic selection |
 |---|---|---|
 | `truecolor` | 24-bit foreground and background colours. | A truecolour profile or recognised truecolour `COLORTERM` value. |
-| `256` | Canonical xterm palette indexes 16..255, or a scene-fitted 240-entry palette written into indexes 16..255 when the startup probe answered `OSC 4 ; 16 ; ?`. | Every profile below truecolour. |
-| `grey` | The fixed xterm greyscale ramp at indexes 232..255, or a scene-fitted greyscale ramp written into indexes 16..255 when the startup probe answered `OSC 4 ; 16 ; ?`. | Never. |
+| `256` | An adaptive, scene-fitted 240-entry palette by default when terminal palette control is available. Otherwise, the canonical xterm palette at indexes 16..255. | Every profile below truecolour. |
+| `grey` | An adaptive, scene-fitted greyscale ramp by default when terminal palette control is available. Otherwise, the fixed xterm ramp at indexes 232..255. | Never. |
 
 <kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `grey`, then wraps. Nyala skips modes above the effective terminal capability. An explicit mode can raise a lower detected capability, but a terminal safety rule can still lower it. `NO_COLOR` changes the automatic starting mode only. It does not lower the detected capability for the cycle.
 
 The `256` mode uses the CIEDE2000-nearest canonical xterm colour. `grey` quantises by luma only: it maps the Rec.601 key to the nearest grey in its active ramp.
 
-When the startup probe answered `OSC 4 ; 16 ; ?`, the `256` mode fits a 240-entry palette to each Block frame, and the `grey` mode fits a greyscale ramp to the page. Both modes write the result into indexes 16..255, leaving indexes 0..15 on your theme. When the probe did not answer, the `256` mode keeps the canonical xterm palette and the `grey` mode keeps the fixed xterm greyscale ramp. A multiplexer session records unsupported and keeps those fixed palettes, so tmux, zellij, GNU screen, and herdr never see a scene-fitted palette or ramp. [`docs/BLOCK-MODES.md`](docs/BLOCK-MODES.md) records the full behaviour.
+Nyala selects adaptive palettes by default. The `256` and `grey` modes use them when terminal palette control is available. Press <kbd>Alt</kbd>+<kbd>P</kbd> to switch between adaptive and static palettes for the current Nyala process. The static palette helps you compare the two outputs or use a terminal path where palette updates are slow. The key works only while Block is active in `256` or `grey` mode. It does nothing in all other contexts. The selection stays set across Block and colour cycles, backend cycles, reloads, and resizes. A new Nyala process starts adaptive.
+
+Nyala confirms palette control with the startup `OSC 4 ; 16 ; ?` probe. Adaptive `256` fits 240 entries to each Block frame, and adaptive `grey` fits a greyscale ramp to the page. Both modes write indexes 16..255 and leave indexes 0..15 on your theme. Static `256` keeps the canonical xterm palette, and static `grey` keeps the fixed xterm greyscale ramp. When the probe does not answer, Nyala uses the static palettes and <kbd>Alt</kbd>+<kbd>P</kbd> does nothing. A multiplexer session records unsupported, so tmux, zellij, GNU screen, and herdr keep the static palettes. [`docs/BLOCK-MODES.md`](docs/BLOCK-MODES.md) records the full behaviour.
 
 > [!NOTE]
-> The `256` and `grey` outputs use only indexes 16..255, which terminals do not customarily redefine. On an answered probe, the `256` and `grey` modes redefine those indexes on purpose and restore the terminal palette with bare OSC 104 on exit, on every backend switch, and on a colour cycle to another mode, including a cycle between `256` and `grey`.
+> The `256` and `grey` outputs use only indexes 16..255, which terminals do not customarily redefine. In adaptive mode, Nyala redefines those indexes. It restores the terminal palette with bare OSC 104 when <kbd>Alt</kbd>+<kbd>P</kbd> selects static or Nyala exits. A backend switch or a colour cycle to another mode also restores it, including a cycle between `256` and `grey`.
 
 ### Keys
 
@@ -143,6 +145,7 @@ When the startup probe answered `OSC 4 ; 16 ; ?`, the `256` mode fits a 240-entr
 | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> | Cycle Block mode backwards (Block backend only) |
 | <kbd>Alt</kbd>+<kbd>C</kbd> | Cycle colour mode: Truecolour -> 256 -> grey (Block backend only) |
 | <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> | Cycle colour mode backwards (Block backend only) |
+| <kbd>Alt</kbd>+<kbd>P</kbd> | Toggle between adaptive and static palettes (`256` and `grey` Block modes only) |
 
 Notes:
 
@@ -154,8 +157,8 @@ Notes:
 - Find searches when you press `Enter`, not as you type, because each search repaints every match in the page. Matches highlight amber and the current one orange. `Shift+Enter` steps back as well, on a terminal that speaks the Kitty keyboard protocol; `Down` and `Up` work everywhere.
 - `Alt+Home` returns to the URL Nyala was launched with, for the lifetime of the process. It is a normal navigation, so `Alt+Left` goes back to the page you were on.
 - The Block mode and colour cycles skip modes the terminal cannot render (see [Terminal compatibility](#terminal-compatibility)).
-- Both cycles only work while the Block backend is on screen. They only affect Block rendering, so cycling them under Kitty or Sixel would change hidden state with no visible feedback.
-- A multiplexer with custom Alt binds can shadow the Alt chords. The zellij defaults leave `Alt+R`, `Alt+B`, and `Alt+C` free.
+- The Block and colour cycles and the palette toggle work only while the Block backend is on screen. The palette toggle also needs terminal palette control and `256` or `grey` mode.
+- A multiplexer with custom Alt binds can shadow the Alt chords. The zellij defaults leave <kbd>Alt</kbd>+<kbd>R</kbd>, <kbd>Alt</kbd>+<kbd>B</kbd>, <kbd>Alt</kbd>+<kbd>C</kbd>, and <kbd>Alt</kbd>+<kbd>P</kbd> free. Multiplexer sessions do not expose palette control, so <kbd>Alt</kbd>+<kbd>P</kbd> has no effect there.
 
 ## Rendering
 

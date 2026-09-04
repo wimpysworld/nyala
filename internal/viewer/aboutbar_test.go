@@ -419,7 +419,7 @@ func TestAboutColourCycleRefreshesOpenRow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, st := modeSession(t, streamTestEngine{})
 			st.SetEnabled([]Backend{BackendBlock})
-			st.paletteQueryOK = tc.adaptive
+			st.staticPaletteSelected = !tc.adaptive
 			done := make(chan struct{})
 			defer close(done)
 			s.ctl = newControl(s.eng, done)
@@ -438,6 +438,90 @@ func TestAboutColourCycleRefreshesOpenRow(t *testing.T) {
 				if row := out.String(); !strings.Contains(row, want) {
 					t.Fatalf("cycle %d About row %q missing %q", i, row, want)
 				}
+			}
+		})
+	}
+}
+
+// TestAboutPaletteToggleRefreshesOpenRow checks both palette-policy directions
+// in the RGB and grey modes. About stays open and shows each new label in the
+// same repaint that clears the old view.
+func TestAboutPaletteToggleRefreshesOpenRow(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mode     ColourMode
+		adaptive string
+		static   string
+	}{
+		{"RGB", ColourXTerm256, "Colour: 240 Adaptive", "Colour: 240 Static"},
+		{"grey", ColourXTermGrey, "Colour: 240 Shades", "Colour: 24 Shades"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, st := modeSession(t, streamTestEngine{})
+			st.SetEnabled([]Backend{BackendBlock})
+			st.Backend = BackendBlock
+			st.Colour = tc.mode
+			st.paletteQueryOK = true
+			done := make(chan struct{})
+			defer close(done)
+			s.ctl = newControl(s.eng, done)
+			s.enterAbout()
+
+			out := s.tty.(interface {
+				Reset()
+				String() string
+			})
+			if row := out.String(); !strings.Contains(row, tc.adaptive) {
+				t.Fatalf("initial About row %q missing %q", row, tc.adaptive)
+			}
+
+			out.Reset()
+			s.handleKey(keyEvent{act: actionTogglePalette})
+			if s.barMode != barModeAbout || !st.staticPaletteSelected {
+				t.Fatalf("static toggle changed About mode %d or kept adaptive", s.barMode)
+			}
+			if row := out.String(); !strings.Contains(row, tc.static) {
+				t.Fatalf("static About row %q missing %q", row, tc.static)
+			}
+
+			out.Reset()
+			s.handleKey(keyEvent{act: actionTogglePalette})
+			if s.barMode != barModeAbout || st.staticPaletteSelected {
+				t.Fatalf("adaptive toggle changed About mode %d or kept static", s.barMode)
+			}
+			if row := out.String(); !strings.Contains(row, tc.adaptive) {
+				t.Fatalf("adaptive About row %q missing %q", row, tc.adaptive)
+			}
+		})
+	}
+}
+
+// TestAboutPaletteToggleNoopKeepsOpenRow checks each unsupported context.
+// Alt+P leaves About and its current row unchanged when State rejects the toggle.
+func TestAboutPaletteToggleNoopKeepsOpenRow(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prepare func(*State)
+	}{
+		{"without OSC 4", func(st *State) { st.paletteQueryOK = false }},
+		{"outside Block", func(st *State) { st.Backend = BackendSixel }},
+		{"in truecolour", func(st *State) { st.Colour = ColourTrue }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, st := modeSession(t, streamTestEngine{})
+			st.Backend = BackendBlock
+			st.Colour = ColourXTerm256
+			st.paletteQueryOK = true
+			tc.prepare(st)
+			s.enterAbout()
+			out := s.tty.(*bytes.Buffer)
+			out.Reset()
+
+			s.handleKey(keyEvent{act: actionTogglePalette})
+
+			if s.barMode != barModeAbout || st.staticPaletteSelected || out.Len() != 0 {
+				t.Fatalf("unsupported Alt+P changed About: mode %d, static %t, output %q",
+					s.barMode, st.staticPaletteSelected, out.String())
 			}
 		})
 	}

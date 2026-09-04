@@ -1935,8 +1935,8 @@ func (s *streamSession) dispatchMouse(ev MouseEvent) {
 // menu; Alt+W copies the page's selection to the terminal clipboard and Ctrl+A
 // selects it, Chromium choosing between the focused field and the document;
 // Alt+R cycles the backend and restarts the stream at the new capture
-// size; Alt+B and Alt+C cycle the
-// Block glyph scheme and colour mode. Both cycles only affect Block
+// size; Alt+B and Alt+C cycle the Block glyph scheme and colour mode, and
+// Alt+P toggles the Block palette policy. These commands only affect Block
 // rendering, so they are no-ops unless Block is the active backend: cycling
 // under a graphics backend would change hidden state with no visible
 // feedback, and the user would later land on Block in an unexpected mode.
@@ -2026,6 +2026,8 @@ func (s *streamSession) handleKey(ev keyEvent) (quit bool) {
 		s.recomposeBlock(s.st.CycleScheme(act == actionCycleBlocksReverse) != before)
 	case actionCycleColour, actionCycleColourReverse:
 		s.cycleColour(act == actionCycleColourReverse)
+	case actionTogglePalette:
+		s.togglePalettePolicy()
 	}
 	return false
 }
@@ -2154,6 +2156,14 @@ func (s *streamSession) cycleColour(reverse bool) {
 	s.recomposeBlock(s.st.CycleColour(reverse) != before)
 }
 
+// togglePalettePolicy changes the supported Block palette policy and repaints
+// the current view. A rejected toggle emits no terminal control and schedules
+// no engine restart.
+func (s *streamSession) togglePalettePolicy() {
+	changed, control := s.st.togglePalettePolicy()
+	s.recomposeBlock(changed, control)
+}
+
 // recomposeBlock repaints the live Block view after a scheme or colour cycle
 // changed it. It follows the backend-switch clear rule: reset the differ
 // against the blank terminal, reset the SGR before the erase, and route the
@@ -2164,7 +2174,7 @@ func (s *streamSession) cycleColour(reverse bool) {
 // the cycles while Block is the active backend, so this always repaints Block.
 // A colour cycle out of 256 and grey, and a cycle between them, release the
 // OSC 4 registers; a scheme cycle inside one of those modes keeps them.
-func (s *streamSession) recomposeBlock(changed bool) {
+func (s *streamSession) recomposeBlock(changed bool, paletteControl ...string) {
 	if !changed {
 		return
 	}
@@ -2181,7 +2191,9 @@ func (s *streamSession) recomposeBlock(changed bool) {
 	// next frame must re-quantise and rewrite them. A scheme cycle inside one
 	// palette mode keeps the registers, because the next frame reuses the
 	// retained palette and writes none of its own.
-	if !s.st.paletteLoading() || s.st.Colour != s.st.paletteMode {
+	if len(paletteControl) > 0 {
+		ctl.WriteString(paletteControl[0])
+	} else if !s.st.paletteLoading() || s.st.Colour != s.st.paletteMode {
 		ctl.WriteString(s.st.releasePalette())
 	}
 	s.appendBar(&ctl)

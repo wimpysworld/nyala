@@ -52,6 +52,60 @@ func greyTestImage(t *testing.T, st *State) *image.RGBA {
 	return img
 }
 
+// TestTogglePalettePolicyGrey proves both grey toggle directions, including
+// the safe restore and the forced first adaptive ramp re-fit.
+func TestTogglePalettePolicyGrey(t *testing.T) {
+	st := greyTestState(true)
+	src := greyTestImage(t, st)
+	var first bytes.Buffer
+	if err := st.RenderStreamFrame(render.Frame{Img: src}, &first); err != nil {
+		t.Fatalf("RenderStreamFrame for the adaptive frame: %v", err)
+	}
+	if !st.adaptivePaletteSelected() || !st.adaptivePaletteActive() {
+		t.Fatal("a new grey state did not select and activate the adaptive policy")
+	}
+	if !strings.Contains(first.String(), osc4Introducer) {
+		t.Fatal("the initial adaptive grey frame wrote no ramp")
+	}
+
+	before := st.greyEngine.RequantCount
+	changed, control := st.togglePalettePolicy()
+	if !changed || control != palette.OSC104 {
+		t.Fatalf("toggle to static = (%t, %q), want (true, %q)", changed, control, palette.OSC104)
+	}
+	st.diff.Reset()
+	var static bytes.Buffer
+	if err := st.RenderStreamFrame(render.Frame{Img: src}, &static); err != nil {
+		t.Fatalf("RenderStreamFrame for the static frame: %v", err)
+	}
+	if strings.Contains(static.String(), osc4Introducer) {
+		t.Fatal("the static grey frame wrote a ramp")
+	}
+	if st.blockRenderer.PaletteLUT != nil {
+		t.Fatal("the static grey frame attached an adaptive ramp table")
+	}
+	for _, idx := range greySGRIndexes(t, static.String()) {
+		if idx < 232 || idx > 255 {
+			t.Fatalf("the static grey frame names register %d, want 232..255", idx)
+		}
+	}
+
+	changed, control = st.togglePalettePolicy()
+	if !changed || control != "" {
+		t.Fatalf("toggle to adaptive = (%t, %q), want (true, empty)", changed, control)
+	}
+	var refit bytes.Buffer
+	if err := st.RenderStreamFrame(render.Frame{Img: src}, &refit); err != nil {
+		t.Fatalf("RenderStreamFrame for the re-entered adaptive frame: %v", err)
+	}
+	if st.greyEngine.RequantCount != before+1 {
+		t.Fatalf("re-entered RequantCount = %d, want %d", st.greyEngine.RequantCount, before+1)
+	}
+	if !strings.Contains(refit.String(), osc4Introducer) {
+		t.Fatal("the first re-entered adaptive grey frame wrote no ramp")
+	}
+}
+
 // greyShiftImage returns a copy of src with every channel raised by delta
 // inside region, saturating at 255. A grey source stays grey, so the luma of
 // every pixel in region moves by exactly delta.

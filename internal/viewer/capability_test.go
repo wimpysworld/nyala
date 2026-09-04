@@ -187,10 +187,11 @@ func TestCapabilitySnapshotColourLabel(t *testing.T) {
 			}
 			st := NewState(160, 24)
 			st.Colour = tc.mode
-			st.paletteQueryOK = tc.adaptive
+			st.staticPaletteSelected = !tc.adaptive
 			snap := st.capabilitySnapshot("dev", "", render.WebGLState{})
-			if snap.Colour.Mode != tc.mode || snap.Colour.Adaptive != tc.adaptive {
-				t.Fatalf("snapshot colour = %d, adaptive = %t, want %d, %t", snap.Colour.Mode, snap.Colour.Adaptive, tc.mode, tc.adaptive)
+			wantAdaptive := tc.adaptive && (tc.mode == ColourXTerm256 || tc.mode == ColourXTermGrey)
+			if snap.Colour.Mode != tc.mode || snap.Colour.Adaptive != wantAdaptive {
+				t.Fatalf("snapshot colour = %d, adaptive = %t, want %d, %t", snap.Colour.Mode, snap.Colour.Adaptive, tc.mode, wantAdaptive)
 			}
 			if row := aboutRowText(snap); !strings.Contains(row, tc.want) {
 				t.Fatalf("About fields %q missing %q", row, tc.want)
@@ -212,12 +213,43 @@ func TestCapabilitySnapshotColourCycleLabels(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := NewState(160, 24)
-			st.paletteQueryOK = tc.adaptive
+			st.staticPaletteSelected = !tc.adaptive
 			for _, want := range tc.want {
 				st.CycleColour(false)
 				if row := aboutRowText(st.capabilitySnapshot("dev", "", render.WebGLState{})); !strings.Contains(row, want) {
 					t.Fatalf("About fields %q missing %q", row, want)
 				}
+			}
+		})
+	}
+}
+
+// TestCapabilitySnapshotColourPolicyIsIndependentOfCapability proves that the
+// About row reports the selected policy and does not expose OSC 4 support.
+func TestCapabilitySnapshotColourPolicyIsIndependentOfCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		mode      ColourMode
+		queryOK   bool
+		static    bool
+		wantLabel string
+	}{
+		{"adaptive RGB without OSC 4", ColourXTerm256, false, false, "Colour: 240 Adaptive"},
+		{"static RGB with OSC 4", ColourXTerm256, true, true, "Colour: 240 Static"},
+		{"adaptive grey without OSC 4", ColourXTermGrey, false, false, "Colour: 240 Shades"},
+		{"static grey with OSC 4", ColourXTermGrey, true, true, "Colour: 24 Shades"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := NewState(160, 24)
+			st.Colour = tc.mode
+			st.paletteQueryOK = tc.queryOK
+			st.staticPaletteSelected = tc.static
+			row := aboutRowText(st.capabilitySnapshot("dev", "", render.WebGLState{}))
+			if !strings.Contains(row, tc.wantLabel) {
+				t.Fatalf("About fields %q missing %q", row, tc.wantLabel)
+			}
+			if strings.Contains(row, "OSC 4") {
+				t.Fatalf("About fields expose OSC 4: %q", row)
 			}
 		})
 	}

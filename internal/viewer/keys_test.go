@@ -438,6 +438,8 @@ func TestDecodeKittyKey(t *testing.T) {
 		{"alt shift b reverses blocks", "98;4u", actionCycleBlocksReverse, cdpModAlt | cdpModShift, true},
 		{"alt c cycles colour", "99;3u", actionCycleColour, cdpModAlt, true},
 		{"alt shift c reverses colour", "99;4u", actionCycleColourReverse, cdpModAlt | cdpModShift, true},
+		{"alt p toggles the palette policy", "112;3u", actionTogglePalette, cdpModAlt, true},
+		{"alt shift p toggles the palette policy", "112;4u", actionTogglePalette, cdpModAlt | cdpModShift, true},
 		{"alt f opens the menu", "102;3u", actionOpenMenu, cdpModAlt, true},
 		{"upper-case key code lower-cases", "82;3u", actionCycleBackend, cdpModAlt, true},
 		{"sub-parameters are cut", "13:65;2:1u", actionActivate, cdpModShift, true},
@@ -473,9 +475,9 @@ func TestDecodeKittyKey(t *testing.T) {
 // action, an unbound report is consumed silently, and a late flags reply from the
 // startup query never leaks bytes as keys.
 func TestNextEventKittyKeyReports(t *testing.T) {
-	events := collectEvents(t, "\x1b[27u"+"\x1b[13;2u"+"\x1b[114;3u"+"\x1b[57358u"+"\x1b[?1u"+"q")
-	if len(events) != 4 {
-		t.Fatalf("events = %d (%+v), want 4: escape, shift-enter, alt-r, and the key", len(events), events)
+	events := collectEvents(t, "\x1b[27u"+"\x1b[13;2u"+"\x1b[114;3u"+"\x1b[112;3u"+"\x1b[57358u"+"\x1b[?1u"+"q")
+	if len(events) != 5 {
+		t.Fatalf("events = %d (%+v), want 5: escape, shift-enter, Alt+R, Alt+P, and the key", len(events), events)
 	}
 	if events[0].b != keyEsc || events[0].act != actionNone || events[0].mod != 0 {
 		t.Errorf("event 0 = %+v, want the ESC byte event a legacy terminal sends", events[0])
@@ -489,8 +491,11 @@ func TestNextEventKittyKeyReports(t *testing.T) {
 	if events[2].act != actionCycleBackend || events[2].mod != cdpModAlt {
 		t.Errorf("event 2 = %+v, want the Alt+R cycle", events[2])
 	}
-	if events[3].b != 'q' || events[3].act != actionNone {
-		t.Errorf("event 3 = %+v, want the plain key 'q'", events[3])
+	if events[3].act != actionTogglePalette || events[3].mod != cdpModAlt {
+		t.Errorf("event 3 = %+v, want the Alt+P palette toggle", events[3])
+	}
+	if events[4].b != 'q' || events[4].act != actionNone {
+		t.Errorf("event 4 = %+v, want the plain key 'q'", events[4])
 	}
 
 	// Plain and shifted Enter both dispatch as activate, and only the shifted one
@@ -580,11 +585,11 @@ func TestNextEventLegacyKeepsEscapeAndAltChords(t *testing.T) {
 		t.Fatalf("bare Esc = %+v, want one ESC byte event", bare)
 	}
 
-	chords := collectEvents(t, "\x1br"+"\x1bR"+"\x1bf")
-	if len(chords) != 3 {
-		t.Fatalf("Alt chords = %d events (%+v), want 3", len(chords), chords)
+	chords := collectEvents(t, "\x1br"+"\x1bR"+"\x1bf"+"\x1bp")
+	if len(chords) != 4 {
+		t.Fatalf("Alt chords = %d events (%+v), want 4", len(chords), chords)
 	}
-	wantChords := []keyAction{actionCycleBackend, actionCycleBackendReverse, actionOpenMenu}
+	wantChords := []keyAction{actionCycleBackend, actionCycleBackendReverse, actionOpenMenu, actionTogglePalette}
 	for i, want := range wantChords {
 		if chords[i].act != want || chords[i].mod != 0 {
 			t.Fatalf("legacy chord %d = %+v, want action %d with no modifier bits", i, chords[i], want)
