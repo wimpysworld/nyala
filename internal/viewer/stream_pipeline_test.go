@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"io"
 	"os"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wimpysworld/nyala/internal/palette"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
@@ -1038,6 +1040,119 @@ func TestStreamLoopDropsStaleFramesWithFPSArmed(t *testing.T) {
 	}
 	if tty.count() == 0 {
 		t.Fatal("writer presented no frames at all")
+	}
+}
+
+func TestAssembleRecordsChangedRGBPaletteAfterFCP(t *testing.T) {
+	state := NewState(20, 11)
+	st := &state
+	st.Backend = BackendBlock
+	st.Colour = ColourXTerm256
+	st.paletteQueryOK = true
+	st.SetDiff(&block.GridDiff{})
+	st.paletteNow = steppedPaletteClock()
+	meter := &fpsMeter{window: time.Second, start: time.Now()}
+	s := &streamSession{st: st, diff: st.diff, fps: meter}
+	pxW, pxH := schemePixels(st.Scheme, st.Cols, engineRows(st.Rows))
+
+	var warmup bytes.Buffer
+	flat := paletteSolidImage(pxW, pxH, color.RGBA{R: 8, G: 8, B: 40, A: 0xff})
+	if _, err := s.assemble(&warmup, render.Frame{Img: flat}); err != nil {
+		t.Fatalf("assemble warm-up frame: %v", err)
+	}
+	if !reflect.DeepEqual(meter.palette, paletteSessionMetrics{}) {
+		t.Fatalf("pre-FCP frame changed palette metrics: %+v", meter.palette)
+	}
+
+	var out bytes.Buffer
+	if _, err := s.assemble(&out, render.Frame{Img: paletteTestImage(pxW, pxH), AfterFCP: true}); err != nil {
+		t.Fatalf("assemble gate frame: %v", err)
+	}
+	got := meter.palette
+	if got.paletteChecks != 1 || got.paletteReuseFailures != 1 || got.paletteUpdates != 1 || got.paletteFullRepaints != 1 {
+		t.Fatalf("RGB update totals = checks %d, failures %d, updates %d, repaints %d", got.paletteChecks, got.paletteReuseFailures, got.paletteUpdates, got.paletteFullRepaints)
+	}
+	entries := int64(len(st.adaptivePalette().Palette))
+	sequences := (entries + palette.MaxOSC4Entries - 1) / palette.MaxOSC4Entries
+	if got.paletteOSCEntries != entries || got.paletteOSCSequences != sequences || got.paletteOSCBytes != int64(len(st.paletteOSC4)) {
+		t.Fatalf("RGB OSC totals = entries %d, sequences %d, bytes %d", got.paletteOSCEntries, got.paletteOSCSequences, got.paletteOSCBytes)
+	}
+	if got.paletteChangedEntries == 0 {
+		t.Fatal("changed RGB refit recorded no changed entries")
+	}
+	if got.outBytes != int64(out.Len()) {
+		t.Fatalf("out bytes = %d, want complete assembled length %d", got.outBytes, out.Len())
+	}
+	if !reflect.DeepEqual(got.paletteCheckMS, []float64{1}) || !reflect.DeepEqual(got.paletteFitMS, []float64{1}) || !reflect.DeepEqual(got.paletteOSCMS, []float64{1}) {
+		t.Fatalf("RGB timing samples = check %v, fit %v, OSC %v", got.paletteCheckMS, got.paletteFitMS, got.paletteOSCMS)
+	}
+}
+
+func TestAssembleRecordsExactRGBPaletteNoOp(t *testing.T) {
+	state := NewState(20, 11)
+	st := &state
+	st.Backend = BackendBlock
+	st.Colour = ColourXTerm256
+	st.paletteQueryOK = true
+	st.SetDiff(&block.GridDiff{})
+	st.paletteNow = steppedPaletteClock()
+	meter := &fpsMeter{window: time.Second, start: time.Now()}
+	s := &streamSession{st: st, diff: st.diff, fps: meter}
+	pxW, pxH := schemePixels(st.Scheme, st.Cols, engineRows(st.Rows))
+	stable := color.RGBA{R: 80, G: 80, B: 80, A: 0xff}
+
+	var first bytes.Buffer
+	initial := paletteTwoToneImage(pxW, pxH, color.RGBA{R: 40, G: 40, B: 40, A: 0xff}, stable)
+	if _, err := s.assemble(&first, render.Frame{Img: initial}); err != nil {
+		t.Fatalf("assemble initial frame: %v", err)
+	}
+	var second bytes.Buffer
+	drift := paletteTwoToneImage(pxW, pxH, color.RGBA{R: 43, G: 43, B: 43, A: 0xff}, stable)
+	if _, err := s.assemble(&second, render.Frame{Img: drift, AfterFCP: true}); err != nil {
+		t.Fatalf("assemble exact no-op frame: %v", err)
+	}
+
+	got := meter.palette
+	if got.paletteChecks != 1 || got.paletteReuseFailures != 1 {
+		t.Fatalf("no-op totals = checks %d, failures %d", got.paletteChecks, got.paletteReuseFailures)
+	}
+	if got.paletteLengthEqualRefits != 1 || got.paletteEqualRefits != 1 || got.paletteLUTEqualRefits != 1 || got.paletteNoOpRefits != 1 {
+		t.Fatalf("no-op equality totals = length %d, palette %d, LUT %d, no-op %d", got.paletteLengthEqualRefits, got.paletteEqualRefits, got.paletteLUTEqualRefits, got.paletteNoOpRefits)
+	}
+	if got.paletteChangedEntries != 0 || got.paletteUpdates != 0 || got.paletteOSCEntries != 0 || got.paletteOSCSequences != 0 || got.paletteOSCBytes != 0 || got.paletteFullRepaints != 0 {
+		t.Fatalf("no-op output totals = changed %d, updates %d, entries %d, sequences %d, bytes %d, repaints %d", got.paletteChangedEntries, got.paletteUpdates, got.paletteOSCEntries, got.paletteOSCSequences, got.paletteOSCBytes, got.paletteFullRepaints)
+	}
+	if !reflect.DeepEqual(got.paletteCheckMS, []float64{1}) || !reflect.DeepEqual(got.paletteFitMS, []float64{1}) || len(got.paletteOSCMS) != 0 {
+		t.Fatalf("no-op timing samples = check %v, fit %v, OSC %v", got.paletteCheckMS, got.paletteFitMS, got.paletteOSCMS)
+	}
+}
+
+func TestAssembleRecordsChangedGreyPalette(t *testing.T) {
+	st := greyTestState(true)
+	st.paletteNow = steppedPaletteClock()
+	meter := &fpsMeter{window: time.Second, start: time.Now()}
+	s := &streamSession{st: st, diff: st.diff, fps: meter}
+
+	var out bytes.Buffer
+	if _, err := s.assemble(&out, render.Frame{Img: greyTestImage(t, st), AfterFCP: true}); err != nil {
+		t.Fatalf("assemble grey gate frame: %v", err)
+	}
+	got := meter.palette
+	if got.paletteChecks != 1 || got.paletteReuseFailures != 1 || got.paletteUpdates != 1 || got.paletteFullRepaints != 1 {
+		t.Fatalf("grey totals = checks %d, failures %d, updates %d, repaints %d", got.paletteChecks, got.paletteReuseFailures, got.paletteUpdates, got.paletteFullRepaints)
+	}
+	entries := int64(len(st.greyEngine.Palette))
+	sequences := (entries + palette.MaxOSC4Entries - 1) / palette.MaxOSC4Entries
+	if got.paletteOSCEntries != entries || got.paletteOSCSequences != sequences || got.paletteOSCBytes != int64(len(st.paletteOSC4)) {
+		t.Fatalf("grey OSC totals = entries %d, sequences %d, bytes %d", got.paletteOSCEntries, got.paletteOSCSequences, got.paletteOSCBytes)
+	}
+}
+
+func steppedPaletteClock() func() time.Time {
+	now := time.Unix(0, 0)
+	return func() time.Time {
+		now = now.Add(time.Millisecond)
+		return now
 	}
 }
 

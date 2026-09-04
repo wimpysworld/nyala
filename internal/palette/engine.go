@@ -38,6 +38,30 @@ const (
 	FreezeMaxDeltaE = 2.3
 )
 
+// RefitResult reports how a completed re-fit compares with the prior valid
+// palette state. The engine records the completed re-fit regardless of this
+// result.
+type RefitResult struct {
+	// PriorValid reports whether the engine held a valid state before the
+	// re-fit.
+	PriorValid bool
+	// LengthEqual reports whether the active palette length equals the prior
+	// valid length.
+	LengthEqual bool
+	// PaletteEqual reports whether LengthEqual is true and each active register
+	// has the same emitted 8-bit RGB value.
+	PaletteEqual bool
+	// LUTEqual reports whether the complete RGB555 LUT equals the prior valid
+	// LUT.
+	LUTEqual bool
+	// ChangedEntries counts new active register positions and active positions
+	// whose emitted 8-bit RGB value changed. It excludes a removed old tail.
+	ChangedEntries int
+	// ExactNoOp reports whether the active length, emitted palette, and complete
+	// LUT all equal the prior valid state.
+	ExactNoOp bool
+}
+
 // The budget mode. A terminal palette has 256 entries and the first 16 carry
 // the user's theme, which the shell prompt, the status bar, and every other
 // program on the screen still use. An engine in budget mode therefore leaves
@@ -151,11 +175,13 @@ func (e *Engine) Reuse(bounds image.Rectangle, sample *image.RGBA) bool {
 // Requantise rebuilds the adaptive palette from the sample, freezes
 // registers that moved less than a just-noticeable difference, rebuilds the
 // LUT, and records the new drift baseline and geometry. In the budget mode it
-// caps maxColours at BudgetColours.
-func (e *Engine) Requantise(bounds image.Rectangle, sample *image.RGBA, maxColours int) {
+// caps maxColours at BudgetColours. It returns a comparison with the prior
+// valid state after it records the new state.
+func (e *Engine) Requantise(bounds image.Rectangle, sample *image.RGBA, maxColours int) RefitResult {
 	maxColours = e.colours(maxColours)
+	priorValid := e.valid
 	e.oldPalette = e.oldPalette[:0]
-	if e.valid {
+	if priorValid {
 		e.oldPalette = append(e.oldPalette, e.Palette...)
 	}
 	// The quantiser reads cap, not a count argument, so the capacity must
@@ -167,11 +193,37 @@ func (e *Engine) Requantise(bounds image.Rectangle, sample *image.RGBA, maxColou
 	}
 	e.Palette = median.Quantizer(0).Quantize(e.Palette[:0], sample)
 	FreezeSubJNDRegisters(e.Palette, e.oldPalette)
-	e.LUT = BuildLUT(e.LUT, e.Palette, e.Base())
+	result := comparePaletteRefit(priorValid, e.oldPalette, e.Palette)
+	var lutEqual bool
+	e.LUT, lutEqual = buildLUT(e.LUT, e.Palette, e.Base())
+	result.LUTEqual = priorValid && lutEqual
+	result.ExactNoOp = result.PaletteEqual && result.LUTEqual
 	e.mappingError = MappingError(sample, e.Palette, e.LUT, e.Base())
 	e.bounds = bounds
 	e.valid = true
 	e.RequantCount++
+	return result
+}
+
+func comparePaletteRefit(priorValid bool, previous, current color.Palette) RefitResult {
+	result := RefitResult{
+		PriorValid:  priorValid,
+		LengthEqual: priorValid && len(current) == len(previous),
+	}
+	result.PaletteEqual = result.LengthEqual
+	for i, entry := range current {
+		if i >= len(previous) || !emittedRGBEqual(entry, previous[i]) {
+			result.ChangedEntries++
+			result.PaletteEqual = false
+		}
+	}
+	return result
+}
+
+func emittedRGBEqual(a, b color.Color) bool {
+	ar, ag, ab, _ := a.RGBA()
+	br, bg, bb, _ := b.RGBA()
+	return ar>>8 == br>>8 && ag>>8 == bg>>8 && ab>>8 == bb>>8
 }
 
 // FreezeSubJNDRegisters matches each new palette entry to its nearest previous

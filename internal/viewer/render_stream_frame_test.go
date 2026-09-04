@@ -2,8 +2,13 @@ package viewer
 
 import (
 	"bytes"
+	"errors"
 	"image"
+	"image/color"
+	"io"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/block"
@@ -47,6 +52,83 @@ func TestRenderStreamFrameGraphicsNoSecondDownscale(t *testing.T) {
 	if b := decoded.Bounds(); b.Dx() != imgW || b.Dy() != imgH {
 		t.Errorf("decoded sixel = %dx%d, want engine-sized %dx%d", b.Dx(), b.Dy(), imgW, imgH)
 	}
+}
+
+func TestRenderStreamFrameDoesNoPaletteTimingWhenUnarmed(t *testing.T) {
+	state := NewState(8, 4)
+	st := &state
+	st.Backend = BackendBlock
+	st.Colour = ColourXTerm256
+	st.paletteQueryOK = true
+	st.SetDiff(&block.GridDiff{})
+	st.paletteNow = func() time.Time {
+		panic("palette clock read while timing was unarmed")
+	}
+
+	img := paletteSolidImage(16, 12, color.RGBA{R: 20, G: 40, B: 60, A: 0xff})
+	if err := st.RenderStreamFrame(render.Frame{Img: img}, io.Discard); err != nil {
+		t.Fatalf("RenderStreamFrame: %v", err)
+	}
+	if !reflect.DeepEqual(st.paletteObservation, paletteFrameObservation{}) {
+		t.Fatalf("unarmed render retained an observation: %+v", st.paletteObservation)
+	}
+}
+
+func TestRenderStreamFrameClearsPaletteObservationForOtherPaths(t *testing.T) {
+	state := NewState(8, 4)
+	st := &state
+	st.SetDiff(&block.GridDiff{})
+	st.paletteNow = steppedPaletteClock()
+	img := paletteSolidImage(16, 12, color.RGBA{R: 20, G: 40, B: 60, A: 0xff})
+
+	st.Backend = BackendBlock
+	st.Colour = ColourXTerm256
+	st.paletteQueryOK = true
+	if err := st.renderStreamFrame(render.Frame{Img: img}, io.Discard, false, true); err != nil {
+		t.Fatalf("adaptive render: %v", err)
+	}
+	if st.paletteObservation.paletteChecks != 1 {
+		t.Fatal("adaptive render produced no observation")
+	}
+
+	cases := []struct {
+		name    string
+		setup   func()
+		frame   render.Frame
+		out     io.Writer
+		wantErr bool
+	}{
+		{name: "static colour", setup: func() { st.Backend, st.Colour, st.paletteQueryOK = BackendBlock, ColourXTerm256, false }, frame: render.Frame{Img: img}, out: io.Discard},
+		{name: "truecolour", setup: func() { st.Backend, st.Colour, st.paletteQueryOK = BackendBlock, ColourTrue, true }, frame: render.Frame{Img: img}, out: io.Discard},
+		{name: "Sixel", setup: func() { st.Backend = BackendSixel }, frame: render.Frame{Img: img}, out: io.Discard},
+		{name: "Kitty", setup: func() { st.Backend = BackendKitty }, frame: render.Frame{EncodedPNG: encodedPNG(t, img)}, out: io.Discard},
+		{name: "nil image", setup: func() { st.Backend = BackendBlock }, frame: render.Frame{}, out: io.Discard},
+		{name: "failed", setup: func() {
+			st.Backend, st.Colour, st.paletteQueryOK = BackendBlock, ColourTrue, true
+			st.diff.Reset()
+		}, frame: render.Frame{Img: img}, out: failingFrameWriter{}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.setup()
+			err := st.renderStreamFrame(tc.frame, tc.out, false, true)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("render error = %v, want error %t", err, tc.wantErr)
+			}
+			if !reflect.DeepEqual(st.paletteObservation, paletteFrameObservation{}) {
+				t.Fatalf("render retained an adaptive observation: %+v", st.paletteObservation)
+			}
+			if st.paletteTiming {
+				t.Fatal("render left palette timing armed")
+			}
+		})
+	}
+}
+
+type failingFrameWriter struct{}
+
+func (failingFrameWriter) Write([]byte) (int, error) {
+	return 0, errors.New("frame write failed")
 }
 
 // TestRenderStreamFrameGraphicsZeroGrid asserts decoded graphics frames remain a

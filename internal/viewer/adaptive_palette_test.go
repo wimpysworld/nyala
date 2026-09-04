@@ -58,6 +58,17 @@ func paletteSolidImage(w, h int, c color.RGBA) *image.RGBA {
 	return img
 }
 
+// paletteTwoToneImage adds a stable final source row to a flat frame.
+func paletteTwoToneImage(w, h int, main, final color.RGBA) *image.RGBA {
+	img := paletteSolidImage(w, h, main)
+	for y := max(0, h-4); y < h; y++ {
+		for x := range w {
+			img.SetRGBA(x, y, final)
+		}
+	}
+	return img
+}
+
 // paletteTestState returns a Block state in the 256 colour mode, carrying the
 // given OSC 4 palette-query verdict, whose adaptive engine already holds a
 // quantised palette, so a compose has a table to attach. Production sets the
@@ -359,6 +370,88 @@ func TestRenderBlockReusedPaletteWritesNoPaletteBytes(t *testing.T) {
 	// differ's retained grid rather than forcing a repaint.
 	if second.Len() != 0 {
 		t.Fatalf("a reused-palette frame wrote %d bytes, want 0", second.Len())
+	}
+}
+
+// TestRenderBlockExactPaletteRefitKeepsTheCellDiff proves that an exact refit
+// emits no palette bytes and still emits a changed cell through the retained
+// differ.
+func TestRenderBlockExactPaletteRefitKeepsTheCellDiff(t *testing.T) {
+	state := NewState(20, 11)
+	st := &state
+	st.Backend = BackendBlock
+	st.Colour = ColourXTerm256
+	st.paletteQueryOK = true
+	st.SetDiff(&block.GridDiff{})
+	pxW, pxH := schemePixels(st.Scheme, st.Cols, engineRows(st.Rows))
+	stable := color.RGBA{R: 80, G: 80, B: 80, A: 0xff}
+	src := paletteTwoToneImage(pxW, pxH, color.RGBA{R: 40, G: 40, B: 40, A: 0xff}, stable)
+	foreground := color.RGBA{R: 23, G: 67, B: 149, A: 0xff}
+	first := render.Frame{Img: src, Text: []render.GlyphRun{{Col: 0, Row: 0, Text: "A", FG: foreground}}}
+	if err := st.RenderStreamFrame(first, io.Discard); err != nil {
+		t.Fatalf("RenderStreamFrame for the first frame: %v", err)
+	}
+
+	eng := st.adaptivePalette()
+	before := eng.RequantCount
+	mode := st.paletteMode
+
+	var out bytes.Buffer
+	drift := paletteTwoToneImage(pxW, pxH, color.RGBA{R: 43, G: 43, B: 43, A: 0xff}, stable)
+	changed := render.Frame{Img: drift, Text: []render.GlyphRun{{Col: 0, Row: 0, Text: "B", FG: foreground}}}
+	if err := st.RenderStreamFrame(changed, &out); err != nil {
+		t.Fatalf("RenderStreamFrame for the changed frame: %v", err)
+	}
+	if eng.RequantCount != before+1 {
+		t.Fatalf("RequantCount = %d, want %d", eng.RequantCount, before+1)
+	}
+	if strings.Contains(out.String(), osc4Introducer) {
+		t.Fatal("an exact palette refit wrote OSC 4 bytes")
+	}
+	if out.Len() == 0 {
+		t.Fatal("the changed frame emitted no cell diff")
+	}
+	lastRow := "\x1b[" + strconv.Itoa(engineRows(st.Rows)) + ";1H"
+	if strings.Contains(out.String(), lastRow) {
+		t.Fatal("the exact palette refit reset the differ and repainted the stable final row")
+	}
+	if st.paletteMode != mode {
+		t.Fatalf("paletteMode = %d after the exact refit, want %d", st.paletteMode, mode)
+	}
+}
+
+// TestPublishPaletteRefitWritesEveryNonExactResult proves that each equality
+// difference publishes the complete palette through the common publication path.
+func TestPublishPaletteRefitWritesEveryNonExactResult(t *testing.T) {
+	colours := color.Palette{
+		color.RGBA{R: 1, G: 2, B: 3, A: 0xff},
+		color.RGBA{R: 4, G: 5, B: 6, A: 0xff},
+	}
+	want := palette.AppendOSC4(nil, colours, palette.BudgetBase)
+	lut := make([]uint8, 1<<15)
+	cases := map[string]palette.RefitResult{
+		"palette": {PriorValid: true, LengthEqual: true, LUTEqual: true, ChangedEntries: 1},
+		"length":  {PriorValid: true, ChangedEntries: 1},
+		"LUT":     {PriorValid: true, LengthEqual: true, PaletteEqual: true},
+	}
+	for name, result := range cases {
+		t.Run(name, func(t *testing.T) {
+			state := NewState(2, 3)
+			st := &state
+			st.Colour = ColourXTerm256
+			st.paletteQueryOK = true
+			st.publishPaletteRefit(result, lut, colours, palette.BudgetBase)
+
+			if !bytes.Equal(st.paletteOSC4, want) {
+				t.Fatal("the refit did not publish the complete palette")
+			}
+			if st.paletteMode != ColourXTerm256 {
+				t.Fatalf("paletteMode = %d, want %d", st.paletteMode, ColourXTerm256)
+			}
+			if !sameTable(st.sgrLUT, lut) {
+				t.Fatal("the refit did not refresh the indexed SGR table")
+			}
+		})
 	}
 }
 

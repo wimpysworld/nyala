@@ -218,6 +218,35 @@ func TestBlockTerminalRoundTripAdaptivePaletteAcrossRequantise(t *testing.T) {
 	}
 }
 
+// TestBlockTerminalRoundTripExactPaletteRefit proves that the terminal keeps
+// correct visible cells when an exact refit suppresses its palette write.
+func TestBlockTerminalRoundTripExactPaletteRefit(t *testing.T) {
+	st := adaptivePaletteInteropState(t)
+	pxW, pxH := schemePixels(st.Scheme, st.Cols, engineRows(st.Rows))
+	stable := color.RGBA{R: 80, G: 80, B: 80, A: 0xff}
+	tracker := blockinterop.NewPaletteTracker()
+	var stream bytes.Buffer
+
+	firstBytes, firstIntended := adaptiveInteropFrame(t, st,
+		paletteTwoToneImage(pxW, pxH, color.RGBA{R: 40, G: 40, B: 40, A: 0xff}, stable))
+	adaptiveInteropWrite(t, adaptiveInteropRewrite(t, tracker, &stream, firstBytes), 2)
+	assertVisibleGridEqual(t, adaptiveInteropDecode(t, st, &stream), firstIntended)
+	before := st.adaptivePalette().RequantCount
+
+	changedBytes, changedIntended := adaptiveInteropFrame(t, st,
+		paletteTwoToneImage(pxW, pxH, color.RGBA{R: 43, G: 43, B: 43, A: 0xff}, stable))
+	if st.adaptivePalette().RequantCount != before+1 {
+		t.Fatalf("RequantCount = %d, want %d", st.adaptivePalette().RequantCount, before+1)
+	}
+	if events := adaptiveInteropRewrite(t, tracker, &stream, changedBytes); len(events) != 0 {
+		t.Fatalf("the exact refit carried %d palette sequences, want 0", len(events))
+	}
+	if len(changedBytes) == 0 {
+		t.Fatal("the changed frame emitted no cell diff")
+	}
+	assertVisibleGridEqual(t, adaptiveInteropDecode(t, st, &stream), changedIntended)
+}
+
 // TestBlockTerminalRoundTripAdaptivePaletteRestoreOnExit proves the teardown
 // hands the terminal back its own theme. The restore must be a bare OSC 104,
 // because a run cannot know which registers the user configured, and a run that

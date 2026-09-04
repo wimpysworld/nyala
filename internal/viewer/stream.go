@@ -1514,8 +1514,10 @@ func startupQuit(ev keyEvent) bool {
 // startup bar screen; steady frames emit cursorHome only. The bar rides inside
 // the sync bracket, so bar and frame present atomically. It returns the encode
 // time, the RenderStreamFrame span alone (matching the out_encode split), when
-// the fps meter is armed, or zero when off (no clock read). buf is one of the
-// two ping-pong buffers; the producer owns it until the writer returns it on free.
+// the fps meter is armed, or zero when off (no clock read). The armed meter also
+// records post-FCP palette work and the complete assembled byte count. buf is
+// one of the two ping-pong buffers; the producer owns it until the writer returns
+// it on free.
 func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeMS float64, err error) {
 	buf.Reset()
 	prefix := framePrefix(s.firstDrawn.Load(), s.diff)
@@ -1540,7 +1542,7 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 		buf.WriteString(beginSixelDisplayMode)
 	}
 	kittyBelowText := timed && s.st.Backend == BackendKitty
-	if rerr := s.st.renderStreamFrame(frame, buf, kittyBelowText); rerr != nil {
+	if rerr := s.st.renderStreamFrame(frame, buf, kittyBelowText, timed); rerr != nil {
 		return 0, rerr
 	}
 	s.firstDrawn.Store(true)
@@ -1568,6 +1570,9 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	s.appendBar(buf)
 	if syncUpdates {
 		buf.WriteString(endSyncUpdate)
+	}
+	if s.fps != nil {
+		s.fps.palette.record(s.fps.gated, s.st.paletteObservation, buf.Len())
 	}
 	return encodeMS, nil
 }
@@ -2436,6 +2441,10 @@ type fpsMeter struct {
 	// show the screencast ingest rate (In) beside the paint rate (Out); nil (a fake
 	// engine, or the switch off) shows Out only. It is read on the draw goroutine.
 	ingest ingestReporter
+
+	// palette contains the post-FCP palette and complete assembled-frame totals.
+	// assemble records it on the same producer goroutine as the rest of the meter.
+	palette paletteSessionMetrics
 }
 
 // ingestReporter is the optional engine capability the viewer reads for the
@@ -2701,8 +2710,10 @@ func printStreamSummary(w io.Writer, fps *fpsMeter, ingest ingestReporter) {
 // goes: our encode versus the terminal write. The trailing ack_rtt_mean_ms and
 // ack_rtt_max_ms report the engine's screencast acknowledgement command round
 // trip, so a slow ack loop that starves Chromium's frame credit shows up here.
-// When no ingest reporter is wired the In and ack fields read zero. A session whose gate never opened reports
-// warmup_ms=unavailable and no invented duration. A nil meter stays silent.
+// It appends the palette and assembled-byte fields from paletteSessionMetrics.
+// When no ingest reporter is wired the In and ack fields read zero. A session
+// whose gate never opened reports warmup_ms=unavailable and no invented
+// duration. A nil meter stays silent.
 func (m *fpsMeter) printSummary(w io.Writer) {
 	if m == nil {
 		return
@@ -2740,10 +2751,11 @@ func (m *fpsMeter) printSummary(w io.Writer) {
 		encodeMean = m.encodeSum / float64(m.paintFrames)
 		writeMean = m.writeSum / float64(m.paintFrames)
 	}
-	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f in_frames=%d in_mean=%.1f in_min=%.1f in_max=%.1f in_median=%.1f in_worst_gap_ms=%.1f in_decode_mean_ms=%.1f in_decode_max_ms=%.1f in_decode_drops=%d in_decode_latest_error=%q out_frames=%d wall=%.2fs out_mean=%.1f out_median=%.1f out_min=%.1f out_max=%.1f out_worst_gap_ms=%.1f out_encode_mean_ms=%.1f out_encode_max_ms=%.1f out_write_mean_ms=%.1f out_write_max_ms=%.1f ack_rtt_mean_ms=%.1f ack_rtt_max_ms=%.1f\n",
+	fmt.Fprintf(w, "nyala fps: warmup_ms=%.0f in_frames=%d in_mean=%.1f in_min=%.1f in_max=%.1f in_median=%.1f in_worst_gap_ms=%.1f in_decode_mean_ms=%.1f in_decode_max_ms=%.1f in_decode_drops=%d in_decode_latest_error=%q out_frames=%d wall=%.2fs out_mean=%.1f out_median=%.1f out_min=%.1f out_max=%.1f out_worst_gap_ms=%.1f out_encode_mean_ms=%.1f out_encode_max_ms=%.1f out_write_mean_ms=%.1f out_write_max_ms=%.1f ack_rtt_mean_ms=%.1f ack_rtt_max_ms=%.1f%s\n",
 		warmupMS, in.Frames, in.MeanFPS, in.MinFPS, in.MaxFPS, in.MedianFPS, in.WorstGapMS, in.DecodeMeanMS, in.DecodeMaxMS, in.DecodeDrops, in.DecodeLatestError,
 		m.frames, wall, mean, medianFPS(m.gaps), minInst, maxInst, worstGapMS,
-		encodeMean, m.encodeMax, writeMean, m.writeMax, in.AckRTTMeanMS, in.AckRTTMaxMS)
+		encodeMean, m.encodeMax, writeMean, m.writeMax, in.AckRTTMeanMS, in.AckRTTMaxMS,
+		m.palette.summaryFragment(wall))
 }
 
 // medianFPS returns the median instantaneous fps from the collected inter-frame
