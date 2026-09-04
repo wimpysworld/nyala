@@ -26,7 +26,7 @@ func exampleAboutSnapshot() capabilitySnapshot {
 		Sixel:          capOff,
 		Sextant:        capOn,
 		KittyTransport: KittyTransportSHM,
-		Colour:         ColourTrue,
+		Colour:         capabilityColour{Mode: ColourTrue},
 		WebGL:          render.WebGLState{Tier: render.WebGL2, Label: "Intel"},
 	}
 }
@@ -401,6 +401,45 @@ func TestAboutModeOwnsPageInput(t *testing.T) {
 	s.handleMouse(MouseEvent{Action: MouseActionPress, Button: MouseButtonLeft, Col: 10, Row: 5})
 	if len(forwarded) != 1 || forwarded[0].Row != 5 {
 		t.Fatalf("page press after About = %+v, want one forwarded press", forwarded)
+	}
+}
+
+// TestAboutColourCycleRefreshesOpenRow pins the live About label to the Alt+C
+// cycle. Each palette capability uses the same three modes and its own compact
+// labels, while About stays open for every repaint.
+func TestAboutColourCycleRefreshesOpenRow(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		adaptive   bool
+		wantLabels []string
+	}{
+		{"static", false, []string{"Colour: 240 Static", "Colour: 24 Shades", "Colour: True Colour"}},
+		{"adaptive", true, []string{"Colour: 240 Adaptive", "Colour: 240 Shades", "Colour: True Colour"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, st := modeSession(t, streamTestEngine{})
+			st.SetEnabled([]Backend{BackendBlock})
+			st.paletteQueryOK = tc.adaptive
+			done := make(chan struct{})
+			defer close(done)
+			s.ctl = newControl(s.eng, done)
+			s.enterAbout()
+
+			out := s.tty.(interface {
+				Reset()
+				String() string
+			})
+			for i, want := range tc.wantLabels {
+				out.Reset()
+				s.handleKey(keyEvent{act: actionCycleColour})
+				if s.barMode != barModeAbout {
+					t.Fatalf("cycle %d left About: mode %d", i, s.barMode)
+				}
+				if row := out.String(); !strings.Contains(row, want) {
+					t.Fatalf("cycle %d About row %q missing %q", i, row, want)
+				}
+			}
+		})
 	}
 }
 

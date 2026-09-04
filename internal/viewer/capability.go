@@ -37,8 +37,15 @@ type capabilitySnapshot struct {
 	Sextant capabilityState // the terminal self-draws the sextant Block scheme
 
 	KittyTransport KittyTransport    // effective Kitty transmission medium
-	Colour         ColourMode        // effective Block colour depth
+	Colour         capabilityColour  // effective Block colour depth and palette capability
 	WebGL          render.WebGLState // engine WebGL probe result
+}
+
+// capabilityColour is the selected Block colour mode and whether its palette
+// can adapt to each frame.
+type capabilityColour struct {
+	Mode     ColourMode
+	Adaptive bool
 }
 
 // capabilitySnapshot builds the About bar's view of this run from the state
@@ -56,7 +63,7 @@ func (s *State) capabilitySnapshot(version, browser string, webgl render.WebGLSt
 		Sixel:          backendState(s.Enabled, BackendSixel),
 		Sextant:        boolState(s.sextantOK),
 		KittyTransport: s.kittyTransport,
-		Colour:         s.Colour,
+		Colour:         capabilityColour{Mode: s.Colour, Adaptive: s.paletteQueryOK},
 		WebGL:          webgl,
 	}
 }
@@ -79,15 +86,20 @@ func boolState(on bool) capabilityState {
 	return capOff
 }
 
-// colourLabel returns the human-readable name of a Block colour mode: "True
-// Colour", "256 Colour", or "Greyscale". An out-of-range mode reports "True
-// Colour", the NewState default.
-func colourLabel(m ColourMode) string {
-	switch m {
+// colourLabel returns the compact name of a Block colour mode. An out-of-range
+// mode reports the NewState default.
+func colourLabel(colour capabilityColour) string {
+	switch colour.Mode {
 	case ColourXTerm256:
-		return "256 Colour"
+		if colour.Adaptive {
+			return "240 Adaptive"
+		}
+		return "240 Static"
 	case ColourXTermGrey:
-		return "Greyscale"
+		if colour.Adaptive {
+			return "240 Shades"
+		}
+		return "24 Shades"
 	default:
 		return "True Colour"
 	}

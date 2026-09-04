@@ -163,31 +163,63 @@ func TestCapabilitySnapshotSextant(t *testing.T) {
 	}
 }
 
-// TestCapabilitySnapshotColourLabel pins the colour depth text for each mode
-// as the snapshot carries it and as the row shows it, and the label for an
-// out-of-range mode, which reads as the NewState default.
+// TestCapabilitySnapshotColourLabel pins the colour depth text for every mode
+// and palette capability state, and the fallback for an out-of-range mode.
 func TestCapabilitySnapshotColourLabel(t *testing.T) {
 	for _, tc := range []struct {
-		mode ColourMode
-		want string
+		name     string
+		mode     ColourMode
+		adaptive bool
+		want     string
 	}{
-		{ColourTrue, "True Colour"},
-		{ColourXTerm256, "256 Colour"},
-		{ColourXTermGrey, "Greyscale"},
-		{ColourMode(99), "True Colour"},
+		{"true colour static capability", ColourTrue, false, "Colour: True Colour"},
+		{"true colour adaptive capability", ColourTrue, true, "Colour: True Colour"},
+		{"240 static", ColourXTerm256, false, "Colour: 240 Static"},
+		{"240 adaptive", ColourXTerm256, true, "Colour: 240 Adaptive"},
+		{"24 grey shades", ColourXTermGrey, false, "Colour: 24 Shades"},
+		{"240 grey shades", ColourXTermGrey, true, "Colour: 240 Shades"},
+		{"fallback static capability", ColourMode(99), false, "Colour: True Colour"},
+		{"fallback adaptive capability", ColourMode(99), true, "Colour: True Colour"},
 	} {
-		if got := colourLabel(tc.mode); got != tc.want {
-			t.Fatalf("colourLabel(%d) = %q, want %q", tc.mode, got, tc.want)
-		}
-		st := NewState(160, 24)
-		st.Colour = tc.mode
-		snap := st.capabilitySnapshot("dev", "", render.WebGLState{})
-		if snap.Colour != tc.mode {
-			t.Fatalf("snapshot colour = %d, want %d", snap.Colour, tc.mode)
-		}
-		if row := aboutRowText(snap); !strings.Contains(row, "Colour: "+tc.want) {
-			t.Fatalf("About fields %q missing %q", row, "Colour: "+tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := "Colour: " + colourLabel(capabilityColour{Mode: tc.mode, Adaptive: tc.adaptive}); got != tc.want {
+				t.Fatalf("colour field for (%d, %t) = %q, want %q", tc.mode, tc.adaptive, got, tc.want)
+			}
+			st := NewState(160, 24)
+			st.Colour = tc.mode
+			st.paletteQueryOK = tc.adaptive
+			snap := st.capabilitySnapshot("dev", "", render.WebGLState{})
+			if snap.Colour.Mode != tc.mode || snap.Colour.Adaptive != tc.adaptive {
+				t.Fatalf("snapshot colour = %d, adaptive = %t, want %d, %t", snap.Colour.Mode, snap.Colour.Adaptive, tc.mode, tc.adaptive)
+			}
+			if row := aboutRowText(snap); !strings.Contains(row, tc.want) {
+				t.Fatalf("About fields %q missing %q", row, tc.want)
+			}
+		})
+	}
+}
+
+// TestCapabilitySnapshotColourCycleLabels pins that the About label follows
+// all three Alt+C modes and wraps without adding a fourth mode.
+func TestCapabilitySnapshotColourCycleLabels(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		adaptive bool
+		want     []string
+	}{
+		{"static", false, []string{"Colour: 240 Static", "Colour: 24 Shades", "Colour: True Colour"}},
+		{"adaptive", true, []string{"Colour: 240 Adaptive", "Colour: 240 Shades", "Colour: True Colour"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := NewState(160, 24)
+			st.paletteQueryOK = tc.adaptive
+			for _, want := range tc.want {
+				st.CycleColour(false)
+				if row := aboutRowText(st.capabilitySnapshot("dev", "", render.WebGLState{})); !strings.Contains(row, want) {
+					t.Fatalf("About fields %q missing %q", row, want)
+				}
+			}
+		})
 	}
 }
 
