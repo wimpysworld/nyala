@@ -278,7 +278,7 @@ func TestBuildLumaLUTMidpointPicksLighter(t *testing.T) {
 		t.Fatalf("luma 108 maps to register %d, want %d", got, base+1)
 	}
 	// One key centre below the midpoint keeps the darker level.
-	darker := color.RGBA{R: 100, G: 100, B: 92, A: 0xff}
+	darker := color.RGBA{R: 100, G: 100, B: 92}
 	if l := Luma8(darker.R, darker.G, darker.B); l != 99 {
 		t.Fatalf("fixture luma = %d, want 99", l)
 	}
