@@ -187,6 +187,7 @@ func TestCapabilitySnapshotColourLabel(t *testing.T) {
 			}
 			st := NewState(160, 24)
 			st.Colour = tc.mode
+			st.paletteQueryOK = tc.adaptive
 			st.staticPaletteSelected = !tc.adaptive
 			snap := st.capabilitySnapshot("dev", "", render.WebGLState{})
 			wantAdaptive := tc.adaptive && (tc.mode == ColourXTerm256 || tc.mode == ColourXTermGrey)
@@ -213,6 +214,7 @@ func TestCapabilitySnapshotColourCycleLabels(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := NewState(160, 24)
+			st.paletteQueryOK = tc.adaptive
 			st.staticPaletteSelected = !tc.adaptive
 			for _, want := range tc.want {
 				st.CycleColour(false)
@@ -224,9 +226,9 @@ func TestCapabilitySnapshotColourCycleLabels(t *testing.T) {
 	}
 }
 
-// TestCapabilitySnapshotColourPolicyIsIndependentOfCapability proves that the
-// About row reports the selected policy and does not expose OSC 4 support.
-func TestCapabilitySnapshotColourPolicyIsIndependentOfCapability(t *testing.T) {
+// TestCapabilitySnapshotColourUsesEffectivePalette proves that the About row
+// reports the palette path that rendering can use without exposing OSC 4.
+func TestCapabilitySnapshotColourUsesEffectivePalette(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		mode      ColourMode
@@ -234,9 +236,9 @@ func TestCapabilitySnapshotColourPolicyIsIndependentOfCapability(t *testing.T) {
 		static    bool
 		wantLabel string
 	}{
-		{"adaptive RGB without OSC 4", ColourXTerm256, false, false, "Colour: 240 Adaptive"},
+		{"adaptive RGB without OSC 4", ColourXTerm256, false, false, "Colour: 240 Static"},
 		{"static RGB with OSC 4", ColourXTerm256, true, true, "Colour: 240 Static"},
-		{"adaptive grey without OSC 4", ColourXTermGrey, false, false, "Colour: 240 Shades"},
+		{"adaptive grey without OSC 4", ColourXTermGrey, false, false, "Colour: 24 Shades"},
 		{"static grey with OSC 4", ColourXTermGrey, true, true, "Colour: 24 Shades"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -131,7 +131,7 @@ func backendGlyph(backend Backend, scheme block.Scheme) string {
 
 // colourBadge returns the four-cell colour label for the active backend.
 // Graphics backends have fixed colour paths. Block reports its current colour
-// mode and selected adaptive or static palette policy.
+// mode and effective adaptive or static palette path.
 func colourBadge(s *State) string {
 	switch s.Backend {
 	case BackendKitty:
@@ -141,15 +141,15 @@ func colourBadge(s *State) string {
 	}
 	switch s.Colour {
 	case ColourXTerm256:
-		if s.staticPaletteSelected {
-			return "240s"
+		if s.adaptivePaletteActive() {
+			return "240a"
 		}
-		return "240a"
+		return "240s"
 	case ColourXTermGrey:
-		if s.staticPaletteSelected {
-			return "24g "
+		if s.adaptivePaletteActive() {
+			return "240g"
 		}
-		return "240g"
+		return "24g "
 	default:
 		return "RGB "
 	}

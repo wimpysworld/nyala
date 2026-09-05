@@ -415,6 +415,7 @@ func TestAboutColourCycleRefreshesOpenRow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, st := modeSession(t, streamTestEngine{})
 			st.SetEnabled([]Backend{BackendBlock})
+			st.paletteQueryOK = tc.adaptive
 			st.staticPaletteSelected = !tc.adaptive
 			done := make(chan struct{})
 			defer close(done)
