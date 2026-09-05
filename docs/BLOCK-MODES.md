@@ -23,7 +23,7 @@ Colour mode precedence is an explicit non-`auto` `--color` value, then `NO_COLOR
 
 Automatic selection maps every profile below truecolour to `256`, the floor mode: every remaining colour mode builds on 256-colour support, and every modern terminal renders indexed colour. A present `NO_COLOR` key selects `grey`; greyscale output still emits SGR colour codes. On a real TTY the stored capability is floored at `256`. A non-TTY keeps its detected capability.
 
-When `--color=auto` selects `truecolor`, Nyala can change an active Block view to adaptive `256` after sustained terminal write pressure. The change needs a successful OSC 4 probe and the adaptive palette policy. Nyala does not change back to `truecolor` automatically. The bottom bar and About view update to `240 Adaptive` when the fallback occurs.
+When `--color=auto` selects `truecolor`, Nyala can change an active Block view to adaptive `256` after sustained terminal write pressure. The change needs a successful OSC 4 probe and the adaptive palette policy. Nyala does not change back to `truecolor` automatically. The bottom bar badge updates to `240a`, and About updates to `240 Adaptive`.
 
 <kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `grey`, then wraps. The cycle skips modes above the effective capability. An explicit mode asserts support for that mode and can raise a lower detected capability. Terminal safety restrictions remain hard caps. `NO_COLOR` selects the automatic starting mode only, so the cycle can still use detected colour modes.
 

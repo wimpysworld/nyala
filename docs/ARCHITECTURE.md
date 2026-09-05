@@ -1558,17 +1558,19 @@ full-pane-height frame would lose its top row.
 
 ### Layout and glyphs
 
-The chrome row is `← │ → │ ⟳ │ ⌂ │ <indicator> <url> │ [fps │] ☰`. Button
-order matches the Chromium toolbar. The ☰ menu button anchors to the
-bottom-right corner as a stable click target; the optional fps segment sits
-immediately left of it, so toggling fps never moves the menu. The URL region
-absorbs the remaining width and truncates with an ellipsis. Glyph click
-targets pad to three cells.
+The chrome row is `← │ → │ ⟳ │ ⌂ │ <url> [│ fps] │ <render> │ <colour> │ ☰`.
+Button order matches the Chromium toolbar. The ☰ menu button anchors to the
+bottom-right corner as a stable click target. The render glyph and colour badge
+form a fixed status group beside it. The optional fps segment sits before that
+group, so toggling fps never moves the status group. The URL region absorbs the
+remaining width and truncates with an ellipsis. Glyph click targets pad to
+three cells. The render target uses a fixed two-cell field plus the same outer
+padding, so every render glyph has one explicit trailing cell.
+For example, the Kitty status group is `│ 🅺  │ RGB  │ ☰`.
 
-The backend indicator sits before the URL: ⚃ U+2683 Block quadrant, ⚅ U+2685
-Block sextant, ⬣ U+2B23 Sixel, ✪ U+272A Kitty. The Block glyphs are die faces
-whose pip counts match their scheme's 2x2 and 2x3 samples per cell, and they
-track the live scheme.
+The render glyph is ⬒ U+2B12 for Block quadrant, ⬢ U+2B22 for Block sextant,
+🅢 U+1F162 for Sixel, and 🅺 U+1F17A for Kitty. The Block glyph tracks the live
+scheme.
 Clicking the indicator cycles backends, mirroring Alt+R; a right-click steps
 the same enabled cycle backwards, mirroring Alt+Shift+R. The indicator is the
 only segment that reads the button, because it is the only one with a genuine
@@ -1576,17 +1578,21 @@ secondary action: no nav button has a history dropdown to open here, so
 elsewhere a click is a click whichever button sent it. A braille spinner
 (U+2800 block) fills the slot until the first frame lands.
 
-Glyph rules: Basic Multilingual Plane only, never U+FE0F, and no
-emoji-presentation lookalikes (← U+2190, not ⬅ U+2B05). Several chosen glyphs
-are East-Asian-ambiguous width, so every segment position and mouse hit span
-derives from `go-runewidth` measurement; a wide rendering shifts the layout
-without breaking hit-testing.
+Glyph rules: never use U+FE0F or a presentation variant. Every segment position
+and mouse hit span derives from `go-runewidth` measurement, so the fixed glyph
+group stays aligned with the status group.
 
 ### Colour and the fps segment
 
 The bar uses the terminal default foreground and background plus the base 16
 ANSI colours only, so it follows the user's theme. Bold marks focus and press
 feedback. Fixed 240-palette entries were rejected because they ignore the theme.
+
+The four-cell colour badge is always present. True Colour and Kitty read
+`RGB `, Sixel reads `256a`, Block 240 Static reads `240s`, Block 240 Adaptive
+reads `240a`, 24 Shades reads `24g `, and 240 Shades reads `240g`. Alt+C,
+Alt+P, and the automatic true-colour fallback update the badge through the
+normal bar repaint.
 
 The bar is a grey band that sits with the terminal's own polarity, chosen once
 from the handshake's OSC 11 reply (`resolveBarStyle`). A dark terminal gets

@@ -686,6 +686,7 @@ func (s *streamSession) appendBar(buf *bytes.Buffer) {
 	}
 	content, layout := renderBar(s.st.Cols, barContent{
 		indicator: indicator,
+		colour:    colourBadge(s.st),
 		url:       s.currentURL(),
 		fps:       fps,
 		signal:    s.liveSignal(time.Now()),

@@ -197,6 +197,27 @@ func TestAutomaticColourFallbackOrdersTransitionAndNextPalette(t *testing.T) {
 	}
 }
 
+func TestAutomaticColourFallbackRefreshesChromeBadge(t *testing.T) {
+	st := automaticFallbackState("auto")
+	eng := streamTestEngine{}
+	done := make(chan struct{})
+	defer close(done)
+	out := &bytes.Buffer{}
+	s := &streamSession{eng: eng, st: &st, tty: out, ctl: newControl(eng, done)}
+	s.firstDrawn.Store(true)
+	armAutomaticFallback(s)
+
+	s.observeWritePressure(freeItem{
+		pressureSample: true,
+		pressureGen:    s.writePressureGen,
+		writeDur:       writePressureThreshold,
+	})
+
+	if !strings.Contains(out.String(), "│ ⬒  │ 240a │ ☰") {
+		t.Fatalf("fallback bar %q missing the adaptive badge", out.String())
+	}
+}
+
 func TestAutomaticColourFallbackIsOneShot(t *testing.T) {
 	st := automaticFallbackState("auto")
 	eng := &switchOpEngine{}

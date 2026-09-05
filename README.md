@@ -101,7 +101,7 @@ Colour mode precedence is an explicit non-`auto` `--color` value, then `NO_COLOR
 | `256` | An adaptive, scene-fitted 240-entry palette by default when terminal palette control is available. Otherwise, the canonical xterm palette at indexes 16..255. | Every profile below truecolour. |
 | `grey` | An adaptive, scene-fitted greyscale ramp by default when terminal palette control is available. Otherwise, the fixed xterm ramp at indexes 232..255. | Never. |
 
-When `--color=auto` starts Block in `truecolor`, Nyala can fall back to adaptive `256` after sustained terminal write pressure. This automatic change needs confirmed palette control and the adaptive palette policy. Nyala does not promote the mode again. The bottom bar reports the new mode as `240 Adaptive`.
+When `--color=auto` starts Block in `truecolor`, Nyala can fall back to adaptive `256` after sustained terminal write pressure. This automatic change needs confirmed palette control and the adaptive palette policy. Nyala does not promote the mode again. The bottom bar badge reads `240a`, and About reads `240 Adaptive`.
 
 <kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `grey`, then wraps. Nyala skips modes above the effective terminal capability. An explicit mode can raise a lower detected capability, but a terminal safety rule can still lower it. `NO_COLOR` changes the automatic starting mode only. It does not lower the detected capability for the cycle.
 
