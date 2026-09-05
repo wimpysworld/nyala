@@ -1558,7 +1558,7 @@ full-pane-height frame would lose its top row.
 
 ### Layout and glyphs
 
-The chrome row is `← │ → │ ⟳ │ ⌂ │ <url> [│ fps] │ <render> │ <colour> │ ☰`.
+The chrome row is `← │ → │ ⟳ │ ⌂ │ <transport> <url> [│ fps] │ <render> │ <colour> │ ☰`.
 Button order matches the Chromium toolbar. The ☰ menu button anchors to the
 bottom-right corner as a stable click target. The render glyph and colour badge
 form a fixed status group beside it. The optional fps segment sits before that
@@ -1576,8 +1576,13 @@ the same enabled cycle backwards, mirroring Alt+Shift+R. Clicking the colour
 badge cycles colour, mirroring Alt+C; a right-click cycles backwards, mirroring
 Alt+Shift+C. The indicator and colour badge read the button for these reverse
 actions. No nav button has a history dropdown to open here, so elsewhere a
-click is a click whichever button sent it. A braille spinner (U+2800 block)
-fills the slot until the first frame lands.
+click is a click whichever button sent it. The URL region starts with one
+fixed transport cell and one padding cell. A yellow ★ marks an HTTPS URL, a
+normal-foreground ☆ marks an HTTP URL, and other schemes leave the transport
+cell blank. The filled star identifies HTTPS transport only. It makes no trust
+claim. A braille spinner (U+2800 block) replaces the transport glyph until the
+first frame lands, so the URL does not move during loading. URL changes refresh
+the glyph.
 
 Glyph rules: never use U+FE0F or a presentation variant. Every segment position
 and mouse hit span derives from `go-runewidth` measurement, so the fixed glyph
@@ -1587,7 +1592,11 @@ group stays aligned with the status group.
 
 The bar uses the terminal default foreground and background plus the base 16
 ANSI colours only, so it follows the user's theme. Bold marks focus and press
-feedback. Fixed 240-palette entries were rejected because they ignore the theme.
+feedback. The loading spinner uses bright white on a dark bar and black on a
+light bar. The reverse-video fallback keeps its default contrast. The HTTPS
+transport glyph uses ANSI yellow. Each prefix style returns to the resolved bar
+style after the glyph, so the padding cell and URL keep the normal bar style.
+Fixed 240-palette entries were rejected because they ignore the theme.
 
 The four-cell colour badge is always present. True Colour and Kitty read
 `RGB `, Sixel reads `256a`, Block 240 Static reads `240s`, Block 240 Adaptive
