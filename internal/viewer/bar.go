@@ -25,19 +25,18 @@ func engineRows(rows int) int {
 	return rows
 }
 
-// Bar glyphs, all Basic Multilingual Plane with no emoji-presentation
-// lookalikes, and never followed by U+FE0F. The Block indicator glyphs are
-// die faces whose pip counts match their scheme's samples per cell.
+// Bar glyphs never use presentation selectors. Each render glyph occupies one
+// cell in a fixed two-cell field, so backend changes do not move the group.
 const (
 	barGlyphBack          = "←" // ← U+2190 Back
 	barGlyphForward       = "→" // → U+2192 Forward
 	barGlyphReload        = "⟳" // ⟳ U+27F3 Reload
 	barGlyphHome          = "⌂" // ⌂ U+2302 Home
 	barGlyphMenu          = "☰" // ☰ U+2630 Menu
-	barGlyphBlockQuadrant = "⚃" // ⚃ U+2683 Block quadrant scheme
-	barGlyphBlockSextant  = "⚅" // ⚅ U+2685 Block sextant scheme
-	barGlyphSixel         = "⬣" // ⬣ U+2B23 Sixel
-	barGlyphKitty         = "✪" // ✪ U+272A Kitty
+	barGlyphBlockQuadrant = "⬒" // ⬒ U+2B12 Block quadrant scheme
+	barGlyphBlockSextant  = "⬢" // ⬢ U+2B22 Block sextant scheme
+	barGlyphSixel         = "🅢" // 🅢 U+1F162 Sixel
+	barGlyphKitty         = "🅺" // 🅺 U+1F17A Kitty
 	barGlyphClose         = "✕" // ✕ close (menu, About, and find modes)
 	barGlyphPrompt        = "❯" // ❯ URL edit prompt
 	barGlyphFind          = "⌕" // ⌕ U+2315 find prompt
@@ -96,7 +95,7 @@ func spinnerGlyph(step int) string {
 }
 
 // backendGlyph returns the indicator glyph for the active backend. Block
-// tracks the live glyph scheme, so an Alt+B scheme cycle moves the die.
+// tracks the live glyph scheme, so an Alt+B scheme cycle changes the glyph.
 func backendGlyph(backend Backend, scheme block.Scheme) string {
 	switch backend {
 	case BackendSixel:
@@ -108,6 +107,32 @@ func backendGlyph(backend Backend, scheme block.Scheme) string {
 			return barGlyphBlockSextant
 		}
 		return barGlyphBlockQuadrant
+	}
+}
+
+// colourBadge returns the four-cell colour label for the active backend.
+// Graphics backends have fixed colour paths. Block reports its current colour
+// mode and selected adaptive or static palette policy.
+func colourBadge(s *State) string {
+	switch s.Backend {
+	case BackendKitty:
+		return "RGB "
+	case BackendSixel:
+		return "256a"
+	}
+	switch s.Colour {
+	case ColourXTerm256:
+		if s.staticPaletteSelected {
+			return "240s"
+		}
+		return "240a"
+	case ColourXTermGrey:
+		if s.staticPaletteSelected {
+			return "24g "
+		}
+		return "240g"
+	default:
+		return "RGB "
 	}
 }
 
@@ -227,12 +252,12 @@ func boldSpans(content string, spans []barSegment) string {
 }
 
 // barContent carries the variable bar fields for one repaint. indicator is
-// the backend glyph, or a spinner frame during the launch navigation. fps is
-// the fps meter text; empty means the meter is off and the segment absent.
-// signal is the transient copy or paste report; empty means the URL region
-// shows the URL, and non-empty replaces the URL text for as long as it holds.
+// the backend glyph, or a spinner frame during the launch navigation. colour
+// is the four-cell badge. fps is the fps meter text. An empty fps hides that
+// segment. A non-empty signal replaces the URL text for as long as it holds.
 type barContent struct {
 	indicator string
+	colour    string
 	url       string
 	fps       string
 	signal    string
@@ -254,6 +279,13 @@ func barButton(kind barSegmentKind, glyph string) barAtom {
 	return barAtom{kind: kind, text: " " + glyph + " ", width: runewidth.StringWidth(glyph) + 2, segment: true}
 }
 
+// barRenderButton builds the render click target. The glyph has one trailing
+// cell in a fixed two-cell field, with the standard button padding outside it.
+func barRenderButton(glyph string) barAtom {
+	field := runewidth.FillRight(runewidth.Truncate(glyph, 1, ""), 2)
+	return barAtom{kind: barSegmentIndicator, text: " " + field + " ", width: 4, segment: true}
+}
+
 // barFiller builds a non-segment atom: a separator or padding cell.
 func barFiller(text string) barAtom {
 	return barAtom{text: text, width: runewidth.StringWidth(text)}
@@ -262,12 +294,12 @@ func barFiller(text string) barAtom {
 // renderBar lays out and renders one bar row for a cols-wide terminal. It
 // returns the row content, exactly cols cells wide with no escapes, and the
 // segment layout it drew. The chrome is
-// ← │ → │ ⟳ │ ⌂ │ <indicator> <url> │ [fps │] ☰: the menu anchors to the
-// right corner behind its own separator, the fps text sits immediately left
-// of it only when present, and the URL region absorbs the remaining width,
-// truncating with an ellipsis. A terminal too narrow for the chrome degrades
-// to a URL-only row. A live signal takes the URL region's text, so a copy or
-// paste report costs no column anywhere else and truncates the same way.
+// ← │ → │ ⟳ │ ⌂ │ <url> [│ fps] │ <indicator> │ <colour> │ ☰: the menu
+// anchors to the right corner. The render glyph and four-cell colour badge
+// always sit immediately to its left. The optional fps text sits before the
+// fixed status group. The URL region absorbs the remaining width and truncates
+// with an ellipsis. A terminal too narrow for the chrome degrades to a URL-only
+// row. A live signal replaces the URL text and uses the same width.
 func renderBar(cols int, c barContent) (string, barLayout) {
 	if cols <= 0 {
 		return "", barLayout{cols: cols}
@@ -285,7 +317,6 @@ func renderBar(cols int, c barContent) (string, barLayout) {
 		barFiller(barSeparator),
 		barButton(barSegmentHome, barGlyphHome),
 		barFiller(barSeparator),
-		barButton(barSegmentIndicator, c.indicator),
 	}
 	right := []barAtom{barFiller(barSeparator)}
 	if c.fps != "" {
@@ -296,7 +327,13 @@ func renderBar(cols int, c barContent) (string, barLayout) {
 			barFiller(barSeparator),
 		)
 	}
-	right = append(right, barButton(barSegmentMenu, barGlyphMenu))
+	right = append(right,
+		barRenderButton(c.indicator),
+		barFiller(barSeparator),
+		barAtom{text: " " + runewidth.FillRight(runewidth.Truncate(c.colour, 4, ""), 4) + " ", width: 6},
+		barFiller(barSeparator),
+		barButton(barSegmentMenu, barGlyphMenu),
+	)
 
 	fixed := 0
 	for _, a := range left {

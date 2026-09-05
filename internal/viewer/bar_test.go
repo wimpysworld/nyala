@@ -56,10 +56,10 @@ func TestBackendGlyph(t *testing.T) {
 		scheme  block.Scheme
 		want    string
 	}{
-		{"block quadrant", BackendBlock, block.SchemeQuadrant, "⚃"},
-		{"block sextant", BackendBlock, block.SchemeSextant, "⚅"},
-		{"sixel", BackendSixel, block.SchemeQuadrant, "⬣"},
-		{"kitty", BackendKitty, block.SchemeSextant, "✪"},
+		{"block quadrant", BackendBlock, block.SchemeQuadrant, "⬒"},
+		{"block sextant", BackendBlock, block.SchemeSextant, "⬢"},
+		{"sixel", BackendSixel, block.SchemeQuadrant, "🅢"},
+		{"kitty", BackendKitty, block.SchemeSextant, "🅺"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -70,19 +70,48 @@ func TestBackendGlyph(t *testing.T) {
 	}
 }
 
-// TestRenderBarLayout pins the full-chrome segment model: the button order
-// Back, Forward, Reload, Home, then indicator and URL, the menu anchored to
-// the right corner, spans measured in cells, ascending and non-overlapping,
-// and the row content exactly cols cells wide.
+func TestColourBadge(t *testing.T) {
+	cases := []struct {
+		name    string
+		backend Backend
+		colour  ColourMode
+		static  bool
+		want    string
+	}{
+		{"Kitty", BackendKitty, ColourXTermGrey, true, "RGB "},
+		{"Sixel", BackendSixel, ColourTrue, true, "256a"},
+		{"Block true colour", BackendBlock, ColourTrue, false, "RGB "},
+		{"Block 240 static", BackendBlock, ColourXTerm256, true, "240s"},
+		{"Block 240 adaptive", BackendBlock, ColourXTerm256, false, "240a"},
+		{"Block 24 shades", BackendBlock, ColourXTermGrey, true, "24g "},
+		{"Block 240 shades", BackendBlock, ColourXTermGrey, false, "240g"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := NewState(80, 24)
+			st.Backend, st.Colour, st.staticPaletteSelected = tc.backend, tc.colour, tc.static
+			if got := colourBadge(&st); got != tc.want {
+				t.Fatalf("colourBadge() = %q, want %q", got, tc.want)
+			}
+			if got := runewidth.StringWidth(colourBadge(&st)); got != 4 {
+				t.Fatalf("colourBadge() width = %d, want 4", got)
+			}
+		})
+	}
+}
+
+// TestRenderBarLayout pins the full-chrome segment model: the navigation
+// buttons, URL, render indicator, and anchored menu. It also checks that spans
+// use cells, stay ordered, and fit a row that is exactly cols cells wide.
 func TestRenderBarLayout(t *testing.T) {
 	const cols = 80
-	content, l := renderBar(cols, barContent{indicator: "⚃", url: "https://example.org/"})
+	content, l := renderBar(cols, barContent{indicator: "⬒", colour: "240a", url: "https://example.org/"})
 	if w := runewidth.StringWidth(content); w != cols {
 		t.Fatalf("bar content width = %d, want %d", w, cols)
 	}
 	wantOrder := []barSegmentKind{
 		barSegmentBack, barSegmentForward, barSegmentReload, barSegmentHome,
-		barSegmentIndicator, barSegmentURL, barSegmentMenu,
+		barSegmentURL, barSegmentIndicator, barSegmentMenu,
 	}
 	if len(l.segments) != len(wantOrder) {
 		t.Fatalf("segments = %d, want %d", len(l.segments), len(wantOrder))
@@ -98,15 +127,14 @@ func TestRenderBarLayout(t *testing.T) {
 		prevEnd = seg.col + seg.width - 1
 	}
 
-	// Glyph click targets pad to at least three cells, derived from the
-	// measured glyph width (a glyph runewidth counts wide keeps its padding).
+	// Navigation and menu click targets pad to three cells. The render target
+	// adds one explicit trailing field cell and therefore spans four cells.
 	glyphs := map[barSegmentKind]string{
-		barSegmentBack:      barGlyphBack,
-		barSegmentForward:   barGlyphForward,
-		barSegmentReload:    barGlyphReload,
-		barSegmentHome:      barGlyphHome,
-		barSegmentIndicator: "⚃",
-		barSegmentMenu:      barGlyphMenu,
+		barSegmentBack:    barGlyphBack,
+		barSegmentForward: barGlyphForward,
+		barSegmentReload:  barGlyphReload,
+		barSegmentHome:    barGlyphHome,
+		barSegmentMenu:    barGlyphMenu,
 	}
 	for kind, glyph := range glyphs {
 		seg, ok := l.segment(kind)
@@ -117,6 +145,10 @@ func TestRenderBarLayout(t *testing.T) {
 			t.Fatalf("segment %d width = %d, want the measured %d-cell click target", kind, seg.width, want)
 		}
 	}
+	indicator, ok := l.segment(barSegmentIndicator)
+	if !ok || indicator.width != 4 {
+		t.Fatalf("render indicator = %+v, want a four-cell click target", indicator)
+	}
 
 	// The menu anchors to the bottom-right corner behind its own separator.
 	menu, _ := l.segment(barSegmentMenu)
@@ -125,6 +157,9 @@ func TestRenderBarLayout(t *testing.T) {
 	}
 	if !strings.Contains(content, barSeparator+" "+barGlyphMenu) {
 		t.Fatalf("bar content %q missing the separator before ☰", content)
+	}
+	if !strings.Contains(content, "│ ⬒  │ 240a │ ☰") {
+		t.Fatalf("bar content %q has the wrong status order", content)
 	}
 
 	// No fps segment without the meter, and never a variation selector.
@@ -136,22 +171,57 @@ func TestRenderBarLayout(t *testing.T) {
 	}
 }
 
+func TestRenderBarStatusGroupWidthIsStable(t *testing.T) {
+	type position struct {
+		indicator barSegment
+		menu      barSegment
+	}
+	var want position
+	for i, tc := range []struct {
+		glyph string
+		badge string
+	}{
+		{"🅺", "RGB "},
+		{"🅢", "256a"},
+		{"⬢", "240s"},
+		{"⬒", "24g "},
+	} {
+		if got := runewidth.StringWidth(tc.glyph); got != 1 {
+			t.Fatalf("render glyph %q width = %d, want 1", tc.glyph, got)
+		}
+		content, layout := renderBar(80, barContent{indicator: tc.glyph, colour: tc.badge, url: "https://example.org/"})
+		indicator, _ := layout.segment(barSegmentIndicator)
+		menu, _ := layout.segment(barSegmentMenu)
+		got := position{indicator: indicator, menu: menu}
+		if i == 0 {
+			want = got
+		} else if got != want {
+			t.Fatalf("status position for %q and %q = %+v, want %+v", tc.glyph, tc.badge, got, want)
+		}
+		if runewidth.StringWidth(content) != 80 {
+			t.Fatalf("row for %q and %q has the wrong width", tc.glyph, tc.badge)
+		}
+		if !strings.Contains(content, "│ "+tc.glyph+"  │") {
+			t.Fatalf("row for %q lacks its trailing render-field cell: %q", tc.glyph, content)
+		}
+	}
+}
+
 // TestRenderBarFPSSegment pins the fps placement: the segment exists exactly
-// when the meter text does, sits immediately left of the anchored menu with
-// a separator between them, and the URL region absorbs the width change so
-// the menu never moves.
+// when the meter text does and sits before the anchored status group. The URL
+// region absorbs the width change, so the status group never moves.
 func TestRenderBarFPSSegment(t *testing.T) {
 	const cols = 80
 	fps := "↓ 24.0 " + barSeparator + " ↑ 12.5 " + barSeparator + " ≌ 42"
-	_, without := renderBar(cols, barContent{indicator: "⬣", url: "https://example.org/"})
-	content, with := renderBar(cols, barContent{indicator: "⬣", url: "https://example.org/", fps: fps})
+	_, without := renderBar(cols, barContent{indicator: "🅢", colour: "256a", url: "https://example.org/"})
+	content, with := renderBar(cols, barContent{indicator: "🅢", colour: "256a", url: "https://example.org/", fps: fps})
 	if w := runewidth.StringWidth(content); w != cols {
 		t.Fatalf("bar content width = %d, want %d", w, cols)
 	}
 	if !strings.Contains(content, fps) {
 		t.Fatalf("bar content %q missing fps text %q", content, fps)
 	}
-	if !strings.Contains(content, fps+" "+barSeparator+" "+barGlyphMenu) {
+	if !strings.Contains(content, fps+" │ 🅢  │ 256a │ "+barGlyphMenu) {
 		t.Fatalf("bar content %q missing the separator between fps and ☰", content)
 	}
 
@@ -167,9 +237,9 @@ func TestRenderBarFPSSegment(t *testing.T) {
 	if menuWith != menuWithout {
 		t.Fatalf("menu moved when the fps segment appeared: %+v vs %+v", menuWith, menuWithout)
 	}
-	// One padding cell and the separator sit between the fps text and ☰.
-	if seg.col+seg.width+2 != menuWith.col {
-		t.Fatalf("fps segment ends at %d, want two filler cells before the menu at %d", seg.col+seg.width, menuWith.col)
+	indicator, _ := with.segment(barSegmentIndicator)
+	if seg.col+seg.width+2 != indicator.col {
+		t.Fatalf("fps segment ends at %d, want two filler cells before the indicator at %d", seg.col+seg.width, indicator.col)
 	}
 	urlWith, _ := with.segment(barSegmentURL)
 	urlWithout, _ := without.segment(barSegmentURL)
@@ -182,9 +252,9 @@ func TestRenderBarFPSSegment(t *testing.T) {
 // region ends with the ellipsis, a fitting URL stays whole, and the row width
 // never grows.
 func TestRenderBarTruncatesURL(t *testing.T) {
-	const cols = 40
+	const cols = 48
 	long := "https://example.org/" + strings.Repeat("segment/", 12)
-	content, _ := renderBar(cols, barContent{indicator: "✪", url: long})
+	content, _ := renderBar(cols, barContent{indicator: "🅺", colour: "RGB ", url: long})
 	if w := runewidth.StringWidth(content); w != cols {
 		t.Fatalf("bar content width = %d, want %d", w, cols)
 	}
@@ -196,7 +266,7 @@ func TestRenderBarTruncatesURL(t *testing.T) {
 	}
 
 	short := "https://a.io/"
-	content, _ = renderBar(cols, barContent{indicator: "✪", url: short})
+	content, _ = renderBar(cols, barContent{indicator: "🅺", colour: "RGB ", url: short})
 	if !strings.Contains(content, short) || strings.Contains(content, barEllipsis) {
 		t.Fatalf("fitting URL was truncated: %q", content)
 	}
@@ -207,7 +277,7 @@ func TestRenderBarTruncatesURL(t *testing.T) {
 // cols cells wide.
 func TestRenderBarNarrowFallsBackToURL(t *testing.T) {
 	const cols = 16
-	content, l := renderBar(cols, barContent{indicator: "⚃", url: "https://example.org/page"})
+	content, l := renderBar(cols, barContent{indicator: "⬒", colour: "240a", url: "https://example.org/page"})
 	if w := runewidth.StringWidth(content); w != cols {
 		t.Fatalf("bar content width = %d, want %d", w, cols)
 	}
@@ -247,7 +317,7 @@ func TestAppendBarSessionGlue(t *testing.T) {
 	s.firstDrawn.Store(true)
 	buf.Reset()
 	s.appendBar(&buf)
-	if !strings.Contains(buf.String(), "✪") {
+	if !strings.Contains(buf.String(), "│ 🅺  │ RGB  │ ☰") {
 		t.Fatalf("post-frame bar %q missing the Kitty indicator", buf.String())
 	}
 
@@ -257,8 +327,31 @@ func TestAppendBarSessionGlue(t *testing.T) {
 	}
 }
 
+func TestChromeBadgeRefreshesForColourAndPaletteChanges(t *testing.T) {
+	st := NewState(80, 24)
+	st.Backend = BackendBlock
+	st.paletteQueryOK = true
+	eng := streamTestEngine{}
+	done := make(chan struct{})
+	defer close(done)
+	out := &bytes.Buffer{}
+	s := &streamSession{eng: eng, st: &st, tty: out, ctl: newControl(eng, done)}
+	s.firstDrawn.Store(true)
+
+	s.cycleColour(false)
+	if !strings.Contains(out.String(), "│ ⬒  │ 240a │ ☰") {
+		t.Fatalf("Alt+C bar %q missing the adaptive badge", out.String())
+	}
+
+	out.Reset()
+	s.togglePalettePolicy()
+	if !strings.Contains(out.String(), "│ ⬒  │ 240s │ ☰") {
+		t.Fatalf("Alt+P bar %q missing the static badge", out.String())
+	}
+}
+
 // TestAppendBarBoldsPressedButton pins the press feedback: a pressed button
-// draws bold until its release, and an unpressed bar (the ⚅ sextant
+// draws bold until its release, and an unpressed bar (the ⬢ sextant
 // indicator included, a distinct glyph rather than a shade) carries no bold.
 func TestAppendBarBoldsPressedButton(t *testing.T) {
 	st := NewState(60, 4)

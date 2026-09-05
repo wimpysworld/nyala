@@ -118,10 +118,10 @@ func TestBoldSpan(t *testing.T) {
 // kind, the URL region resolves anywhere inside it, and a separator cell
 // resolves to nothing.
 func TestBarLayoutHit(t *testing.T) {
-	_, l := renderBar(80, barContent{indicator: "⚃", url: "https://example.org/"})
+	_, l := renderBar(80, barContent{indicator: "⬒", colour: "240a", url: "https://example.org/"})
 	for _, kind := range []barSegmentKind{
 		barSegmentBack, barSegmentForward, barSegmentReload, barSegmentHome,
-		barSegmentIndicator, barSegmentURL, barSegmentMenu,
+		barSegmentURL, barSegmentIndicator, barSegmentMenu,
 	} {
 		seg, ok := l.segment(kind)
 		if !ok {
@@ -136,6 +136,13 @@ func TestBarLayoutHit(t *testing.T) {
 	back, _ := l.segment(barSegmentBack)
 	if _, ok := l.hit(back.col + back.width); ok {
 		t.Fatal("hit resolved the separator cell after the back button")
+	}
+	indicator, _ := l.segment(barSegmentIndicator)
+	menu, _ := l.segment(barSegmentMenu)
+	for col := indicator.col + indicator.width; col < menu.col; col++ {
+		if _, ok := l.hit(col); ok {
+			t.Fatalf("hit resolved the colour badge or its separator at column %d", col)
+		}
 	}
 }
 
@@ -437,8 +444,8 @@ func TestFPSCommandLabelReflectsState(t *testing.T) {
 // so a click still resolves to the segment drawn under it.
 func TestFPSSegmentKeepsMenuAnchored(t *testing.T) {
 	const cols = 80
-	withFPS, withLay := renderBar(cols, barContent{indicator: "⚃", url: "https://example.org/", fps: "↓ 60.0 │ ↑ 60.0 │ ≌ 120"})
-	without, withoutLay := renderBar(cols, barContent{indicator: "⚃", url: "https://example.org/"})
+	withFPS, withLay := renderBar(cols, barContent{indicator: "⬒", colour: "240a", url: "https://example.org/", fps: "↓ 60.0 │ ↑ 60.0 │ ≌ 120"})
+	without, withoutLay := renderBar(cols, barContent{indicator: "⬒", colour: "240a", url: "https://example.org/"})
 
 	if runewidth.StringWidth(withFPS) != cols || runewidth.StringWidth(without) != cols {
 		t.Fatalf("bar rows are %d and %d cells, want %d", runewidth.StringWidth(withFPS), runewidth.StringWidth(without), cols)
@@ -454,11 +461,16 @@ func TestFPSSegmentKeepsMenuAnchored(t *testing.T) {
 	if menuWith != menuWithout {
 		t.Fatalf("the menu button moved on the toggle: %+v with fps, %+v without", menuWith, menuWithout)
 	}
+	indicatorWith, _ := withLay.segment(barSegmentIndicator)
+	indicatorWithout, _ := withoutLay.segment(barSegmentIndicator)
+	if indicatorWith != indicatorWithout {
+		t.Fatalf("the render indicator moved on the toggle: %+v with fps, %+v without", indicatorWith, indicatorWithout)
+	}
 
-	// Every button left of the URL region also holds its column: only the URL
-	// region resizes, and it sits left of the fps segment.
+	// The navigation buttons stay fixed. The right status group stays anchored,
+	// and only the URL region resizes.
 	for _, kind := range []barSegmentKind{
-		barSegmentBack, barSegmentForward, barSegmentReload, barSegmentHome, barSegmentIndicator,
+		barSegmentBack, barSegmentForward, barSegmentReload, barSegmentHome,
 	} {
 		a, okA := withLay.segment(kind)
 		b, okB := withoutLay.segment(kind)

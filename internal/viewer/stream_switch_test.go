@@ -214,6 +214,12 @@ func TestTabSwitchClearsAndRepaintsBar(t *testing.T) {
 			if !strings.Contains(got, "\x1b[24;1H") {
 				t.Fatalf("switch clear did not repaint the bar on the bottom row: %q", got)
 			}
+			if !strings.Contains(got, "│ 256a │ ☰") {
+				t.Fatalf("backend switch bar %q missing the Sixel colour badge", got)
+			}
+			if drawn && !strings.Contains(got, "│ 🅢  │ 256a │ ☰") {
+				t.Fatalf("backend switch bar %q missing the Sixel render glyph", got)
+			}
 			want := []string{"SetBackend(sixel)"}
 			if !waitFor(2*time.Second, func() bool { return reflect.DeepEqual(eng.calls(), want) }) {
 				t.Fatalf("calls after Block-to-Sixel Tab = %v; want %v", eng.calls(), want)

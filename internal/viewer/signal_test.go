@@ -71,7 +71,7 @@ func TestRenderBarSignalKeepsRowWidthAndAnchor(t *testing.T) {
 		signalText(signalPasteDiscarded, 0),
 	}
 	for _, cols := range []int{120, 80, 40, 24, 16, 8, 1} {
-		base := barContent{indicator: "⚃", url: "https://example.org/page"}
+		base := barContent{indicator: "⬒", colour: "240a", url: "https://example.org/page"}
 		plain, without := renderBar(cols, base)
 		if w := runewidth.StringWidth(plain); w != cols {
 			t.Fatalf("plain row width at %d cols = %d", cols, w)
