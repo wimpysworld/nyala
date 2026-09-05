@@ -142,21 +142,25 @@ func TestColourBadge(t *testing.T) {
 		name    string
 		backend Backend
 		colour  ColourMode
+		queryOK bool
 		static  bool
 		want    string
 	}{
-		{"Kitty", BackendKitty, ColourXTermGrey, true, "RGB "},
-		{"Sixel", BackendSixel, ColourTrue, true, "256a"},
-		{"Block true colour", BackendBlock, ColourTrue, false, "RGB "},
-		{"Block 240 static", BackendBlock, ColourXTerm256, true, "240s"},
-		{"Block 240 adaptive", BackendBlock, ColourXTerm256, false, "240a"},
-		{"Block 24 shades", BackendBlock, ColourXTermGrey, true, "24g "},
-		{"Block 240 shades", BackendBlock, ColourXTermGrey, false, "240g"},
+		{"Kitty", BackendKitty, ColourXTermGrey, true, false, "RGB "},
+		{"Sixel", BackendSixel, ColourXTerm256, true, false, "256a"},
+		{"Block true colour", BackendBlock, ColourTrue, true, false, "RGB "},
+		{"Block 240 static policy", BackendBlock, ColourXTerm256, true, true, "240s"},
+		{"Block 240 static without OSC 4", BackendBlock, ColourXTerm256, false, false, "240s"},
+		{"Block 240 adaptive", BackendBlock, ColourXTerm256, true, false, "240a"},
+		{"Block 24 shades static policy", BackendBlock, ColourXTermGrey, true, true, "24g "},
+		{"Block 24 shades without OSC 4", BackendBlock, ColourXTermGrey, false, false, "24g "},
+		{"Block 240 shades", BackendBlock, ColourXTermGrey, true, false, "240g"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			st := NewState(80, 24)
-			st.Backend, st.Colour, st.staticPaletteSelected = tc.backend, tc.colour, tc.static
+			st.Backend, st.Colour = tc.backend, tc.colour
+			st.paletteQueryOK, st.staticPaletteSelected = tc.queryOK, tc.static
 			if got := colourBadge(&st); got != tc.want {
 				t.Fatalf("colourBadge() = %q, want %q", got, tc.want)
 			}

@@ -1600,7 +1600,9 @@ Fixed 240-palette entries were rejected because they ignore the theme.
 
 The four-cell colour badge is always present. True Colour and Kitty read
 `RGB `, Sixel reads `256a`, Block 240 Static reads `240s`, Block 240 Adaptive
-reads `240a`, 24 Shades reads `24g `, and 240 Shades reads `240g`. Alt+C,
+reads `240a`, 24 Shades reads `24g `, and 240 Shades reads `240g`. The Block
+labels report the effective palette path, so an unavailable OSC 4 probe reads
+as static even when the adaptive policy remains selected. Alt+C,
 Alt+P, and the automatic true-colour fallback update the badge through the
 normal bar repaint.
 
@@ -1830,7 +1832,7 @@ for unknown runtime state, which today is only the WebGL tier before or without
 a probe result. The terminal field is omitted when the handshake gave no
 XTVERSION identity, and the browser field when the engine has no version. The
 `256` mode reads `240 Adaptive` or `240 Static`. The grey mode reads `240
-Shades` or `24 Shades`. These labels show the selected palette policy without
+Shades` or `24 Shades`. These labels show the effective palette path without
 protocol terms. Registered Alt render bindings repaint the row while About
 stays open. Alt+C and Alt+P update the colour label when their gates permit a
 change. The row
