@@ -1572,11 +1572,12 @@ The render glyph is ⬒ U+2B12 for Block quadrant, ⬢ U+2B22 for Block sextant,
 🅢 U+1F162 for Sixel, and 🅺 U+1F17A for Kitty. The Block glyph tracks the live
 scheme.
 Clicking the indicator cycles backends, mirroring Alt+R; a right-click steps
-the same enabled cycle backwards, mirroring Alt+Shift+R. The indicator is the
-only segment that reads the button, because it is the only one with a genuine
-secondary action: no nav button has a history dropdown to open here, so
-elsewhere a click is a click whichever button sent it. A braille spinner
-(U+2800 block) fills the slot until the first frame lands.
+the same enabled cycle backwards, mirroring Alt+Shift+R. Clicking the colour
+badge cycles colour, mirroring Alt+C; a right-click cycles backwards, mirroring
+Alt+Shift+C. The indicator and colour badge read the button for these reverse
+actions. No nav button has a history dropdown to open here, so elsewhere a
+click is a click whichever button sent it. A braille spinner (U+2800 block)
+fills the slot until the first frame lands.
 
 Glyph rules: never use U+FE0F or a presentation variant. Every segment position
 and mouse hit span derives from `go-runewidth` measurement, so the fixed glyph
