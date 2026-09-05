@@ -23,7 +23,11 @@ Colour mode precedence is an explicit non-`auto` `--color` value, then `NO_COLOR
 
 Automatic selection maps every profile below truecolour to `256`, the floor mode: every remaining colour mode builds on 256-colour support, and every modern terminal renders indexed colour. A present `NO_COLOR` key selects `grey`; greyscale output still emits SGR colour codes. On a real TTY the stored capability is floored at `256`. A non-TTY keeps its detected capability.
 
+When `--color=auto` selects `truecolor`, Nyala can change an active Block view to adaptive `256` after sustained terminal write pressure. The change needs a successful OSC 4 probe and the adaptive palette policy. Nyala does not change back to `truecolor` automatically. The bottom bar and About view update to `240 Adaptive` when the fallback occurs.
+
 <kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `grey`, then wraps. The cycle skips modes above the effective capability. An explicit mode asserts support for that mode and can raise a lower detected capability. Terminal safety restrictions remain hard caps. `NO_COLOR` selects the automatic starting mode only, so the cycle can still use detected colour modes.
+
+An explicit `--color=truecolor` keeps `truecolor` until the user changes it. Every colour flag still permits <kbd>Alt</kbd>+<kbd>C</kbd> and <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd>. With `--color=auto`, a manual cycle back to `truecolor` resets the pressure detector and permits another automatic fallback.
 
 The `256` mode maps each RGB colour to the CIEDE2000-nearest canonical xterm entry in indexes 16..255. The `grey` mode maps the Rec.601 key `77R + 150G + 29B` to the nearest grey in its active ramp. On the fixed xterm ramp in indexes 232..255, the reference levels are 8, 18, through 238 in steps of 10, and an exact midpoint selects the lighter grey.
 

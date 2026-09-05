@@ -520,6 +520,12 @@ type streamSession struct {
 	assembled         *bytes.Buffer
 	assembledEncodeMS float64
 	assembledTimed    bool // the assembled frame passed the FCP measurement gate
+	// assembledPressureSample marks a frame selected for write-pressure timing.
+	// The generation makes a completion from before a reset stale.
+	assembledPressureSample bool
+	assembledPressureGen    uint64
+	writePressure           writePressureObserver
+	writePressureGen        uint64
 	// assembledSHM identifies the assembled Kitty shm transmit and the reset
 	// generation that created its object. The handoff records it in the reply
 	// ledger and arms the one-in-flight pacing gate when it is still valid.
@@ -829,6 +835,7 @@ func (s *streamSession) maybeEmitPointerShape() {
 // switch or a resize never strands this cached handle.
 func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error {
 	frames := s.eng.Frames()
+	s.resetWritePressure()
 	// Heartbeat the bar's fps segment so an idle page decays it to a live 0
 	// rather than freezing it at the last frame's rate. The block backend
 	// pushes no frames while static, so without this a scroll that settles
@@ -905,6 +912,7 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			item = writeItem{
 				buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed,
 				tmuxSixel: s.assembledTmuxSixel, kittySHM: s.assembledSHM.id != 0,
+				pressureSample: s.assembledPressureSample, pressureGen: s.assembledPressureGen,
 			}
 		}
 
@@ -952,6 +960,7 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 		select {
 		case readyC <- item:
 			s.assembled = nil
+			s.assembledPressureSample = false
 			s.markKittySHMHandoff()
 			s.markTmuxSixelHandoff()
 		case <-gateC:
@@ -1042,6 +1051,7 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			if fi.tmuxSixel {
 				s.recordTmuxSixelWrite(fi.writeDur)
 			}
+			s.observeWritePressure(fi)
 			avail = append(avail, fi.buf)
 		case ev, ok := <-keys:
 			if !ok {
@@ -1555,6 +1565,7 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	// Tag an shm transmit for reply correlation and the pacing gate.
 	s.markKittySHMAssembled(s.st.takeKittySHMID())
 	s.assembledTmuxSixel = nonScrollingSixel && s.st.mux == muxTmux
+	s.assembledPressureSample, s.assembledPressureGen = s.nextWritePressureSample()
 
 	if s.fps != nil {
 		// The engine stamps frames received after main-frame first contentful paint.
@@ -1587,8 +1598,10 @@ func (s *streamSession) flushAssembled() {
 	s.writer.send(writeItem{
 		buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed,
 		tmuxSixel: s.assembledTmuxSixel, kittySHM: s.assembledSHM.id != 0,
+		pressureSample: s.assembledPressureSample, pressureGen: s.assembledPressureGen,
 	})
 	s.assembled = nil
+	s.assembledPressureSample = false
 	s.markKittySHMHandoff()
 	s.markTmuxSixelHandoff()
 }
@@ -1626,6 +1639,7 @@ func (s *streamSession) emitControl(b []byte) error {
 // bar at the new geometry; a pre-frame resize is safe because the bar repaint
 // follows every clear.
 func (s *streamSession) resize() error {
+	s.resetWritePressure()
 	nc, nr, err := cterm.GetSize(s.fd)
 	if err != nil {
 		// A GetSize failure drops this resize: the engine keeps the old grid, so the
@@ -2124,6 +2138,9 @@ func (s *streamSession) cycleBackend(reverse bool) {
 	} else {
 		s.st.CycleBackend()
 	}
+	if s.st.Backend != previous {
+		s.resetWritePressure()
+	}
 	// One control buffer carries the whole switch clear, routed through the
 	// writer so it stays ordered against the frames and never races an
 	// in-flight write. Best-effort: a write failure surfaces on the next
@@ -2181,7 +2198,11 @@ func (s *streamSession) cycleColour(reverse bool) {
 		return
 	}
 	before := s.st.Colour
-	s.recomposeBlock(s.st.CycleColour(reverse) != before)
+	changed := s.st.CycleColour(reverse) != before
+	if !changed {
+		s.resetWritePressure()
+	}
+	s.recomposeBlock(changed)
 }
 
 // togglePalettePolicy changes the supported Block palette policy and repaints
@@ -2206,6 +2227,7 @@ func (s *streamSession) recomposeBlock(changed bool, paletteControl ...string) {
 	if !changed {
 		return
 	}
+	s.resetWritePressure()
 	if s.diff != nil {
 		s.diff.Reset()
 	}
