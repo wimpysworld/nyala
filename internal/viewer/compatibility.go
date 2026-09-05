@@ -151,6 +151,7 @@ func resolveColourCapability(flag string, detected ColourMode, compat terminalCo
 func (s *State) configureColour(flag string, environ []string, detected ColourMode, isTTY bool) {
 	s.Colour = resolveCompatibleColour(flag, environ, detected, s.compat)
 	s.colourCap = resolveColourCapability(flag, detected, s.compat, isTTY)
+	s.automaticColourFallback = flag == "auto" && s.Colour == ColourTrue
 }
 
 // validateForcedBackend applies terminal-specific errors before the generic

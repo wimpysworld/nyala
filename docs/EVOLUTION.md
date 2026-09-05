@@ -202,6 +202,16 @@ Output-identical micro-kernels followed: mask-membership tables cut colour
 picking (quadrant -32.8%, sextant -29.6%) and exact packed-RGBA sampling
 cut its kernel by 63.7%.
 
+**Automatic colour responds to measured write pressure.** An automatic True
+Colour Block view can fall back once to the adaptive 240-entry palette when
+OSC 4 works and the adaptive policy remains selected. The allocation-free
+observer times every eighth eligible write, ignores four startup samples, and
+requires four consecutive writes at 15 ms or more. The threshold separates the
+measured 16.7 ms True Colour writes from 7.2 ms adaptive writes. Explicit True
+Colour prevents the automatic fallback. An automatic session rearms the
+detector when a manual cycle returns to True Colour. No terminal-name policy
+or automatic promotion was added.
+
 **`REP`, measured and rejected.** ECMA-48 `REP` for runs of three or more
 equal cells saved 92 to 98% of bytes on flat fixtures, but regressed p90 by
 15.7 to 24.6% with 0% saving on photo and motion content. The production

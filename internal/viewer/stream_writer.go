@@ -23,14 +23,17 @@ func msSince(start time.Time) float64 {
 // tmux Sixel frame, whose write is timed unconditionally because the adaptive
 // pacing gate feeds on the duration even with the fps meter off. kittySHM marks
 // a Kitty shared-memory frame so a failed write keeps that provenance after the
-// producer's acknowledgement state changes.
+// producer's acknowledgement state changes. pressureSample requests one sampled
+// duration for the write-pressure observer.
 type writeItem struct {
-	buf       *bytes.Buffer
-	ctrl      []byte
-	encodeMS  float64
-	timed     bool
-	tmuxSixel bool
-	kittySHM  bool
+	buf            *bytes.Buffer
+	ctrl           []byte
+	encodeMS       float64
+	timed          bool
+	tmuxSixel      bool
+	kittySHM       bool
+	pressureSample bool
+	pressureGen    uint64
 }
 
 // writeFailure carries the first terminal error and the kind of item whose
@@ -47,15 +50,18 @@ func (f writeFailure) Unwrap() error { return f.err }
 
 // freeItem returns a drained frame buffer to the producer with the frame's encode
 // and write times. The producer reuses the buffer and records the paint split on
-// its own goroutine, because the fps meter is single-goroutine. A tmuxSixel item
-// carries the write duration for the adaptive pacing gate, zero on a failed write.
+// its own goroutine, because the fps meter is single-goroutine. A tmuxSixel or
+// pressureSample item carries the write duration for its observer, zero on a
+// failed write.
 type freeItem struct {
-	buf       *bytes.Buffer
-	encodeMS  float64
-	writeMS   float64
-	writeDur  time.Duration
-	timed     bool
-	tmuxSixel bool
+	buf            *bytes.Buffer
+	encodeMS       float64
+	writeMS        float64
+	writeDur       time.Duration
+	timed          bool
+	tmuxSixel      bool
+	pressureSample bool
+	pressureGen    uint64
 }
 
 // streamWriter owns every terminal write on one goroutine so the producer's next
@@ -72,6 +78,7 @@ type streamWriter struct {
 	free  chan freeItem
 	errc  chan writeFailure
 	done  chan struct{}
+	clock func() time.Time
 }
 
 // newStreamWriter starts the writer goroutine. ready is cap 1 for strict order;
@@ -92,10 +99,10 @@ func newStreamWriter(tty io.Writer) *streamWriter {
 }
 
 // run emits each queued item to the terminal in order until ready closes. It times
-// only the io.Write (the terminal flush) when the item is timed or a tmux Sixel
-// frame, so the fps meter attributes write time apart from the producer's encode
-// and the adaptive tmux pacing gate reads the write duration even with the meter
-// off. On the first write error, or a short write (n < len with a nil error, which
+// only the io.Write (the terminal flush) when the item is timed, a tmux Sixel
+// frame, or a selected pressure sample. The fps meter attributes write time apart
+// from the producer's encode, while the two observers receive one shared duration.
+// On the first write error, or a short write (n < len with a nil error, which
 // tears the frame tail), it records the error once on errc, then discards later
 // writes while still returning pooled buffers on free, so a blocked producer
 // handoff never deadlocks.
@@ -110,10 +117,10 @@ func (w *streamWriter) run() {
 		var writeMS float64
 		var writeDur time.Duration
 		if !failed {
-			clocked := item.timed || item.tmuxSixel
+			clocked := item.timed || item.tmuxSixel || item.pressureSample
 			var start time.Time
 			if clocked {
-				start = time.Now()
+				start = w.now()
 			}
 			n, err := w.tty.Write(data)
 			if err == nil && n < len(data) {
@@ -128,16 +135,24 @@ func (w *streamWriter) run() {
 				default:
 				}
 			} else if clocked {
-				writeDur = max(time.Since(start), 0)
+				writeDur = max(w.now().Sub(start), 0)
 				if item.timed {
 					writeMS = float64(writeDur) / float64(time.Millisecond)
 				}
 			}
 		}
 		if item.buf != nil {
-			w.free <- freeItem{buf: item.buf, encodeMS: item.encodeMS, writeMS: writeMS, writeDur: writeDur, timed: item.timed, tmuxSixel: item.tmuxSixel}
+			w.free <- freeItem{buf: item.buf, encodeMS: item.encodeMS, writeMS: writeMS, writeDur: writeDur, timed: item.timed, tmuxSixel: item.tmuxSixel, pressureSample: item.pressureSample, pressureGen: item.pressureGen}
 		}
 	}
+}
+
+// now reads the injected test clock or the process monotonic clock.
+func (w *streamWriter) now() time.Time {
+	if w.clock != nil {
+		return w.clock()
+	}
+	return time.Now()
 }
 
 // send hands one item to the writer with a blocking send. It waits only for the

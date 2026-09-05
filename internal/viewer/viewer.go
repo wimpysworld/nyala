@@ -76,6 +76,9 @@ type State struct {
 	cellPx                          // terminal cell pixel size for graphics scaling
 	compat    terminalCompatibility // terminal-specific rendering compatibility policy
 	colourCap ColourMode            // highest colour mode that Alt+C can select
+	// automaticColourFallback records that auto detection selected True Colour.
+	// Explicit colour flags and auto selections of lower modes leave it false.
+	automaticColourFallback bool
 
 	// sextantOK records whether the terminal self-draws sextant glyphs, resolved
 	// once by configureBackends from the environment. The Alt+B scheme cycle

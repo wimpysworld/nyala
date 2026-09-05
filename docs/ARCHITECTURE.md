@@ -1058,6 +1058,31 @@ colour mode builds on 256-colour support, and every modern terminal renders
 indexed colour. The runtime cycle order is `ColourTrue`, `ColourXTerm256`,
 then `ColourXTermGrey`.
 
+An automatic True Colour Block session observes sustained terminal write
+pressure when palette control is confirmed and the adaptive palette policy is
+still selected. The observer selects every eighth eligible completed frame
+write for timing, ignores its first four samples, and reports pressure after
+four consecutive samples of at least 15 ms. A faster sample clears the slow
+run. The observer has fixed state and adds no allocations, atomics, goroutines,
+logging, or dependency on the FPS meter. Unselected writes do not read the
+clock.
+
+`automaticColourFallback` records that `--color=auto` resolved to
+`ColourTrue`. An explicit `--color=truecolor`, another backend, an unanswered
+OSC 4 probe, the static palette policy, or another colour mode closes the
+observer gate. Resize, backend, render, colour-cycle, and session lifecycle
+changes reset the samples and invalidate stale completions. Page navigation
+keeps the session-level sample history. When an automatic session cycles back
+to `ColourTrue`, the reset observer becomes eligible again.
+
+The first pressure verdict changes the mode to `ColourXTerm256` through
+`recomposeBlock()`. Queued True Colour output completes before the reset,
+clear, current navigation bar, and same-backend restart. The next frame writes
+its OSC 4 palette before indexed cells. The new mode makes the observer
+ineligible. Nyala never promotes the mode automatically. Manual colour cycling
+remains available for every flag. An automatic session can cycle back to
+`ColourTrue` and arm a new pressure observation period.
+
 `resolveColourCapability` sets the cycle's effective cap from detection and an
 explicit mode. On a real TTY the cap is floored at `ColourXTerm256`, the mode
 every profile now starts at or above. A non-TTY keeps its detected cap, so

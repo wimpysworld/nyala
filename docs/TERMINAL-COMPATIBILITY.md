@@ -32,6 +32,14 @@ nothing when one of these conditions is false. The active navigation-bar mode
 does not change this gate, so the key works in chrome, URL edit, find, menu, and
 About modes. The selection lasts for the current Nyala process.
 
+When `--color=auto` selected True Colour, Nyala can fall back to adaptive `256`
+only while Block is active and the OSC 4 probe confirmed support. Sustained
+terminal write pressure triggers the change, not the terminal name. The change
+does not promote the mode automatically. An explicit `--color=truecolor`
+prevents the automatic fallback. With `--color=auto`, a manual cycle back to
+True Colour resets the pressure detector and permits another automatic
+fallback.
+
 When the terminal answered `OSC 4 ; 16 ; ?`, adaptive `256` writes a
 scene-fitted palette and adaptive `grey` writes a scene-fitted greyscale ramp
 into indexes 16..255 with OSC 4. Static `256` uses the canonical xterm palette,
