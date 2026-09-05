@@ -121,7 +121,7 @@ func TestBarLayoutHit(t *testing.T) {
 	_, l := renderBar(80, barContent{indicator: "⬒", colour: "240a", url: "https://example.org/"})
 	for _, kind := range []barSegmentKind{
 		barSegmentBack, barSegmentForward, barSegmentReload, barSegmentHome,
-		barSegmentURL, barSegmentIndicator, barSegmentMenu,
+		barSegmentURL, barSegmentIndicator, barSegmentColour, barSegmentMenu,
 	} {
 		seg, ok := l.segment(kind)
 		if !ok {
@@ -138,11 +138,15 @@ func TestBarLayoutHit(t *testing.T) {
 		t.Fatal("hit resolved the separator cell after the back button")
 	}
 	indicator, _ := l.segment(barSegmentIndicator)
+	colour, _ := l.segment(barSegmentColour)
 	menu, _ := l.segment(barSegmentMenu)
-	for col := indicator.col + indicator.width; col < menu.col; col++ {
+	for _, col := range []int{indicator.col + indicator.width, colour.col + colour.width} {
 		if _, ok := l.hit(col); ok {
-			t.Fatalf("hit resolved the colour badge or its separator at column %d", col)
+			t.Fatalf("hit resolved a status separator at column %d", col)
 		}
+	}
+	if colour.col+colour.width >= menu.col {
+		t.Fatalf("colour badge ends at %d, menu starts at %d", colour.col+colour.width-1, menu.col)
 	}
 }
 
@@ -465,6 +469,11 @@ func TestFPSSegmentKeepsMenuAnchored(t *testing.T) {
 	indicatorWithout, _ := withoutLay.segment(barSegmentIndicator)
 	if indicatorWith != indicatorWithout {
 		t.Fatalf("the render indicator moved on the toggle: %+v with fps, %+v without", indicatorWith, indicatorWithout)
+	}
+	colourWith, _ := withLay.segment(barSegmentColour)
+	colourWithout, _ := withoutLay.segment(barSegmentColour)
+	if colourWith != colourWithout {
+		t.Fatalf("the colour badge moved on the toggle: %+v with fps, %+v without", colourWith, colourWithout)
 	}
 
 	// The navigation buttons stay fixed. The right status group stays anchored,
@@ -813,6 +822,75 @@ func TestHandleMouseIndicatorLeftAndMiddleCycleForward(t *testing.T) {
 				t.Fatalf("button %d forward step %d = %v, want %v", button, i, st.Backend, w)
 			}
 		}
+	}
+}
+
+// TestHandleMouseColourBadgeCycles pins the badge click actions to the colour
+// key actions: left steps forwards like Alt+C, right steps backwards like
+// Alt+Shift+C, and neither action changes the separate Alt+P palette policy.
+func TestHandleMouseColourBadgeCycles(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		button MouseButton
+		want   ColourMode
+	}{
+		{"left forwards", MouseButtonLeft, ColourXTerm256},
+		{"right reverses", MouseButtonRight, ColourXTermGrey},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := NewState(80, 24)
+			st.Backend = BackendBlock
+			st.Colour = ColourTrue
+			st.paletteQueryOK = true
+			var forwarded []MouseEvent
+			eng := streamTestEngine{sendMouse: func(ev MouseEvent) { forwarded = append(forwarded, ev) }}
+			done := make(chan struct{})
+			defer close(done)
+			s := dispatchSession(eng, &st)
+			s.ctl = newControl(eng, done)
+			s.repaintBar()
+
+			seg, ok := s.barLay.segment(barSegmentColour)
+			if !ok {
+				t.Fatal("colour badge segment missing")
+			}
+			barRow := st.Rows - 1
+			s.handleMouse(MouseEvent{Action: MouseActionPress, Button: tc.button, Col: seg.col - 1, Row: barRow})
+			if st.Colour != tc.want {
+				t.Fatalf("colour badge press selected %v, want %v", st.Colour, tc.want)
+			}
+			if st.staticPaletteSelected {
+				t.Fatal("colour badge press changed the Alt+P palette policy")
+			}
+			if !s.pressedSet || s.pressed != barSegmentColour {
+				t.Fatal("colour badge press did not set press feedback")
+			}
+			s.handleMouse(MouseEvent{Action: MouseActionRelease, Button: tc.button, Col: seg.col - 1, Row: barRow})
+			if st.Colour != tc.want || s.pressedSet {
+				t.Fatalf("colour badge release changed colour to %v or kept press feedback", st.Colour)
+			}
+			if len(forwarded) != 0 {
+				t.Fatalf("colour badge click reached the page: %+v", forwarded)
+			}
+		})
+	}
+}
+
+// TestHandleMouseColourBadgeIsBlockOnly pins the same backend gate as Alt+C:
+// a badge click under a graphics backend keeps the stored Block colour mode.
+func TestHandleMouseColourBadgeIsBlockOnly(t *testing.T) {
+	st := NewState(80, 24)
+	st.Backend = BackendKitty
+	st.Colour = ColourTrue
+	s := dispatchSession(streamTestEngine{}, &st)
+	s.repaintBar()
+	seg, ok := s.barLay.segment(barSegmentColour)
+	if !ok {
+		t.Fatal("colour badge segment missing")
+	}
+	s.handleMouse(MouseEvent{Action: MouseActionPress, Button: MouseButtonLeft, Col: seg.col - 1, Row: st.Rows - 1})
+	if st.Colour != ColourTrue {
+		t.Fatalf("graphics-backend badge click selected %v, want no change", st.Colour)
 	}
 }
 

@@ -111,7 +111,7 @@ func TestRenderBarLayout(t *testing.T) {
 	}
 	wantOrder := []barSegmentKind{
 		barSegmentBack, barSegmentForward, barSegmentReload, barSegmentHome,
-		barSegmentURL, barSegmentIndicator, barSegmentMenu,
+		barSegmentURL, barSegmentIndicator, barSegmentColour, barSegmentMenu,
 	}
 	if len(l.segments) != len(wantOrder) {
 		t.Fatalf("segments = %d, want %d", len(l.segments), len(wantOrder))
@@ -148,6 +148,10 @@ func TestRenderBarLayout(t *testing.T) {
 	indicator, ok := l.segment(barSegmentIndicator)
 	if !ok || indicator.width != 4 {
 		t.Fatalf("render indicator = %+v, want a four-cell click target", indicator)
+	}
+	colour, ok := l.segment(barSegmentColour)
+	if !ok || colour.width != 6 {
+		t.Fatalf("colour badge = %+v, want a six-cell click target", colour)
 	}
 
 	// The menu anchors to the bottom-right corner behind its own separator.

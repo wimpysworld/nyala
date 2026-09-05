@@ -479,17 +479,18 @@ func (s *streamSession) onBarRow(row int) bool {
 
 // handleBarMouse dispatches one chrome-mode bar-row press against the spans of
 // the last repaint: the nav buttons reuse the SendNav actions, the indicator
-// cycles the backend like Alt+R (or like Alt+Shift+R on a right press), the URL
-// region opens the editor, and ☰ opens the menu. A press on a button holds it
-// bold until the release, which handleMouse clears wherever it lands. Motion and
-// wheel events on the bar are dropped: the bar row sits outside the engine grid
-// and holds no draggable control.
+// cycles the backend like Alt+R (or like Alt+Shift+R on a right press), the
+// colour badge cycles colour like Alt+C (or like Alt+Shift+C on a right press),
+// the URL region opens the editor, and ☰ opens the menu. A press on a button
+// holds it bold until the release, which handleMouse clears wherever it lands.
+// Motion and wheel events on the bar are dropped: the bar row sits outside the
+// engine grid and holds no draggable control.
 //
-// Only the indicator reads the button. Every other segment activates on any
-// button, because no bar control has a secondary action to reveal: a nav button
-// has no history dropdown to open here, so the forgiving reading is that a click
-// is a click. Nothing on the bar row reaches CDP either way, so a right press
-// here raises no page context-menu event, unlike a right press on the page.
+// The indicator and colour badge read the button for their reverse actions.
+// Every other segment activates on any button, because no other bar control has
+// a secondary action to reveal. Nothing on the bar row reaches CDP either way,
+// so a right press here raises no page context-menu event, unlike a right press
+// on the page.
 func (s *streamSession) handleBarMouse(ev MouseEvent) {
 	if ev.Action != MouseActionPress {
 		return
@@ -516,6 +517,11 @@ func (s *streamSession) handleBarMouse(ev MouseEvent) {
 		// The right button mirrors Alt+Shift+R: the same enabled cycle stepped
 		// backwards. Every other button steps forwards like Alt+R.
 		s.cycleBackend(ev.Button == MouseButtonRight)
+	case barSegmentColour:
+		s.pressSegment(kind)
+		// The right button mirrors Alt+Shift+C. Every other button steps
+		// forwards like Alt+C.
+		s.cycleColour(ev.Button == MouseButtonRight)
 	case barSegmentURL:
 		s.enterEdit()
 	case barSegmentMenu:

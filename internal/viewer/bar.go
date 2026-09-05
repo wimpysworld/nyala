@@ -151,6 +151,8 @@ const (
 	barSegmentHome
 	// barSegmentIndicator is the backend indicator (or startup spinner) slot.
 	barSegmentIndicator
+	// barSegmentColour is the four-cell colour badge and its outer padding.
+	barSegmentColour
 	// barSegmentURL is the flexible URL region.
 	barSegmentURL
 	// barSegmentFPS is the fps meter text, present only when the meter is armed.
@@ -330,7 +332,7 @@ func renderBar(cols int, c barContent) (string, barLayout) {
 	right = append(right,
 		barRenderButton(c.indicator),
 		barFiller(barSeparator),
-		barAtom{text: " " + runewidth.FillRight(runewidth.Truncate(c.colour, 4, ""), 4) + " ", width: 6},
+		barAtom{kind: barSegmentColour, text: " " + runewidth.FillRight(runewidth.Truncate(c.colour, 4, ""), 4) + " ", width: 6, segment: true},
 		barFiller(barSeparator),
 		barButton(barSegmentMenu, barGlyphMenu),
 	)

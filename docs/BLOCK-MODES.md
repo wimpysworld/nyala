@@ -25,7 +25,7 @@ Automatic selection maps every profile below truecolour to `256`, the floor mode
 
 When `--color=auto` selects `truecolor`, Nyala can change an active Block view to adaptive `256` after sustained terminal write pressure. The change needs a successful OSC 4 probe and the adaptive palette policy. Nyala does not change back to `truecolor` automatically. The bottom bar badge updates to `240a`, and About updates to `240 Adaptive`.
 
-<kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `grey`, then wraps. The cycle skips modes above the effective capability. An explicit mode asserts support for that mode and can raise a lower detected capability. Terminal safety restrictions remain hard caps. `NO_COLOR` selects the automatic starting mode only, so the cycle can still use detected colour modes.
+<kbd>Alt</kbd>+<kbd>C</kbd> cycles `truecolor` -> `256` -> `grey`, then wraps. A left-click on the bottom bar's colour badge does the same, and a right-click cycles backwards like <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd>. The cycle skips modes above the effective capability. An explicit mode asserts support for that mode and can raise a lower detected capability. Terminal safety restrictions remain hard caps. `NO_COLOR` selects the automatic starting mode only, so the cycle can still use detected colour modes.
 
 An explicit `--color=truecolor` keeps `truecolor` until the user changes it. Every colour flag still permits <kbd>Alt</kbd>+<kbd>C</kbd> and <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd>. With `--color=auto`, a manual cycle back to `truecolor` resets the pressure detector and permits another automatic fallback.
 
