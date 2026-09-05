@@ -40,6 +40,8 @@ const (
 	barGlyphClose         = "✕" // ✕ close (menu, About, and find modes)
 	barGlyphPrompt        = "❯" // ❯ URL edit prompt
 	barGlyphFind          = "⌕" // ⌕ U+2315 find prompt
+	barGlyphHTTPS         = "★" // ★ HTTPS transport
+	barGlyphHTTP          = "☆" // ☆ HTTP transport
 	barSeparator          = "│" // │ segment separator
 	barEllipsis           = "…" // … URL truncation marker
 )
@@ -84,14 +86,31 @@ func resolveBarStyle(dark, ok bool) string {
 	return barStyleLight
 }
 
-// barSpinner is the braille startup spinner cycle shown in the indicator
-// slot while the launch navigation runs, before the first frame.
+// barSpinner is the braille startup spinner cycle shown before the URL while
+// the launch navigation runs, before the first frame.
 var barSpinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // spinnerGlyph returns the spinner frame for one tick step, wrapping so any
 // non-negative step is valid.
 func spinnerGlyph(step int) string {
 	return barSpinner[step%len(barSpinner)]
+}
+
+// transportGlyph returns the URL-prefix glyph for the URL scheme. The filled
+// star identifies HTTPS transport only. Other schemes reserve the same cell.
+func transportGlyph(rawURL string) string {
+	scheme, _, ok := strings.Cut(rawURL, ":")
+	if !ok {
+		return " "
+	}
+	switch {
+	case strings.EqualFold(scheme, "https"):
+		return barGlyphHTTPS
+	case strings.EqualFold(scheme, "http"):
+		return barGlyphHTTP
+	default:
+		return " "
+	}
 }
 
 // backendGlyph returns the indicator glyph for the active backend. Block
@@ -149,7 +168,7 @@ const (
 	barSegmentReload
 	// barSegmentHome is the ⌂ launch-URL button.
 	barSegmentHome
-	// barSegmentIndicator is the backend indicator (or startup spinner) slot.
+	// barSegmentIndicator is the backend indicator slot.
 	barSegmentIndicator
 	// barSegmentColour is the four-cell colour badge and its outer padding.
 	barSegmentColour
@@ -177,6 +196,7 @@ type barSegment struct {
 type barLayout struct {
 	cols     int
 	segments []barSegment
+	prefix   barSegment
 }
 
 // segment returns the span for kind and whether the layout holds it.
@@ -211,41 +231,95 @@ func boldSpan(content string, col, width int) string {
 
 // boldSpans wraps each cell span [col, col+width) of a plain bar row in SGR
 // bold in a single pass, so several spans never miscount cells across an
-// earlier insertion's escapes. Spans must not overlap; they are applied in
-// column order. It walks the row by measured cells, so a wide rune keeps the
-// spans aligned with the hit-test columns. Degenerate or out-of-row spans
-// leave the row unchanged.
+// earlier insertion's escapes. It walks the row by measured cells, so a wide
+// rune keeps the spans aligned with the hit-test columns. Degenerate or
+// out-of-row spans leave the row unchanged.
 func boldSpans(content string, spans []barSegment) string {
-	valid := make([]barSegment, 0, len(spans))
-	for _, sp := range spans {
-		if sp.col >= 1 && sp.width >= 1 {
-			valid = append(valid, sp)
+	decorations := make([]barDecoration, 0, len(spans))
+	for _, span := range spans {
+		decorations = append(decorations, barDecoration{span: span, open: "\x1b[1m", close: "\x1b[22m"})
+	}
+	return decorateBar(content, decorations)
+}
+
+type barDecoration struct {
+	span  barSegment
+	open  string
+	close string
+}
+
+// decorateBar inserts style bytes around cell spans after the plain row and its
+// layout are complete. When spans overlap, it closes every active style at a
+// boundary and reopens the styles that continue. A close sequence can therefore
+// reset the full bar style without clearing another active decoration. Cell
+// measurement never sees ANSI.
+func decorateBar(content string, decorations []barDecoration) string {
+	validDecorations := make([]barDecoration, 0, len(decorations))
+	for _, decoration := range decorations {
+		if decoration.span.col >= 1 && decoration.span.width >= 1 {
+			validDecorations = append(validDecorations, decoration)
 		}
 	}
-	if len(valid) == 0 {
+	if len(validDecorations) == 0 {
 		return content
 	}
-	slices.SortFunc(valid, func(a, b barSegment) int { return a.col - b.col })
+	slices.SortStableFunc(validDecorations, func(a, b barDecoration) int {
+		if byColumn := a.span.col - b.span.col; byColumn != 0 {
+			return byColumn
+		}
+		return b.span.width - a.span.width
+	})
 	var b strings.Builder
 	cell := 1
 	idx := 0
-	open, wrote := false, false
-	for _, r := range content {
-		if open && cell >= valid[idx].col+valid[idx].width {
-			b.WriteString("\x1b[22m")
-			open = false
-			idx++
+	active := make([]barDecoration, 0, len(validDecorations))
+	wrote := false
+	closeActive := func() {
+		for i := len(active) - 1; i >= 0; i-- {
+			b.WriteString(active[i].close)
 		}
-		if !open && idx < len(valid) && cell >= valid[idx].col {
-			b.WriteString("\x1b[1m")
-			open = true
+	}
+	openActive := func() {
+		for _, decoration := range active {
+			b.WriteString(decoration.open)
+		}
+	}
+	for _, r := range content {
+		expired := false
+		for _, decoration := range active {
+			if cell >= decoration.span.col+decoration.span.width {
+				expired = true
+				break
+			}
+		}
+		if expired {
+			closeActive()
+			kept := active[:0]
+			for _, decoration := range active {
+				if cell < decoration.span.col+decoration.span.width {
+					kept = append(kept, decoration)
+				}
+			}
+			active = kept
+		}
+		start := len(active)
+		for idx < len(validDecorations) && cell >= validDecorations[idx].span.col {
+			active = append(active, validDecorations[idx])
+			idx++
 			wrote = true
+		}
+		if expired {
+			openActive()
+		} else {
+			for _, decoration := range active[start:] {
+				b.WriteString(decoration.open)
+			}
 		}
 		b.WriteRune(r)
 		cell += runewidth.RuneWidth(r)
 	}
-	if open {
-		b.WriteString("\x1b[22m")
+	if len(active) > 0 {
+		closeActive()
 	}
 	if !wrote {
 		return content
@@ -253,12 +327,39 @@ func boldSpans(content string, spans []barSegment) string {
 	return b.String()
 }
 
+// urlPrefixStyle returns the prefix colour style. Known bar polarity gives the
+// spinner an explicit high-contrast foreground. The reverse-video fallback
+// keeps its default contrast. Reverse video needs a background selector to
+// display the HTTPS transport glyph as yellow ink.
+func urlPrefixStyle(barStyle string, loading bool, transport string) string {
+	if loading {
+		if barStyle == barStyleLight {
+			return "\x1b[30m"
+		}
+		if barStyle == barStyleDark {
+			return "\x1b[97m"
+		}
+		return ""
+	}
+	if transport == barGlyphHTTPS {
+		if barStyle == barStyleReverse {
+			return "\x1b[43m"
+		}
+		return "\x1b[33m"
+	}
+	return ""
+}
+
 // barContent carries the variable bar fields for one repaint. indicator is
-// the backend glyph, or a spinner frame during the launch navigation. colour
-// is the four-cell badge. fps is the fps meter text. An empty fps hides that
-// segment. A non-empty signal replaces the URL text for as long as it holds.
+// the backend glyph. spinner replaces the transport glyph during the launch
+// navigation. transport can carry a glyph that the caller already derived.
+// colour is the four-cell badge. fps is the fps meter text. An empty fps hides
+// that segment. A non-empty signal replaces the URL text for as long as it
+// holds.
 type barContent struct {
 	indicator string
+	spinner   string
+	transport string
 	colour    string
 	url       string
 	fps       string
@@ -296,7 +397,7 @@ func barFiller(text string) barAtom {
 // renderBar lays out and renders one bar row for a cols-wide terminal. It
 // returns the row content, exactly cols cells wide with no escapes, and the
 // segment layout it drew. The chrome is
-// ← │ → │ ⟳ │ ⌂ │ <url> [│ fps] │ <indicator> │ <colour> │ ☰: the menu
+// ← │ → │ ⟳ │ ⌂ │ <transport> <url> [│ fps] │ <indicator> │ <colour> │ ☰: the menu
 // anchors to the right corner. The render glyph and four-cell colour badge
 // always sit immediately to its left. The optional fps text sits before the
 // fixed status group. The URL region absorbs the remaining width and truncates
@@ -307,8 +408,20 @@ func renderBar(cols int, c barContent) (string, barLayout) {
 		return "", barLayout{cols: cols}
 	}
 	region := c.url
+	hasPrefix := true
 	if c.signal != "" {
 		region = c.signal
+		hasPrefix = false
+	}
+	if hasPrefix {
+		prefix := c.transport
+		if prefix == "" {
+			prefix = transportGlyph(c.url)
+		}
+		if c.spinner != "" {
+			prefix = c.spinner
+		}
+		region = runewidth.FillRight(runewidth.Truncate(prefix, 1, ""), 1) + " " + region
 	}
 	left := []barAtom{
 		barButton(barSegmentBack, barGlyphBack),
@@ -348,7 +461,14 @@ func renderBar(cols int, c barContent) (string, barLayout) {
 	if urlWidth < 1 {
 		// Too narrow for the chrome: the whole row is the URL region.
 		content := runewidth.FillRight(runewidth.Truncate(region, cols, barEllipsis), cols)
-		return content, barLayout{cols: cols, segments: []barSegment{{kind: barSegmentURL, col: 1, width: cols}}}
+		layout := barLayout{
+			cols:     cols,
+			segments: []barSegment{{kind: barSegmentURL, col: 1, width: cols}},
+		}
+		if hasPrefix {
+			layout.prefix = barSegment{col: 1, width: 1}
+		}
+		return content, layout
 	}
 
 	atoms := make([]barAtom, 0, len(left)+1+len(right))
@@ -367,6 +487,9 @@ func renderBar(cols int, c barContent) (string, barLayout) {
 	for _, a := range atoms {
 		if a.segment {
 			l.segments = append(l.segments, barSegment{kind: a.kind, col: col, width: a.width})
+			if a.kind == barSegmentURL && hasPrefix {
+				l.prefix = barSegment{col: col, width: 1}
+			}
 		}
 		row = append(row, a.text...)
 		col += a.width

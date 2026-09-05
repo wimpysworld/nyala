@@ -212,8 +212,9 @@ func handleFatalSignal(sig os.Signal, restore func(), closeEngine func() error, 
 // until the user quits. It puts the terminal into raw mode, detects which
 // backends the terminal supports, hands the resolved backend and cell px to the
 // engine so it sizes the screencast capture, then navigates to url. It clears
-// the screen and draws the bottom bar immediately, with a braille spinner in
-// the indicator slot until the first frame replaces it with the backend glyph.
+// the screen and draws the bottom bar immediately, with a braille spinner
+// before the URL until the first frame removes it. The backend glyph stays in
+// the fixed status group.
 // It re-fits and restarts the stream on resize, forwards scroll keys, page keys,
 // and the wheel to the engine, cycles the backend on Alt+R, and restores the
 // terminal on exit. It returns an error only on a setup or I/O failure; a clean
@@ -482,8 +483,8 @@ func setupViewer(eng Engine, tty *os.File, colourFlag, kittyTransport string, sc
 // streamSession bundles the per-run viewer state the push loop mutates: the
 // engine it forwards to, the State it draws from, the tty it writes to, and the
 // tty fd it reads the resized geometry from. firstDrawn selects the first
-// frame's full clear and keeps the bar's indicator on the startup spinner
-// until a real frame draws.
+// frame's full clear and keeps the startup spinner before the URL until a real
+// frame draws.
 type streamSession struct {
 	eng Engine
 	st  *State
@@ -665,9 +666,9 @@ type streamSession struct {
 // mode (edit, menu, about, find) swaps the row content through appendBarMode. In
 // chrome, the URL comes from Engine.CurrentURL at each repaint, falling back
 // to the launch URL, a live copy or paste signal takes the URL region for its
-// hold, the indicator shows the startup spinner until the first frame draws, a
-// pressed button renders bold until its release, and the layout is kept for
-// bar-row mouse hit-testing.
+// hold, a startup spinner prefixes the URL region until the first frame draws,
+// the indicator always shows the backend glyph, a pressed button renders bold
+// until its release, and the layout is kept for bar-row mouse hit-testing.
 func (s *streamSession) appendBar(buf *bytes.Buffer) {
 	if s.st.Rows < 2 {
 		return
@@ -677,28 +678,40 @@ func (s *streamSession) appendBar(buf *bytes.Buffer) {
 		return
 	}
 	indicator := backendGlyph(s.st.Backend, s.st.Scheme)
+	spinner := ""
 	if !s.firstDrawn.Load() {
-		indicator = spinnerGlyph(s.spinner)
+		spinner = spinnerGlyph(s.spinner)
 	}
 	fps := ""
 	if s.fpsBadgeShown() {
 		fps = s.fps.barText(time.Now())
 	}
+	currentURL := s.currentURL()
+	transport := transportGlyph(currentURL)
+	signal := s.liveSignal(time.Now())
 	content, layout := renderBar(s.st.Cols, barContent{
 		indicator: indicator,
+		spinner:   spinner,
+		transport: transport,
 		colour:    colourBadge(s.st),
-		url:       s.currentURL(),
+		url:       currentURL,
 		fps:       fps,
-		signal:    s.liveSignal(time.Now()),
+		signal:    signal,
 	})
 	s.barLay = layout
+	decorations := make([]barDecoration, 0, 2)
 	// A pressed button holds bold until its release.
 	if s.pressedSet {
 		if seg, ok := layout.segment(s.pressed); ok {
-			content = boldSpan(content, seg.col, seg.width)
+			decorations = append(decorations, barDecoration{span: seg, open: "\x1b[1m", close: "\x1b[22m"})
 		}
 	}
-	fmt.Fprintf(buf, "\x1b[%d;1H%s%s\x1b[0m", s.st.Rows, s.st.barStyle(), content)
+	barStyle := s.st.barStyle()
+	if style := urlPrefixStyle(barStyle, spinner != "", transport); style != "" {
+		decorations = append(decorations, barDecoration{span: layout.prefix, open: style, close: barStyle})
+	}
+	content = decorateBar(content, decorations)
+	fmt.Fprintf(buf, "\x1b[%d;1H%s%s\x1b[0m", s.st.Rows, barStyle, content)
 }
 
 // armFPSHeartbeat starts the once-per-second badge refresh, if it is not
@@ -1465,15 +1478,15 @@ func kittyResponseImageID(body string) (string, bool) {
 	return "", false
 }
 
-// barSpinnerInterval paces the startup spinner in the bar's indicator slot:
-// fast enough to read as live progress, slow enough to cost nothing.
+// barSpinnerInterval paces the startup spinner before the URL: fast enough to
+// read as live progress, slow enough to cost nothing.
 const barSpinnerInterval = 90 * time.Millisecond
 
 // waitForNavigate keeps the raw-mode controls live while engine startup runs.
 // Browser launch and CDP setup can block before frames exist, so Ctrl-C and
 // resize handling must not wait for Navigate to return. A ticker animates the
-// bar's braille spinner until Navigate returns; the first frame then swaps
-// the spinner for the backend glyph.
+// bar's braille spinner until Navigate returns. The first frame removes the
+// last spinner frame from the bar.
 func (s *streamSession) waitForNavigate(winch <-chan os.Signal, keys <-chan keyEvent, navigated <-chan error) error {
 	spin := time.NewTicker(barSpinnerInterval)
 	defer spin.Stop()

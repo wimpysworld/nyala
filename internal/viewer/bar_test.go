@@ -47,6 +47,73 @@ func TestSpinnerGlyph(t *testing.T) {
 	}
 }
 
+func TestTransportGlyph(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"HTTPS", "https://example.org/", barGlyphHTTPS},
+		{"HTTPS mixed case", "HTTPS://example.org/", barGlyphHTTPS},
+		{"HTTP", "http://example.org/", barGlyphHTTP},
+		{"file", "file:///tmp/page.html", " "},
+		{"missing scheme", "example.org", " "},
+		{"invalid URL", "://example.org", " "},
+		{"scheme-like path", "https/example.org:443", " "},
+		{"other scheme", "about:blank", " "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := transportGlyph(tc.url); got != tc.want {
+				t.Fatalf("transportGlyph(%q) = %q, want %q", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
+var transportGlyphSink string
+
+func BenchmarkTransportGlyph(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		transportGlyphSink = transportGlyph("https://example.org/path?q=value")
+	}
+}
+
+func TestTransportGlyphDoesNotAllocate(t *testing.T) {
+	allocs := testing.AllocsPerRun(1000, func() {
+		transportGlyphSink = transportGlyph("https://example.org/path?q=value")
+	})
+	if allocs != 0 {
+		t.Fatalf("transportGlyph allocated %.0f times per call, want 0", allocs)
+	}
+}
+
+func TestURLPrefixStyle(t *testing.T) {
+	cases := []struct {
+		name      string
+		barStyle  string
+		loading   bool
+		transport string
+		want      string
+	}{
+		{"dark loading bar", barStyleDark, true, barGlyphHTTPS, "\x1b[97m"},
+		{"light loading bar", barStyleLight, true, barGlyphHTTPS, "\x1b[30m"},
+		{"reverse loading bar", barStyleReverse, true, barGlyphHTTPS, ""},
+		{"dark HTTPS bar", barStyleDark, false, barGlyphHTTPS, "\x1b[33m"},
+		{"light HTTPS bar", barStyleLight, false, barGlyphHTTPS, "\x1b[33m"},
+		{"reverse HTTPS bar", barStyleReverse, false, barGlyphHTTPS, "\x1b[43m"},
+		{"HTTP bar", barStyleDark, false, barGlyphHTTP, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := urlPrefixStyle(tc.barStyle, tc.loading, tc.transport); got != tc.want {
+				t.Fatalf("urlPrefixStyle(%q, %v, %q) = %q, want %q", tc.barStyle, tc.loading, tc.transport, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestBackendGlyph pins the indicator glyphs: the Block glyph tracks the
 // live scheme, Sixel and Kitty ignore it.
 func TestBackendGlyph(t *testing.T) {
@@ -211,6 +278,99 @@ func TestRenderBarStatusGroupWidthIsStable(t *testing.T) {
 	}
 }
 
+// TestRenderBarLoadingState pins the loading and idle rows: one fixed prefix
+// cell changes from the spinner to the transport glyph, and the URL and fixed
+// status group do not move.
+func TestRenderBarLoadingState(t *testing.T) {
+	const cols = 48
+	url := "https://example.org/" + strings.Repeat("segment/", 8)
+	idleContent, idle := renderBar(cols, barContent{indicator: barGlyphKitty, colour: "RGB ", url: url})
+	loadingContent, loading := renderBar(cols, barContent{
+		indicator: barGlyphKitty,
+		spinner:   spinnerGlyph(0),
+		colour:    "RGB ",
+		url:       url,
+	})
+
+	for name, content := range map[string]string{"idle": idleContent, "loading": loadingContent} {
+		if width := runewidth.StringWidth(content); width != cols {
+			t.Fatalf("%s bar width = %d, want %d", name, width, cols)
+		}
+		if strings.ContainsRune(content, '\x1b') {
+			t.Fatalf("%s plain bar carries an escape: %q", name, content)
+		}
+		if !strings.Contains(content, barEllipsis) {
+			t.Fatalf("%s bar did not truncate the URL: %q", name, content)
+		}
+		if !strings.Contains(content, "│ "+barGlyphKitty+"  │ RGB  │ ☰") {
+			t.Fatalf("%s bar lost the Kitty status group: %q", name, content)
+		}
+	}
+	if strings.Contains(idleContent, spinnerGlyph(0)) {
+		t.Fatalf("idle bar contains a spinner: %q", idleContent)
+	}
+	if !strings.Contains(idleContent, "│"+barGlyphHTTPS+" https://") {
+		t.Fatalf("idle bar does not prefix the URL with HTTPS transport: %q", idleContent)
+	}
+	if !strings.Contains(loadingContent, "│"+spinnerGlyph(0)+" https://") {
+		t.Fatalf("loading bar does not prefix the URL with the spinner: %q", loadingContent)
+	}
+
+	idleURL, _ := idle.segment(barSegmentURL)
+	loadingURL, _ := loading.segment(barSegmentURL)
+	if loadingURL != idleURL {
+		t.Fatalf("URL span moved while loading: %+v vs %+v", loadingURL, idleURL)
+	}
+	if loading.prefix != idle.prefix || loading.prefix.col != loadingURL.col || loading.prefix.width != 1 {
+		t.Fatalf("prefix span moved while loading: %+v vs %+v", loading.prefix, idle.prefix)
+	}
+	if kind, ok := loading.hit(loading.prefix.col); !ok || kind != barSegmentURL {
+		t.Fatalf("spinner column hit = (%d, %v), want the URL segment", kind, ok)
+	}
+	for _, kind := range []barSegmentKind{barSegmentIndicator, barSegmentColour, barSegmentMenu} {
+		idleSegment, _ := idle.segment(kind)
+		loadingSegment, _ := loading.segment(kind)
+		if loadingSegment != idleSegment {
+			t.Fatalf("status segment %d moved while loading: %+v vs %+v", kind, loadingSegment, idleSegment)
+		}
+	}
+}
+
+func TestRenderBarURLPrefixPadding(t *testing.T) {
+	cases := []struct {
+		name    string
+		content barContent
+		prefix  string
+	}{
+		{"spinner", barContent{spinner: spinnerGlyph(0), url: "https://spin.example/"}, spinnerGlyph(0)},
+		{"HTTPS", barContent{url: "https://secure.example/"}, barGlyphHTTPS},
+		{"HTTP", barContent{url: "http://plain.example/"}, barGlyphHTTP},
+		{"other scheme", barContent{url: "file:///tmp/page.html"}, " "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.content.indicator = barGlyphKitty
+			tc.content.colour = "RGB "
+			content, layout := renderBar(60, tc.content)
+			urlAt := strings.Index(content, tc.content.url)
+			if urlAt < 0 {
+				t.Fatalf("bar %q does not contain URL %q", content, tc.content.url)
+			}
+			urlCol := runewidth.StringWidth(content[:urlAt]) + 1
+			if urlCol != layout.prefix.col+2 {
+				t.Fatalf("URL column = %d, want %d after prefix at %d", urlCol, layout.prefix.col+2, layout.prefix.col)
+			}
+			prefixAt := strings.Index(content, tc.prefix+" "+tc.content.url)
+			if prefixAt < 0 || runewidth.StringWidth(content[:prefixAt])+1 != layout.prefix.col {
+				t.Fatalf("bar %q does not place %q at prefix column %d", content, tc.prefix+" "+tc.content.url, layout.prefix.col)
+			}
+			if width := runewidth.StringWidth(content); width != 60 {
+				t.Fatalf("bar width = %d, want 60", width)
+			}
+		})
+	}
+}
+
 // TestRenderBarFPSSegment pins the fps placement: the segment exists exactly
 // when the meter text does and sits before the anchored status group. The URL
 // region absorbs the width change, so the status group never moves.
@@ -281,22 +441,42 @@ func TestRenderBarTruncatesURL(t *testing.T) {
 // cols cells wide.
 func TestRenderBarNarrowFallsBackToURL(t *testing.T) {
 	const cols = 16
-	content, l := renderBar(cols, barContent{indicator: "⬒", colour: "240a", url: "https://example.org/page"})
-	if w := runewidth.StringWidth(content); w != cols {
-		t.Fatalf("bar content width = %d, want %d", w, cols)
-	}
-	if len(l.segments) != 1 || l.segments[0].kind != barSegmentURL {
-		t.Fatalf("narrow layout = %+v, want the URL region alone", l.segments)
-	}
-	if l.segments[0].col != 1 || l.segments[0].width != cols {
-		t.Fatalf("narrow URL span = %+v, want the whole row", l.segments[0])
+	for _, tc := range []struct {
+		name    string
+		content barContent
+		want    string
+	}{
+		{"loading", barContent{spinner: spinnerGlyph(0), url: "https://example.org/page"}, spinnerGlyph(0) + " https://"},
+		{"other scheme", barContent{url: "file:///tmp/page.html"}, "  file:///"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.content.indicator = "⬒"
+			tc.content.colour = "240a"
+			content, l := renderBar(cols, tc.content)
+			if w := runewidth.StringWidth(content); w != cols {
+				t.Fatalf("bar content width = %d, want %d", w, cols)
+			}
+			if len(l.segments) != 1 || l.segments[0].kind != barSegmentURL {
+				t.Fatalf("narrow layout = %+v, want the URL region alone", l.segments)
+			}
+			if l.segments[0].col != 1 || l.segments[0].width != cols {
+				t.Fatalf("narrow URL span = %+v, want the whole row", l.segments[0])
+			}
+			if !strings.HasPrefix(content, tc.want) {
+				t.Fatalf("narrow bar prefix = %q, want %q", content, tc.want)
+			}
+			if l.prefix != (barSegment{col: 1, width: 1}) {
+				t.Fatalf("narrow prefix = %+v, want the first cell", l.prefix)
+			}
+		})
 	}
 }
 
 // TestAppendBarSessionGlue pins the session-side bar draw: the bar addresses
 // the bottom terminal row in reverse video, resets the SGR after, shows the
-// launch URL before the engine records a commit, the spinner before the
-// first frame, and the backend glyph after. A one-row terminal draws no bar.
+// launch URL before the engine records a commit, prefixes it with the spinner
+// before the first frame, and always shows the backend glyph. A one-row
+// terminal draws no bar.
 func TestAppendBarSessionGlue(t *testing.T) {
 	st := NewState(60, 4)
 	st.Backend = BackendKitty
@@ -317,17 +497,121 @@ func TestAppendBarSessionGlue(t *testing.T) {
 	if !strings.Contains(out, spinnerGlyph(0)) {
 		t.Fatalf("pre-frame bar %q missing the spinner", out)
 	}
+	if !strings.Contains(out, spinnerGlyph(0)+" https://launch.example/") {
+		t.Fatalf("pre-frame bar %q does not place the spinner before the URL", out)
+	}
+	if strings.Contains(out, "\x1b[97m") || strings.Contains(out, "\x1b[107m") {
+		t.Fatalf("pre-frame fallback bar %q overrides the reverse-video contrast", out)
+	}
+	if !strings.Contains(out, "│ 🅺  │ RGB  │ ☰") {
+		t.Fatalf("pre-frame bar %q missing the stable Kitty indicator", out)
+	}
 
 	s.firstDrawn.Store(true)
 	buf.Reset()
 	s.appendBar(&buf)
+	if strings.Contains(buf.String(), spinnerGlyph(0)) {
+		t.Fatalf("post-frame bar %q kept the spinner", buf.String())
+	}
 	if !strings.Contains(buf.String(), "│ 🅺  │ RGB  │ ☰") {
 		t.Fatalf("post-frame bar %q missing the Kitty indicator", buf.String())
+	}
+	if !strings.Contains(buf.String(), "\x1b[43m"+barGlyphHTTPS+barStyleReverse+" https://launch.example/") {
+		t.Fatalf("post-frame bar %q missing the yellow HTTPS transport glyph", buf.String())
 	}
 
 	st.Resize(60, 1)
 	if b := s.barBytes(); b != nil {
 		t.Fatalf("one-row terminal drew a bar: %q", b)
+	}
+}
+
+func TestAppendBarStylesURLPrefixAndTracksURLChanges(t *testing.T) {
+	eng := &streamTestEngine{currentURL: "http://plain.example/"}
+	st := NewState(60, 4)
+	st.barSGR = barStyleDark
+	s := &streamSession{eng: eng, st: &st}
+	s.firstDrawn.Store(true)
+
+	var buf bytes.Buffer
+	s.appendBar(&buf)
+	if !strings.Contains(buf.String(), barGlyphHTTP+" http://plain.example/") {
+		t.Fatalf("HTTP bar %q missing the normal-foreground transport glyph", buf.String())
+	}
+	if strings.Contains(buf.String(), "\x1b[33m") {
+		t.Fatalf("HTTP bar %q coloured the transport glyph yellow", buf.String())
+	}
+
+	eng.currentURL = "https://redirect.example/"
+	buf.Reset()
+	s.appendBar(&buf)
+	if !strings.Contains(buf.String(), "\x1b[33m"+barGlyphHTTPS+barStyleDark+" https://redirect.example/") {
+		t.Fatalf("redirected bar %q did not refresh the HTTPS transport glyph", buf.String())
+	}
+
+	eng.currentURL = "file:///tmp/page.html"
+	buf.Reset()
+	s.appendBar(&buf)
+	if !strings.Contains(buf.String(), "│  file:///tmp/page.html") {
+		t.Fatalf("file bar %q did not reserve a blank transport cell", buf.String())
+	}
+}
+
+func TestAppendBarSpinnerUsesBarPolarity(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		barStyle  string
+		spinStyle string
+	}{
+		{"dark bar", barStyleDark, "\x1b[97m"},
+		{"light bar", barStyleLight, "\x1b[30m"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := NewState(60, 4)
+			st.barSGR = tc.barStyle
+			s := &streamSession{st: &st, launchURL: "https://example.org/"}
+			var buf bytes.Buffer
+			s.appendBar(&buf)
+			want := tc.spinStyle + spinnerGlyph(0) + tc.barStyle + " https://example.org/"
+			if !strings.Contains(buf.String(), want) {
+				t.Fatalf("bar %q missing styled spinner sequence %q", buf.String(), want)
+			}
+		})
+	}
+}
+
+func TestAppendBarBoldsPressedHTTPSURLAndKeepsPrefixColour(t *testing.T) {
+	st := NewState(60, 4)
+	st.barSGR = barStyleDark
+	s := &streamSession{st: &st, launchURL: "https://example.org/"}
+	s.firstDrawn.Store(true)
+	s.pressed, s.pressedSet = barSegmentURL, true
+
+	var buf bytes.Buffer
+	s.appendBar(&buf)
+	want := "\x1b[1m\x1b[33m" + barGlyphHTTPS + barStyleDark + "\x1b[22m\x1b[1m https://example.org/"
+	if !strings.Contains(buf.String(), want) {
+		t.Fatalf("pressed HTTPS bar %q missing nested prefix and URL styles %q", buf.String(), want)
+	}
+	if !strings.Contains(buf.String(), "\x1b[22m│") {
+		t.Fatalf("pressed HTTPS bar %q leaks bold past the URL", buf.String())
+	}
+}
+
+func TestAppendBarBoldsPressedLoadingURLAndKeepsSpinnerColour(t *testing.T) {
+	st := NewState(60, 4)
+	st.barSGR = barStyleDark
+	s := &streamSession{st: &st, launchURL: "https://example.org/"}
+	s.pressed, s.pressedSet = barSegmentURL, true
+
+	var buf bytes.Buffer
+	s.appendBar(&buf)
+	want := "\x1b[1m\x1b[97m" + spinnerGlyph(0) + barStyleDark + "\x1b[22m\x1b[1m https://example.org/"
+	if !strings.Contains(buf.String(), want) {
+		t.Fatalf("pressed loading bar %q missing nested spinner and URL styles %q", buf.String(), want)
+	}
+	if !strings.Contains(buf.String(), "\x1b[22m│") {
+		t.Fatalf("pressed loading bar %q leaks bold past the URL", buf.String())
 	}
 }
 
