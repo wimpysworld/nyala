@@ -816,17 +816,27 @@ func spawnShared(guard *profileGuard, cfg allocatorConfig, connect connectFunc) 
 		return nil, nil, fmt.Errorf("spawn shared browser: %w", err)
 	}
 	pid := proc.Pid
-	go func() { _, _ = proc.Wait() }()
+	// The reap goroutine also ends the port wait, so a browser that exits
+	// before it publishes DevToolsActivePort fails at once, not at the
+	// devToolsWaitTimeout deadline.
+	waitCtx, stopWait := context.WithCancelCause(context.Background())
+	go func() {
+		state, err := proc.Wait()
+		if err == nil {
+			err = fmt.Errorf("browser exited: %s", state)
+		}
+		stopWait(err)
+	}()
 	if err := guard.writePID(pid); err != nil {
 		stopBrowser(pid, profileDir)
 		return nil, nil, err
 	}
-	waitCtx, stopWait := context.WithTimeout(context.Background(), devToolsWaitTimeout)
+	waitCtx, stopTimeout := context.WithTimeout(waitCtx, devToolsWaitTimeout)
 	wsURL, err := waitDevToolsActivePort(waitCtx, profileDir)
-	stopWait()
+	stopTimeout()
 	if err != nil {
 		stopBrowser(pid, profileDir)
-		return nil, nil, fmt.Errorf("wait for %s: %w", devToolsActivePortFile, err)
+		return nil, nil, fmt.Errorf("wait for %s: %w", devToolsActivePortFile, context.Cause(waitCtx))
 	}
 	holder, closeSocket, err := connect(context.Background(), wsURL, sharedConnectTimeout)
 	if err != nil {
