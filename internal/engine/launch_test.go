@@ -731,7 +731,7 @@ func TestBrowserOwnsProfileGatesOnCommandLine(t *testing.T) {
 	// sh keeps the positional argument in its argv and ignores it. The trailing
 	// true stops sh from replacing itself with sleep, which would drop the argv.
 	//nolint:gosec // The profile path is a test temp dir.
-	cmd := exec.CommandContext(ctx, "sh", "-c", "sleep 30; true", "sh", "--user-data-dir="+profileDir)
+	cmd := exec.CommandContext(ctx, "sh", "-c", "sleep 30; true", "sh", "--user-data-dir="+profileDir+"-child")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start fake browser: %v", err)
 	}
@@ -742,11 +742,16 @@ func TestBrowserOwnsProfileGatesOnCommandLine(t *testing.T) {
 	// Start returns at the exec point of no return, a moment before the kernel
 	// publishes the new argv, so the command line can read empty at once.
 	time.Sleep(50 * time.Millisecond)
-	if !browserOwnsProfile(ctx, cmd.Process.Pid, profileDir) {
+	if !browserOwnsProfile(ctx, cmd.Process.Pid, profileDir+"-child") {
 		t.Error("a process whose argv names the profile was not recognised")
 	}
 	if browserOwnsProfile(ctx, cmd.Process.Pid, profileDir+"-other") {
 		t.Error("a process on another profile was recognised")
+	}
+	// The profile is a prefix of the process's profile path, so a substring
+	// match would claim it.
+	if browserOwnsProfile(ctx, cmd.Process.Pid, profileDir) {
+		t.Error("a process on a profile that extends this path was recognised")
 	}
 }
 
