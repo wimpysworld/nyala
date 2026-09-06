@@ -35,7 +35,9 @@ const gracefulCloseTimeout = 500 * time.Millisecond
 // from the engine, never from a dead context. A rebuild navigates to the held
 // launch URL (Navigate records it once and OpenURL never rewrites it), keeping
 // the backend and cell state; the held scroll offset replays only when the
-// crashed page was that launch URL, after its first contentful paint.
+// crashed page was that launch URL, after its first contentful paint. The
+// labelProcessSpawned mark is kept for a shared profile too, where launch may
+// only connect to a browser another instance spawned.
 func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	timer := newLoadTimer()
 	if err = e.launch(e.browserFlag); err != nil {
@@ -809,8 +811,10 @@ func (e *ChromiumEngine) pokeReflow() {
 
 // teardownSession tears down the live session without closing the frames
 // channel, so normal Close, error cleanup, and crash rebuild share one path. For
-// a live session it asks chromedp.Cancel to send Browser.close, bounded by
-// gracefulCloseTimeout. A close error, timeout, or dead session selects raw
+// a live session it runs closeBrowserOp bounded by gracefulCloseTimeout: a
+// private engine sends Browser.close through chromedp.Cancel, and a shared
+// profile closes its own target then terminates the browser only as the last
+// client (sharedCloseOp). A close error, timeout, or dead session selects raw
 // cancellation, so browser or CDP failure cannot block exit or crash rebuild.
 // It then waits for the session's frame publisher and decode workers, then drains
 // frames buffered before cancellation won its selects. This prevents an old-session
@@ -937,7 +941,10 @@ func (e *ChromiumEngine) supervise(crashed chan struct{}) {
 
 // rebuild tears down the dead session and starts a fresh one from held state. It
 // returns the new session's crash channel and ok=true on success, or ok=false
-// when the relaunch fails, in which case the supervisor stops.
+// when the relaunch fails, in which case the supervisor stops. On a shared
+// profile a dead browser closes the websocket, the remote allocator cancels the
+// holder context and with it e.ctx, and the rerun of launch reacquires the lock
+// in the right mode on the same guard fd, so it relaunches or reconnects.
 func (e *ChromiumEngine) rebuild() (crashed chan struct{}, ok bool) {
 	e.teardownSession()
 	startSession := e.startSession

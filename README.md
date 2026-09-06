@@ -72,7 +72,7 @@ nyala --profile /path/to/nyala-profile example.com
 nyala --private example.com
 ```
 
-`--private` ignores `--profile`, `NYALA_PROFILE`, and the default persistent profile. To clear saved browser state, stop every Nyala process that uses the profile, then delete the resolved profile directory.
+Several `nyala` instances share one profile and one Chromium, and a login in one is visible in the others after reload. `--private` ignores `--profile`, `NYALA_PROFILE`, and the default persistent profile. To clear saved browser state, quit `nyala`, then delete the resolved profile directory.
 
 > [!WARNING]
 > chromedp launches Chromium with `--password-store=basic` and `--use-mock-keychain`. Saved passwords are stored in the plain `Login Data` file inside the profile, not in the desktop keychain. Protect the profile directory as sensitive data.
