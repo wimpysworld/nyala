@@ -584,6 +584,40 @@ func TestLaunchArgvHidesAutomationSignals(t *testing.T) {
 	}
 }
 
+func TestSpawnSharedFailsWhenBrowserExitsBeforePortFile(t *testing.T) {
+	// A browser that dies before it publishes DevToolsActivePort must fail the
+	// spawn at once. The recorder exits at once and the production 30 s port
+	// wait stays in force, so a prompt return proves the exit ended the wait.
+	profileDir := filepath.Join(t.TempDir(), "profile")
+	if err := os.MkdirAll(profileDir, 0o700); err != nil {
+		t.Fatalf("create profile dir: %v", err)
+	}
+	browserPath, _ := argvRecorder(t)
+	e := New("")
+	if err := e.SetProfileDir(profileDir); err != nil {
+		t.Fatalf("SetProfileDir: %v", err)
+	}
+	t.Cleanup(func() { _ = e.Close() })
+	if err := e.openProfileGuard(); err != nil {
+		t.Fatalf("openProfileGuard: %v", err)
+	}
+	if won, err := e.profileGuard.tryExclusive(); err != nil || !won {
+		t.Fatalf("tryExclusive = (%v, %v), want (true, nil)", won, err)
+	}
+	connect := func(context.Context, string, time.Duration) (context.Context, context.CancelFunc, error) {
+		t.Fatal("connect ran without a port file")
+		return nil, nil, nil
+	}
+	start := time.Now()
+	_, _, err := spawnShared(e.profileGuard, allocatorConfig{execPath: browserPath, profileDir: profileDir, scale: 1}, connect)
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("spawnShared took %v after the browser exited, want well under 3 s", elapsed)
+	}
+	if err == nil || !strings.Contains(err.Error(), "browser exited") {
+		t.Errorf("spawnShared error = %v, want one that reports the browser exit", err)
+	}
+}
+
 func TestLaunchArgvCarriesPersistentProfile(t *testing.T) {
 	// A persistent profile takes the shared path: the recorder is spawned
 	// detached with the profile, the remote debugging port, and the keep-alive
