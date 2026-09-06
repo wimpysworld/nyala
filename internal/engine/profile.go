@@ -112,14 +112,15 @@ func (g *profileGuard) unlock() error {
 // the LOCK_EX holder writes, so clients never race on the content. The last
 // client out reads the pid to stop the browser it did not spawn.
 func (g *profileGuard) writePID(pid int) error {
-	if err := g.file.Truncate(0); err != nil {
-		return fmt.Errorf("truncate profile guard: %w", err)
-	}
-	if _, err := g.file.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("rewind profile guard: %w", err)
-	}
-	if _, err := g.file.WriteString(strconv.Itoa(pid)); err != nil {
+	// Write before truncating, so a launcher killed midway never leaves the
+	// file empty. Stale trailing digits from a longer previous pid are gated by
+	// browserOwnsProfile like any other pid.
+	text := strconv.Itoa(pid)
+	if _, err := g.file.WriteAt([]byte(text), 0); err != nil {
 		return fmt.Errorf("write profile guard pid: %w", err)
+	}
+	if err := g.file.Truncate(int64(len(text))); err != nil {
+		return fmt.Errorf("truncate profile guard: %w", err)
 	}
 	return nil
 }
