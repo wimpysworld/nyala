@@ -37,7 +37,8 @@ const gracefulCloseTimeout = 500 * time.Millisecond
 // the backend and cell state; the held scroll offset replays only when the
 // crashed page was that launch URL, after its first contentful paint. The
 // labelProcessSpawned mark is kept for a shared profile too, where launch may
-// only connect to a browser another instance spawned.
+// only connect to a browser another instance spawned, and for a remote attach,
+// which then adds the labelRemoteAttached mark with the lost launch controls.
 func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	timer := newLoadTimer()
 	if err = e.launch(e.browserFlag); err != nil {
@@ -45,6 +46,9 @@ func (e *ChromiumEngine) startSession() (crashed chan struct{}, err error) {
 	}
 	timer.mark(labelProcessSpawned)
 	e.mu.Lock()
+	if e.remoteURL != "" {
+		timer.mark(labelRemoteAttached + ": " + strings.Join(RemoteLostControls(), ", "))
+	}
 	ctx := e.ctx
 	url := e.url
 	frames := e.frames

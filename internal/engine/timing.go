@@ -14,9 +14,12 @@ import (
 // diagnostic switches.
 const debugTimingEnv = "NYALA_DEBUG_TIMING"
 
-// The four load-path milestone labels are kept exact so debug output does not drift.
+// The load-path milestone labels are kept exact so debug output does not drift.
+// labelRemoteAttached follows labelProcessSpawned only on a remote attach, where
+// the mark carries the launch-only controls the remote browser fixed itself.
 const (
 	labelProcessSpawned    = "process spawned"
+	labelRemoteAttached    = "remote attach, launch-only controls unavailable"
 	labelScreencastStarted = "screencast started"
 	labelFirstFrame        = "first frame emitted"
 	labelFirstText         = "first text published"

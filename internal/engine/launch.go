@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -375,8 +374,8 @@ func waitDevToolsActivePort(ctx context.Context, profileDir string) (string, err
 	}
 }
 
-// connectFunc is the signature of connectShared, so a test can replace the
-// websocket dial through the engine's connectSharedOp hook.
+// connectFunc is the signature of connectShared and connectRemote, so a test
+// can replace the websocket dial through the engine's connectSharedOp hook.
 type connectFunc func(parent context.Context, wsURL string, timeout time.Duration) (context.Context, context.CancelFunc, error)
 
 // connectShared dials the shared browser at wsURL through a chromedp remote
@@ -385,13 +384,25 @@ type connectFunc func(parent context.Context, wsURL string, timeout time.Duratio
 // rewrite it through /json/version. It returns a holder context that carries the
 // Browser but no target, and a cancel that cancels that context then the
 // allocator. On error it cancels both and returns the error.
+func connectShared(parent context.Context, wsURL string, timeout time.Duration) (context.Context, context.CancelFunc, error) {
+	holder, cancel, err := connectBrowser(parent, wsURL, timeout, chromedp.NoModifyURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("connect shared browser %s: %w", wsURL, err)
+	}
+	return holder, cancel, nil
+}
+
+// connectBrowser is the one remote allocator dial. It connects to url with
+// opts, proves the socket with Browser.getVersion bounded by timeout, and
+// returns a holder context that carries the Browser but no target, and a cancel
+// that cancels that context then the allocator. On error it cancels both.
 //
 // It allocates the Browser directly, the way chromedp's initContextBrowser
 // does, instead of through chromedp.Run: under a remote allocator the first Run
 // on a context without a target id creates an about:blank tab in some existing
 // window, which could foreground over another client's page.
-func connectShared(parent context.Context, wsURL string, timeout time.Duration) (context.Context, context.CancelFunc, error) {
-	allocCtx, allocCancel := chromedp.NewRemoteAllocator(parent, wsURL, chromedp.NoModifyURL)
+func connectBrowser(parent context.Context, url string, timeout time.Duration, opts ...chromedp.RemoteAllocatorOption) (context.Context, context.CancelFunc, error) {
+	allocCtx, allocCancel := chromedp.NewRemoteAllocator(parent, url, opts...)
 	holder, holderCancel := chromedp.NewContext(allocCtx)
 	cancel := func() {
 		holderCancel()
@@ -401,14 +412,35 @@ func connectShared(parent context.Context, wsURL string, timeout time.Duration) 
 	b, err := c.Allocator.Allocate(holder, chromedp.WithDialTimeout(timeout))
 	if err != nil {
 		cancel()
-		return nil, nil, fmt.Errorf("connect shared browser %s: %w", wsURL, err)
+		return nil, nil, err
 	}
 	c.Browser = b
 	probeCtx, probeCancel := context.WithTimeout(holder, timeout)
 	defer probeCancel()
 	if _, _, _, _, _, err := browser.GetVersion().Do(cdp.WithExecutor(probeCtx, b)); err != nil {
 		cancel()
-		return nil, nil, fmt.Errorf("connect shared browser %s: %w", wsURL, err)
+		return nil, nil, err
+	}
+	return holder, cancel, nil
+}
+
+// remoteAllocatorOptions selects the chromedp options for a user-supplied
+// debugging URL. A ws URL that already names /devtools/browser/ is used as
+// given, so it takes NoModifyURL. Any other form, such as http://host:port,
+// returns nil so chromedp fetches /json/version and reads the socket URL from it.
+func remoteAllocatorOptions(url string) []chromedp.RemoteAllocatorOption {
+	if strings.Contains(url, "/devtools/browser/") {
+		return []chromedp.RemoteAllocatorOption{chromedp.NoModifyURL}
+	}
+	return nil
+}
+
+// connectRemote dials a Chromium that Nyala did not launch at url. It is the
+// production connectFunc of launchRemote and names the endpoint in its error.
+func connectRemote(parent context.Context, url string, timeout time.Duration) (context.Context, context.CancelFunc, error) {
+	holder, cancel, err := connectBrowser(parent, url, timeout, remoteAllocatorOptions(url)...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("attach to remote Chromium at %s (Nyala did not launch Chromium): %w", url, err)
 	}
 	return holder, cancel, nil
 }
@@ -461,28 +493,36 @@ func terminateBrowser(ctx context.Context, pid int) error {
 func browserOwnsProfile(ctx context.Context, pid int, profileDir string) bool {
 	want := "--user-data-dir=" + profileDir
 	if data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline")); err == nil {
-		// /proc separates arguments with NUL, so a whole-argument comparison
-		// rejects a profile whose path extends this one.
-		return slices.Contains(strings.Split(string(data), "\x00"), want)
+		return commandLineHasArg(string(data), want)
 	}
 	//nolint:gosec // ps receives a pid that Nyala formatted from an integer.
 	out, err := exec.CommandContext(ctx, "ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		return false
 	}
-	// ps joins arguments with spaces, so the value must end at a space or at
-	// the end of the line.
-	args := strings.TrimRight(string(out), "\n")
+	return commandLineHasArg(strings.TrimRight(string(out), "\n"), want)
+}
+
+// commandLineHasArg reports whether want appears in args as a whole argument.
+// The kernel separates /proc cmdline arguments with NUL, but Chromium rewrites
+// its own argv into one space-joined string, and ps joins with spaces, so both
+// NUL and space bound an argument. A match must start at the beginning of args
+// or after a bound and end at the end of args or before a bound, so a profile
+// whose path extends want is rejected. A path that contains a space cannot
+// match and the browser is left alone, which is the safe failure.
+func commandLineHasArg(args, want string) bool {
+	isBound := func(c byte) bool { return c == 0 || c == ' ' }
 	for i := 0; ; {
 		j := strings.Index(args[i:], want)
 		if j < 0 {
 			return false
 		}
-		end := i + j + len(want)
-		if end == len(args) || args[end] == ' ' {
+		start := i + j
+		end := start + len(want)
+		if (start == 0 || isBound(args[start-1])) && (end == len(args) || isBound(args[end])) {
 			return true
 		}
-		i = end
+		i = start + 1
 	}
 }
 
@@ -873,20 +913,83 @@ func sharedCloseOp(guard *profileGuard, closeTarget func(context.Context) error,
 	}
 }
 
-// launch resolves the executable from flag, then builds the session context. A
-// private engine (empty profileDir) takes launchPrivate and owns its Chromium
-// through chromedp. A persistent profile takes launchShared: one Chromium per
-// profile, one target in its own window per engine. Both paths then fetch the
-// window id, enable lifecycle events, and size the layout viewport and the
-// captured surface together. It stores the context, its cancel, the graceful
-// close, and the window id on the engine.
+// remoteCloseOp builds the graceful close for a remote attach session. It
+// closes this instance's target, then the websocket, and returns the close
+// error. It never terminates the browser: the remote Chromium belongs to the
+// user, and no pid or lock exists to terminate through. The target close runs
+// under gracefulCloseTimeout, which a slow tunnel can miss, so teardownSession
+// then falls back to a raw cancel and leaves an about:blank window on the
+// remote browser.
+func remoteCloseOp(closeTarget func(context.Context) error, closeSocket func()) func(context.Context) error {
+	return func(ctx context.Context) error {
+		err := closeTarget(ctx)
+		closeSocket()
+		return err
+	}
+}
+
+// launchRemote attaches this engine to the running Chromium at url: it dials
+// with sharedConnectTimeout, then creates this instance's own target with
+// newInstanceTarget. It returns the target context, a raw cancel that cancels
+// the target then the websocket, and the remoteCloseOp graceful close. It
+// spawns nothing, takes no lock, and retries nothing, so a failure is reported
+// once with the endpoint named.
+func (e *ChromiumEngine) launchRemote(url string) (context.Context, context.CancelFunc, func(context.Context) error, error) {
+	e.mu.Lock()
+	connect := e.connectSharedOp
+	e.mu.Unlock()
+	if connect == nil {
+		connect = connectRemote
+	}
+	holder, closeSocket, err := connect(context.Background(), url, sharedConnectTimeout)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	targetCtx, targetCancel, err := newInstanceTarget(holder)
+	if err != nil {
+		closeSocket()
+		return nil, nil, nil, fmt.Errorf("attach to remote Chromium at %s (Nyala did not launch Chromium): %w", url, err)
+	}
+	cancel := func() {
+		targetCancel()
+		closeSocket()
+	}
+	closeTarget := func(context.Context) error { return chromedp.Cancel(targetCtx) }
+	return targetCtx, cancel, remoteCloseOp(closeTarget, closeSocket), nil
+}
+
+// RemoteLostControls lists the launch-only controls that remote attach cannot
+// apply, in a fixed order. The remote browser fixed each of them at its own
+// start, so the matching Nyala flags and environment variables have no effect.
+func RemoteLostControls() []string {
+	return []string{
+		"executable path (--browser, NYALA_BROWSER, CHROME_PATH)",
+		"profile directory and lock",
+		"window-size",
+		"force-device-scale-factor",
+		"headless",
+		"enable-gpu and enable-unsafe-swiftshader",
+		"audio unmute and autoplay-policy",
+		"disable-frame-rate-limit",
+		"proxy-server and proxy-bypass-list",
+		"disable-smooth-scrolling",
+		"keep-alive-for-test",
+	}
+}
+
+// launch builds the session context through one of three branches. A set
+// remoteURL takes launchRemote and attaches to a Chromium Nyala did not launch,
+// with no executable resolution. Otherwise it resolves the executable from flag:
+// a private engine (empty profileDir) takes launchPrivate and owns its Chromium
+// through chromedp, and a persistent profile takes launchShared, one Chromium
+// per profile, one target in its own window per engine. All three paths then
+// fetch the window id, enable lifecycle events, and size the layout viewport
+// and the captured surface together from the engine's cell geometry and scale.
+// It stores the context, its cancel, the graceful close, and the window id on
+// the engine.
 func (e *ChromiumEngine) launch(flag string) error {
 	if e.proxyErr != nil {
 		return e.proxyErr
-	}
-	execPath, err := resolveExecutable(flag)
-	if err != nil {
-		return err
 	}
 	e.mu.Lock()
 	surfW, surfH := e.surfaceSize(e.cols, e.rows)
@@ -894,27 +997,39 @@ func (e *ChromiumEngine) launch(flag string) error {
 	z := e.layoutScale()
 	disableFrameRateLimit := e.disableFrameRateLimit
 	profileDir := e.profileDir
+	remoteURL := e.remoteURL
 	e.mu.Unlock()
-	cfg := allocatorConfig{
-		execPath:              execPath,
-		profileDir:            profileDir,
-		surfaceWidth:          surfW,
-		surfaceHeight:         surfH,
-		scale:                 z,
-		proxy:                 e.proxy,
-		enableGPU:             true,
-		enableAudio:           audioAvailable(),
-		disableFrameRateLimit: disableFrameRateLimit,
-	}
 	var (
 		ctx          context.Context
 		cancel       context.CancelFunc
 		closeBrowser func(context.Context) error
+		err          error
 	)
-	if profileDir == "" {
-		ctx, cancel, closeBrowser = launchPrivate(cfg)
-	} else if ctx, cancel, closeBrowser, err = e.launchShared(cfg); err != nil {
-		return err
+	if remoteURL != "" {
+		if ctx, cancel, closeBrowser, err = e.launchRemote(remoteURL); err != nil {
+			return err
+		}
+	} else {
+		execPath, rerr := resolveExecutable(flag)
+		if rerr != nil {
+			return rerr
+		}
+		cfg := allocatorConfig{
+			execPath:              execPath,
+			profileDir:            profileDir,
+			surfaceWidth:          surfW,
+			surfaceHeight:         surfH,
+			scale:                 z,
+			proxy:                 e.proxy,
+			enableGPU:             true,
+			enableAudio:           audioAvailable(),
+			disableFrameRateLimit: disableFrameRateLimit,
+		}
+		if profileDir == "" {
+			ctx, cancel, closeBrowser = launchPrivate(cfg)
+		} else if ctx, cancel, closeBrowser, err = e.launchShared(cfg); err != nil {
+			return err
+		}
 	}
 	e.mu.Lock()
 	e.ctx = ctx

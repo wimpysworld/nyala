@@ -204,9 +204,9 @@ func livePortURL(t *testing.T, profileDir string) string {
 	return url
 }
 
-// connectRemote attaches to a spawned Chromium and returns the first chromedp
+// liveConnectRemote attaches to a spawned Chromium and returns the first chromedp
 // context with its browser connection started.
-func connectRemote(t *testing.T, url string) (context.Context, func()) {
+func liveConnectRemote(t *testing.T, url string) (context.Context, func()) {
 	t.Helper()
 	parent, cancelParent := context.WithTimeout(context.Background(), 60*time.Second)
 	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(parent, url, chromedp.NoModifyURL)
@@ -277,7 +277,7 @@ func waitExit(cmd *exec.Cmd, d time.Duration) (bool, error) {
 // a natural exit and the last client terminates the process itself.
 func liveFactSurvivesLastPageClose(t *testing.T, execPath string) {
 	cmd, dir := spawnChromium(t, execPath)
-	ctx, _ := connectRemote(t, livePortURL(t, dir))
+	ctx, _ := liveConnectRemote(t, livePortURL(t, dir))
 	closed := closeAllPages(t, ctx)
 	exited, err := waitExit(cmd, 3*time.Second)
 	remaining := remainingTargetTypes(ctx)
@@ -307,7 +307,7 @@ func liveFactSigtermEndsProcess(t *testing.T, execPath string) {
 			_ = cmd.Process.Kill()
 		}
 	})
-	ctx, disconnect := connectRemote(t, livePortURL(t, dir))
+	ctx, disconnect := liveConnectRemote(t, livePortURL(t, dir))
 	closed := closeAllPages(t, ctx)
 	disconnect()
 	pid := cmd.Process.Pid
