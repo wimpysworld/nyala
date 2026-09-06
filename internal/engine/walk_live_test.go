@@ -57,6 +57,68 @@ func TestLiveSameRowMultiColumnTextKeepsFragmentsSeparate(t *testing.T) {
 	assertFragmentGrid(t, res, 1, 20)
 }
 
+// TestLiveRubyTextKeepsSeparateRows checks every sub-cell offset, because a ruby
+// annotation and its base can round to the same row despite separate baselines.
+func TestLiveRubyTextKeepsSeparateRows(t *testing.T) {
+	var page strings.Builder
+	page.WriteString("data:text/html,<html><body style='margin:0'>")
+	for i := range 16 {
+		for side, position := range []string{"over", "under"} {
+			fmt.Fprintf(&page, "<ruby style='position:absolute;left:%dpx;top:%dpx;ruby-position:%s'>B%dS%d<rt><span>A%dS%d</span></rt></ruby>",
+				16+side*240, 32+i*17, position, i, side, i, side)
+		}
+	}
+	page.WriteString("</body></html>")
+	res := liveTextWalk(t, page.String())
+	runs := make(map[string]walkRun)
+	for _, run := range res.Runs {
+		runs[run.Text] = run
+	}
+	for i := range 16 {
+		for side := range 2 {
+			base, baseOK := runs[fmt.Sprintf("B%dS%d", i, side)]
+			annotation, annotationOK := runs[fmt.Sprintf("A%dS%d", i, side)]
+			if !baseOK || !annotationOK {
+				t.Fatalf("ruby %d side %d lacks base or annotation", i, side)
+			}
+			if side == 0 && annotation.Row >= base.Row || side == 1 && annotation.Row <= base.Row {
+				t.Errorf("ruby %d side %d: annotation row %d (y=%g), base row %d (y=%g)",
+					i, side, annotation.Row, annotation.Y, base.Row, base.Y)
+			}
+		}
+	}
+}
+
+// TestLiveRubyTextKeepsNeighbouringLines checks that ruby spacing changes page
+// layout, so neither the annotation nor its base overwrites adjacent text.
+func TestLiveRubyTextKeepsNeighbouringLines(t *testing.T) {
+	for _, position := range []string{"over", "under"} {
+		t.Run(position, func(t *testing.T) {
+			page := "data:text/html,<body style='margin:0'><div>before</div>" +
+				"<div><ruby style='ruby-position:" + position + "'>base<rt>note</rt></ruby> tail</div>" +
+				"<div>after</div></body>"
+			res := liveTextWalk(t, page)
+			runs := make(map[string]walkRun)
+			for _, run := range res.Runs {
+				runs[run.Text] = run
+			}
+			for _, text := range []string{"before", "base", "note", "tail", "after"} {
+				if _, ok := runs[text]; !ok {
+					t.Fatalf("missing text %q", text)
+				}
+			}
+			for _, text := range []string{"base", "note"} {
+				if row := runs[text].Row; row <= runs["before"].Row || row >= runs["after"].Row {
+					t.Errorf("%q row %d overlaps adjacent lines at %d and %d", text, row, runs["before"].Row, runs["after"].Row)
+				}
+			}
+			if runs["base"].Row != runs["tail"].Row {
+				t.Errorf("base row %d differs from following text row %d", runs["base"].Row, runs["tail"].Row)
+			}
+		})
+	}
+}
+
 // liveWalkPage brings a real Chromium up on page, waits for the first synced frame
 // so the page has laid out, injects the production forcing stylesheet, and waits
 // for the embedded font. It returns the evaluate context and the forced CSS cell,
