@@ -487,7 +487,7 @@ func stopBrowser(pid int, profileDir string) {
 	if !browserOwnsProfile(ctx, pid, profileDir) {
 		return
 	}
-	if err := terminateBrowser(ctx, pid); err != nil {
+	if err := terminateBrowser(ctx, pid); err != nil && browserOwnsProfile(ctx, pid, profileDir) {
 		_ = unix.Kill(pid, unix.SIGKILL)
 	}
 }
