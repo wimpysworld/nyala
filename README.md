@@ -77,6 +77,51 @@ Several `nyala` instances share one profile and one Chromium, and a login in one
 > [!WARNING]
 > chromedp launches Chromium with `--password-store=basic` and `--use-mock-keychain`. Saved passwords are stored in the plain `Login Data` file inside the profile, not in the desktop keychain. Protect the profile directory as sensitive data.
 
+### Attach to a remote Chromium
+
+Nyala can drive a Chrome or Chromium that is already running instead of launching one. The common case is Nyala on a remote development machine, reached over ssh, driving the Chrome on your laptop. The browser, and the logins you make in it, live on the laptop, and Nyala shows the pages in your terminal.
+
+The recipe has three steps. First, on the laptop, start Chrome with a dedicated profile directory and the debugging port. Chrome 136 and later refuse `--remote-debugging-port` on the default profile, so the `--user-data-dir` is required. That profile persists between runs, so you log in to your sites once.
+
+On Linux:
+
+```bash
+google-chrome --user-data-dir="$HOME/.local/share/nyala-remote" --remote-debugging-port=9222
+```
+
+Use `chromium` in place of `google-chrome` when that is the installed binary. On macOS:
+
+```bash
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --user-data-dir="$HOME/Library/Application Support/nyala-remote" --remote-debugging-port=9222
+```
+
+Second, open a reverse tunnel from the laptop to the development machine, so port 9222 on the development machine reaches Chrome on the laptop:
+
+```bash
+ssh -R 9222:127.0.0.1:9222 devbox
+```
+
+Third, in that ssh session, point Nyala at the tunnelled port:
+
+```bash
+nyala --remote-debugging-url http://127.0.0.1:9222 example.com
+```
+
+The environment variable `NYALA_REMOTE_DEBUGGING_URL` sets the same value, so a shell profile on the development machine can make remote attach the default for that host.
+
+Two URL forms are accepted. `http://host:port` is the debugging port itself. Nyala asks `/json/version` at that address for the browser websocket and connects to it. `ws://host:port/devtools/browser/<id>` is that websocket address, as `/json/version` or the `DevToolsActivePort` file in the profile report it, and Nyala uses it as given. Use the `http` form unless you have a reason to pin one browser socket. `https` and `wss` are accepted with the same meaning. Any other scheme is rejected.
+
+`--remote-debugging-url` cannot be combined with `--browser`, `--profile`, or `--private`. Nyala does not launch Chromium in this mode, so each of those flags is rejected with an error that names it. Managed launch stays the default when the flag is absent.
+
+What you see and what you lose. A headed Chrome opens one new window on the laptop for each Nyala instance, and Nyala renders that window in your terminal. The remote browser fixed its own settings when it started, so Nyala cannot change them. The paint density is the laptop's device scale, not the one Nyala derives from your terminal. Nyala sets the CSS layout size only and fits the frame to the terminal grid, as it does after a zoom-in, so the picture can be softer than a managed launch. The controls that remote attach loses are the executable path (`--browser`, `NYALA_BROWSER`, `CHROME_PATH`), the profile directory and lock, the window size, the device scale factor, headless mode, the GPU flags, audio unmute and the autoplay policy, `--disable-frame-rate-limit`, the proxy server and bypass list, smooth-scrolling suppression, and keep-alive. The proxy environment variables still have no effect on a remote browser, but proxy authentication over the DevTools Protocol still works.
+
+On Linux, keep at least one tab of your own open in the remote Chrome. Chrome on Linux exits when its last window closes, and Nyala closes its own window when it quits. Chrome on macOS keeps running with no window. Nyala never closes or kills the remote browser. On quit it closes only its own window and its own connection.
+
+A dropped ssh tunnel shows as a lost connection. Nyala tears its session down and reconnects to the same URL, so the page returns when the tunnel returns. Restart the `ssh -R` command and the next reconnect attempt succeeds.
+
+> [!CAUTION]
+> The debugging port grants full control of that Chrome profile: every open tab, every cookie, every saved login. Bind it to `127.0.0.1` as in the recipe above and reach it over ssh only. Never expose the port on a network interface, and never put it behind a plain port forward on a shared host.
+
 Behind a proxy? Nyala reads the standard proxy environment variables and routes Chromium through them. It honours `HTTPS_PROXY`, `HTTP_PROXY`, and `ALL_PROXY` (and their lowercase forms), with `NO_PROXY` for hosts to skip. A proxy URL with credentials works too. Nyala authenticates over the DevTools Protocol, so the credentials stay out of the process arguments.
 
 | Flag | Default | Description |
@@ -85,6 +130,7 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 | `--browser` | auto | Path to the Chromium executable to drive. |
 | `--profile` | `~/.local/share/nyala/profile` | Persistent browser profile directory. `NYALA_PROFILE` and `XDG_DATA_HOME` can change the default. |
 | `--private` | off | Use a disposable browser profile and ignore persistent profile settings. |
+| `--remote-debugging-url` | off | Attach to a running Chromium at `http://host:port` or `ws://host:port/devtools/browser/<id>` instead of launching one. `NYALA_REMOTE_DEBUGGING_URL` sets the same value. Excludes `--browser`, `--profile`, and `--private`. |
 | `--backend` | `auto` | Renderer backend: `auto`, `block`, `kitty`, or `sixel`. `auto` picks the terminal's best supported backend. A named backend sets the starting renderer and fails fast if the terminal cannot run it. |
 | `--blocks` | `auto` | Block glyph mode: `auto`, `sextant` (2x3), or `quadrant` (2x2). `auto` picks sextant on terminals known to self-draw it, read from a static allow-list of environment variables, and quadrant elsewhere. |
 | `--color` | `auto` | Block colour mode: `auto`, `truecolor`, `256`, or `grey`. |

@@ -159,6 +159,32 @@ removes the temporary directory, kills the child on parent death through
 `Pdeathsig`, and waits for exit. A detached spawn on a temporary directory
 would need Nyala to add all three for a case that shares nothing.
 
+Remote attach is the third launch branch. The app calls
+`SetRemoteDebuggingURL` before `Navigate` when `--remote-debugging-url` or
+`NYALA_REMOTE_DEBUGGING_URL` is set, and `validateLaunchMode` (`app.go`)
+rejects the flag together with `--browser`, `--profile`, or `--private`,
+because Nyala launches nothing in this mode and a silently ignored flag would
+mislead. `launch` reads the recorded URL first and takes `launchRemote`,
+skipping `resolveExecutable` and the `allocatorConfig` build entirely.
+`launchRemote` dials through `connectRemote`, which is a `connectFunc` beside
+`connectShared`, and both share the one `connectBrowser` dial, so
+`chromedp.NewRemoteAllocator` has one call site in `launch.go`.
+`remoteAllocatorOptions` picks the chromedp option by URL form: a URL that
+already names `/devtools/browser/` takes `NoModifyURL` and is used as given,
+and any other form, such as `http://host:port`, passes no option so chromedp
+fetches `/json/version` and reads the browser socket from it. The dial then
+runs `newInstanceTarget` for a page target in its own window, and the
+unchanged post-connect sequence follows: `GetWindowForTarget`,
+`enableLifecycle`, font forcing, `applySizing`, and `enableProxyAuth`. The
+branch adds no discovery, no lock, no pid, and no retry loop, because the
+user owns that browser and Nyala has no profile directory to lock or port
+file to read. A failure is reported once with the endpoint named. The driving
+case is Nyala on a remote development machine, reached over ssh, attached
+through a reverse tunnel to a headed Chrome on the user's laptop. Chrome 136
+and later refuse `--remote-debugging-port` on the default profile, so that
+Chrome runs on a dedicated `--user-data-dir` whose logins persist between
+runs.
+
 A persistent profile is shared: one Chromium per profile, one page target in
 its own window per `nyala` instance, and a login in one instance is visible in
 the others after reload. `launchShared` runs the protocol in `attachShared`.
@@ -325,6 +351,25 @@ so every client of one profile paints at the launcher's device scale. A later
 instance with a different cell geometry gets its own CSS layout size through
 `applySizing` but the launcher's paint density, and the viewer fits the frame
 to its grid as it does after a zoom-in.
+
+A remote attach carries the same limit one step further. The remote browser
+fixed its device scale, window size, and headless or headed state at its own
+start, so `applySizing` sets the CSS layout size only and the frame arrives at
+the remote's paint density, which the viewer fits to the grid as after a
+zoom-in. Every launch-only control is lost with it, and `RemoteLostControls`
+lists them in a fixed order: the executable path (`--browser`,
+`NYALA_BROWSER`, `CHROME_PATH`), the profile directory and lock,
+`window-size`, `force-device-scale-factor`, `headless`, `enable-gpu` and
+`enable-unsafe-swiftshader`, audio unmute and `autoplay-policy`,
+`disable-frame-rate-limit`, `proxy-server` and `proxy-bypass-list`,
+`disable-smooth-scrolling`, and `keep-alive-for-test`. `startSession` marks
+that list under `labelRemoteAttached` in the `NYALA_DEBUG_TIMING` output, so
+a user who asks why a flag had no effect can read the answer. Proxy
+authentication is not on the list: `enableProxyAuth` runs after connect over
+CDP `Fetch`, so it works against a remote browser too. On a headed remote
+Chrome, `newInstanceTarget` opens one new window per Nyala instance on the
+remote desktop, and that window is what the user sees rendered in the
+terminal.
 
 ### Screencast loop
 
@@ -825,6 +870,21 @@ cannot block process exit or crash rebuild. On engine close, this teardown
 completes before `Close` releases the profile guard, so the last-client
 decision reads a still-held lock and Chromium finishes writing persistent
 state while the next launcher still waits on `LOCK_EX`.
+
+A remote attach runs `remoteCloseOp`: it closes this instance's own target,
+then the websocket, and returns the close error. It never sends SIGTERM and
+never calls `Browser.close`, because the remote Chromium belongs to the user
+and no pid or lock exists to terminate through. The 500 ms
+`gracefulCloseTimeout` applies here too, and a target close over a slow ssh
+tunnel can miss it, so `teardownSession` falls back to the raw cancel and
+leaves an `about:blank` window open on the remote browser. The timeout is
+kept: a longer wait would delay every quit to protect a window the user can
+close by hand. Recovery is unchanged. A dropped tunnel closes the websocket,
+`RemoteAllocator` cancels the holder context, and `rebuild` reruns `launch`,
+which reads the same recorded URL and reconnects to it, so a tunnel drop heals
+without Nyala touching the remote browser. Chrome on Linux exits when its last
+window closes, and the remote has no `--keep-alive-for-test`, so the user
+keeps one tab of their own open or the reconnect finds no browser.
 
 One mutex guards all shared session and geometry state. Every method locks,
 copies into locals, unlocks, then runs chromedp I/O on the locals; the mutex
@@ -2239,6 +2299,11 @@ decode-every-frame consumer streams JPEG q90.
   patch in Nix only.
 - Block screencast quality is fixed at JPEG q90; no runtime quality knob.
 - Tabs are out of scope for v1; the engine seam admits child targets later.
+- Remote attach (`--remote-debugging-url`) reuses the shared-profile connect
+  path through `connectBrowser` and adds no discovery, lock, pid, or retry
+  loop; the launch flags it cannot apply are rejected at the CLI by
+  `validateLaunchMode` rather than ignored (details under Launch and Chromium
+  discovery).
 - No home-page or theming configuration; the binary stays stateless.
 - The whole tree is cgo-free and cross-builds cleanly; that constraint has
   steered library choices repeatedly (pure-Go glyph matcher, no libsixel at

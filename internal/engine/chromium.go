@@ -28,7 +28,7 @@ type ChromiumEngine struct {
 	// dispatchWheel) and the supervisor goroutine (startSession,
 	// teardownSession, launch, rebuild): ctx, cancel, acks, text, frame, cols,
 	// rows, scrollX, scrollY, scrollYTarget, click, backend, cellW, cellH,
-	// profileDir, profileGuard, connectSharedOp, windowID, inputFailures and
+	// profileDir, remoteURL, profileGuard, connectSharedOp, windowID, inputFailures and
 	// fontForcingID. Lock, copy the fields into locals or write the updates,
 	// unlock, then run the chromedp I/O on the locals. Never hold mu across a
 	// chromedp.Run or a channel send, or it deadlocks with the supervisor.
@@ -111,6 +111,7 @@ type ChromiumEngine struct {
 	backend      render.Backend // active terminal rendering backend
 	browserFlag  string         // --browser value, empty for env/PATH discovery
 	profileDir   string         // resolved profile directory, empty until configured
+	remoteURL    string         // running Chromium to attach to, empty for a managed launch
 	profileGuard *profileGuard  // held for the engine lifetime, including recovery
 	// disableFrameRateLimit passes Chromium's launch-time
 	// --disable-frame-rate-limit switch. It is set before Navigate and remains
@@ -372,6 +373,16 @@ func (e *ChromiumEngine) SetProfileDir(flag string) error {
 	e.profileDir = profileDir
 	e.mu.Unlock()
 	return nil
+}
+
+// SetRemoteDebuggingURL records the debugging endpoint of a Chromium that is
+// already running, either http://host:port or ws://host:port/devtools/browser/<id>.
+// A set URL excludes the managed launch: launch attaches to that browser instead
+// of resolving an executable or a profile. Call it before Navigate.
+func (e *ChromiumEngine) SetRemoteDebuggingURL(url string) {
+	e.mu.Lock()
+	e.remoteURL = url
+	e.mu.Unlock()
 }
 
 // SetDisableFrameRateLimit controls Chromium's launch-time

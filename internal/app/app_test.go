@@ -29,10 +29,21 @@ func tryParse(args ...string) (CLI, error) {
 	return cli, err
 }
 
+// isolateRemoteEnv clears NYALA_REMOTE_DEBUGGING_URL for the test. Kong reads
+// that variable at parse time, so a value left in a developer's shell would
+// otherwise reach every parsed CLI and turn a launch-mode test into a remote
+// one. t.Setenv restores the shell value when the test ends.
+func isolateRemoteEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("NYALA_REMOTE_DEBUGGING_URL", "")
+}
+
 // parse runs kong over args and fails the test if the parse errors. URL is a
-// required positional, so every parse call must supply one.
+// required positional, so every parse call must supply one. It isolates the
+// remote debugging environment first, so every parse test sees a clean CLI.
 func parse(t *testing.T, args ...string) CLI {
 	t.Helper()
+	isolateRemoteEnv(t)
 	cli, err := tryParse(args...)
 	if err != nil {
 		t.Fatalf("parse %v: %v", args, err)
@@ -56,6 +67,150 @@ func TestParseDefaults(t *testing.T) {
 	}
 	if cli.DisableFrameRateLimit {
 		t.Errorf("DisableFrameRateLimit = true, want false by default")
+	}
+	if cli.RemoteDebuggingURL != "" {
+		t.Errorf("RemoteDebuggingURL = %q, want empty by default", cli.RemoteDebuggingURL)
+	}
+}
+
+// TestParseRemoteDebuggingURL pins both routes into the field: the flag, and
+// the NYALA_REMOTE_DEBUGGING_URL variable that kong reads when the flag is
+// absent. The env route matters because validateLaunchMode reads the field in
+// app rather than the engine, so a lost env tag would silently drop the
+// variable.
+func TestParseRemoteDebuggingURL(t *testing.T) {
+	const endpoint = "http://127.0.0.1:9222"
+	t.Run("flag", func(t *testing.T) {
+		cli := parse(t, "--remote-debugging-url", endpoint, "example.com")
+		if cli.RemoteDebuggingURL != endpoint {
+			t.Errorf("--remote-debugging-url %q: RemoteDebuggingURL = %q, want %q", endpoint, cli.RemoteDebuggingURL, endpoint)
+		}
+	})
+	t.Run("env", func(t *testing.T) {
+		isolateRemoteEnv(t)
+		t.Setenv("NYALA_REMOTE_DEBUGGING_URL", endpoint)
+		cli, err := tryParse("example.com")
+		if err != nil {
+			t.Fatalf("parse with NYALA_REMOTE_DEBUGGING_URL: %v", err)
+		}
+		if cli.RemoteDebuggingURL != endpoint {
+			t.Errorf("NYALA_REMOTE_DEBUGGING_URL=%q: RemoteDebuggingURL = %q, want %q", endpoint, cli.RemoteDebuggingURL, endpoint)
+		}
+	})
+}
+
+// TestHelpDescribesRemoteAttach pins the help surface for the attach mode: the
+// flag name, its environment variable, and the flags it excludes all appear.
+func TestHelpDescribesRemoteAttach(t *testing.T) {
+	isolateRemoteEnv(t)
+	var cli CLI
+	var output bytes.Buffer
+	parser, err := kong.New(
+		&cli,
+		kong.Name("nyala"),
+		kong.Vars{"version": "test"},
+		kong.Writers(&output, &output),
+		kong.Exit(func(int) {}),
+	)
+	if err != nil {
+		t.Fatalf("kong.New: %v", err)
+	}
+	_, _ = parser.Parse([]string{"--help"})
+	help := strings.Join(strings.Fields(output.String()), " ")
+	for _, want := range []string{
+		"--remote-debugging-url=STRING",
+		"NYALA_REMOTE_DEBUGGING_URL",
+		"Attach to a running Chromium",
+		"Excludes --browser, --profile, and --private ($NYALA_REMOTE_DEBUGGING_URL)",
+	} {
+		if !strings.Contains(help, want) {
+			t.Errorf("help is missing %q:\n%s", want, output.String())
+		}
+	}
+}
+
+// TestRunRemoteRejectsLaunchFlags asserts that each launch flag combined with a
+// remote endpoint fails in validateLaunchMode. Run receives a nil tty, so an
+// error that reaches the viewer would surface as a nil-file failure rather than
+// the launch-mode message: the message check proves the rejection came first.
+func TestRunRemoteRejectsLaunchFlags(t *testing.T) {
+	const endpoint = "http://127.0.0.1:9222"
+	for _, tc := range []struct {
+		name string
+		cli  CLI
+		flag string
+	}{
+		{"browser", CLI{Browser: "/usr/bin/chromium"}, "--browser"},
+		{"profile", CLI{Profile: "/tmp/profile"}, "--profile"},
+		{"private", CLI{Private: true}, "--private"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cli := tc.cli
+			cli.URL = "example.com"
+			cli.RemoteDebuggingURL = endpoint
+			err := Run(cli, "dev", nil)
+			if err == nil {
+				t.Fatalf("Run with %s and --remote-debugging-url: want an error, got nil", tc.flag)
+			}
+			for _, want := range []string{"--remote-debugging-url", tc.flag, "does not launch Chromium"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Run with %s: error = %q, want it to mention %q", tc.flag, err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestRunRemoteRejectsBadScheme asserts an endpoint with a scheme the engine
+// cannot attach through fails before the viewer runs, and that the error lists
+// the accepted schemes so the user can correct the value.
+func TestRunRemoteRejectsBadScheme(t *testing.T) {
+	err := Run(CLI{URL: "example.com", RemoteDebuggingURL: "ftp://host:9222"}, "dev", nil)
+	if err == nil {
+		t.Fatalf("Run(ftp endpoint): want an error, got nil")
+	}
+	for _, want := range []string{"unsupported --remote-debugging-url scheme", `"ftp"`, "http, https, ws, or wss"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Run(ftp endpoint): error = %q, want it to mention %q", err, want)
+		}
+	}
+}
+
+// TestRunRemotePassesValidation asserts a valid endpoint with no launch flags
+// passes validateLaunchMode and reaches the viewer's not-a-terminal guard. A
+// NYALA_PROFILE that points at an absent directory stays absent, which proves
+// the remote arm resolves no profile on the way.
+func TestRunRemotePassesValidation(t *testing.T) {
+	profileDir := filepath.Join(t.TempDir(), "watched-profile")
+	t.Setenv("NYALA_PROFILE", profileDir)
+
+	for _, endpoint := range []string{
+		"http://127.0.0.1:9222",
+		"https://host:9222",
+		"ws://127.0.0.1:9222/devtools/browser/abc",
+		"wss://host:9222/devtools/browser/abc",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("os.Pipe: %v", err)
+			}
+			defer r.Close()
+			defer w.Close()
+			err = Run(CLI{URL: "example.com", RemoteDebuggingURL: endpoint}, "dev", r)
+			if err == nil {
+				t.Fatalf("Run(%q): want the not-a-terminal error, got nil", endpoint)
+			}
+			if strings.Contains(err.Error(), "--remote-debugging-url") {
+				t.Errorf("Run(%q): err = %v, want it past launch-mode validation", endpoint, err)
+			}
+			if !strings.Contains(err.Error(), "not a terminal") {
+				t.Errorf("Run(%q): err = %v, want the not-a-terminal guard", endpoint, err)
+			}
+		})
+	}
+	if _, statErr := os.Stat(profileDir); !os.IsNotExist(statErr) {
+		t.Fatalf("remote Run profile Stat error = %v, want path absent", statErr)
 	}
 }
 

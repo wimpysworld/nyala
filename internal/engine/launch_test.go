@@ -751,6 +751,33 @@ func TestSharedArgvMirrorsExecAllocatorOrder(t *testing.T) {
 	}
 }
 
+func TestCommandLineHasArgBounds(t *testing.T) {
+	// Chromium rewrites its /proc cmdline into one space-joined string, so a
+	// NUL-only split never matched a real browser and the last client left it
+	// running. Both NUL and space must bound an argument.
+	want := "--user-data-dir=/p/profile"
+	cases := []struct {
+		name string
+		args string
+		ok   bool
+	}{
+		{"nul separated", "chromium\x00--headless\x00--user-data-dir=/p/profile\x00about:blank\x00", true},
+		{"space joined by chromium", "chromium --headless --user-data-dir=/p/profile --remote-debugging-port=0 about:blank", true},
+		{"at end", "chromium --user-data-dir=/p/profile", true},
+		{"prefix of longer path, nul", "chromium\x00--user-data-dir=/p/profile-2\x00", false},
+		{"prefix of longer path, space", "chromium --user-data-dir=/p/profile-2 about:blank", false},
+		{"embedded in another flag", "chromium --x--user-data-dir=/p/profile about:blank", false},
+		{"absent", "chromium --headless", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := commandLineHasArg(tc.args, want); got != tc.ok {
+				t.Errorf("commandLineHasArg = %v, want %v", got, tc.ok)
+			}
+		})
+	}
+}
+
 func TestBrowserOwnsProfileGatesOnCommandLine(t *testing.T) {
 	// A pid from the lock file may belong to a stranger after recycling. Only a
 	// process whose command line names the profile may receive a signal.

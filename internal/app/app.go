@@ -1,7 +1,11 @@
 // Package app holds the Nyala command-line surface and its dispatch. It owns one
 // CLI struct, parsed by kong in cmd/nyala, and routes a parsed run to the
-// engine and viewer. The dispatch is thin: it validates the URL and drives
-// the live screencast loop. It holds no rendering logic of its own.
+// engine and viewer. The dispatch is thin: it validates the URL, checks that
+// the launch flags agree with the launch mode, and drives the live screencast
+// loop. Nyala launches Chromium with a persistent or private profile by
+// default, or attaches to a running Chromium through --remote-debugging-url
+// and then sets no profile or executable at all. It holds no rendering logic
+// of its own.
 package app
 
 import (
@@ -18,7 +22,8 @@ import (
 
 // CLI is the parsed Nyala command line. cmd/nyala binds it to kong; the fields
 // carry the colour mode, the target URL, optional browser and profile paths,
-// and the private-profile policy.
+// the private-profile policy, and the remote debugging URL that attaches to a
+// running Chromium instead of launching one.
 type CLI struct {
 	Version kong.VersionFlag `help:"Show version."`
 
@@ -45,6 +50,13 @@ type CLI struct {
 
 	// Private uses a disposable browser profile and ignores persistent profile settings.
 	Private bool `help:"Use a disposable browser profile and ignore --profile." name:"private"`
+
+	// RemoteDebuggingURL attaches to a running Chromium at its debugging
+	// endpoint instead of launching one. It excludes --browser, --profile, and
+	// --private. Kong reads NYALA_REMOTE_DEBUGGING_URL for it at parse time,
+	// unlike the engine-side environment lookups for --browser and --profile,
+	// because validateLaunchMode checks the flag here in app.
+	RemoteDebuggingURL string `help:"Attach to a running Chromium at http://host:port or ws://host:port/devtools/browser/<id> instead of launching one. Excludes --browser, --profile, and --private." name:"remote-debugging-url" env:"NYALA_REMOTE_DEBUGGING_URL"`
 
 	// DisableFrameRateLimit removes Chromium's browser frame-rate limit. It does
 	// not control terminal or display synchronisation.
@@ -80,15 +92,23 @@ func (c *ColorFlag) UnmarshalText(text []byte) error {
 // URL has no scheme, accepts http, https, and file, and rejects any other
 // scheme with a clear error. It configures the Chromium engine from the
 // --browser and --profile flags, unless --private bypasses persistent profile
-// setup, then runs the interactive viewer. version is the build version main
-// plumbs through for the viewer's About line.
+// setup, then runs the interactive viewer. With --remote-debugging-url it
+// rejects those three flags, hands the endpoint to the engine, and resolves no
+// executable or profile. version is the build version main plumbs through for
+// the viewer's About line.
 func Run(cli CLI, version string, tty *os.File) error {
 	target, err := normaliseURL(cli.URL)
 	if err != nil {
 		return err
 	}
+	if err := validateLaunchMode(cli); err != nil {
+		return err
+	}
 	chromium := engine.New(cli.Browser)
-	if !cli.Private {
+	switch {
+	case cli.RemoteDebuggingURL != "":
+		chromium.SetRemoteDebuggingURL(cli.RemoteDebuggingURL)
+	case !cli.Private:
 		if err := chromium.SetProfileDir(cli.Profile); err != nil {
 			return err
 		}
@@ -207,6 +227,38 @@ func mouseButton(b viewer.MouseButton) engine.MouseButton {
 		return engine.MouseButtonNone
 	default:
 		return engine.MouseButtonLeft
+	}
+}
+
+// validateLaunchMode checks that the launch flags agree with the launch mode.
+// Without --remote-debugging-url every combination is valid. With it, Nyala
+// does not launch Chromium, so --browser, --profile, and --private are
+// rejected, and the endpoint must carry an http, https, ws, or wss scheme.
+func validateLaunchMode(cli CLI) error {
+	if cli.RemoteDebuggingURL == "" {
+		return nil
+	}
+	var flag string
+	switch {
+	case cli.Browser != "":
+		flag = "--browser"
+	case cli.Profile != "":
+		flag = "--profile"
+	case cli.Private:
+		flag = "--private"
+	}
+	if flag != "" {
+		return fmt.Errorf("--remote-debugging-url cannot be combined with %s: Nyala does not launch Chromium when it attaches to %s", flag, cli.RemoteDebuggingURL)
+	}
+	parsed, err := url.Parse(cli.RemoteDebuggingURL)
+	if err != nil {
+		return fmt.Errorf("invalid --remote-debugging-url %q: %w", cli.RemoteDebuggingURL, err)
+	}
+	switch parsed.Scheme {
+	case "http", "https", "ws", "wss":
+		return nil
+	default:
+		return fmt.Errorf("unsupported --remote-debugging-url scheme %q in %s (want http, https, ws, or wss)", parsed.Scheme, cli.RemoteDebuggingURL)
 	}
 }
 
