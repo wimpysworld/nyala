@@ -40,11 +40,15 @@ actions:
   github_owned_allowed: true
   verified_allowed: true
   patterns_allowed:
+    - "DeterminateSystems/flakehub-cache-action@*"
+    - "DeterminateSystems/nix-installer-action@*"
+    - "dorny/paths-filter@*"
     - "freerangebytes/setup-actionlint@*"
     - "golang/govulncheck-action@*"
     - "golangci/golangci-lint-action@*"
     - "nick-fields/retry@*"
     - "robherley/go-test-action@*"
+    - "sigstore/cosign-installer@*"
     - "softprops/action-gh-release@*"
 
 code_scanning:
