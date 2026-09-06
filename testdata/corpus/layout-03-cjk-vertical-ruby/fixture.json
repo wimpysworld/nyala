@@ -22,7 +22,7 @@
     "mean": 0.95,
     "max": 4.5,
     "drifted": 5,
-    "collisions": 8,
-    "reason": "CJK vertical and ruby runs fall back off the embedded face, so advances are not 2*cellW; the horizontal CJK paragraph maps near-clean, and a new drifted box still trips the pinned count. The shaped CJK/ruby runs overlap a row, so same-row cell collisions are expected. The 240x48 wide leg reflows to variable states under corpus load: the box count and collision count shift run to run (isolated runs settle near 2, loaded runs reach 6 to 7), so the collision count is pinned at 8 to cover the observed range while the narrow legs stay near 1 to 2."
+    "collisions": 2,
+    "reason": "CJK vertical and ruby runs fall back off the embedded face, so advances differ from 2*cellW. Ruby padding keeps annotations off the base row. Repeated corpus runs at all three geometries leave two collisions between neighbouring base runs, so the collision limit is 2. The drift limits still cover the fallback font advances."
   }
 }

@@ -99,7 +99,12 @@ input, textarea, select, option, svg, svg *, ::placeholder {
 *%s {
   font-size: %gpx !important;
   line-height: %gpx !important;
-}`, fontFamily, dataURL, fontFamily, textFill, not.String(), seedPx, cellH)
+}
+rt {
+  /* Ruby layout ignores line-height. Reserve the cell's leading on both sides
+     so annotations above or below the base cannot snap onto its terminal row. */
+  padding-block: max(0px, calc((%gpx - 1em) / 2)) !important;
+}`, fontFamily, dataURL, fontFamily, textFill, not.String(), seedPx, cellH, cellH)
 
 	var b strings.Builder
 	b.WriteString("(function(){var s=document.createElement('style');s.id=")
