@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -460,11 +461,29 @@ func terminateBrowser(ctx context.Context, pid int) error {
 func browserOwnsProfile(ctx context.Context, pid int, profileDir string) bool {
 	want := "--user-data-dir=" + profileDir
 	if data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline")); err == nil {
-		return strings.Contains(string(data), want)
+		// /proc separates arguments with NUL, so a whole-argument comparison
+		// rejects a profile whose path extends this one.
+		return slices.Contains(strings.Split(string(data), "\x00"), want)
 	}
 	//nolint:gosec // ps receives a pid that Nyala formatted from an integer.
 	out, err := exec.CommandContext(ctx, "ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
-	return err == nil && strings.Contains(string(out), want)
+	if err != nil {
+		return false
+	}
+	// ps joins arguments with spaces, so the value must end at a space or at
+	// the end of the line.
+	args := strings.TrimRight(string(out), "\n")
+	for i := 0; ; {
+		j := strings.Index(args[i:], want)
+		if j < 0 {
+			return false
+		}
+		end := i + j + len(want)
+		if end == len(args) || args[end] == ' ' {
+			return true
+		}
+		i = end
+	}
 }
 
 // terminateOwnedBrowser is terminateBrowser gated on browserOwnsProfile. It is
