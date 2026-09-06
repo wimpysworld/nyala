@@ -1,16 +1,22 @@
 package engine
 
 import (
+	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/chromedp/cdproto/fetch"
+	"github.com/chromedp/chromedp"
+	"golang.org/x/sys/unix"
 )
 
 // fakeExecutable writes an executable file named name into a fresh temp dir and
@@ -163,7 +169,10 @@ func TestSetProfileDirResolvesWithoutTouchingPath(t *testing.T) {
 	}
 }
 
-func TestLaunchCreatesProfileBeforeExecutableResolution(t *testing.T) {
+func TestLaunchResolvesExecutableBeforeTouchingProfile(t *testing.T) {
+	// launch resolves the executable first and opens the profile guard only on
+	// the shared path, so a missing browser leaves the profile untouched and no
+	// lock file behind for a later run to misread.
 	profileDir := filepath.Join(t.TempDir(), "profile")
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("NYALA_BROWSER", "")
@@ -187,26 +196,46 @@ func TestLaunchCreatesProfileBeforeExecutableResolution(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no Chromium found") {
 		t.Fatalf("launch error = %v, want executable resolution error", err)
 	}
-	info, err := os.Stat(profileDir)
-	if err != nil {
-		t.Fatalf("Stat created profile directory: %v", err)
+	if _, err := os.Stat(profileDir); !os.IsNotExist(err) {
+		t.Fatalf("profile path after failed resolution Stat error = %v, want not exist", err)
 	}
-	if got := info.Mode().Perm(); got != 0o700 {
-		t.Errorf("profile directory mode = %04o, want 0700", got)
-	}
-	if e.profileGuard == nil {
-		t.Fatal("launch did not retain the profile guard before executable resolution")
-	}
-	lockInfo, err := os.Stat(filepath.Join(profileDir, profileLockName))
-	if err != nil {
-		t.Fatalf("Stat profile guard: %v", err)
-	}
-	if got := lockInfo.Mode().Perm(); got != 0o600 {
-		t.Errorf("profile guard mode = %04o, want 0600", got)
+	if e.profileGuard != nil {
+		t.Fatal("launch opened the profile guard before executable resolution")
 	}
 }
 
+// openLockFD opens a second, independent descriptor on the profile lock file.
+// flock locks belong to the open file description, so a lock on this fd
+// conflicts with the engine's own fd inside one test process, the same way a
+// second nyala process would.
+func openLockFD(t *testing.T, profileDir string) *os.File {
+	t.Helper()
+	f, err := os.OpenFile(filepath.Join(profileDir, profileLockName), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open independent lock fd: %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	return f
+}
+
+// flockNB tries a non-blocking flock in mode on f and reports whether it won.
+func flockNB(t *testing.T, f *os.File, mode int) bool {
+	t.Helper()
+	err := unix.Flock(int(f.Fd()), mode|unix.LOCK_NB)
+	if errors.Is(err, unix.EWOULDBLOCK) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("flock mode %d: %v", mode, err)
+	}
+	return true
+}
+
 func TestProfileGuardContentionAndRecovery(t *testing.T) {
+	// Two engines on one profile hold the guard at the same time: the launcher
+	// wins LOCK_EX and downgrades, the client takes LOCK_SH. A third exclusive
+	// attempt fails while either shared holder lives and succeeds once both
+	// close, on the same lock file throughout.
 	profileDir := filepath.Join(t.TempDir(), "profile")
 	first := New("")
 	second := New("")
@@ -223,8 +252,12 @@ func TestProfileGuardContentionAndRecovery(t *testing.T) {
 			t.Errorf("first Close: %v", err)
 		}
 	})
-	if err := first.acquireProfileGuard(); err != nil {
-		t.Fatalf("first acquireProfileGuard: %v", err)
+	if err := first.openProfileGuard(); err != nil {
+		t.Fatalf("first openProfileGuard: %v", err)
+	}
+	won, err := first.profileGuard.tryExclusive()
+	if err != nil || !won {
+		t.Fatalf("first tryExclusive = (%v, %v), want (true, nil)", won, err)
 	}
 	lockPath := filepath.Join(profileDir, profileLockName)
 	before, err := os.Stat(lockPath)
@@ -232,35 +265,146 @@ func TestProfileGuardContentionAndRecovery(t *testing.T) {
 		t.Fatalf("Stat profile guard: %v", err)
 	}
 
-	blocked := make(chan error, 1)
-	go func() { blocked <- second.acquireProfileGuard() }()
-	select {
-	case err := <-blocked:
-		if err == nil {
-			t.Fatal("second acquireProfileGuard succeeded while the first held the guard")
-		}
-		if !strings.Contains(err.Error(), profileDir) {
-			t.Errorf("contention error %q does not name profile directory %q", err, profileDir)
-		}
-		if !strings.Contains(err.Error(), "--private") {
-			t.Errorf("contention error %q does not suggest --private", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("second acquireProfileGuard blocked")
+	if err := second.openProfileGuard(); err != nil {
+		t.Fatalf("second openProfileGuard: %v", err)
+	}
+	// While the launcher holds LOCK_EX the client cannot take LOCK_SH.
+	blockedCtx, cancelBlocked := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancelBlocked()
+	if err := second.profileGuard.acquireShared(blockedCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second acquireShared while LOCK_EX held = %v, want deadline exceeded", err)
 	}
 
+	if err := first.profileGuard.downgrade(); err != nil {
+		t.Fatalf("first downgrade: %v", err)
+	}
+	sharedCtx, cancelShared := context.WithTimeout(context.Background(), time.Second)
+	defer cancelShared()
+	if err := second.profileGuard.acquireShared(sharedCtx); err != nil {
+		t.Fatalf("second acquireShared after downgrade: %v", err)
+	}
+	if first.profileGuard.mode != unix.LOCK_SH || second.profileGuard.mode != unix.LOCK_SH {
+		t.Fatalf("modes = (%d, %d), want both LOCK_SH", first.profileGuard.mode, second.profileGuard.mode)
+	}
+
+	third := openLockFD(t, profileDir)
+	if flockNB(t, third, unix.LOCK_EX) {
+		t.Fatal("third LOCK_EX succeeded while two shared holders exist")
+	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("first Close: %v", err)
 	}
-	if err := second.acquireProfileGuard(); err != nil {
-		t.Fatalf("second acquireProfileGuard after first Close: %v", err)
+	if flockNB(t, third, unix.LOCK_EX) {
+		t.Fatal("third LOCK_EX succeeded while the second shared holder exists")
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if !flockNB(t, third, unix.LOCK_EX) {
+		t.Fatal("third LOCK_EX failed after both holders closed")
 	}
 	after, err := os.Stat(lockPath)
 	if err != nil {
-		t.Fatalf("Stat recovered profile guard: %v", err)
+		t.Fatalf("Stat profile guard after recovery: %v", err)
 	}
 	if !os.SameFile(before, after) {
 		t.Fatal("recovery replaced the existing profile guard file")
+	}
+}
+
+func TestProfileGuardExclusiveThenSharedDowngrade(t *testing.T) {
+	// downgrade must convert LOCK_EX to LOCK_SH on the same fd: an independent
+	// fd cannot take LOCK_SH before the downgrade and can after it, and LOCK_EX
+	// stays refused until unlock.
+	profileDir := t.TempDir()
+	e := New("")
+	if err := e.SetProfileDir(profileDir); err != nil {
+		t.Fatalf("SetProfileDir(%q): %v", profileDir, err)
+	}
+	t.Cleanup(func() {
+		if err := e.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	if err := e.openProfileGuard(); err != nil {
+		t.Fatalf("openProfileGuard: %v", err)
+	}
+	g := e.profileGuard
+	if g.mode != 0 {
+		t.Fatalf("mode after open = %d, want 0", g.mode)
+	}
+	won, err := g.tryExclusive()
+	if err != nil || !won {
+		t.Fatalf("tryExclusive = (%v, %v), want (true, nil)", won, err)
+	}
+	if g.mode != unix.LOCK_EX {
+		t.Fatalf("mode after tryExclusive = %d, want LOCK_EX", g.mode)
+	}
+	other := openLockFD(t, profileDir)
+	if flockNB(t, other, unix.LOCK_SH) {
+		t.Fatal("independent LOCK_SH succeeded while LOCK_EX held")
+	}
+	if err := g.downgrade(); err != nil {
+		t.Fatalf("downgrade: %v", err)
+	}
+	if g.mode != unix.LOCK_SH {
+		t.Fatalf("mode after downgrade = %d, want LOCK_SH", g.mode)
+	}
+	if !flockNB(t, other, unix.LOCK_SH) {
+		t.Fatal("independent LOCK_SH failed after downgrade")
+	}
+	if err := unix.Flock(int(other.Fd()), unix.LOCK_UN); err != nil {
+		t.Fatalf("unlock independent fd: %v", err)
+	}
+	if flockNB(t, other, unix.LOCK_EX) {
+		t.Fatal("independent LOCK_EX succeeded while the guard holds LOCK_SH")
+	}
+	if err := g.unlock(); err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
+	if g.mode != 0 {
+		t.Fatalf("mode after unlock = %d, want 0", g.mode)
+	}
+	if !flockNB(t, other, unix.LOCK_EX) {
+		t.Fatal("independent LOCK_EX failed after the guard unlocked")
+	}
+}
+
+func TestProfileGuardPIDRoundTrip(t *testing.T) {
+	// The lock file carries the launcher's Chromium pid for the last client
+	// out. readPID must refuse an empty file and return exactly what writePID
+	// stored, including after a shorter pid overwrites a longer one.
+	e := New("")
+	if err := e.SetProfileDir(t.TempDir()); err != nil {
+		t.Fatalf("SetProfileDir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := e.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	if err := e.openProfileGuard(); err != nil {
+		t.Fatalf("openProfileGuard: %v", err)
+	}
+	g := e.profileGuard
+	if pid, ok := g.readPID(); ok {
+		t.Fatalf("readPID on empty file = (%d, true), want ok false", pid)
+	}
+	for _, want := range []int{123456, 42} {
+		if err := g.writePID(want); err != nil {
+			t.Fatalf("writePID(%d): %v", want, err)
+		}
+		got, ok := g.readPID()
+		if !ok || got != want {
+			t.Fatalf("readPID after writePID(%d) = (%d, %v), want (%d, true)", want, got, ok, want)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(e.profileDir, profileLockName))
+	if err != nil {
+		t.Fatalf("read lock file: %v", err)
+	}
+	if string(data) != "42" {
+		t.Errorf("lock file content = %q, want %q", data, "42")
 	}
 }
 
@@ -280,8 +424,11 @@ func TestProfileGuardReusesStaleFile(t *testing.T) {
 	if err := e.SetProfileDir(profileDir); err != nil {
 		t.Fatalf("SetProfileDir(%q): %v", profileDir, err)
 	}
-	if err := e.acquireProfileGuard(); err != nil {
-		t.Fatalf("acquireProfileGuard with stale file: %v", err)
+	if err := e.openProfileGuard(); err != nil {
+		t.Fatalf("openProfileGuard with stale file: %v", err)
+	}
+	if won, err := e.profileGuard.tryExclusive(); err != nil || !won {
+		t.Fatalf("tryExclusive with stale file = (%v, %v), want (true, nil)", won, err)
 	}
 	contents, err := os.ReadFile(lockPath)
 	if err != nil {
@@ -327,15 +474,50 @@ func TestGPUFlags(t *testing.T) {
 	}
 }
 
-func recordLaunchArgv(t *testing.T, configure func(*ChromiumEngine)) []string {
+// shortDevToolsWait shrinks the DevToolsActivePort wait for the test and
+// restores it afterwards. A fake browser never writes the file, so without this
+// each shared launch attempt would wait the production 30 s.
+func shortDevToolsWait(t *testing.T) {
+	t.Helper()
+	saved := devToolsWaitTimeout
+	devToolsWaitTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { devToolsWaitTimeout = saved })
+}
+
+// argvRecorder installs a fake browser that records its argv into a file and
+// exits at once. It returns the browser path and a reader for the recorded
+// argv. The recorder reads the file path from the NYALA_TEST_ARGV_FILE
+// environment variable, which both the exec allocator and spawnDetached
+// inherit. spawnDetached points stdio at /dev/null, so the recorder writes to
+// the file rather than to stdout.
+func argvRecorder(t *testing.T) (browserPath string, readArgv func() []string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the recorder is a POSIX shell script")
 	}
 	argvFile := filepath.Join(t.TempDir(), "argv")
 	t.Setenv("NYALA_TEST_ARGV_FILE", argvFile)
-	_, browserPath := fakeExecutable(t, "chromium",
+	_, browserPath = fakeExecutable(t, "chromium",
 		"printf '%s\\n' \"$@\" > \"$NYALA_TEST_ARGV_FILE\"\nexit 1\n")
+	readArgv = func() []string {
+		t.Helper()
+		raw, err := os.ReadFile(argvFile)
+		if err != nil {
+			t.Fatalf("read recorded argv: %v", err)
+		}
+		return strings.Split(strings.TrimSpace(string(raw)), "\n")
+	}
+	return browserPath, readArgv
+}
+
+// recordLaunchArgv drives a real launch against the argv recorder and returns
+// the argv the browser received. Both the private and the shared path fail
+// because the recorder exits without serving CDP, and it returns the error so
+// a caller can assert on the shared retry cap.
+func recordLaunchArgv(t *testing.T, configure func(*ChromiumEngine)) ([]string, error) {
+	t.Helper()
+	browserPath, readArgv := argvRecorder(t)
+	shortDevToolsWait(t)
 
 	// NYALA_BROWSER beats the empty PATH, so the recorder is the resolved browser.
 	t.Setenv("PATH", t.TempDir())
@@ -354,22 +536,28 @@ func recordLaunchArgv(t *testing.T, configure func(*ChromiumEngine)) []string {
 			t.Errorf("Close: %v", err)
 		}
 	})
-	if err := e.launch(""); err == nil {
+	err := e.launch("")
+	if err == nil {
 		t.Fatal("launch() = nil, want the start failure from the recording browser")
 	}
+	return readArgv(), err
+}
 
-	raw, err := os.ReadFile(argvFile)
-	if err != nil {
-		t.Fatalf("read recorded argv: %v", err)
+// hasArg reports whether argv contains arg exactly or as a --arg=value prefix.
+func hasArg(argv []string, arg string) bool {
+	for _, a := range argv {
+		if a == arg || strings.HasPrefix(a, arg+"=") {
+			return true
+		}
 	}
-	return strings.Split(strings.TrimSpace(string(raw)), "\n")
+	return false
 }
 
 func TestLaunchArgvCarriesGPUFlags(t *testing.T) {
 	// gpuFlags is pure, so a test on it alone stays green if newAllocator stops
 	// appending the result. The fake browser records the real launch argv and exits
 	// before a browser starts.
-	argv := recordLaunchArgv(t, nil)
+	argv, _ := recordLaunchArgv(t, nil)
 	// Assert presence, not position: chromedp holds flags in a map, so argv order
 	// is not stable between runs.
 	for _, want := range []string{"--enable-gpu", "--enable-unsafe-swiftshader"} {
@@ -380,7 +568,7 @@ func TestLaunchArgvCarriesGPUFlags(t *testing.T) {
 }
 
 func TestLaunchArgvHidesAutomationSignals(t *testing.T) {
-	argv := recordLaunchArgv(t, nil)
+	argv, _ := recordLaunchArgv(t, nil)
 	for _, want := range []string{
 		"--disable-blink-features=AutomationControlled",
 		"--remote-debugging-port=0",
@@ -397,15 +585,53 @@ func TestLaunchArgvHidesAutomationSignals(t *testing.T) {
 }
 
 func TestLaunchArgvCarriesPersistentProfile(t *testing.T) {
+	// A persistent profile takes the shared path: the recorder is spawned
+	// detached with the profile, the remote debugging port, and the keep-alive
+	// switch, and without the automation banner. It exits without writing
+	// DevToolsActivePort, so launch must give up after maxLaunchAttempts.
 	profileDir := filepath.Join(t.TempDir(), "profile")
-	argv := recordLaunchArgv(t, func(e *ChromiumEngine) {
+	start := time.Now()
+	argv, err := recordLaunchArgv(t, func(e *ChromiumEngine) {
 		if err := e.SetProfileDir(profileDir); err != nil {
 			t.Fatalf("SetProfileDir(%q): %v", profileDir, err)
 		}
 	})
-	want := "--user-data-dir=" + profileDir
-	if !slices.Contains(argv, want) {
-		t.Errorf("launch argv %v is missing exact persistent profile argument %q", argv, want)
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("shared launch took %v with a 200 ms port wait, want well under 3 s", elapsed)
+	}
+	want := "after " + strconv.Itoa(maxLaunchAttempts) + " attempts"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("launch error %q does not report %q", err, want)
+	}
+	if !strings.Contains(err.Error(), devToolsActivePortFile) {
+		t.Errorf("launch error %q does not name %s", err, devToolsActivePortFile)
+	}
+	for _, arg := range []string{
+		"--user-data-dir=" + profileDir,
+		"--keep-alive-for-test",
+		"--remote-debugging-port=0",
+	} {
+		if !slices.Contains(argv, arg) {
+			t.Errorf("shared launch argv %v is missing %q", argv, arg)
+		}
+	}
+	if hasArg(argv, "--enable-automation") {
+		t.Errorf("shared launch argv %v carries --enable-automation", argv)
+	}
+	// The shared path creates the profile and the lock file with private modes.
+	info, err := os.Stat(profileDir)
+	if err != nil {
+		t.Fatalf("Stat created profile directory: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("profile directory mode = %04o, want 0700", got)
+	}
+	lockInfo, err := os.Stat(filepath.Join(profileDir, profileLockName))
+	if err != nil {
+		t.Fatalf("Stat profile guard: %v", err)
+	}
+	if got := lockInfo.Mode().Perm(); got != 0o600 {
+		t.Errorf("profile guard mode = %04o, want 0600", got)
 	}
 }
 
@@ -415,7 +641,12 @@ func TestLaunchWithoutConfiguredProfileUsesDisposableUserDataDir(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
 
-	argv := recordLaunchArgv(t, nil)
+	argv, _ := recordLaunchArgv(t, nil)
+	// The private path keeps chromedp's exec allocator, which owns the browser
+	// lifetime, so the shared keep-alive switch must not appear.
+	if slices.Contains(argv, "--keep-alive-for-test") {
+		t.Errorf("private launch argv %v carries --keep-alive-for-test", argv)
+	}
 	var userDataDir string
 	for _, arg := range argv {
 		if strings.HasPrefix(arg, "--user-data-dir=") {
@@ -430,6 +661,239 @@ func TestLaunchWithoutConfiguredProfileUsesDisposableUserDataDir(t *testing.T) {
 	}
 	if _, err := os.Stat(watchedProfile); !os.IsNotExist(err) {
 		t.Fatalf("unconfigured launch profile Stat error = %v, want path absent", err)
+	}
+}
+
+// stripLaunchPathArgs removes the switches each launch path sets itself, so
+// the remaining argv is the flag set both paths must share.
+func stripLaunchPathArgs(argv []string) []string {
+	out := make([]string, 0, len(argv))
+	for _, arg := range argv {
+		if hasArg([]string{arg}, "--user-data-dir") ||
+			arg == "--remote-debugging-port=0" ||
+			arg == "--keep-alive-for-test" {
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
+}
+
+func TestSharedArgvMirrorsExecAllocatorOrder(t *testing.T) {
+	// sharedArgv and newAllocator must build from one flag source, so a switch
+	// added to one path cannot go missing from the other. chromedp emits its
+	// flags from a map in random order, so the comparison sorts both sides.
+	browserPath, readArgv := argvRecorder(t)
+	profileDir := filepath.Join(t.TempDir(), "profile")
+	cfg := allocatorConfig{
+		execPath:              browserPath,
+		profileDir:            profileDir,
+		surfaceWidth:          1280,
+		surfaceHeight:         720,
+		scale:                 1.5,
+		proxy:                 ProxyConfig{Server: "http://host:3128", Bypass: "localhost"},
+		enableGPU:             true,
+		enableAudio:           true,
+		disableFrameRateLimit: true,
+	}
+
+	allocCtx, allocCancel := newAllocator(context.Background(), cfg)
+	defer allocCancel()
+	ctx, cancel := chromedp.NewContext(allocCtx)
+	defer cancel()
+	if err := chromedp.Run(ctx); err == nil {
+		t.Fatal("chromedp.Run against the recorder = nil, want a start failure")
+	}
+	execArgv := stripLaunchPathArgs(readArgv())
+	shared := stripLaunchPathArgs(sharedArgv(launchFlags(cfg), profileDir))
+	slices.Sort(execArgv)
+	slices.Sort(shared)
+	if !slices.Equal(execArgv, shared) {
+		t.Errorf("sharedArgv (sorted)\n%v\ndiffers from the exec allocator argv (sorted)\n%v", shared, execArgv)
+	}
+	full := sharedArgv(launchFlags(cfg), profileDir)
+	if n := len(full); n < 3 || full[n-1] != "about:blank" || full[n-2] != "--keep-alive-for-test" || full[n-3] != "--remote-debugging-port=0" {
+		t.Errorf("sharedArgv tail = %v, want --remote-debugging-port=0, --keep-alive-for-test, about:blank", full)
+	}
+}
+
+func TestBrowserOwnsProfileGatesOnCommandLine(t *testing.T) {
+	// A pid from the lock file may belong to a stranger after recycling. Only a
+	// process whose command line names the profile may receive a signal.
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake browser is a POSIX shell process")
+	}
+	profileDir := filepath.Join(t.TempDir(), "profile")
+	ctx := context.Background()
+	if browserOwnsProfile(ctx, os.Getpid(), profileDir) {
+		t.Error("the test binary was reported as a browser on the profile")
+	}
+	// sh keeps the positional argument in its argv and ignores it. The trailing
+	// true stops sh from replacing itself with sleep, which would drop the argv.
+	//nolint:gosec // The profile path is a test temp dir.
+	cmd := exec.CommandContext(ctx, "sh", "-c", "sleep 30; true", "sh", "--user-data-dir="+profileDir)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start fake browser: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	// Start returns at the exec point of no return, a moment before the kernel
+	// publishes the new argv, so the command line can read empty at once.
+	time.Sleep(50 * time.Millisecond)
+	if !browserOwnsProfile(ctx, cmd.Process.Pid, profileDir) {
+		t.Error("a process whose argv names the profile was not recognised")
+	}
+	if browserOwnsProfile(ctx, cmd.Process.Pid, profileDir+"-other") {
+		t.Error("a process on another profile was recognised")
+	}
+}
+
+func TestParseDevToolsActivePort(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"two lines", "9222\n/devtools/browser/abc", "ws://127.0.0.1:9222/devtools/browser/abc", false},
+		{"trailing newline", "9222\n/devtools/browser/abc\n", "ws://127.0.0.1:9222/devtools/browser/abc", false},
+		{"missing second line", "9222\n", "", true},
+		{"non-numeric port", "port\n/devtools/browser/abc", "", true},
+		{"empty", "", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseDevToolsActivePort([]byte(c.input))
+			if (err != nil) != c.wantErr {
+				t.Fatalf("parseDevToolsActivePort(%q) error = %v, wantErr %v", c.input, err, c.wantErr)
+			}
+			if got != c.want {
+				t.Errorf("parseDevToolsActivePort(%q) = %q, want %q", c.input, got, c.want)
+			}
+		})
+	}
+}
+
+// sharedTestEngine returns an engine on profileDir together with a launch
+// config that points at the argv recorder. Close runs at cleanup.
+func sharedTestEngine(t *testing.T, profileDir string) (*ChromiumEngine, allocatorConfig, func() []string) {
+	t.Helper()
+	browserPath, readArgv := argvRecorder(t)
+	shortDevToolsWait(t)
+	e := New("")
+	if err := e.SetProfileDir(profileDir); err != nil {
+		t.Fatalf("SetProfileDir(%q): %v", profileDir, err)
+	}
+	t.Cleanup(func() {
+		if err := e.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	return e, allocatorConfig{execPath: browserPath, profileDir: profileDir, scale: 1}, readArgv
+}
+
+func TestSharedClientRetriesWhenLauncherDies(t *testing.T) {
+	// Another process holds LOCK_EX and dies without publishing a port file.
+	// The kernel drops its lock, the client's LOCK_SH poll succeeds, the port
+	// read fails, and the client must retry as the launcher itself rather than
+	// wait for a launcher that no longer exists.
+	profileDir := filepath.Join(t.TempDir(), "profile")
+	if err := os.MkdirAll(profileDir, 0o700); err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	launcher := openLockFD(t, profileDir)
+	if !flockNB(t, launcher, unix.LOCK_EX) {
+		t.Fatal("independent LOCK_EX failed on a fresh lock file")
+	}
+	released := time.AfterFunc(100*time.Millisecond, func() { _ = launcher.Close() })
+	defer released.Stop()
+
+	e, cfg, readArgv := sharedTestEngine(t, profileDir)
+	start := time.Now()
+	_, _, _, err := e.launchShared(cfg)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("launchShared = nil, want failure after the retry cap")
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("launchShared took %v, want under 3 s", elapsed)
+	}
+	if elapsed < 100*time.Millisecond {
+		t.Errorf("launchShared returned in %v, before the dead launcher released LOCK_EX", elapsed)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "attempts") || !strings.Contains(msg, devToolsActivePortFile) {
+		t.Errorf("launchShared error %q does not report the attempt cap and the port file", msg)
+	}
+	// The client became the launcher: the recorder was spawned with the profile.
+	if !slices.Contains(readArgv(), "--user-data-dir="+profileDir) {
+		t.Errorf("client did not spawn the browser after the launcher died")
+	}
+	if e.profileGuard.mode != 0 {
+		t.Errorf("guard mode after failed launch = %d, want 0 (unlocked)", e.profileGuard.mode)
+	}
+}
+
+func TestLaunchAdoptsLiveBrowser(t *testing.T) {
+	// The lock file names a live pid and DevToolsActivePort parses, so the
+	// LOCK_EX winner adopts the browser: it connects to the published URL,
+	// spawns nothing, and keeps Default/Sessions. spawnShared is the seam,
+	// because launchShared goes on to newInstanceTarget, which needs a real
+	// Browser. The current process stands in for the live browser pid.
+	profileDir := filepath.Join(t.TempDir(), "profile")
+	sessionFile := filepath.Join(profileDir, "Default", "Sessions", "x")
+	if err := os.MkdirAll(filepath.Dir(sessionFile), 0o700); err != nil {
+		t.Fatalf("create sessions dir: %v", err)
+	}
+	if err := os.WriteFile(sessionFile, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("write session file: %v", err)
+	}
+	const wantURL = "ws://127.0.0.1:9333/devtools/browser/live"
+	if err := os.WriteFile(devToolsActivePortPath(profileDir), []byte("9333\n/devtools/browser/live\n"), 0o600); err != nil {
+		t.Fatalf("write port file: %v", err)
+	}
+	e, cfg, _ := sharedTestEngine(t, profileDir)
+	if err := e.openProfileGuard(); err != nil {
+		t.Fatalf("openProfileGuard: %v", err)
+	}
+	guard := e.profileGuard
+	if won, err := guard.tryExclusive(); err != nil || !won {
+		t.Fatalf("tryExclusive = (%v, %v), want (true, nil)", won, err)
+	}
+	if err := guard.writePID(os.Getpid()); err != nil {
+		t.Fatalf("writePID: %v", err)
+	}
+
+	type key struct{}
+	var gotURLs []string
+	var gotTimeouts []time.Duration
+	connect := func(parent context.Context, wsURL string, timeout time.Duration) (context.Context, context.CancelFunc, error) {
+		gotURLs = append(gotURLs, wsURL)
+		gotTimeouts = append(gotTimeouts, timeout)
+		ctx, cancel := context.WithCancel(context.WithValue(parent, key{}, "fake"))
+		return ctx, cancel, nil
+	}
+	holder, closeSocket, err := spawnShared(guard, cfg, connect)
+	if err != nil {
+		t.Fatalf("spawnShared: %v", err)
+	}
+	defer closeSocket()
+	if holder.Value(key{}) != "fake" {
+		t.Error("spawnShared did not return the connect fake's holder context")
+	}
+	if !slices.Equal(gotURLs, []string{wantURL}) {
+		t.Errorf("connect URLs = %v, want exactly [%s]", gotURLs, wantURL)
+	}
+	if !slices.Equal(gotTimeouts, []time.Duration{adoptConnectTimeout}) {
+		t.Errorf("connect timeouts = %v, want [%v]", gotTimeouts, adoptConnectTimeout)
+	}
+	if _, err := os.Stat(sessionFile); err != nil {
+		t.Errorf("adopt purged Default/Sessions: %v", err)
+	}
+	if pid, ok := guard.readPID(); !ok || pid != os.Getpid() {
+		t.Errorf("adopt rewrote the lock file pid to (%d, %v), want own pid kept", pid, ok)
 	}
 }
 

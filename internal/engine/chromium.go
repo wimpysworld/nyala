@@ -28,14 +28,17 @@ type ChromiumEngine struct {
 	// dispatchWheel) and the supervisor goroutine (startSession,
 	// teardownSession, launch, rebuild): ctx, cancel, acks, text, frame, cols,
 	// rows, scrollX, scrollY, scrollYTarget, click, backend, cellW, cellH,
-	// profileDir, profileGuard, windowID, inputFailures and fontForcingID. Lock,
-	// copy the fields into locals or write the updates, unlock, then run the
-	// chromedp I/O on the locals. Never hold mu across a chromedp.Run or a channel
-	// send, or it deadlocks with the supervisor.
+	// profileDir, profileGuard, connectSharedOp, windowID, inputFailures and
+	// fontForcingID. Lock, copy the fields into locals or write the updates,
+	// unlock, then run the chromedp I/O on the locals. Never hold mu across a
+	// chromedp.Run or a channel send, or it deadlocks with the supervisor.
 	mu sync.Mutex
 
-	// Browser context, bounded graceful close, and raw cancellation, owned by
-	// chromedp. teardownSession snapshots and clears all three together.
+	// Session context, bounded graceful close, and raw cancellation. For a
+	// private engine ctx is chromedp's first context and closeBrowserOp closes
+	// the browser. For a shared profile ctx is this instance's target context
+	// and closeBrowserOp is sharedCloseOp, whose closures hold the websocket
+	// cancel. teardownSession snapshots and clears all three together.
 	ctx            context.Context
 	closeBrowserOp func(context.Context) error
 	cancel         context.CancelFunc
@@ -296,6 +299,10 @@ type ChromiumEngine struct {
 	// startSessionOp is nil in production. Recovery tests replace it to prove
 	// rebuild ordering without launching Chromium.
 	startSessionOp func() (chan struct{}, error)
+	// connectSharedOp is nil in production, where launchShared dials with
+	// connectShared. Launch tests replace it to drive the adopt, spawn, and
+	// retry decisions without a websocket.
+	connectSharedOp connectFunc
 
 	// lifecycle tracks navigation commits and main-frame first contentful paint for
 	// one session. It is installed before navigation and cleared on teardown.
@@ -675,9 +682,13 @@ func (e *ChromiumEngine) wheelPositionLocked(atCell bool, col, row int) (cx, cy 
 	return wheelCentre(e.cols, e.rows, e.cellW, e.cellH, e.layoutScale())
 }
 
-// Close tears down the engine and the browser process. It signals the supervisor
-// to stop instead of rebuilding, then waits for the supervisor to tear down the
-// live session and close the frames channel. The supervisor is the single owner
+// Close tears down the engine and what it owns of the browser. A private engine
+// owns the Chromium process. On a shared profile the engine owns one target and
+// one websocket, and it terminates the process only when it is the last client
+// (sharedCloseOp). It then releases the profile guard last, after the session is
+// torn down, so the last-client decision reads a still-held lock. It signals the
+// supervisor to stop instead of rebuilding, then waits for the supervisor to tear
+// down the live session and close the frames channel. The supervisor is the single owner
 // of the session fields, so Close never touches them concurrently with a rebuild.
 // Teardown drains the slot before cancelling the context, mirroring the readKeys
 // done-channel pattern, so no consumer goroutine blocks on a slot or a send that

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/wimpysworld/nyala/internal/render"
+	"golang.org/x/sys/unix"
 )
 
 func TestCloseAfterNavigateFailureReturns(t *testing.T) {
@@ -138,6 +140,10 @@ func TestSuperviseCloseWinsOverRebuild(t *testing.T) {
 	}
 }
 
+// TestCloseGracefullyClosesLiveSession asserts that Close runs the graceful
+// closeBrowserOp with no engine lock held and skips raw cancellation when the
+// op succeeds. On a shared profile the op is sharedCloseOp: close this
+// instance's own target, then terminate the browser only as the last client.
 func TestCloseGracefullyClosesLiveSession(t *testing.T) {
 	e := New("")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -181,6 +187,10 @@ func TestCloseGracefullyClosesLiveSession(t *testing.T) {
 	}
 }
 
+// TestTeardownSessionDeadlineFallsBackToRawCancellation asserts that a
+// closeBrowserOp that never returns (a close-own-target, then terminate the
+// browser when last, op stuck on a wedged browser) is cut off at closeTimeout
+// and raw cancellation runs instead.
 func TestTeardownSessionDeadlineFallsBackToRawCancellation(t *testing.T) {
 	if gracefulCloseTimeout != 500*time.Millisecond {
 		t.Fatalf("gracefulCloseTimeout = %v, want 500ms", gracefulCloseTimeout)
@@ -375,11 +385,15 @@ func TestRecoveryProfileGuardHeldUntilClose(t *testing.T) {
 			t.Errorf("Close: %v", err)
 		}
 	})
-	if err := e.acquireProfileGuard(); err != nil {
-		t.Fatalf("initial acquireProfileGuard: %v", err)
+	if err := e.openProfileGuard(); err != nil {
+		t.Fatalf("initial openProfileGuard: %v", err)
 	}
 	guard := e.profileGuard
 	fd := guard.file.Fd()
+	// A connected client holds LOCK_SH, so a rebuild starts from that mode.
+	if err := guard.acquireShared(context.Background()); err != nil {
+		t.Fatalf("initial acquireShared: %v", err)
+	}
 
 	argvFile := filepath.Join(t.TempDir(), "argv")
 	t.Setenv("NYALA_TEST_ARGV_FILE", argvFile)
@@ -390,6 +404,11 @@ func TestRecoveryProfileGuardHeldUntilClose(t *testing.T) {
 	t.Setenv("CHROME_PATH", "")
 	alternateProfile := filepath.Join(t.TempDir(), "alternate-profile")
 	t.Setenv("NYALA_PROFILE", alternateProfile)
+	// The recorder exits without writing DevToolsActivePort, so each launch
+	// attempt would otherwise wait the full production budget.
+	savedWait := devToolsWaitTimeout
+	devToolsWaitTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { devToolsWaitTimeout = savedWait })
 
 	if _, ok := e.rebuild(); ok {
 		t.Fatal("rebuild with recording browser succeeded, want its start failure")
@@ -411,14 +430,166 @@ func TestRecoveryProfileGuardHeldUntilClose(t *testing.T) {
 	if _, err := os.Stat(alternateProfile); !os.IsNotExist(err) {
 		t.Fatalf("alternate profile Stat error = %v, want path absent", err)
 	}
+
+	// Every failed attempt unlocked the guard. Hold LOCK_SH again as a
+	// connected client would, then prove a second engine joins while this one
+	// still holds: shared succeeds at once, exclusive is refused.
+	if err := guard.acquireShared(context.Background()); err != nil {
+		t.Fatalf("acquireShared after rebuild: %v", err)
+	}
+	if err := other.openProfileGuard(); err != nil {
+		t.Fatalf("other openProfileGuard: %v", err)
+	}
+	if exclusive, err := other.profileGuard.tryExclusive(); err != nil || exclusive {
+		t.Fatalf("other tryExclusive while owner holds shared = (%t, %v), want (false, nil)", exclusive, err)
+	}
+	sharedCtx, cancelShared := context.WithTimeout(context.Background(), time.Second)
+	defer cancelShared()
+	if err := other.profileGuard.acquireShared(sharedCtx); err != nil {
+		t.Fatalf("other acquireShared while owner holds shared: %v", err)
+	}
+	if e.profileGuard != guard {
+		t.Fatal("owner guard changed while another client joined")
+	}
+
 	if err := e.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	if e.profileGuard != nil {
 		t.Fatal("Close retained the profile guard")
 	}
-	if err := other.acquireProfileGuard(); err != nil {
-		t.Fatalf("acquireProfileGuard after owner Close: %v", err)
+	if exclusive, err := other.profileGuard.tryExclusive(); err != nil || !exclusive {
+		t.Fatalf("other tryExclusive after owner Close = (%t, %v), want (true, nil)", exclusive, err)
+	}
+}
+
+// newTestGuard opens a lock file beneath a fresh temp directory, holds LOCK_SH
+// on it as a connected client does, and stores pid as the launcher would. The
+// file closes in t.Cleanup.
+func newTestGuard(t *testing.T, pid int) (*profileGuard, string) {
+	t.Helper()
+	lockPath := filepath.Join(t.TempDir(), profileLockName)
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open lock file: %v", err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	guard := &profileGuard{file: file}
+	if err := guard.acquireShared(context.Background()); err != nil {
+		t.Fatalf("acquireShared: %v", err)
+	}
+	if err := guard.writePID(pid); err != nil {
+		t.Fatalf("writePID: %v", err)
+	}
+	return guard, lockPath
+}
+
+// closeOpRecorder records the order in which sharedCloseOp calls its three
+// funcs and the pid it passes to terminate.
+type closeOpRecorder struct {
+	calls []string
+	pids  []int
+}
+
+func (r *closeOpRecorder) closeTarget(context.Context) error {
+	r.calls = append(r.calls, "closeTarget")
+	return nil
+}
+
+func (r *closeOpRecorder) terminate(_ context.Context, pid int) error {
+	r.calls = append(r.calls, "terminate")
+	r.pids = append(r.pids, pid)
+	return nil
+}
+
+func (r *closeOpRecorder) closeSocket() {
+	r.calls = append(r.calls, "closeSocket")
+}
+
+// TestLastClientTerminatesBrowser asserts the last-out path of sharedCloseOp:
+// with no other lock holder, LOCK_EX succeeds, so the op closes its own
+// target, closes the websocket, then terminates the pid from the lock file.
+// The socket closes before the terminate so chromedp never writes to a socket
+// the dying browser reset.
+func TestLastClientTerminatesBrowser(t *testing.T) {
+	const pid = 424242
+	guard, _ := newTestGuard(t, pid)
+	rec := &closeOpRecorder{}
+	op := sharedCloseOp(guard, rec.closeTarget, rec.terminate, rec.closeSocket)
+	if err := op(context.Background()); err != nil {
+		t.Fatalf("sharedCloseOp: %v", err)
+	}
+	want := []string{"closeTarget", "closeSocket", "terminate"}
+	if !slices.Equal(rec.calls, want) {
+		t.Fatalf("call order = %v, want %v", rec.calls, want)
+	}
+	if !slices.Equal(rec.pids, []int{pid}) {
+		t.Fatalf("terminate pids = %v, want [%d]", rec.pids, pid)
+	}
+	if guard.mode != unix.LOCK_EX {
+		t.Fatalf("guard mode after last-client close = %d, want LOCK_EX (%d)", guard.mode, unix.LOCK_EX)
+	}
+}
+
+// TestNonLastClientClosesSocketOnly asserts that sharedCloseOp leaves the
+// browser alive while another client holds LOCK_SH on its own descriptor: the
+// op closes its own target and the websocket, and never calls terminate.
+func TestNonLastClientClosesSocketOnly(t *testing.T) {
+	const pid = 424242
+	guard, lockPath := newTestGuard(t, pid)
+	// flock locks are shared within a process by open file description, so
+	// the other client must hold its lock through a second os.OpenFile.
+	otherFile, err := os.OpenFile(lockPath, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open second descriptor: %v", err)
+	}
+	t.Cleanup(func() { _ = otherFile.Close() })
+	other := &profileGuard{file: otherFile}
+	if err := other.acquireShared(context.Background()); err != nil {
+		t.Fatalf("other acquireShared: %v", err)
+	}
+
+	rec := &closeOpRecorder{}
+	op := sharedCloseOp(guard, rec.closeTarget, rec.terminate, rec.closeSocket)
+	if err := op(context.Background()); err != nil {
+		t.Fatalf("sharedCloseOp: %v", err)
+	}
+	want := []string{"closeTarget", "closeSocket"}
+	if !slices.Equal(rec.calls, want) {
+		t.Fatalf("call order = %v, want %v", rec.calls, want)
+	}
+	if len(rec.pids) != 0 {
+		t.Fatalf("terminate ran with pids %v while another client held the guard", rec.pids)
+	}
+	if guard.mode != unix.LOCK_SH {
+		t.Fatalf("guard mode after non-last close = %d, want LOCK_SH (%d)", guard.mode, unix.LOCK_SH)
+	}
+}
+
+// TestSharedCloseOpHonoursDeadline asserts that a terminate that never
+// observes the browser exit returns when the caller's deadline ends, with that
+// deadline error, so teardownSession can fall back to raw cancellation.
+func TestSharedCloseOpHonoursDeadline(t *testing.T) {
+	guard, _ := newTestGuard(t, 424242)
+	rec := &closeOpRecorder{}
+	blockingTerminate := func(ctx context.Context, pid int) error {
+		<-ctx.Done()
+		return fmt.Errorf("terminate browser %d: still alive: %w", pid, ctx.Err())
+	}
+	op := sharedCloseOp(guard, rec.closeTarget, blockingTerminate, rec.closeSocket)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := op(ctx)
+	elapsed := time.Since(start)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("sharedCloseOp error = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("sharedCloseOp returned after %v, want within 500ms of a 50ms deadline", elapsed)
+	}
+	if !slices.Equal(rec.calls, []string{"closeTarget", "closeSocket"}) {
+		t.Fatalf("calls before terminate = %v, want closeTarget then closeSocket", rec.calls)
 	}
 }
 

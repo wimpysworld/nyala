@@ -2,20 +2,28 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"syscall"
+	"time"
 
 	"github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/font"
+	"golang.org/x/sys/unix"
 )
 
 // chromiumNames lists the executable names tried on PATH, in order, when no
@@ -174,35 +182,314 @@ type allocatorConfig struct {
 // keys read the page's settled scroll offset back in the same dispatch that
 // pressed the key, so an animated scroll would be read part way through.
 func newAllocator(parent context.Context, cfg allocatorConfig) (context.Context, context.CancelFunc) {
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.ExecPath(cfg.execPath),
-		chromedp.WindowSize(cfg.surfaceWidth, cfg.surfaceHeight),
-		chromedp.Flag("force-device-scale-factor", strconv.FormatFloat(cfg.scale, 'g', -1, 64)),
-		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		chromedp.Flag("enable-automation", false),
-		chromedp.Flag("disable-smooth-scrolling", true),
-	)
+	opts := []chromedp.ExecAllocatorOption{chromedp.ExecPath(cfg.execPath)}
 	if cfg.profileDir != "" {
 		opts = append(opts, chromedp.UserDataDir(cfg.profileDir))
 	}
+	for _, f := range launchFlags(cfg) {
+		opts = append(opts, chromedp.Flag(f.name, f.value))
+	}
+	return chromedp.NewExecAllocator(parent, opts...)
+}
+
+// launchFlag is one Chromium command-line switch. value is a bool or a string,
+// the two types chromedp.Flag accepts: a bool true emits --name, a bool false
+// emits nothing, and a string emits --name=value.
+type launchFlag struct {
+	name  string
+	value any
+}
+
+// chromedpDefaultFlags replicates chromedp.DefaultExecAllocatorOptions as a
+// readable list, including the three switches chromedp.Headless sets. chromedp
+// stores flags in an unexported map, so Nyala keeps its own copy to build argv
+// for the detached shared browser from the same set the exec path uses.
+var chromedpDefaultFlags = []launchFlag{
+	{"no-first-run", true},
+	{"no-default-browser-check", true},
+	{"headless", true},
+	{"hide-scrollbars", true},
+	{"mute-audio", true},
+	{"disable-background-networking", true},
+	{"enable-features", "NetworkService,NetworkServiceInProcess"},
+	{"disable-background-timer-throttling", true},
+	{"disable-backgrounding-occluded-windows", true},
+	{"disable-breakpad", true},
+	{"disable-client-side-phishing-detection", true},
+	{"disable-default-apps", true},
+	{"disable-dev-shm-usage", true},
+	{"disable-extensions", true},
+	{"disable-features", "site-per-process,Translate,BlinkGenPropertyTrees"},
+	{"disable-hang-monitor", true},
+	{"disable-ipc-flooding-protection", true},
+	{"disable-popup-blocking", true},
+	{"disable-prompt-on-repost", true},
+	{"disable-renderer-backgrounding", true},
+	{"disable-sync", true},
+	{"force-color-profile", "srgb"},
+	{"metrics-recording-only", true},
+	{"safebrowsing-disable-auto-update", true},
+	{"enable-automation", true},
+	{"password-store", "basic"},
+	{"use-mock-keychain", true},
+}
+
+// launchFlags returns the full Chromium switch list for cfg: the chromedp
+// defaults followed by Nyala's own switches, deduplicated by name with the last
+// write winning, as the chromedp flag map does. So enable-automation false and
+// mute-audio false replace the defaults and emit nothing. It excludes exec-path
+// and user-data-dir, which each launch path sets itself. The result is pure, so
+// both newAllocator and sharedArgv build from one source.
+func launchFlags(cfg allocatorConfig) []launchFlag {
+	flags := append([]launchFlag(nil), chromedpDefaultFlags...)
+	flags = append(flags,
+		launchFlag{"window-size", fmt.Sprintf("%d,%d", cfg.surfaceWidth, cfg.surfaceHeight)},
+		launchFlag{"force-device-scale-factor", strconv.FormatFloat(cfg.scale, 'g', -1, 64)},
+		launchFlag{"disable-blink-features", "AutomationControlled"},
+		launchFlag{"enable-automation", false},
+		launchFlag{"disable-smooth-scrolling", true},
+	)
 	for _, name := range gpuFlags(cfg.enableGPU) {
-		opts = append(opts, chromedp.Flag(name, true))
+		flags = append(flags, launchFlag{name, true})
 	}
 	if cfg.enableAudio {
-		opts = append(opts, chromedp.Flag("mute-audio", false))
+		flags = append(flags, launchFlag{"mute-audio", false})
 		// Chromium blocks audible autoplay until a user gesture. Nyala has no input
 		// yet, so audible media on a page would never start. Allow gesture-free
 		// autoplay so it plays on load. Muted autoplay is already allowed, so this
 		// pairs with the unmute above and rides the same live-path gate.
-		opts = append(opts, chromedp.Flag("autoplay-policy", "no-user-gesture-required"))
+		flags = append(flags, launchFlag{"autoplay-policy", "no-user-gesture-required"})
 	}
 	for _, name := range frameRateLimitFlags(cfg.disableFrameRateLimit) {
-		opts = append(opts, chromedp.Flag(name, true))
+		flags = append(flags, launchFlag{name, true})
 	}
 	for _, pair := range proxyFlags(cfg.proxy) {
-		opts = append(opts, chromedp.Flag(pair[0], pair[1]))
+		flags = append(flags, launchFlag{pair[0], pair[1]})
 	}
-	return chromedp.NewExecAllocator(parent, opts...)
+	index := make(map[string]int, len(flags))
+	out := flags[:0]
+	for _, f := range flags {
+		if i, seen := index[f.name]; seen {
+			out[i].value = f.value
+			continue
+		}
+		index[f.name] = len(out)
+		out = append(out, f)
+	}
+	return out
+}
+
+// sharedArgv converts flags to the argv for a detached shared browser, in the
+// order chromedp.ExecAllocator.Allocate emits it: the flags, then
+// --user-data-dir=profileDir, --no-sandbox when running as root,
+// --remote-debugging-port=0, --keep-alive-for-test so the browser survives its
+// last closed target, then about:blank. A bool true flag emits --name, a bool
+// false emits nothing, and any other value emits --name=value.
+func sharedArgv(flags []launchFlag, profileDir string) []string {
+	argv := make([]string, 0, len(flags)+5)
+	for _, f := range flags {
+		switch v := f.value.(type) {
+		case bool:
+			if v {
+				argv = append(argv, "--"+f.name)
+			}
+		default:
+			argv = append(argv, fmt.Sprintf("--%s=%v", f.name, v))
+		}
+	}
+	argv = append(argv, "--user-data-dir="+profileDir)
+	if os.Getuid() == 0 {
+		argv = append(argv, "--no-sandbox")
+	}
+	argv = append(argv, "--remote-debugging-port=0", "--keep-alive-for-test", "about:blank")
+	return argv
+}
+
+// spawnDetached starts execPath with argv in a new session so the browser
+// outlives this process: it sets Setsid and, on purpose, no Pdeathsig, unlike
+// chromedp's exec allocator. stdin, stdout, and stderr are opened on os.DevNull.
+// The caller owns the returned process and must call Process.Release or Wait.
+func spawnDetached(execPath string, argv []string) (*os.Process, error) {
+	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer devNull.Close()
+	cmd := exec.Command(execPath, argv...) //nolint:noctx // detached on purpose: no context may kill the shared browser
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = devNull, devNull, devNull
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return cmd.Process, nil
+}
+
+// devToolsActivePortFile is the file Chromium writes into its user data
+// directory once --remote-debugging-port=0 has bound a port.
+const devToolsActivePortFile = "DevToolsActivePort"
+
+// devToolsActivePortPath returns the DevToolsActivePort path under profileDir.
+func devToolsActivePortPath(profileDir string) string {
+	return filepath.Join(profileDir, devToolsActivePortFile)
+}
+
+// parseDevToolsActivePort parses DevToolsActivePort contents: line one is the
+// bound port and line two is the /devtools/browser/<id> path. It returns the
+// browser websocket URL ws://127.0.0.1:<port><path>, or an error when the file
+// is empty, the port is not a number, or the second line is missing. Chromium
+// writes the file in two steps, so a caller polls until the parse succeeds.
+func parseDevToolsActivePort(data []byte) (string, error) {
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 2 {
+		return "", fmt.Errorf("DevToolsActivePort: incomplete file %q", data)
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err != nil {
+		return "", fmt.Errorf("DevToolsActivePort: bad port %q", lines[0])
+	}
+	return fmt.Sprintf("ws://127.0.0.1:%d%s", port, strings.TrimSpace(lines[1])), nil
+}
+
+// launchPollInterval is the delay between checks while waiting for the shared
+// browser to write DevToolsActivePort or to exit.
+const launchPollInterval = 50 * time.Millisecond
+
+// waitDevToolsActivePort polls the DevToolsActivePort file under profileDir
+// until it parses to a websocket URL or ctx ends. It returns ctx.Err on timeout.
+func waitDevToolsActivePort(ctx context.Context, profileDir string) (string, error) {
+	path := devToolsActivePortPath(profileDir)
+	ticker := time.NewTicker(launchPollInterval)
+	defer ticker.Stop()
+	for {
+		if data, err := os.ReadFile(path); err == nil {
+			if wsURL, perr := parseDevToolsActivePort(data); perr == nil {
+				return wsURL, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// connectFunc is the signature of connectShared, so a test can replace the
+// websocket dial through the engine's connectSharedOp hook.
+type connectFunc func(parent context.Context, wsURL string, timeout time.Duration) (context.Context, context.CancelFunc, error)
+
+// connectShared dials the shared browser at wsURL through a chromedp remote
+// allocator and proves the socket with Browser.getVersion bounded by timeout.
+// NoModifyURL keeps the exact URL DevToolsActivePort gave, so chromedp does not
+// rewrite it through /json/version. It returns a holder context that carries the
+// Browser but no target, and a cancel that cancels that context then the
+// allocator. On error it cancels both and returns the error.
+//
+// It allocates the Browser directly, the way chromedp's initContextBrowser
+// does, instead of through chromedp.Run: under a remote allocator the first Run
+// on a context without a target id creates an about:blank tab in some existing
+// window, which could foreground over another client's page.
+func connectShared(parent context.Context, wsURL string, timeout time.Duration) (context.Context, context.CancelFunc, error) {
+	allocCtx, allocCancel := chromedp.NewRemoteAllocator(parent, wsURL, chromedp.NoModifyURL)
+	holder, holderCancel := chromedp.NewContext(allocCtx)
+	cancel := func() {
+		holderCancel()
+		allocCancel()
+	}
+	c := chromedp.FromContext(holder)
+	b, err := c.Allocator.Allocate(holder, chromedp.WithDialTimeout(timeout))
+	if err != nil {
+		cancel()
+		return nil, nil, fmt.Errorf("connect shared browser %s: %w", wsURL, err)
+	}
+	c.Browser = b
+	probeCtx, probeCancel := context.WithTimeout(holder, timeout)
+	defer probeCancel()
+	if _, _, _, _, _, err := browser.GetVersion().Do(cdp.WithExecutor(probeCtx, b)); err != nil {
+		cancel()
+		return nil, nil, fmt.Errorf("connect shared browser %s: %w", wsURL, err)
+	}
+	return holder, cancel, nil
+}
+
+// newInstanceTarget creates this instance's page target in its own window on
+// the holder's Browser and returns a child context attached to it. The child
+// inherits the Browser, so its first chromedp.Run attaches to the target and
+// creates nothing. A separate window keeps Browser.setContentsSize on one
+// instance from resizing another.
+func newInstanceTarget(holder context.Context) (context.Context, context.CancelFunc, error) {
+	b := chromedp.FromContext(holder).Browser
+	id, err := target.CreateTarget("about:blank").WithNewWindow(true).Do(cdp.WithExecutor(holder, b))
+	if err != nil {
+		return nil, nil, fmt.Errorf("create instance target: %w", err)
+	}
+	ctx, cancel := chromedp.NewContext(holder, chromedp.WithTargetID(id))
+	return ctx, cancel, nil
+}
+
+// terminateBrowser sends SIGTERM to pid and polls with a null signal until the
+// process is gone or ctx ends. An initial ESRCH counts as success, since the
+// browser has already exited. Chromium refuses Browser.close from a remote
+// client, so the last client terminates the shared browser this way.
+func terminateBrowser(ctx context.Context, pid int) error {
+	if err := unix.Kill(pid, unix.SIGTERM); err != nil {
+		if errors.Is(err, unix.ESRCH) {
+			return nil
+		}
+		return fmt.Errorf("terminate browser %d: %w", pid, err)
+	}
+	ticker := time.NewTicker(launchPollInterval)
+	defer ticker.Stop()
+	for {
+		if err := unix.Kill(pid, 0); errors.Is(err, unix.ESRCH) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("terminate browser %d: still alive: %w", pid, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// browserOwnsProfile reports whether pid is a Chromium running on profileDir.
+// A pid read from the lock file can outlive its browser, and the kernel can
+// hand the number to an unrelated process, so every signal to such a pid is
+// gated on the process command line naming the profile. Linux exposes the
+// command line in /proc; elsewhere ps prints it.
+func browserOwnsProfile(ctx context.Context, pid int, profileDir string) bool {
+	want := "--user-data-dir=" + profileDir
+	if data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline")); err == nil {
+		return strings.Contains(string(data), want)
+	}
+	//nolint:gosec // ps receives a pid that Nyala formatted from an integer.
+	out, err := exec.CommandContext(ctx, "ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
+	return err == nil && strings.Contains(string(out), want)
+}
+
+// terminateOwnedBrowser is terminateBrowser gated on browserOwnsProfile. It is
+// the terminate step of sharedCloseOp, whose pid comes from the lock file.
+func terminateOwnedBrowser(ctx context.Context, pid int, profileDir string) error {
+	if !browserOwnsProfile(ctx, pid, profileDir) {
+		return nil
+	}
+	return terminateBrowser(ctx, pid)
+}
+
+// stopBrowser terminates pid with SIGTERM bounded by browserExitTimeout, then
+// SIGKILL when it is still alive. launchShared uses it on a browser that
+// answers no connection, or that it spawned and then failed to reach, because a
+// fresh spawn on the same profile would collide with Chromium's ProcessSingleton.
+// A pid whose command line does not name profileDir is left alone.
+func stopBrowser(pid int, profileDir string) {
+	ctx, cancel := context.WithTimeout(context.Background(), browserExitTimeout)
+	defer cancel()
+	if !browserOwnsProfile(ctx, pid, profileDir) {
+		return
+	}
+	if err := terminateBrowser(ctx, pid); err != nil {
+		_ = unix.Kill(pid, unix.SIGKILL)
+	}
 }
 
 // frameRateLimitFlags returns Chromium's launch-time frame-rate-limit switch
@@ -351,18 +638,222 @@ func (e *ChromiumEngine) injectFontStylesheet(ctx context.Context) error {
 	return nil
 }
 
-// launch resolves the executable from flag, purges the profile's tab-restore
-// state under the held guard, builds the allocator and the
-// chromedp context sized to the device-pixel surface, fetches
-// the browser window id, enables lifecycle events, then sizes the layout viewport
-// and the captured surface together. It stores the context, its cancel, and the
-// window id on the engine.
+// Shared-browser launch budgets. devToolsWaitTimeout is a var so a launch test
+// with a fake browser that never writes DevToolsActivePort can shorten it.
+const (
+	// maxLaunchAttempts caps the lock, spawn or connect, and attach cycle.
+	maxLaunchAttempts = 3
+	// adoptConnectTimeout bounds the probe of a browser a previous launcher left
+	// running. A live pid that answers no connection is treated as wedged.
+	adoptConnectTimeout = 2 * time.Second
+	// sharedConnectTimeout bounds the dial and version probe of a browser this
+	// launcher spawned or another launcher published.
+	sharedConnectTimeout = 10 * time.Second
+	// sharedLockTimeout bounds a client's wait for the launcher to downgrade.
+	sharedLockTimeout = 60 * time.Second
+	// browserExitTimeout bounds stopBrowser's SIGTERM wait before SIGKILL.
+	browserExitTimeout = 10 * time.Second
+)
+
+var devToolsWaitTimeout = 30 * time.Second
+
+// launchPrivate builds the exec allocator and first chromedp context for a
+// private (temporary profile) engine. chromedp owns the process: its Cancel on
+// the first context sends Browser.close, and the allocator removes the
+// temporary user data directory.
+func launchPrivate(cfg allocatorConfig) (context.Context, context.CancelFunc, func(context.Context) error) {
+	allocCtx, allocCancel := newAllocator(context.Background(), cfg)
+	ctx, ctxCancel := chromedp.NewContext(allocCtx)
+	cancel := func() {
+		ctxCancel()
+		allocCancel()
+	}
+	closeBrowser := func(closeCtx context.Context) error {
+		if err := chromedp.Cancel(closeCtx); err != nil {
+			return err
+		}
+		allocCancel()
+		return nil
+	}
+	return ctx, cancel, closeBrowser
+}
+
+// launchShared connects this engine to the profile's shared Chromium, spawning
+// it when no other client has. Each attempt takes the lock in the right mode
+// through attachShared, then creates this instance's own target with
+// newInstanceTarget. A failed attempt unlocks the guard and retries, capped at
+// maxLaunchAttempts. It returns the target context, a raw cancel that cancels the
+// target then the websocket, and the sharedCloseOp graceful close.
+func (e *ChromiumEngine) launchShared(cfg allocatorConfig) (context.Context, context.CancelFunc, func(context.Context) error, error) {
+	if err := e.openProfileGuard(); err != nil {
+		return nil, nil, nil, err
+	}
+	e.mu.Lock()
+	guard := e.profileGuard
+	connect := e.connectSharedOp
+	e.mu.Unlock()
+	if connect == nil {
+		connect = connectShared
+	}
+	var errs []error
+	for attempt := range maxLaunchAttempts {
+		if attempt > 0 {
+			time.Sleep(launchPollInterval)
+		}
+		holder, closeSocket, err := attachShared(guard, cfg, connect)
+		if err == nil {
+			var targetCtx context.Context
+			var targetCancel context.CancelFunc
+			targetCtx, targetCancel, err = newInstanceTarget(holder)
+			if err == nil {
+				cancel := func() {
+					targetCancel()
+					closeSocket()
+				}
+				closeTarget := func(context.Context) error { return chromedp.Cancel(targetCtx) }
+				terminate := func(ctx context.Context, pid int) error {
+					return terminateOwnedBrowser(ctx, pid, cfg.profileDir)
+				}
+				return targetCtx, cancel, sharedCloseOp(guard, closeTarget, terminate, closeSocket), nil
+			}
+			closeSocket()
+		}
+		errs = append(errs, err, guard.unlock())
+	}
+	return nil, nil, nil, fmt.Errorf("launch shared browser after %d attempts: %w", maxLaunchAttempts, errors.Join(errs...))
+}
+
+// attachShared runs one lock-and-connect attempt. The LOCK_EX winner is the
+// launcher: it adopts or spawns the browser through spawnShared, then downgrades
+// to LOCK_SH so waiting clients proceed. Every other engine waits for LOCK_SH,
+// reads DevToolsActivePort, and connects. It returns the holder context and its
+// socket cancel. On error the caller unlocks and retries, so a client whose
+// launcher died, or whose browser is gone, becomes the launcher itself.
+func attachShared(guard *profileGuard, cfg allocatorConfig, connect connectFunc) (context.Context, context.CancelFunc, error) {
+	exclusive, err := guard.tryExclusive()
+	if err != nil {
+		return nil, nil, err
+	}
+	if exclusive {
+		holder, closeSocket, err := spawnShared(guard, cfg, connect)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := guard.downgrade(); err != nil {
+			closeSocket()
+			return nil, nil, err
+		}
+		return holder, closeSocket, nil
+	}
+	lockCtx, stopLock := context.WithTimeout(context.Background(), sharedLockTimeout)
+	defer stopLock()
+	if err := guard.acquireShared(lockCtx); err != nil {
+		return nil, nil, err
+	}
+	wsURL, err := readDevToolsActivePort(cfg.profileDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	return connect(context.Background(), wsURL, sharedConnectTimeout)
+}
+
+// readDevToolsActivePort reads and parses the DevToolsActivePort file under
+// profileDir once, without polling.
+func readDevToolsActivePort(profileDir string) (string, error) {
+	data, err := os.ReadFile(devToolsActivePortPath(profileDir))
+	if err != nil {
+		return "", err
+	}
+	return parseDevToolsActivePort(data)
+}
+
+// spawnShared runs under LOCK_EX. When the lock file names a live pid that
+// still answers on its DevToolsActivePort, it adopts that browser and spawns
+// nothing. A live pid that answers no connection is wedged or still shutting
+// down, so it is stopped first: a fresh spawn on the same profile would collide
+// with Chromium's ProcessSingleton. It then purges the tab-restore state,
+// removes the stale port file, spawns the detached browser, records its pid,
+// waits for the port file, and connects. On failure it stops the process it
+// spawned. A goroutine reaps the child, so a null-signal liveness check on the
+// pid stays truthful after the browser exits.
+func spawnShared(guard *profileGuard, cfg allocatorConfig, connect connectFunc) (context.Context, context.CancelFunc, error) {
+	profileDir := cfg.profileDir
+	if pid, ok := guard.readPID(); ok && unix.Kill(pid, 0) == nil {
+		if wsURL, err := readDevToolsActivePort(profileDir); err == nil {
+			if holder, closeSocket, err := connect(context.Background(), wsURL, adoptConnectTimeout); err == nil {
+				return holder, closeSocket, nil
+			}
+		}
+		stopBrowser(pid, profileDir)
+	}
+	if err := purgeSessionState(profileDir); err != nil {
+		return nil, nil, err
+	}
+	if err := os.Remove(devToolsActivePortPath(profileDir)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, nil, fmt.Errorf("remove stale %s: %w", devToolsActivePortFile, err)
+	}
+	proc, err := spawnDetached(cfg.execPath, sharedArgv(launchFlags(cfg), profileDir))
+	if err != nil {
+		return nil, nil, fmt.Errorf("spawn shared browser: %w", err)
+	}
+	pid := proc.Pid
+	go func() { _, _ = proc.Wait() }()
+	if err := guard.writePID(pid); err != nil {
+		stopBrowser(pid, profileDir)
+		return nil, nil, err
+	}
+	waitCtx, stopWait := context.WithTimeout(context.Background(), devToolsWaitTimeout)
+	wsURL, err := waitDevToolsActivePort(waitCtx, profileDir)
+	stopWait()
+	if err != nil {
+		stopBrowser(pid, profileDir)
+		return nil, nil, fmt.Errorf("wait for %s: %w", devToolsActivePortFile, err)
+	}
+	holder, closeSocket, err := connect(context.Background(), wsURL, sharedConnectTimeout)
+	if err != nil {
+		stopBrowser(pid, profileDir)
+		return nil, nil, err
+	}
+	return holder, closeSocket, nil
+}
+
+// sharedCloseOp builds the graceful close for a shared-browser session. It
+// closes this instance's target, then tries LOCK_EX. Success means this is the
+// last client, so it terminates the browser pid the launcher stored in the lock
+// file, bounded by ctx, which carries the deadline teardownSession applies.
+// Failure means another client lives, so the browser stays. The websocket
+// closes before the terminate, so chromedp never logs a write on a socket the
+// dying browser reset. It returns the first error. The funcs are parameters so
+// a test can drive the decision without a browser.
+func sharedCloseOp(guard *profileGuard, closeTarget func(context.Context) error, terminate func(context.Context, int) error, closeSocket func()) func(context.Context) error {
+	return func(ctx context.Context) error {
+		err := closeTarget(ctx)
+		last, lockErr := guard.tryExclusive()
+		if err == nil {
+			err = lockErr
+		}
+		closeSocket()
+		if last {
+			if pid, ok := guard.readPID(); ok {
+				if terr := terminate(ctx, pid); err == nil {
+					err = terr
+				}
+			}
+		}
+		return err
+	}
+}
+
+// launch resolves the executable from flag, then builds the session context. A
+// private engine (empty profileDir) takes launchPrivate and owns its Chromium
+// through chromedp. A persistent profile takes launchShared: one Chromium per
+// profile, one target in its own window per engine. Both paths then fetch the
+// window id, enable lifecycle events, and size the layout viewport and the
+// captured surface together. It stores the context, its cancel, the graceful
+// close, and the window id on the engine.
 func (e *ChromiumEngine) launch(flag string) error {
 	if e.proxyErr != nil {
 		return e.proxyErr
-	}
-	if err := e.acquireProfileGuard(); err != nil {
-		return err
 	}
 	execPath, err := resolveExecutable(flag)
 	if err != nil {
@@ -375,33 +866,26 @@ func (e *ChromiumEngine) launch(flag string) error {
 	disableFrameRateLimit := e.disableFrameRateLimit
 	profileDir := e.profileDir
 	e.mu.Unlock()
-	if err := purgeSessionState(profileDir); err != nil {
-		return err
-	}
-	enableGPU := true
-	enableAudio := audioAvailable()
-	allocCtx, allocCancel := newAllocator(context.Background(), allocatorConfig{
+	cfg := allocatorConfig{
 		execPath:              execPath,
 		profileDir:            profileDir,
 		surfaceWidth:          surfW,
 		surfaceHeight:         surfH,
 		scale:                 z,
 		proxy:                 e.proxy,
-		enableGPU:             enableGPU,
-		enableAudio:           enableAudio,
+		enableGPU:             true,
+		enableAudio:           audioAvailable(),
 		disableFrameRateLimit: disableFrameRateLimit,
-	})
-	ctx, ctxCancel := chromedp.NewContext(allocCtx)
-	cancel := func() {
-		ctxCancel()
-		allocCancel()
 	}
-	closeBrowser := func(closeCtx context.Context) error {
-		if err := chromedp.Cancel(closeCtx); err != nil {
-			return err
-		}
-		allocCancel()
-		return nil
+	var (
+		ctx          context.Context
+		cancel       context.CancelFunc
+		closeBrowser func(context.Context) error
+	)
+	if profileDir == "" {
+		ctx, cancel, closeBrowser = launchPrivate(cfg)
+	} else if ctx, cancel, closeBrowser, err = e.launchShared(cfg); err != nil {
+		return err
 	}
 	e.mu.Lock()
 	e.ctx = ctx

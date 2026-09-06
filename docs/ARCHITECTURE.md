@@ -148,21 +148,89 @@ viewer starts; private mode bypasses that call, even when `--profile` or
 `NYALA_PROFILE` is set. The engine owns the directory and its lifetime. It
 resolves a persistent path once, records it without touching the file system,
 then creates the directory lazily with `0700` permissions on first launch. It
-opens the `0600` `.nyala.lock` file and takes a non-blocking exclusive lock for
-the engine lifetime. A private engine keeps an empty profile path, so it never
-resolves, creates, inspects, or locks the persistent directory. `newAllocator`
-then omits `chromedp.UserDataDir`, leaving chromedp to create its disposable
-profile.
+opens the `0600` `.nyala.lock` file (`profile.go`) and keeps that one fd open
+for the engine lifetime, across every recovery rebuild, so `flock` mode
+changes happen atomically on one descriptor. A private engine keeps an empty
+profile path, so it never resolves, creates, inspects, or locks the persistent
+directory. `launchPrivate` keeps the `chromedp.NewExecAllocator` path through
+`newAllocator`, which omits `chromedp.UserDataDir` and leaves chromedp to
+create its disposable profile. That path stays because `ExecAllocator` already
+removes the temporary directory, kills the child on parent death through
+`Pdeathsig`, and waits for exit. A detached spawn on a temporary directory
+would need Nyala to add all three for a case that shares nothing.
 
-Launch purges `Default/Sessions` beneath the persistent profile after the
-guard is held and before the process spawns. Nyala drives every navigation
-itself, so Chromium's tab-restore state is never wanted, and an aborted run
-leaves Session and Tabs files that grow with each navigation. Headless
-Chromium reloads that state at launch and respawns the recorded tabs, which
-wedged the CDP handshake before the first load milestone on a profile that had
-accumulated hundreds of entries. The guard makes the deletion safe: no other
-Nyala holds the profile, and the engine's own Chromium has not spawned yet. A
-private engine has an empty profile path, so it purges nothing.
+A persistent profile is shared: one Chromium per profile, one page target in
+its own window per `nyala` instance, and a login in one instance is visible in
+the others after reload. `launchShared` runs the protocol in `attachShared`.
+The engine tries `LOCK_EX|LOCK_NB`. The winner is the launcher. Every other
+engine polls `LOCK_SH|LOCK_NB`, bounded by `sharedLockTimeout`, reads
+`DevToolsActivePort`, and connects. A launcher that dies before it downgrades
+releases its lock when the kernel closes its fd, so a waiting client wakes and
+retries. Any failure unlocks the guard and retries from the exclusive attempt,
+`maxLaunchAttempts` times, so a client whose launcher or browser is gone
+becomes the launcher itself.
+
+The launcher (`spawnShared`) first reads the pid the previous launcher wrote
+into the lock file. When that pid is alive and a connection to its
+`DevToolsActivePort` address succeeds within `adoptConnectTimeout`, it adopts
+that browser and spawns nothing, without purging. The lock decides liveness,
+not the port file: `DevToolsActivePort` stays on disk after a clean SIGTERM
+exit, so its presence proves nothing. A live pid that answers no connection
+is wedged or still shutting down, so `stopBrowser` sends SIGTERM and then
+SIGKILL after `browserExitTimeout`, because a fresh spawn on the same profile
+would collide with Chromium's ProcessSingleton. The launcher then purges
+`Default/Sessions`, removes the stale `DevToolsActivePort`, spawns Chromium,
+writes the new pid into the lock file, waits for `DevToolsActivePort` within
+`devToolsWaitTimeout`, connects, and downgrades to `LOCK_SH`. Chromium writes
+the port file in two steps, so `waitDevToolsActivePort` polls until both
+lines parse. A failure after the spawn stops the process the launcher
+started.
+
+Every signal to a pid read from the lock file is gated on
+`browserOwnsProfile`. The pid can outlive its browser, and the kernel can hand
+the number to an unrelated process, so Nyala reads the process command line
+(`/proc/<pid>/cmdline` on Linux, `ps -o args=` elsewhere) and signals only when
+it names `--user-data-dir=<profile>`. Both `stopBrowser` and the last-client
+terminate in `sharedCloseOp` pass through that gate.
+
+The purge stays with the launcher under `LOCK_EX`. Nyala drives every
+navigation itself, so Chromium's tab-restore state is never wanted, and an
+aborted run leaves Session and Tabs files that grow with each navigation.
+Headless Chromium reloads that state at launch and respawns the recorded
+tabs, which wedged the CDP handshake before the first load milestone on a
+profile that had accumulated hundreds of entries. The exclusive lock makes
+the deletion safe: no other client is connected, and the launcher's own
+Chromium has not spawned yet. Exit cleanup cannot replace it, because the
+last client out cannot know whether the next launcher will adopt or spawn.
+
+Nyala spawns the shared Chromium itself (`spawnDetached`) instead of through
+chromedp, because `ExecAllocator` uses `exec.CommandContext` and `Pdeathsig`,
+so its browser cannot outlive the Go process. The detached spawn uses
+`exec.Command` with `Setsid`, `/dev/null` on all three stdio streams, and no
+`Pdeathsig`. A `Wait` goroutine reaps the child, so a null-signal liveness
+check on the pid stays truthful after the browser exits. `sharedArgv` appends
+`--user-data-dir`, `--remote-debugging-port=0`, and `--keep-alive-for-test`.
+Headless Chromium 152 stays alive after every page target closes, because a
+built-in extension `background_page` target keeps it alive, so the flag is
+insurance for a build without that target. Both launch paths read one flag
+list: `chromedp.Flag` stores into an unexported map, so `launchFlags` is the
+single source, `newAllocator` converts it to allocator options and
+`sharedArgv` converts it to argv in the order `ExecAllocator.Allocate` emits.
+
+`connectShared` dials the browser websocket through
+`chromedp.NewRemoteAllocator` with `NoModifyURL`, so chromedp keeps the exact
+URL the port file gave instead of rewriting it through `/json/version`. It
+allocates the Browser directly on a holder context, the way chromedp's
+`initContextBrowser` does, instead of through `chromedp.Run`: under a remote
+allocator the first `Run` on a context without a target id creates an
+`about:blank` tab in some existing window, which could foreground over another
+client's page. `newInstanceTarget` then creates this instance's page target
+with `Target.createTarget` and `newWindow=true` and attaches a child context
+with `chromedp.WithTargetID`. A separate window is required, not preferred.
+`TestLiveSharedBrowserFacts` (`sharedbrowser_live_test.go`) shows that two
+such targets have distinct window ids, that `Browser.setContentsSize` on one
+leaves the other's bounds and `window.innerWidth` unchanged, and that
+chromedp's own first target also has its own window.
 
 `newAllocator` launches through `chromedp.NewExecAllocator`. When audio is
 enabled it appends `chromedp.Flag("mute-audio", false)` with a bool value; a
@@ -250,6 +318,13 @@ arrives undersized and the viewer fits it to the grid: Kitty through the
 cost is zoom-in softness until the next navigation. A
 contents-size-at-launch-scale variant was tried and reverted: it cannot
 change paint density and it broke Block's frame-spans-viewport contract.
+
+The shared browser carries the same limit across instances, and it is
+recorded rather than fixed. `--force-device-scale-factor` is a process flag,
+so every client of one profile paints at the launcher's device scale. A later
+instance with a different cell geometry gets its own CSS layout size through
+`applySizing` but the launcher's paint density, and the viewer fits the frame
+to its grid as it does after a zoom-in.
 
 ### Screencast loop
 
@@ -724,19 +799,32 @@ the held scroll offset once the load signal lands. `Frames()` survives the
 rebuild, so the consumer keeps reading. `navigateAsync` drives navigation on
 its own goroutine after the frame loop is live, so startup never blocks; a
 failed load renders Chromium's own error page rather than tearing the session
-down. Every allocator uses the same engine-held profile path. Rebuilds neither
-resolve another path nor replace the profile guard, so the lock spans every
-Chromium process in one engine lifetime.
+down. Every launch uses the same engine-held profile path. Rebuilds neither
+resolve another path nor replace the profile guard, so one lock fd spans every
+Chromium connection in one engine lifetime. On a shared profile a dead browser
+closes the websocket, `RemoteAllocator` cancels the holder context and with it
+`e.ctx`, and `rebuild` reruns `launch`. That rerun takes the lock in the right
+mode on the same fd, so it relaunches the browser, reconnects to a browser
+another client relaunched first, or makes a new target on a browser that still
+lives.
 
 Normal close, error cleanup, and crash recovery share `teardownSession`. For a
-live session, it asks `chromedp.Cancel` to send `Browser.close` with a 500 ms
-limit. A close error, timeout, or already-dead session falls back to raw
-cancellation. The limit gives a healthy local Chromium time to flush state,
-while browser or CDP failure cannot block process exit or crash rebuild. On
-engine close, this teardown completes before `Close` releases the profile
-guard. The ordering lets Chromium finish writing persistent state while Nyala
-still excludes another process from the profile. Releasing the guard first
-could allow two Chromium processes to write the same data.
+live session it runs `closeBrowserOp` bounded by `gracefulCloseTimeout`, 500
+ms. A private engine asks `chromedp.Cancel` to send `Browser.close`. A shared
+profile runs `sharedCloseOp`: it closes this instance's own target, closes the
+websocket, then tries `LOCK_EX|LOCK_NB`. Success means this is the last
+client, so it sends SIGTERM to the pid the launcher wrote into the lock file
+and waits for exit within the same deadline. Failure means another client
+lives, so the browser stays. SIGTERM replaces `Browser.close` because that
+command is unreachable from a chromedp remote context: `chromedp.Cancel` there
+closes only a target, and chromedp refuses `browser.Close()` on the Browser
+executor. The websocket closes before the terminate, so chromedp never logs a
+write on a socket the dying browser reset. A close error, timeout, or
+already-dead session falls back to raw cancellation, so browser or CDP failure
+cannot block process exit or crash rebuild. On engine close, this teardown
+completes before `Close` releases the profile guard, so the last-client
+decision reads a still-held lock and Chromium finishes writing persistent
+state while the next launcher still waits on `LOCK_EX`.
 
 One mutex guards all shared session and geometry state. Every method locks,
 copies into locals, unlocks, then runs chromedp I/O on the locals; the mutex

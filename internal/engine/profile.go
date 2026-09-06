@@ -1,21 +1,39 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
 
 const profileLockName = ".nyala.lock"
 
+// sharedLockPoll is the interval between LOCK_SH|LOCK_NB attempts in
+// acquireShared.
+const sharedLockPoll = 50 * time.Millisecond
+
+// profileGuard is the open lock file beneath a persistent profile. One fd is
+// held for the engine lifetime, including recovery rebuilds, so lock mode
+// conversions happen atomically on the same descriptor. mode is 0 when no
+// lock is held, unix.LOCK_EX while this engine launches Chromium, and
+// unix.LOCK_SH while it is connected as one of the profile's clients.
 type profileGuard struct {
 	file *os.File
+	mode int
 }
 
-func (e *ChromiumEngine) acquireProfileGuard() error {
+// openProfileGuard creates the profile directory and opens the lock file
+// without taking a lock. It is idempotent: a guard already held by the engine
+// is kept, so rebuilds reuse the same fd. A private engine (empty profileDir)
+// is a no-op.
+func (e *ChromiumEngine) openProfileGuard() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.profileDir == "" || e.profileGuard != nil {
@@ -29,18 +47,98 @@ func (e *ChromiumEngine) acquireProfileGuard() error {
 	if err != nil {
 		return fmt.Errorf("open profile guard %q: %w", lockPath, err)
 	}
-	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		closeErr := file.Close()
-		if errors.Is(err, unix.EWOULDBLOCK) {
-			return errors.Join(
-				fmt.Errorf("profile directory %q is already in use; use --private to start without it", e.profileDir),
-				closeErr,
-			)
-		}
-		return errors.Join(fmt.Errorf("lock profile directory %q: %w", e.profileDir, err), closeErr)
-	}
 	e.profileGuard = &profileGuard{file: file}
 	return nil
+}
+
+// tryExclusive attempts LOCK_EX|LOCK_NB. It returns false when another
+// process holds the lock in any mode, and true when this engine now holds the
+// exclusive lock and is the launcher or the last client.
+func (g *profileGuard) tryExclusive() (bool, error) {
+	err := unix.Flock(int(g.file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+	if errors.Is(err, unix.EWOULDBLOCK) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("lock profile guard exclusively: %w", err)
+	}
+	g.mode = unix.LOCK_EX
+	return true, nil
+}
+
+// acquireShared polls LOCK_SH|LOCK_NB until it succeeds or ctx ends. It
+// waits while a launcher holds LOCK_EX. A launcher that dies before it
+// downgrades releases its lock when the kernel closes its fd, so the poll
+// succeeds and the caller can retry the launch itself.
+func (g *profileGuard) acquireShared(ctx context.Context) error {
+	for {
+		err := unix.Flock(int(g.file.Fd()), unix.LOCK_SH|unix.LOCK_NB)
+		if err == nil {
+			g.mode = unix.LOCK_SH
+			return nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) {
+			return fmt.Errorf("lock profile guard shared: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for shared profile guard: %w", ctx.Err())
+		case <-time.After(sharedLockPoll):
+		}
+	}
+}
+
+// downgrade converts the held LOCK_EX to LOCK_SH on the same fd. flock
+// converts atomically, so no other process can take the exclusive lock in
+// between.
+func (g *profileGuard) downgrade() error {
+	if err := unix.Flock(int(g.file.Fd()), unix.LOCK_SH); err != nil {
+		return fmt.Errorf("downgrade profile guard: %w", err)
+	}
+	g.mode = unix.LOCK_SH
+	return nil
+}
+
+// unlock releases the held lock and keeps the fd open for a later attempt.
+func (g *profileGuard) unlock() error {
+	if err := unix.Flock(int(g.file.Fd()), unix.LOCK_UN); err != nil {
+		return fmt.Errorf("unlock profile guard: %w", err)
+	}
+	g.mode = 0
+	return nil
+}
+
+// writePID replaces the lock file content with the decimal Chromium pid. Only
+// the LOCK_EX holder writes, so clients never race on the content. The last
+// client out reads the pid to stop the browser it did not spawn.
+func (g *profileGuard) writePID(pid int) error {
+	if err := g.file.Truncate(0); err != nil {
+		return fmt.Errorf("truncate profile guard: %w", err)
+	}
+	if _, err := g.file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind profile guard: %w", err)
+	}
+	if _, err := g.file.WriteString(strconv.Itoa(pid)); err != nil {
+		return fmt.Errorf("write profile guard pid: %w", err)
+	}
+	return nil
+}
+
+// readPID returns the Chromium pid stored by writePID. It returns false when
+// the file is empty or does not hold a positive decimal integer.
+func (g *profileGuard) readPID() (int, bool) {
+	if _, err := g.file.Seek(0, io.SeekStart); err != nil {
+		return 0, false
+	}
+	data, err := io.ReadAll(g.file)
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(string(data))
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
 }
 
 // purgeSessionState removes Chromium's tab-restore state beneath profileDir.
@@ -48,9 +146,9 @@ func (e *ChromiumEngine) acquireProfileGuard() error {
 // and an aborted run leaves Session and Tabs files that grow with each
 // navigation. Headless Chromium reloads that state at launch and respawns the
 // recorded tabs, which can wedge the CDP handshake before the first milestone
-// prints. launch calls this after acquireProfileGuard and before the process
-// spawns, so no live Chromium owns the files. An empty profileDir (a private
-// engine) and a missing directory are both no-ops.
+// prints. launch calls this while it holds the exclusive guard and before the
+// process spawns, so no live Chromium owns the files. An empty profileDir (a
+// private engine) and a missing directory are both no-ops.
 func purgeSessionState(profileDir string) error {
 	if profileDir == "" {
 		return nil
@@ -62,6 +160,8 @@ func purgeSessionState(profileDir string) error {
 	return nil
 }
 
+// releaseProfileGuard is the single LOCK_UN plus close path. Close calls it
+// last, after the session is torn down.
 func (e *ChromiumEngine) releaseProfileGuard() error {
 	e.mu.Lock()
 	guard := e.profileGuard
