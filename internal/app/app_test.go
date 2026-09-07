@@ -133,6 +133,36 @@ func TestHelpDescribesRemoteAttach(t *testing.T) {
 // remote endpoint fails in validateLaunchMode. Run receives a nil tty, so an
 // error that reaches the viewer would surface as a nil-file failure rather than
 // the launch-mode message: the message check proves the rejection came first.
+// TestParseRejectsRemoteWithLaunchFlags asserts kong itself refuses an attach
+// endpoint combined with a launch flag, so main never reaches Run with the
+// invalid pair.
+func TestParseRejectsRemoteWithLaunchFlags(t *testing.T) {
+	isolateRemoteEnv(t)
+	for _, tc := range []struct {
+		name string
+		args []string
+		flag string
+	}{
+		{"browser", []string{"--browser", "/usr/bin/chromium"}, "--browser"},
+		{"profile", []string{"--profile", "/tmp/profile"}, "--profile"},
+		{"private", []string{"--private"}, "--private"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{"--remote-debugging-url", "http://127.0.0.1:9222"}, tc.args...)
+			_, err := tryParse(append(args, "example.com")...)
+			if err == nil {
+				t.Fatalf("parse with %s and --remote-debugging-url: want an error, got nil", tc.flag)
+			}
+			if !strings.Contains(err.Error(), tc.flag) || !strings.Contains(err.Error(), "does not launch Chromium") {
+				t.Errorf("parse with %s: error = %q", tc.flag, err)
+			}
+		})
+	}
+	if _, err := tryParse("--remote-debugging-url", "ftp://host:9222", "example.com"); err == nil {
+		t.Error("parse with an ftp endpoint: want an error, got nil")
+	}
+}
+
 func TestRunRemoteRejectsLaunchFlags(t *testing.T) {
 	const endpoint = "http://127.0.0.1:9222"
 	for _, tc := range []struct {

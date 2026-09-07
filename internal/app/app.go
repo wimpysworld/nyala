@@ -230,6 +230,12 @@ func mouseButton(b viewer.MouseButton) engine.MouseButton {
 	}
 }
 
+// Validate is kong's post-parse hook, so an attach endpoint combined with a
+// launch flag fails at parse time with a usage error, before Run.
+func (c *CLI) Validate() error {
+	return validateLaunchMode(*c)
+}
+
 // validateLaunchMode checks that the launch flags agree with the launch mode.
 // Without --remote-debugging-url every combination is valid. With it, Nyala
 // does not launch Chromium, so --browser, --profile, and --private are
