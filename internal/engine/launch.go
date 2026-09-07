@@ -440,7 +440,7 @@ func remoteAllocatorOptions(url string) []chromedp.RemoteAllocatorOption {
 func connectRemote(parent context.Context, url string, timeout time.Duration) (context.Context, context.CancelFunc, error) {
 	holder, cancel, err := connectBrowser(parent, url, timeout, remoteAllocatorOptions(url)...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("attach to remote Chromium at %s (Nyala did not launch Chromium): %w", url, err)
+		return nil, nil, remoteError(url, err)
 	}
 	return holder, cancel, nil
 }
@@ -712,7 +712,15 @@ const (
 	sharedLockTimeout = 60 * time.Second
 	// browserExitTimeout bounds stopBrowser's SIGTERM wait before SIGKILL.
 	browserExitTimeout = 10 * time.Second
+	// remoteReconnectInterval separates dial attempts while a remote attach
+	// rebuild waits for its endpoint to return.
+	remoteReconnectInterval = time.Second
 )
+
+// remoteReconnectTimeout bounds how long a remote attach rebuild keeps dialling
+// an endpoint that answers nothing, such as a dropped ssh tunnel, before the
+// supervisor gives up. It is a var so a test can shorten it.
+var remoteReconnectTimeout = 60 * time.Second
 
 var devToolsWaitTimeout = 30 * time.Second
 
@@ -937,18 +945,40 @@ func remoteCloseOp(closeTarget func(context.Context) error, closeSocket func()) 
 func (e *ChromiumEngine) launchRemote(url string) (context.Context, context.CancelFunc, func(context.Context) error, error) {
 	e.mu.Lock()
 	connect := e.connectSharedOp
+	rebuild := e.currentURL != ""
+	closing := e.closing
 	e.mu.Unlock()
 	if connect == nil {
 		connect = connectRemote
 	}
-	holder, closeSocket, err := connect(context.Background(), url, sharedConnectTimeout)
-	if err != nil {
-		return nil, nil, nil, err
+	// The first launch fails fast on a bad endpoint. A rebuild follows a lost
+	// connection, which over an ssh tunnel is the tunnel dropping, so it keeps
+	// dialling until the endpoint returns, Close arrives, or the window ends.
+	deadline := time.Now()
+	if rebuild {
+		deadline = deadline.Add(remoteReconnectTimeout)
+	}
+	var holder context.Context
+	var closeSocket context.CancelFunc
+	for {
+		var err error
+		holder, closeSocket, err = connect(context.Background(), url, sharedConnectTimeout)
+		if err == nil {
+			break
+		}
+		if !rebuild || time.Now().After(deadline) {
+			return nil, nil, nil, err
+		}
+		select {
+		case <-closing:
+			return nil, nil, nil, err
+		case <-time.After(remoteReconnectInterval):
+		}
 	}
 	targetCtx, targetCancel, err := newInstanceTarget(holder)
 	if err != nil {
 		closeSocket()
-		return nil, nil, nil, fmt.Errorf("attach to remote Chromium at %s (Nyala did not launch Chromium): %w", url, err)
+		return nil, nil, nil, remoteError(url, err)
 	}
 	cancel := func() {
 		targetCancel()
@@ -956,6 +986,12 @@ func (e *ChromiumEngine) launchRemote(url string) (context.Context, context.Canc
 	}
 	closeTarget := func(context.Context) error { return chromedp.Cancel(targetCtx) }
 	return targetCtx, cancel, remoteCloseOp(closeTarget, closeSocket), nil
+}
+
+// remoteError wraps a remote attach failure so every error on that path names
+// the endpoint and says that Nyala did not launch the browser.
+func remoteError(url string, err error) error {
+	return fmt.Errorf("attach to remote Chromium at %s (Nyala did not launch Chromium): %w", url, err)
 }
 
 // RemoteLostControls lists the launch-only controls that remote attach cannot
@@ -1005,7 +1041,11 @@ func (e *ChromiumEngine) launch(flag string) error {
 		closeBrowser func(context.Context) error
 		err          error
 	)
+	// wrap names the remote endpoint on every session setup error after the
+	// attach, so a raw CDP failure never hides which browser refused it.
+	wrap := func(err error) error { return err }
 	if remoteURL != "" {
+		wrap = func(err error) error { return remoteError(remoteURL, err) }
 		if ctx, cancel, closeBrowser, err = e.launchRemote(remoteURL); err != nil {
 			return err
 		}
@@ -1046,14 +1086,14 @@ func (e *ChromiumEngine) launch(flag string) error {
 		return gerr
 	})); err != nil {
 		e.teardownSession()
-		return err
+		return wrap(err)
 	}
 	e.mu.Lock()
 	e.windowID = windowID
 	e.mu.Unlock()
 	if err := enableLifecycle(ctx); err != nil {
 		e.teardownSession()
-		return err
+		return wrap(err)
 	}
 	// Force the page onto the monospace grid only for the block backend, which folds
 	// the crisp text overlay onto its cell grid. The graphics backends draw the
@@ -1061,7 +1101,7 @@ func (e *ChromiumEngine) launch(flag string) error {
 	if forcing {
 		if err := e.injectFontStylesheet(ctx); err != nil {
 			e.teardownSession()
-			return err
+			return wrap(err)
 		}
 		// Register the layout-shift observer and its binding on the block backend, so a
 		// reflow after the last navigation, resize, scroll, or networkAlmostIdle trigger
@@ -1072,14 +1112,14 @@ func (e *ChromiumEngine) launch(flag string) error {
 	}
 	if err := applySizing(ctx, windowID, surfW, surfH, z); err != nil {
 		e.teardownSession()
-		return err
+		return wrap(err)
 	}
 	e.mu.Lock()
 	e.sizedSurfaceW, e.sizedSurfaceH, e.sizedScale = surfW, surfH, z
 	e.mu.Unlock()
 	if err := e.enableProxyAuth(ctx); err != nil {
 		e.teardownSession()
-		return err
+		return wrap(err)
 	}
 	return nil
 }

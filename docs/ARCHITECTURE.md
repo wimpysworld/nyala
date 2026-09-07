@@ -881,8 +881,13 @@ leaves an `about:blank` window open on the remote browser. The timeout is
 kept: a longer wait would delay every quit to protect a window the user can
 close by hand. Recovery is unchanged. A dropped tunnel closes the websocket,
 `RemoteAllocator` cancels the holder context, and `rebuild` reruns `launch`,
-which reads the same recorded URL and reconnects to it, so a tunnel drop heals
-without Nyala touching the remote browser. Chrome on Linux exits when its last
+which reads the same recorded URL and reconnects to it. A tunnel that is still
+down at that moment would otherwise end the supervisor, because `rebuild`
+gives up after one failed `launch`, so `launchRemote` on a rebuild (marked by
+a committed `currentURL`) redials every `remoteReconnectInterval` for up to
+`remoteReconnectTimeout`, and stops early when Close arrives. The first launch
+keeps failing fast, so a mistyped endpoint is reported at once. A tunnel drop
+therefore heals without Nyala touching the remote browser. Chrome on Linux exits when its last
 window closes, and the remote has no `--keep-alive-for-test`, so the user
 keeps one tab of their own open or the reconnect finds no browser.
 
