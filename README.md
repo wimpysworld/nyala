@@ -117,7 +117,7 @@ What you see and what you lose. A headed Chrome opens one new window on the lapt
 
 On Linux, keep at least one tab of your own open in the remote Chrome. Chrome on Linux exits when its last window closes, and Nyala closes its own window when it quits. Chrome on macOS keeps running with no window. Nyala never closes or kills the remote browser. On quit it closes only its own window and its own connection.
 
-A dropped ssh tunnel shows as a lost connection. Nyala tears its session down and reconnects to the same URL, so the page returns when the tunnel returns. Restart the `ssh -R` command and the next reconnect attempt succeeds.
+A dropped ssh tunnel shows as a lost connection. Nyala tears its session down and dials the same URL once a second for up to a minute, so the page returns when the tunnel returns. Restart the `ssh -R` command within that minute and the session heals. After the minute Nyala exits, and you start it again.
 
 > [!CAUTION]
 > The debugging port grants full control of that Chrome profile: every open tab, every cookie, every saved login. Bind it to `127.0.0.1` as in the recipe above and reach it over ssh only. Never expose the port on a network interface, and never put it behind a plain port forward on a shared host.

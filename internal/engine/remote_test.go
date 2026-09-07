@@ -199,3 +199,71 @@ func TestRemoteLostControlsListsLaunchOnlyFlags(t *testing.T) {
 		}
 	}
 }
+
+// TestLaunchRemoteRetriesOnRebuild asserts the reconnect window. The first
+// launch fails at once on a dead endpoint. A rebuild, marked by a committed
+// currentURL, keeps dialling until the endpoint answers, and stops early when
+// Close arrives.
+func TestLaunchRemoteRetriesOnRebuild(t *testing.T) {
+	const url = "http://127.0.0.1:9222"
+	saved := remoteReconnectTimeout
+	remoteReconnectTimeout = 5 * time.Second
+	t.Cleanup(func() { remoteReconnectTimeout = saved })
+
+	t.Run("first launch fails fast", func(t *testing.T) {
+		e := New("")
+		e.SetRemoteDebuggingURL(url)
+		fake := &remoteConnectFake{err: errors.New("dial refused")}
+		e.connectSharedOp = fake.connect
+		start := time.Now()
+		if _, _, _, err := e.launchRemote(url); err == nil {
+			t.Fatal("first launch on a dead endpoint returned nil")
+		}
+		if len(fake.urls) != 1 || time.Since(start) > remoteReconnectInterval {
+			t.Fatalf("first launch dialled %d times in %v, want once at once", len(fake.urls), time.Since(start))
+		}
+	})
+
+	t.Run("rebuild retries until the endpoint answers", func(t *testing.T) {
+		e := New("")
+		e.SetRemoteDebuggingURL(url)
+		e.mu.Lock()
+		e.currentURL = "https://example.com/"
+		e.mu.Unlock()
+		fake := &remoteConnectFake{err: errors.New("dial refused")}
+		e.connectSharedOp = func(parent context.Context, u string, timeout time.Duration) (context.Context, context.CancelFunc, error) {
+			if len(fake.urls) == 2 {
+				fake.err = nil
+			}
+			return fake.connect(parent, u, timeout)
+		}
+		_, _, _, err := e.launchRemote(url)
+		if err == nil || !strings.Contains(err.Error(), "did not launch Chromium") {
+			t.Fatalf("rebuild error = %v, want the attach wrap after the dial succeeded", err)
+		}
+		if len(fake.urls) != 3 {
+			t.Fatalf("rebuild dialled %d times, want 3 (two refusals, then success)", len(fake.urls))
+		}
+	})
+
+	t.Run("rebuild stops on close", func(t *testing.T) {
+		e := New("")
+		e.SetRemoteDebuggingURL(url)
+		e.mu.Lock()
+		e.currentURL = "https://example.com/"
+		e.mu.Unlock()
+		fake := &remoteConnectFake{err: errors.New("dial refused")}
+		e.connectSharedOp = fake.connect
+		go func() {
+			time.Sleep(remoteReconnectInterval / 2)
+			e.closeOnce.Do(func() { close(e.closing) })
+		}()
+		start := time.Now()
+		if _, _, _, err := e.launchRemote(url); err == nil {
+			t.Fatal("rebuild returned nil while closing")
+		}
+		if time.Since(start) > 2*remoteReconnectInterval {
+			t.Fatalf("rebuild kept dialling for %v after Close", time.Since(start))
+		}
+	})
+}
