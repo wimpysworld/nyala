@@ -1,3 +1,5 @@
+import 'just/loader.just'
+
 backend := ""
 cell := ""
 
@@ -5,13 +7,13 @@ cell := ""
 default:
     @just --list
 
-# Build Nyala
-build:
+# Build the stripped root binary for Nyala commands
+build-nyala:
     @go build -ldflags "-s -w" -o nyala ./cmd/nyala
 
 # Build and run Nyala
 [positional-arguments]
-run url="https://wimpys.world" *flags: build
+run url="https://wimpys.world" *flags: build-nyala
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -135,7 +137,7 @@ debug-run url="https://wimpys.world" *flags:
 # Interactive tty only: the meter measures the on-screen render, so a headless run
 # has nothing to draw. Quit nyala to end the run and print the summary.
 [positional-arguments]
-fps url="https://wimpys.world" *flags: build
+fps url="https://wimpys.world" *flags: build-nyala
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -152,9 +154,8 @@ fps url="https://wimpys.world" *flags: build
     NYALA_FPS_TIMING=1 just run "$url" "$@"
 
 # Run the full local gate
-check: tidy-check fmt-check lint test build release-check
+check: check-go lint-actions build build-nyala release-check
     @nix flake check
-    @just vuln
 
 # Run every correctness and diagnostic leg, collecting independent failures
 diagnostics:
@@ -255,20 +256,16 @@ regen-fixtures:
     done
 
 # Format Go sources
-fmt:
-    @golangci-lint fmt
+fmt: fmt-go
 
 # Check Go formatting
-fmt-check:
-    @golangci-lint fmt --diff --color=never
+fmt-check: fmt-check-go
 
-# Run linters
-lint:
-    @go vet ./...
-    @gocyclo -top 20 -avg -ignore '_test\.go$' .
-    @ineffassign ./...
-    @golangci-lint run
-    @actionlint
+# Run managed linters and vet without golangci-lint exclusions
+lint-nyala: lint
+
+# Report cyclomatic complexity without a failure threshold
+complexity: complexity-go
 
 # Check GoReleaser config
 release-check:
@@ -283,12 +280,9 @@ coverage:
     #!/usr/bin/env bash
     set -euo pipefail
     coverage_file="${TMPDIR:-/tmp}/nyala-coverage.out"
-    go test -coverprofile="$coverage_file" -covermode=atomic ./...
+    GOFLAGS="${GOFLAGS:-} -covermode=atomic" just coverage-go
+    mv coverage.out "$coverage_file"
     go tool cover -func="$coverage_file"
-
-# Run tests
-test:
-    @go test ./...
 
 # Run the live engine integration test (needs Chromium; off CI, not in `test`)
 live:
@@ -394,7 +388,7 @@ kitty-transport-bench:
 # Record the demo GIF from nyala.tape. VHS records the Block backend only: its
 # xterm.js emulator cannot show Kitty or Sixel output. The nixpkgs vhs package
 # bundles the ttyd and ffmpeg it needs.
-vhs: build
+vhs: build-nyala
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -408,51 +402,23 @@ vhs: build
     vhs nyala.tape
 
 # Tidy Go modules
-tidy:
-    @go mod tidy
+tidy: tidy-go
 
 # Check Go modules are tidy
-tidy-check:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    go mod tidy
-    if [ -n "$(git status --porcelain -- go.mod go.sum)" ]; then
-        git diff -- go.mod go.sum
-        git status --short -- go.mod go.sum
-        exit 1
-    fi
+tidy-check: tidy-check-go
 
-# Run Go vulnerability checks
-vuln:
-    @govulncheck ./...
+# Run Go policy, vulnerability checks, and vet
+vuln: lint-go
+
+# Run vet without golangci-lint exclusions
+vet: vet-go
 
 # Create a new release tag (requires VERSION=x.y.z)
-release VERSION:
+release-nyala VERSION:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    if ! [[ "{{VERSION}}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo "Error: VERSION must be in format x.y.z (e.g. 0.1.0)"
-        exit 1
-    fi
-
-    if [ -n "$(git status --porcelain)" ]; then
-        echo "Error: Working directory is not clean"
-        exit 1
-    fi
-
-    if git show-ref --tags --verify --quiet "refs/tags/v{{VERSION}}"; then
-        echo "Error: Tag v{{VERSION}} already exists"
-        exit 1
-    fi
-
-    echo "Creating release v{{VERSION}}..."
-    git tag -a "v{{VERSION}}" -m "v{{VERSION}}"
-    echo "Tag v{{VERSION}} created"
-    echo ""
-    echo "To publish the release:"
-    echo "  git push origin v{{VERSION}}"
-    echo ""
+    just release {{quote(VERSION)}}
     echo "This release is configured for GoReleaser to:"
     echo "  - Cross-compile binaries for linux and darwin (amd64, arm64)"
     echo "  - Generate changelog from commits"

@@ -2,7 +2,9 @@
 .direnv/
 dist/
 /nyala
+/bin/
 /nyala-timings.log
 /result
 /testdata/diagnostics/
 RESEARCH-PLAN.md
+/coverage.out

@@ -303,7 +303,19 @@ Host mode means the Block glyph mode follows the outer terminal. Nyala never off
 
 ## Development
 
-Enter the pinned environment with `nix develop`, then run `just` to list the recipes. `just test` runs the fast unit-test gate. `just build`, `just test`, and `just lint` must pass after any code change, and `just check` runs the full pre-commit gate.
+The Nix development shell and Nix package use Go 1.26.6. CI retains `go-version-file: go.mod`. The module minimum remains Go 1.26.4.
+
+Enter the pinned environment with `nix develop`, then run `just` to list the recipes. `just test` runs the fast unit-test gate. `just build`, `just test`, and `just lint-nyala` must pass after any code change. `just check` runs the full pre-commit gate.
+
+`just build` writes Go executables to `bin/`. `just build-nyala` retains the stripped root binary that `run`, `fps`, `vhs`, and `nyala.tape` use. `just lint-nyala` runs actionlint, golangci-lint, govulncheck, and standalone vet without golangci-lint exclusions. `just complexity` prints an optional complexity report without a failure threshold. `just check` does not replace `just diagnostics`.
+
+`just release-nyala <version>` creates a local tag through the managed release recipe, then prints the publication instructions. It does not publish the release.
+
+Tailor supplies `.golangci.yml` as an unmarked default through ordinary `first-fit` and leaves the existing file unchanged. Customise this file directly. The default retains Nyala's lint policy and exceptions, with `govet` and `ineffassign` explicitly enabled. It enables `intrange`, leaves `modernize` and `gocyclo` inactive, and retains the `G306` exception. Scoped `G101` and `G703` exceptions retain their paths and reasons. Linter and formatter path exclusions remain identical. Tailor manages `just/go.just` and `nix/go.nix`. Do not edit those generated files directly.
+
+`just check-go` checks formatting, module files, lint, vulnerabilities, full vet, and tests without changing source or module files. `just fmt` and `just tidy` apply changes. Their `fmt-check` and `tidy-check` variants only check. `just vet` runs standalone vet. `just vuln` uses the full managed Go lint recipe, which also runs vulnerability checks and vet. `just coverage` uses managed coverage with atomic counters, moves the result to `${TMPDIR:-/tmp}/nyala-coverage.out`, and prints the function report. Direct `just coverage-go` leaves gitignored `coverage.out`.
+
+The development shell does not include Tailor. Before `just alter` or `just measure`, build and install Tailor from the current source checkout that includes the shared Go tooling. These files use that checkout, not a published release or a committed revision that includes all current changes. Revision `74da2f327934d3226a42a3dbc60769f160bd8733` supplies only the earlier managed Go test recipes. The pinned Tailor 0.2.1 and Tailor 0.4.0 also lack the complete shared tooling. Do not use those versions to regenerate these files.
 
 ### Diagnostics
 

@@ -25,10 +25,10 @@
       goFor =
         pkgs:
         pkgs.go_1_26.overrideAttrs (_: {
-          version = "1.26.5";
+          version = "1.26.6";
           src = pkgs.fetchurl {
-            url = "https://go.dev/dl/go1.26.5.src.tar.gz";
-            hash = "sha256-SVvkvIcXasVnOS5bQRar2YRm0z17SdQedkzMaXay3EI=";
+            url = "https://go.dev/dl/go1.26.6.src.tar.gz";
+            hash = "sha256-oHIcVMaIkBRI13rZs+x+p8R0cwdV/4kTgukuy5P/LLE=";
           };
         });
       localPackage =
@@ -113,13 +113,6 @@
                 actionlint
                 cosign
                 gh
-                go
-                gocyclo
-                golangci-lint
-                goperf
-                goreleaser
-                govulncheck
-                ineffassign
                 just
                 libsixel
                 pkg-config
@@ -128,7 +121,12 @@
               ])
               # Stage 3 runtime browser; Linux-only (nixpkgs chromium is
               # platforms = lib.platforms.linux).
-              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.chromium ];
+              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.chromium ]
+              ++ import ./nix/loader.nix {
+                pkgs = pkgs // {
+                  inherit go;
+                };
+              };
 
             # Prepend the NixOS Mesa driver so `just run` launches Chromium with the
             # GPU driver discoverable for GPU-backed WebGL

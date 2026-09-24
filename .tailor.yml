@@ -1,6 +1,9 @@
 # Refitted by tailor on 2026-09-06
 license: BlueOak-1.0.0
 
+languages:
+  go: true
+
 repository:
   description: A browser for the terminal 🦌
   has_wiki: false
@@ -176,6 +179,18 @@ labels:
     description: Hacktoberfest contribution
 
 swatches:
+  - path: .golangci.yml
+    alteration: first-fit
+
+  - path: .goreleaser.yaml
+    alteration: never
+
+  - path: Dockerfile
+    alteration: never
+
+  - path: .github/workflows/build-go.yml
+    alteration: never
+
   - path: .github/dependabot.yml
     alteration: first-fit
 

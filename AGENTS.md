@@ -26,6 +26,8 @@ Read `docs/ARCHITECTURE.md` for the design record and decision rationale.
 
 Use the pinned Nix development shell through `nix develop` or direnv. Prefer
 `just` recipes over ad-hoc commands. Run `just` to list them.
+Install Tailor separately before `just alter` or `just measure`. Follow the
+revision requirement in `README.md`, because the pinned shell does not supply it.
 
 Chromium is a runtime dependency. The binary resolves it through `--browser`,
 then `NYALA_BROWSER`, `CHROME_PATH`, and `PATH`.
@@ -49,9 +51,25 @@ then `NYALA_BROWSER`, `CHROME_PATH`, and `PATH`.
   `testdata/overlay/*.runs`. Write each line by hand as
   `col row fgHex rank text`; the rank column is mandatory, because an optional
   one cannot be told from text that starts with an integer.
-- `just fmt` formats with the configured gofumpt formatter.
-- `just build`, `just test`, and `just lint` must pass after code changes.
-- `just check` runs the full local pre-commit gate.
+- Customise `.golangci.yml` directly. Tailor supplies this unmarked default through
+  ordinary `first-fit` and leaves the existing file unchanged.
+- Do not edit the Tailor-managed `just/go.just` or `nix/go.nix` directly.
+- `just check-go` checks formatting, module files, lint, vulnerabilities, full vet,
+  and tests without changing source or module files.
+- `just fmt` formats with the configured gofumpt formatter. Use `just fmt-check`
+  and `just tidy-check` for source-preserving checks.
+- `just coverage` retains atomic counters, the temporary report, and the function
+  summary. Direct `just coverage-go` writes gitignored `coverage.out`.
+- `just vuln` uses the full managed Go lint recipe. `just vet` runs standalone vet.
+- `just build` builds all Go packages and writes executables to `bin/`.
+- Use `just build-nyala` for the stripped root binary that `run`, `fps`, and `vhs` use.
+- `just build`, `just test`, and `just lint-nyala` must pass after code changes.
+- `just lint-nyala` runs actionlint, golangci-lint, govulncheck, and standalone
+  vet without golangci-lint exclusions.
+- `just complexity` prints an optional complexity report, not a failure gate.
+- `just release-nyala <version>` creates a local tag and prints publication
+  instructions. It does not publish the release.
+- `just check` runs the local pre-commit gate. It does not replace `just diagnostics`.
 
 Do not add a bounded recorder, diagnostic bundle API, capture environment
 switch, or capture-only render path. Diagnostics must drive normal engine and

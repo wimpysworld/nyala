@@ -7,6 +7,8 @@ linters:
     - errorlint
     - gocritic
     - gosec
+    - govet
+    - ineffassign
     - intrange
     - misspell
     - noctx
