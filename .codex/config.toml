@@ -1,4 +1,4 @@
 [mcp_servers.playwright]
 command = "playwright-mcp"
-args = ["--headless"]
+args = ["--headless", "--isolated"]
 enabled = true

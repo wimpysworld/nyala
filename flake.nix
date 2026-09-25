@@ -83,28 +83,6 @@
         let
           pkgs = pkgsFor system;
           go = goFor pkgs;
-          # Nyala drives Chromium only, so the Playwright MCP server ships
-          # Chromium only. The stock package wraps PLAYWRIGHT_BROWSERS_PATH
-          # with Chromium, the headless shell, Firefox, and WebKit (2.5 GB).
-          # Swapping the browser set in both the driver and playwright-test
-          # cuts the closure to 0.9 GB. The headless shell is not needed: the
-          # wrapper defaults PLAYWRIGHT_MCP_BROWSER to the chromium channel,
-          # which launches the full Chrome for Testing even in headless mode.
-          playwrightMcpChromium =
-            let
-              browsers = pkgs.playwright-driver.browsers-chromium;
-              playwright-test = pkgs.playwright-test.overrideAttrs (old: {
-                installPhase =
-                  builtins.replaceStrings [ "${pkgs.playwright-driver.browsers}" ] [ "${browsers}" ]
-                    old.installPhase;
-              });
-            in
-            pkgs.playwright-mcp.override {
-              inherit playwright-test;
-              playwright-driver = pkgs.playwright-driver // {
-                inherit browsers;
-              };
-            };
         in
         {
           default = pkgs.mkShell {
@@ -116,7 +94,6 @@
                 just
                 libsixel
                 pkg-config
-                playwrightMcpChromium
                 poppler-utils
               ])
               # Stage 3 runtime browser; Linux-only (nixpkgs chromium is
@@ -128,14 +105,11 @@
                 };
               };
 
-            # Prepend the NixOS Mesa driver so `just run` launches Chromium with the
-            # GPU driver discoverable for GPU-backed WebGL
-            # (docs/ARCHITECTURE.md, Launch and Chromium discovery). Linux only.
-            shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-              if [ -d /run/opengl-driver/lib ]; then
-                export LD_LIBRARY_PATH="/run/opengl-driver/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-              fi
-            '';
+            shellHook = import ./nix/hooks.nix {
+              pkgs = pkgs // {
+                inherit go;
+              };
+            };
           };
         }
       );

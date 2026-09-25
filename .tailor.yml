@@ -4,6 +4,9 @@ license: BlueOak-1.0.0
 languages:
   go: true
 
+mcp:
+  playwright: true
+
 repository:
   description: "A browser for the terminal 🦌"
   has_wiki: false
