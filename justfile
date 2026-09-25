@@ -7,13 +7,9 @@ cell := ""
 default:
     @just --list
 
-# Build the stripped root binary for Nyala commands
-build-nyala:
-    @go build -ldflags "-s -w" -o nyala ./cmd/nyala
-
 # Build and run Nyala
 [positional-arguments]
-run url="https://wimpys.world" *flags: build-nyala
+run url="https://wimpys.world" *flags: build
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -137,7 +133,7 @@ debug-run url="https://wimpys.world" *flags:
 # Interactive tty only: the meter measures the on-screen render, so a headless run
 # has nothing to draw. Quit nyala to end the run and print the summary.
 [positional-arguments]
-fps url="https://wimpys.world" *flags: build-nyala
+fps url="https://wimpys.world" *flags: build
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -152,10 +148,6 @@ fps url="https://wimpys.world" *flags: build-nyala
         exit 1
     fi
     NYALA_FPS_TIMING=1 just run "$url" "$@"
-
-# Run the full local gate
-check: check-go lint-actions build build-nyala release-check
-    @nix flake check
 
 # Run every correctness and diagnostic leg, collecting independent failures
 diagnostics:
@@ -255,34 +247,9 @@ regen-fixtures:
         pdftoppm -png -r 150 -singlefile "testdata/${name}.pdf" "testdata/${name}"
     done
 
-# Format Go sources
-fmt: fmt-go
-
-# Check Go formatting
-fmt-check: fmt-check-go
-
-# Run managed linters and vet without golangci-lint exclusions
-lint-nyala: lint
-
-# Report cyclomatic complexity without a failure threshold
-complexity: complexity-go
-
-# Check GoReleaser config
-release-check:
-    @goreleaser check
-
 # Build a local snapshot release
 release-snapshot:
     @goreleaser release --snapshot --clean --skip=sign
-
-# Run tests with coverage
-coverage:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    coverage_file="${TMPDIR:-/tmp}/nyala-coverage.out"
-    GOFLAGS="${GOFLAGS:-} -covermode=atomic" just coverage-go
-    mv coverage.out "$coverage_file"
-    go tool cover -func="$coverage_file"
 
 # Run the live engine integration test (needs Chromium; off CI, not in `test`)
 live:
@@ -388,7 +355,7 @@ kitty-transport-bench:
 # Record the demo GIF from nyala.tape. VHS records the Block backend only: its
 # xterm.js emulator cannot show Kitty or Sixel output. The nixpkgs vhs package
 # bundles the ttyd and ffmpeg it needs.
-vhs: build-nyala
+vhs: build
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -400,33 +367,3 @@ vhs: build-nyala
     mkdir -p assets
     # The tape runs ./nyala, so it records the binary just built in this worktree.
     vhs nyala.tape
-
-# Tidy Go modules
-tidy: tidy-go
-
-# Check Go modules are tidy
-tidy-check: tidy-check-go
-
-# Run Go policy, vulnerability checks, and vet
-vuln: lint-go
-
-# Run vet without golangci-lint exclusions
-vet: vet-go
-
-# Create a new release tag (requires VERSION=x.y.z)
-release-nyala VERSION:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    just release {{quote(VERSION)}}
-    echo "This release is configured for GoReleaser to:"
-    echo "  - Cross-compile binaries for linux and darwin (amd64, arm64)"
-    echo "  - Generate changelog from commits"
-    echo "  - Create GitHub release assets with bare binaries, tarballs, and checksums"
-    echo "  - Build native packages (deb, rpm, apk, archlinux)"
-    echo "  - Update the Homebrew tap (wimpysworld/homebrew-tap)"
-    echo "  - Update the AUR package (nyala-bin)"
-    echo "  - Generate the Nix package (pkgs/nyala/default.nix)"
-    echo "  - Build and publish Docker images (ghcr.io/wimpysworld/nyala)"
-    echo "  - Sign checksums with cosign (keyless)"
-    echo "  - Sign Docker images with cosign (keyless)"
