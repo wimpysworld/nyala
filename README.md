@@ -303,7 +303,7 @@ Host mode means the Block glyph mode follows the outer terminal. Nyala never off
 
 ## Development
 
-The Nix development shell and Nix package use Go 1.26.6. CI retains `go-version-file: go.mod`. The module minimum remains Go 1.26.4.
+The Nix development shell, Nix package, and `go.mod` use Go 1.26.6. CI retains `go-version-file: go.mod`.
 
 Enter the pinned environment with `nix develop`, then run `just` to list the recipes. The three standard quality commands are `just build`, `just test`, and `just lint`. All three must pass after a code change.
 
