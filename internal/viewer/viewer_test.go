@@ -292,7 +292,9 @@ func TestStreamLoopQuitsAfterDownArrowWhenSendKeyBlocks(t *testing.T) {
 				}
 			case <-time.After(100 * time.Millisecond):
 				close(releaseSend)
-				<-loopDone
+				if err := <-loopDone; err != nil {
+					t.Fatalf("loop returned error: %v", err)
+				}
 				t.Fatalf("loop did not quit after Down arrow then %s", c.name)
 			}
 		})
