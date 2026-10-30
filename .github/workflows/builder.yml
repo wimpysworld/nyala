@@ -144,9 +144,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: DeterminateSystems/nix-installer-action@v23
       - name: Enable FlakeHub Cache
-        uses: DeterminateSystems/flakehub-cache-action@v3.22.2
+        uses: DeterminateSystems/flakehub-cache-action@v3.22.5
         continue-on-error: true
       - name: Check flake
         run: nix flake check
@@ -321,7 +321,7 @@ jobs:
       # private repo lacks. Skip while private; re-enables when public.
       - name: Upload SARIF
         if: ${{ always() && github.event.repository.visibility == 'public' }}
-        uses: github/codeql-action/upload-sarif@v4.37.9
+        uses: github/codeql-action/upload-sarif@v4.38.2
         with:
           sarif_file: govulncheck.sarif
           category: govulncheck
@@ -378,9 +378,9 @@ jobs:
           command: |
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: DeterminateSystems/nix-installer-action@v23
       - name: Enable FlakeHub Cache
-        uses: DeterminateSystems/flakehub-cache-action@v3.22.2
+        uses: DeterminateSystems/flakehub-cache-action@v3.22.5
         continue-on-error: true
       - name: Install GoReleaser
         run: go install "github.com/goreleaser/goreleaser/v2@${GORELEASER_VERSION}"
@@ -421,9 +421,9 @@ jobs:
           command: |
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: DeterminateSystems/nix-installer-action@v23
       - name: Enable FlakeHub Cache
-        uses: DeterminateSystems/flakehub-cache-action@v3.22.2
+        uses: DeterminateSystems/flakehub-cache-action@v3.22.5
         continue-on-error: true
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.2
