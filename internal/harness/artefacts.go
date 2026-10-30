@@ -27,7 +27,7 @@ import (
 	"os"
 	"path/filepath"
 
-	pixelmatch "github.com/raf555/pixelmatch"
+	pixelmatch "github.com/raf555/pixelmatch/v7"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
 	"golang.org/x/image/math/fixed"

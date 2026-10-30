@@ -17,6 +17,13 @@ updates:
       gomod:
         patterns:
           - "*"
+        exclude-patterns:
+          - "github.com/chromedp/*"
+    ignore:
+      - dependency-name: "github.com/chromedp/chromedp"
+        versions: [">= 0.17.0"]
+      - dependency-name: "github.com/chromedp/cdproto"
+        versions: [">= 0.157.0"]
     commit-message:
       prefix: "deps"
       include: "scope"
