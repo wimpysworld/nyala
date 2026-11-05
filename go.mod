@@ -4,7 +4,7 @@ go 1.26.6
 
 require (
 	github.com/agnivade/levenshtein v1.2.2
-	github.com/alecthomas/kong v1.16.1
+	github.com/alecthomas/kong v1.17.0
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/charmbracelet/x/term v0.2.2
@@ -12,10 +12,10 @@ require (
 	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
 	github.com/chromedp/chromedp v0.16.0
 	github.com/delthas/octreequant v0.0.0-20240724152321-2675d824f212
-	github.com/ebitengine/purego v0.11.2
+	github.com/ebitengine/purego v0.11.3
 	github.com/emmansun/base64 v0.11.0
 	github.com/ericpauley/go-quantize v0.0.0-20200331213906-ae555eb2afa4
-	github.com/gen2brain/jpegn v0.6.1
+	github.com/gen2brain/jpegn v0.6.2
 	github.com/klauspost/compress v1.20.3
 	github.com/lucasb-eyer/go-colorful v1.4.1
 	github.com/mattn/go-runewidth v0.0.31
