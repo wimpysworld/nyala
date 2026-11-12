@@ -24,7 +24,7 @@ require (
 	github.com/rivo/uniseg v0.4.7
 	github.com/soniakeys/quant v1.0.0
 	github.com/woozymasta/png v1.2.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	golang.org/x/tools v0.52.0
 	gonum.org/v1/plot v0.17.0
 )
