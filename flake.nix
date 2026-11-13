@@ -3,15 +3,12 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-    nix-packages.url = "github:wimpysworld/nix-packages";
-    nix-packages.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
     {
       self,
       nixpkgs,
-      nix-packages,
       ...
     }:
     let
@@ -118,14 +115,10 @@
         system:
         let
           nyala = localPackage system;
-          externalNyala = nix-packages.packages.${system}.nyala or null;
         in
         {
           inherit nyala;
           default = nyala;
-        }
-        // nixpkgs.lib.optionalAttrs (externalNyala != null) {
-          nix-packages-nyala = externalNyala;
         }
       );
 

@@ -62,9 +62,13 @@ release:
     ```
     Requires [`bin`](https://github.com/marcosnils/bin).
 
-    **Homebrew**: `brew install wimpysworld/tap/nyala`
+    **Homebrew** (macOS):
+    ```shell
+    brew tap wimpysworld/haberdasher https://brew.wimpys.world/tap.git
+    brew install --cask wimpysworld/haberdasher/nyala
+    ```
 
-    **Nix**: `nix run github:wimpysworld/nix-packages#nyala`
+    **Nix**: `nix run github:wimpysworld/nyala`
 
     **Docker**: `docker run --rm ghcr.io/wimpysworld/nyala`
 
@@ -89,18 +93,6 @@ nfpms:
       - apk
       - archlinux
 
-homebrew_casks:
-  - ids:
-      - compressed
-    binaries:
-      - nyala
-    repository:
-      owner: wimpysworld
-      name: homebrew-tap
-      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
-    description: "A browser for the terminal."
-    homepage: https://github.com/wimpysworld/nyala
-    license: BlueOak-1.0.0
 
 aurs:
   - name: nyala-bin
@@ -114,16 +106,6 @@ aurs:
     package: |
       install -Dm755 nyala "${pkgdir}/usr/bin/nyala"
 
-nix:
-  - name: nyala
-    repository:
-      owner: wimpysworld
-      name: nix-packages
-      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
-    path: pkgs/nyala/default.nix
-    description: "A browser for the terminal."
-    homepage: https://github.com/wimpysworld/nyala
-    license: blueOak100
 
 dockers_v2:
   - id: ghcr

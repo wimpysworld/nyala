@@ -433,7 +433,6 @@ jobs:
         run: goreleaser release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
           AUR_KEY: ${{ secrets.AUR_KEY }}
       - name: Update floating major version tag
         if: ${{ !contains(github.ref_name, '-') }}

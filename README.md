@@ -28,12 +28,13 @@ How the project got here, decision by decision, is written up in [`docs/EVOLUTIO
 
 **Homebrew**
 ```bash
-brew install wimpysworld/tap/nyala
+brew tap wimpysworld/haberdasher https://brew.wimpys.world/tap.git
+brew install --cask wimpysworld/haberdasher/nyala
 ```
 
 **Nix**
 ```bash
-nix run github:wimpysworld/nix-packages#nyala
+nix run github:wimpysworld/nyala
 ```
 
 **Docker**
