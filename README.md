@@ -28,8 +28,8 @@ How the project got here, decision by decision, is written up in [`docs/EVOLUTIO
 
 **Homebrew**
 ```bash
-brew tap wimpysworld/haberdasher https://brew.wimpys.world/tap.git
-brew install --cask wimpysworld/haberdasher/nyala
+brew tap wimpysworld/tap https://brew.wimpys.world/tap.git
+brew install --cask wimpysworld/tap/nyala
 ```
 
 **Nix**

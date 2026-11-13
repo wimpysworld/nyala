@@ -64,8 +64,8 @@ release:
 
     **Homebrew** (macOS):
     ```shell
-    brew tap wimpysworld/haberdasher https://brew.wimpys.world/tap.git
-    brew install --cask wimpysworld/haberdasher/nyala
+    brew tap wimpysworld/tap https://brew.wimpys.world/tap.git
+    brew install --cask wimpysworld/tap/nyala
     ```
 
     **Nix**: `nix run github:wimpysworld/nyala`
