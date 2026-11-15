@@ -21,6 +21,9 @@ var (
 	loadErr      error
 	shmOpenSym   uintptr
 	shmUnlinkSym uintptr
+	// errnoLocation is libSystem's __error, which returns the calling
+	// thread's errno. purego does not capture errno on Darwin.
+	errnoLocation func() *int32
 )
 
 // Object is a writable mapping of one Darwin POSIX shared-memory object.
@@ -110,16 +113,26 @@ func loadLibSystem() error {
 		shmUnlinkSym, err = purego.Dlsym(handle, "shm_unlink")
 		if err != nil {
 			loadErr = errors.Join(fmt.Errorf("posixshm: resolve shm_unlink: %w", err), purego.Dlclose(handle))
+			return
 		}
+		errorSym, err := purego.Dlsym(handle, "__error")
+		if err != nil {
+			loadErr = errors.Join(fmt.Errorf("posixshm: resolve __error: %w", err), purego.Dlclose(handle))
+			return
+		}
+		purego.RegisterFunc(&errnoLocation, errorSym)
 	})
 	return loadErr
 }
 
 func shmOpen(name string, flags int, mode uint32) (int, error) {
 	cname := append([]byte(name), 0)
+	// errno is per thread, so read it on the thread that made the call.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	// Darwin arm64 reads the variadic mode from the first stack slot. purego
 	// places argument 9 there, so pass the mode in both positions.
-	r1, _, errno := purego.SyscallN(
+	r1, _, _ := purego.SyscallN(
 		shmOpenSym,
 		uintptr(unsafe.Pointer(&cname[0])),
 		uintptr(flags),
@@ -133,19 +146,22 @@ func shmOpen(name string, flags int, mode uint32) (int, error) {
 	)
 	runtime.KeepAlive(cname)
 	if int32(r1) == -1 {
-		return -1, syscall.Errno(errno)
+		return -1, syscall.Errno(*errnoLocation())
 	}
 	return int(int32(r1)), nil
 }
 
 func unlink(name string) error {
 	cname := append([]byte(name), 0)
-	r1, _, errno := purego.SyscallN(shmUnlinkSym, uintptr(unsafe.Pointer(&cname[0])))
+	// errno is per thread, so read it on the thread that made the call.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	r1, _, _ := purego.SyscallN(shmUnlinkSym, uintptr(unsafe.Pointer(&cname[0])))
 	runtime.KeepAlive(cname)
 	if int32(r1) != -1 {
 		return nil
 	}
-	err := syscall.Errno(errno)
+	err := syscall.Errno(*errnoLocation())
 	if errors.Is(err, unix.ENOENT) {
 		return nil
 	}
