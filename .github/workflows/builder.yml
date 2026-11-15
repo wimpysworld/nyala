@@ -171,9 +171,18 @@ jobs:
           - goos: darwin
             goarch: amd64
             runner: macos-15-intel
+          - goos: windows
+            goarch: amd64
+            runner: windows-2025
+          - goos: windows
+            goarch: arm64
+            runner: windows-11-arm
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -268,6 +277,10 @@ jobs:
             goarch: amd64
           - goos: darwin
             goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -280,8 +293,8 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Vet Darwin packages
-        if: matrix.goos == 'darwin'
+      - name: Vet ${{ matrix.goos }} packages
+        if: matrix.goos != 'linux'
         run: go vet ./...
       - name: Build Nyala
         run: go build -o "${RUNNER_TEMP}/nyala-${GOOS}-${GOARCH}" ./cmd/nyala
