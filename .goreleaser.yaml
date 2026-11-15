@@ -15,6 +15,7 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -39,6 +40,9 @@ archives:
       - tar.gz
     format_overrides:
       - goos: darwin
+        formats:
+          - none
+      - goos: windows
         formats:
           - none
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Arch }}"
@@ -70,8 +74,9 @@ release:
     - Arch Linux: [pkg.wimpys.world](https://pkg.wimpys.world/#nyala)
     - Alpine Linux: [apk.wimpys.world](https://apk.wimpys.world/#nyala)
     - macOS (Homebrew): [brew.wimpys.world](https://brew.wimpys.world/#nyala)
+    - Windows (Scoop): [scoop.wimpys.world](https://scoop.wimpys.world/#nyala)
     - Nix and NixOS: [nix.wimpys.world](https://nix.wimpys.world/#nyala)
-    - Linux and macOS, with [bin](https://github.com/marcosnils/bin): `bin install github.com/wimpysworld/nyala`
+    - Any platform, with [bin](https://github.com/marcosnils/bin): `bin install github.com/wimpysworld/nyala`
     - Container: `docker run --rm ghcr.io/wimpysworld/nyala --version`
     - GitHub Actions: `uses: wimpysworld/nyala@v0`
 

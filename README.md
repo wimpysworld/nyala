@@ -33,11 +33,12 @@ How the project got here, decision by decision, is written up in [`docs/EVOLUTIO
 | <img src="https://pkg.wimpys.world/logo.svg" width="32" height="32" alt=""> | Arch Linux | [pkg.wimpys.world](https://pkg.wimpys.world/#nyala) |
 | <img src="https://apk.wimpys.world/logo.svg" width="32" height="32" alt=""> | Alpine Linux | [apk.wimpys.world](https://apk.wimpys.world/#nyala) |
 | <img src="https://brew.wimpys.world/logo.svg" width="32" height="32" alt=""> | macOS (Homebrew) | [brew.wimpys.world](https://brew.wimpys.world/#nyala) |
+| <img src="https://scoop.wimpys.world/logo.svg" width="32" height="32" alt=""> | Windows (Scoop) | [scoop.wimpys.world](https://scoop.wimpys.world/#nyala) |
 | <img src="https://nix.wimpys.world/logo.svg" width="32" height="32" alt=""> | Nix and NixOS | [nix.wimpys.world](https://nix.wimpys.world/#nyala) |
 
 Each repository is signed, and its page gives the setup steps and keeps Nyala up to date.
 
-### Linux and macOS
+### Any platform
 
 [bin](https://github.com/marcosnils/bin) installs and updates the release binary:
 
