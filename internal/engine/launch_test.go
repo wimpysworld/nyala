@@ -110,7 +110,7 @@ func TestResolveProfileDirPrecedence(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("NYALA_PROFILE", c.nyalaProfile)
 			t.Setenv("XDG_DATA_HOME", c.dataHome)
-			t.Setenv("HOME", home)
+			setHome(t, home)
 
 			got, err := resolveProfileDir(c.flag)
 			if err != nil {
@@ -126,7 +126,7 @@ func TestResolveProfileDirPrecedence(t *testing.T) {
 func TestResolveProfileDirMissingHome(t *testing.T) {
 	t.Setenv("NYALA_PROFILE", "")
 	t.Setenv("XDG_DATA_HOME", "")
-	t.Setenv("HOME", "")
+	setHome(t, "")
 
 	got, err := resolveProfileDir("")
 	if err == nil {
@@ -176,6 +176,7 @@ func TestLaunchResolvesExecutableBeforeTouchingProfile(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("NYALA_BROWSER", "")
 	t.Setenv("CHROME_PATH", "")
+	hideInstalledBrowsers(t)
 	clearProxyEnv(t, nil)
 
 	e := New("")
@@ -215,6 +216,23 @@ func openLockFD(t *testing.T, profileDir string) *os.File {
 	}
 	t.Cleanup(func() { _ = f.Close() })
 	return f
+}
+
+// setHome points os.UserHomeDir at home, which reads HOME on Unix and
+// USERPROFILE on Windows.
+func setHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
+// hideInstalledBrowsers empties the directories chromiumInstallPaths reads, so
+// a browser installed on the host cannot satisfy a test that expects none.
+func hideInstalledBrowsers(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"ProgramFiles", "ProgramFiles(x86)", "LocalAppData"} {
+		t.Setenv(name, "")
+	}
 }
 
 // flockNB tries a non-blocking flock in mode on f and reports whether it won.

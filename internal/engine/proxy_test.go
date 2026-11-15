@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -28,6 +29,14 @@ func clearProxyEnv(t *testing.T, set map[string]string) {
 		t.Setenv(name, "")
 	}
 	for name, value := range set {
+		// Windows environment names ignore case, so a lowercase name is the same
+		// variable as its uppercase twin and would overwrite it in map order.
+		// Where the case also sets the twin, the uppercase value it expects wins.
+		if upper := strings.ToUpper(name); runtime.GOOS == "windows" && upper != name {
+			if _, ok := set[upper]; ok {
+				continue
+			}
+		}
 		t.Setenv(name, value)
 	}
 }

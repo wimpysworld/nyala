@@ -90,6 +90,7 @@ func TestLaunchRemoteSkipsExecutableResolution(t *testing.T) {
 	t.Setenv("NYALA_BROWSER", "")
 	t.Setenv("CHROME_PATH", "")
 	t.Setenv("PATH", "")
+	hideInstalledBrowsers(t)
 	if _, err := resolveExecutable(""); err == nil {
 		t.Fatal("resolveExecutable found a Chromium with every route empty, the test premise is wrong")
 	}

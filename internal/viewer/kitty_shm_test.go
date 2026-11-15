@@ -170,6 +170,15 @@ func (w *failKittyAPCWriter) Write(p []byte) (int, error) {
 	return 0, w.err
 }
 
+// skipWithoutKittySHM skips a test that needs a real shm object where the kitty
+// package builds its unsupported stub.
+func skipWithoutKittySHM(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skipf("kitty shm transport is unsupported on %s", runtime.GOOS)
+	}
+}
+
 func newTestSHMWriter() *testSHMWriter {
 	return &testSHMWriter{writer: kitty.NewSHMWriter()}
 }
@@ -221,6 +230,7 @@ func TestKittySHMCreateMapErrorReturns(t *testing.T) {
 // TestKittySHMObjectCloseErrorReturns asserts a mapped-object close failure is
 // returned and cleanup unlinks the object without selecting retained PNG.
 func TestKittySHMObjectCloseErrorReturns(t *testing.T) {
+	skipWithoutKittySHM(t)
 	want := errors.New("forced shm object close failure")
 	s := shmState()
 	shm := newTestSHMWriter()
@@ -235,6 +245,7 @@ func TestKittySHMObjectCloseErrorReturns(t *testing.T) {
 // TestKittySHMAPCEncodeErrorReturns asserts an APC writer failure is returned
 // after SHM preparation and cleanup unlinks the unconsumed object.
 func TestKittySHMAPCEncodeErrorReturns(t *testing.T) {
+	skipWithoutKittySHM(t)
 	want := errors.New("forced Kitty APC failure")
 	s := shmState()
 	shm := newTestSHMWriter()

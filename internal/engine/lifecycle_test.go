@@ -20,6 +20,7 @@ func TestCloseAfterNavigateFailureReturns(t *testing.T) {
 	t.Setenv("PATH", "")
 	t.Setenv("NYALA_BROWSER", "")
 	t.Setenv("CHROME_PATH", "")
+	hideInstalledBrowsers(t)
 	e := New("")
 	e.SetCellPx(8, 16)
 	e.Resize(80, 24)
