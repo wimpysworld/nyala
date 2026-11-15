@@ -1,6 +1,6 @@
 module github.com/wimpysworld/nyala
 
-go 1.26.6
+go 1.26.11
 
 require (
 	github.com/agnivade/levenshtein v1.2.2
