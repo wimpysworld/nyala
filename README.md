@@ -26,28 +26,36 @@ How the project got here, decision by decision, is written up in [`docs/EVOLUTIO
 
 ## Install
 
-**Homebrew**
-```bash
-brew tap wimpysworld/tap https://brew.wimpys.world/tap.git
-brew install --cask wimpysworld/tap/nyala
+| | Platform | Repository |
+| :-: | --- | --- |
+| <img src="https://apt.wimpys.world/logo.svg" width="32" height="32" alt=""> | Debian and Ubuntu | [apt.wimpys.world](https://apt.wimpys.world/#nyala) |
+| <img src="https://rpm.wimpys.world/logo.svg" width="32" height="32" alt=""> | Fedora and openSUSE | [rpm.wimpys.world](https://rpm.wimpys.world/#nyala) |
+| <img src="https://pkg.wimpys.world/logo.svg" width="32" height="32" alt=""> | Arch Linux | [pkg.wimpys.world](https://pkg.wimpys.world/#nyala) |
+| <img src="https://apk.wimpys.world/logo.svg" width="32" height="32" alt=""> | Alpine Linux | [apk.wimpys.world](https://apk.wimpys.world/#nyala) |
+| <img src="https://brew.wimpys.world/logo.svg" width="32" height="32" alt=""> | macOS (Homebrew) | [brew.wimpys.world](https://brew.wimpys.world/#nyala) |
+| <img src="https://nix.wimpys.world/logo.svg" width="32" height="32" alt=""> | Nix and NixOS | [nix.wimpys.world](https://nix.wimpys.world/#nyala) |
+
+Each repository is signed, and its page gives the setup steps and keeps Nyala up to date.
+
+### Linux and macOS
+
+[bin](https://github.com/marcosnils/bin) installs and updates the release binary:
+
+```shell
+bin install github.com/wimpysworld/nyala
 ```
 
-**Nix**
-```bash
-nix run github:wimpysworld/nyala
-```
+### Container
 
-**Docker**
-```bash
+```shell
 docker run --rm ghcr.io/wimpysworld/nyala
 ```
 
-**GitHub Actions**
+### GitHub Actions
+
 ```yaml
 - uses: wimpysworld/nyala@v0
 ```
-
-**Linux packages and binaries.** `.deb`, `.rpm`, `.apk`, Arch, and bare binaries are on [GitHub Releases](https://github.com/wimpysworld/nyala/releases). An AUR package `nyala-bin` is also available.
 
 > [!TIP]
 > The Nix package ships its own Chromium, so there is nothing else to install. Every other install method needs a Chromium on your system.
@@ -304,7 +312,7 @@ Host mode means the Block glyph mode follows the outer terminal. Nyala never off
 
 ## Development
 
-The Nix development shell, Nix package, and `go.mod` use Go 1.26.6. CI retains `go-version-file: go.mod`.
+The Nix development shell, Nix package, and `go.mod` use Go 1.26.11. CI retains `go-version-file: go.mod`.
 
 Enter the pinned environment with `nix develop`, then run `just` to list the recipes. The three standard quality commands are `just build`, `just test`, and `just lint`. All three must pass after a code change.
 
