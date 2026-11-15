@@ -229,7 +229,7 @@ func commitURL(text string) (string, bool) {
 		return "", false
 	}
 	low := strings.ToLower(t)
-	if strings.HasPrefix(low, "javascript:") || strings.HasPrefix(low, "data:") {
+	if strings.HasPrefix(low, "javascript:") || strings.HasPrefix(low, "data:") || strings.HasPrefix(low, "vbscript:") {
 		return "", false
 	}
 	if !strings.Contains(t, ".") {

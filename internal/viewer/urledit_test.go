@@ -274,6 +274,7 @@ func TestCommitURL(t *testing.T) {
 		{"javascript opaque form refused", "javascript:document.cookie", "", false},
 		{"javascript case refused", "JavaScript:alert(1)", "", false},
 		{"data scheme refused", "data:text/html,<script>1</script>", "", false},
+		{"vbscript scheme refused", "vbscript:msgbox(1.0)", "", false},
 		{"chrome scheme refused", "chrome://settings", "", false},
 		{"embedded https does not launder", "javascript:fetch('https://evil/')", "", false},
 	}
