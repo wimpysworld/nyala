@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 const profileLockName = ".nyala.lock"
@@ -22,8 +20,8 @@ const sharedLockPoll = 50 * time.Millisecond
 // profileGuard is the open lock file beneath a persistent profile. One fd is
 // held for the engine lifetime, including recovery rebuilds, so lock mode
 // conversions happen atomically on the same descriptor. mode is 0 when no
-// lock is held, unix.LOCK_EX while this engine launches Chromium, and
-// unix.LOCK_SH while it is connected as one of the profile's clients.
+// lock is held, lockExclusive while this engine launches Chromium, and
+// lockShared while it is connected as one of the profile's clients.
 type profileGuard struct {
 	file *os.File
 	mode int
@@ -55,14 +53,14 @@ func (e *ChromiumEngine) openProfileGuard() error {
 // process holds the lock in any mode, and true when this engine now holds the
 // exclusive lock and is the launcher or the last client.
 func (g *profileGuard) tryExclusive() (bool, error) {
-	err := unix.Flock(int(g.file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-	if errors.Is(err, unix.EWOULDBLOCK) {
+	err := tryLockFile(g.file, lockExclusive)
+	if isLockBusy(err) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("lock profile guard exclusively: %w", err)
 	}
-	g.mode = unix.LOCK_EX
+	g.mode = lockExclusive
 	return true, nil
 }
 
@@ -72,12 +70,12 @@ func (g *profileGuard) tryExclusive() (bool, error) {
 // succeeds and the caller can retry the launch itself.
 func (g *profileGuard) acquireShared(ctx context.Context) error {
 	for {
-		err := unix.Flock(int(g.file.Fd()), unix.LOCK_SH|unix.LOCK_NB)
+		err := tryLockFile(g.file, lockShared)
 		if err == nil {
-			g.mode = unix.LOCK_SH
+			g.mode = lockShared
 			return nil
 		}
-		if !errors.Is(err, unix.EWOULDBLOCK) {
+		if !isLockBusy(err) {
 			return fmt.Errorf("lock profile guard shared: %w", err)
 		}
 		select {
@@ -92,16 +90,16 @@ func (g *profileGuard) acquireShared(ctx context.Context) error {
 // converts atomically, so no other process can take the exclusive lock in
 // between.
 func (g *profileGuard) downgrade() error {
-	if err := unix.Flock(int(g.file.Fd()), unix.LOCK_SH); err != nil {
+	if err := downgradeLockFile(g.file); err != nil {
 		return fmt.Errorf("downgrade profile guard: %w", err)
 	}
-	g.mode = unix.LOCK_SH
+	g.mode = lockShared
 	return nil
 }
 
 // unlock releases the held lock and keeps the fd open for a later attempt.
 func (g *profileGuard) unlock() error {
-	if err := unix.Flock(int(g.file.Fd()), unix.LOCK_UN); err != nil {
+	if err := unlockFile(g.file); err != nil {
 		return fmt.Errorf("unlock profile guard: %w", err)
 	}
 	g.mode = 0
@@ -171,7 +169,7 @@ func (e *ChromiumEngine) releaseProfileGuard() error {
 	if guard == nil {
 		return nil
 	}
-	unlockErr := unix.Flock(int(guard.file.Fd()), unix.LOCK_UN)
+	unlockErr := unlockFile(guard.file)
 	closeErr := guard.file.Close()
 	return errors.Join(unlockErr, closeErr)
 }

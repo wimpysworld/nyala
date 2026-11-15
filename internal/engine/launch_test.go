@@ -16,7 +16,6 @@ import (
 
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/chromedp"
-	"golang.org/x/sys/unix"
 )
 
 // fakeExecutable writes an executable file named name into a fresh temp dir and
@@ -221,8 +220,8 @@ func openLockFD(t *testing.T, profileDir string) *os.File {
 // flockNB tries a non-blocking flock in mode on f and reports whether it won.
 func flockNB(t *testing.T, f *os.File, mode int) bool {
 	t.Helper()
-	err := unix.Flock(int(f.Fd()), mode|unix.LOCK_NB)
-	if errors.Is(err, unix.EWOULDBLOCK) {
+	err := tryLockFile(f, mode)
+	if isLockBusy(err) {
 		return false
 	}
 	if err != nil {
@@ -283,24 +282,24 @@ func TestProfileGuardContentionAndRecovery(t *testing.T) {
 	if err := second.profileGuard.acquireShared(sharedCtx); err != nil {
 		t.Fatalf("second acquireShared after downgrade: %v", err)
 	}
-	if first.profileGuard.mode != unix.LOCK_SH || second.profileGuard.mode != unix.LOCK_SH {
+	if first.profileGuard.mode != lockShared || second.profileGuard.mode != lockShared {
 		t.Fatalf("modes = (%d, %d), want both LOCK_SH", first.profileGuard.mode, second.profileGuard.mode)
 	}
 
 	third := openLockFD(t, profileDir)
-	if flockNB(t, third, unix.LOCK_EX) {
+	if flockNB(t, third, lockExclusive) {
 		t.Fatal("third LOCK_EX succeeded while two shared holders exist")
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("first Close: %v", err)
 	}
-	if flockNB(t, third, unix.LOCK_EX) {
+	if flockNB(t, third, lockExclusive) {
 		t.Fatal("third LOCK_EX succeeded while the second shared holder exists")
 	}
 	if err := second.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
 	}
-	if !flockNB(t, third, unix.LOCK_EX) {
+	if !flockNB(t, third, lockExclusive) {
 		t.Fatal("third LOCK_EX failed after both holders closed")
 	}
 	after, err := os.Stat(lockPath)
@@ -337,26 +336,26 @@ func TestProfileGuardExclusiveThenSharedDowngrade(t *testing.T) {
 	if err != nil || !won {
 		t.Fatalf("tryExclusive = (%v, %v), want (true, nil)", won, err)
 	}
-	if g.mode != unix.LOCK_EX {
+	if g.mode != lockExclusive {
 		t.Fatalf("mode after tryExclusive = %d, want LOCK_EX", g.mode)
 	}
 	other := openLockFD(t, profileDir)
-	if flockNB(t, other, unix.LOCK_SH) {
+	if flockNB(t, other, lockShared) {
 		t.Fatal("independent LOCK_SH succeeded while LOCK_EX held")
 	}
 	if err := g.downgrade(); err != nil {
 		t.Fatalf("downgrade: %v", err)
 	}
-	if g.mode != unix.LOCK_SH {
+	if g.mode != lockShared {
 		t.Fatalf("mode after downgrade = %d, want LOCK_SH", g.mode)
 	}
-	if !flockNB(t, other, unix.LOCK_SH) {
+	if !flockNB(t, other, lockShared) {
 		t.Fatal("independent LOCK_SH failed after downgrade")
 	}
-	if err := unix.Flock(int(other.Fd()), unix.LOCK_UN); err != nil {
+	if err := unlockFile(other); err != nil {
 		t.Fatalf("unlock independent fd: %v", err)
 	}
-	if flockNB(t, other, unix.LOCK_EX) {
+	if flockNB(t, other, lockExclusive) {
 		t.Fatal("independent LOCK_EX succeeded while the guard holds LOCK_SH")
 	}
 	if err := g.unlock(); err != nil {
@@ -365,7 +364,7 @@ func TestProfileGuardExclusiveThenSharedDowngrade(t *testing.T) {
 	if g.mode != 0 {
 		t.Fatalf("mode after unlock = %d, want 0", g.mode)
 	}
-	if !flockNB(t, other, unix.LOCK_EX) {
+	if !flockNB(t, other, lockExclusive) {
 		t.Fatal("independent LOCK_EX failed after the guard unlocked")
 	}
 }
@@ -870,7 +869,7 @@ func TestSharedClientRetriesWhenLauncherDies(t *testing.T) {
 		t.Fatalf("create profile: %v", err)
 	}
 	launcher := openLockFD(t, profileDir)
-	if !flockNB(t, launcher, unix.LOCK_EX) {
+	if !flockNB(t, launcher, lockExclusive) {
 		t.Fatal("independent LOCK_EX failed on a fresh lock file")
 	}
 	released := time.AfterFunc(100*time.Millisecond, func() { _ = launcher.Close() })

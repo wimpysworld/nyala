@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/chromedp/cdproto/browser"
@@ -23,7 +22,6 @@ import (
 	"github.com/chromedp/chromedp"
 	"github.com/wimpysworld/nyala/internal/render"
 	"github.com/wimpysworld/nyala/internal/render/font"
-	"golang.org/x/sys/unix"
 )
 
 // chromiumNames lists the executable names tried on PATH, in order, when no
@@ -40,9 +38,10 @@ var chromiumNames = []string{
 // resolveExecutable returns the Chromium or Chrome executable to launch. It
 // tries, in order: the --browser flag value, the NYALA_BROWSER environment
 // variable, the CHROME_PATH environment variable, then a PATH lookup for a
-// known Chromium or Chrome binary name. It returns the first non-empty result
-// and a clear error naming the search order when none resolve. The function is
-// pure beyond reading the environment and PATH, so it is hermetically testable.
+// known Chromium or Chrome binary name, then the standard install paths on
+// Windows. It returns the first non-empty result and a clear error naming the
+// search order when none resolve. The function is pure beyond reading the
+// environment, PATH, and the install paths, so it is hermetically testable.
 func resolveExecutable(flag string) (string, error) {
 	if flag != "" {
 		return flag, nil
@@ -55,6 +54,11 @@ func resolveExecutable(flag string) (string, error) {
 	}
 	for _, name := range chromiumNames {
 		if path, err := exec.LookPath(name); err == nil {
+			return path, nil
+		}
+	}
+	for _, path := range chromiumInstallPaths() {
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
 			return path, nil
 		}
 	}
@@ -306,7 +310,8 @@ func sharedArgv(flags []launchFlag, profileDir string) []string {
 }
 
 // spawnDetached starts execPath with argv in a new session so the browser
-// outlives this process: it sets Setsid and, on purpose, no Pdeathsig, unlike
+// outlives this process: detachedSysProcAttr sets Setsid (a new process group
+// on Windows) and, on purpose, no Pdeathsig, unlike
 // chromedp's exec allocator. stdin, stdout, and stderr are opened on os.DevNull.
 // The caller owns the returned process and must call Process.Release or Wait.
 func spawnDetached(execPath string, argv []string) (*os.Process, error) {
@@ -316,7 +321,7 @@ func spawnDetached(execPath string, argv []string) (*os.Process, error) {
 	}
 	defer devNull.Close()
 	cmd := exec.Command(execPath, argv...) //nolint:noctx // detached on purpose: no context may kill the shared browser
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = detachedSysProcAttr()
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = devNull, devNull, devNull
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -465,16 +470,15 @@ func newInstanceTarget(holder context.Context) (context.Context, context.CancelF
 // browser has already exited. Chromium refuses Browser.close from a remote
 // client, so the last client terminates the shared browser this way.
 func terminateBrowser(ctx context.Context, pid int) error {
-	if err := unix.Kill(pid, unix.SIGTERM); err != nil {
-		if errors.Is(err, unix.ESRCH) {
-			return nil
-		}
+	if gone, err := signalTerminate(pid); gone {
+		return nil
+	} else if err != nil {
 		return fmt.Errorf("terminate browser %d: %w", pid, err)
 	}
 	ticker := time.NewTicker(launchPollInterval)
 	defer ticker.Stop()
 	for {
-		if err := unix.Kill(pid, 0); errors.Is(err, unix.ESRCH) {
+		if processGone(pid) {
 			return nil
 		}
 		select {
@@ -488,19 +492,10 @@ func terminateBrowser(ctx context.Context, pid int) error {
 // browserOwnsProfile reports whether pid is a Chromium running on profileDir.
 // A pid read from the lock file can outlive its browser, and the kernel can
 // hand the number to an unrelated process, so every signal to such a pid is
-// gated on the process command line naming the profile. Linux exposes the
-// command line in /proc; elsewhere ps prints it.
+// gated on the process command line naming the profile.
 func browserOwnsProfile(ctx context.Context, pid int, profileDir string) bool {
-	want := "--user-data-dir=" + profileDir
-	if data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline")); err == nil {
-		return commandLineHasArg(string(data), want)
-	}
-	//nolint:gosec // ps receives a pid that Nyala formatted from an integer.
-	out, err := exec.CommandContext(ctx, "ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		return false
-	}
-	return commandLineHasArg(strings.TrimRight(string(out), "\n"), want)
+	args, ok := processCommandLine(ctx, pid)
+	return ok && commandLineHasArg(args, "--user-data-dir="+profileDir)
 }
 
 // commandLineHasArg reports whether want appears in args as a whole argument.
@@ -547,7 +542,7 @@ func stopBrowser(pid int, profileDir string) {
 		return
 	}
 	if err := terminateBrowser(ctx, pid); err != nil && browserOwnsProfile(ctx, pid, profileDir) {
-		_ = unix.Kill(pid, unix.SIGKILL)
+		killProcess(pid)
 	}
 }
 
@@ -845,7 +840,7 @@ func readDevToolsActivePort(profileDir string) (string, error) {
 // pid stays truthful after the browser exits.
 func spawnShared(guard *profileGuard, cfg allocatorConfig, connect connectFunc) (context.Context, context.CancelFunc, error) {
 	profileDir := cfg.profileDir
-	if pid, ok := guard.readPID(); ok && unix.Kill(pid, 0) == nil {
+	if pid, ok := guard.readPID(); ok && processAlive(pid) {
 		if wsURL, err := readDevToolsActivePort(profileDir); err == nil {
 			if holder, closeSocket, err := connect(context.Background(), wsURL, adoptConnectTimeout); err == nil {
 				return holder, closeSocket, nil

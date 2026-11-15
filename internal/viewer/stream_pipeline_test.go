@@ -541,7 +541,7 @@ func TestStreamLoopTeardownAfterCycleAndWinch(t *testing.T) {
 	}
 
 	// A resize signal must not deadlock even when GetSize fails on the unset fd.
-	winch <- syscall.SIGWINCH
+	winch <- syscall.Signal(0)
 	keys <- keyEvent{b: keyQuitCtrlQ}
 
 	select {

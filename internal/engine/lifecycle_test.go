@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/wimpysworld/nyala/internal/render"
-	"golang.org/x/sys/unix"
 )
 
 func TestCloseAfterNavigateFailureReturns(t *testing.T) {
@@ -526,8 +525,8 @@ func TestLastClientTerminatesBrowser(t *testing.T) {
 	if !slices.Equal(rec.pids, []int{pid}) {
 		t.Fatalf("terminate pids = %v, want [%d]", rec.pids, pid)
 	}
-	if guard.mode != unix.LOCK_EX {
-		t.Fatalf("guard mode after last-client close = %d, want LOCK_EX (%d)", guard.mode, unix.LOCK_EX)
+	if guard.mode != lockExclusive {
+		t.Fatalf("guard mode after last-client close = %d, want LOCK_EX (%d)", guard.mode, lockExclusive)
 	}
 }
 
@@ -561,8 +560,8 @@ func TestNonLastClientClosesSocketOnly(t *testing.T) {
 	if len(rec.pids) != 0 {
 		t.Fatalf("terminate ran with pids %v while another client held the guard", rec.pids)
 	}
-	if guard.mode != unix.LOCK_SH {
-		t.Fatalf("guard mode after non-last close = %d, want LOCK_SH (%d)", guard.mode, unix.LOCK_SH)
+	if guard.mode != lockShared {
+		t.Fatalf("guard mode after non-last close = %d, want LOCK_SH (%d)", guard.mode, lockShared)
 	}
 }
 

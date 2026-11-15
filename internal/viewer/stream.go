@@ -314,9 +314,8 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	// down with the terminal.
 	defer func() { _ = eng.Close() }()
 
-	winch := make(chan os.Signal, 1)
-	signal.Notify(winch, syscall.SIGWINCH)
-	defer signal.Stop(winch)
+	winch, stopResize := notifyResize(fd)
+	defer stopResize()
 
 	// done stops the key-reader goroutine when Stream returns, so a goroutine
 	// blocked on a send after the consumer stops selecting cannot leak.
