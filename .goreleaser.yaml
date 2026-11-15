@@ -3,6 +3,10 @@ version: 2
 
 project_name: nyala
 
+git:
+  ignore_tags:
+    - latest
+
 builds:
   - main: ./cmd/nyala
     binary: nyala
@@ -29,10 +33,15 @@ archives:
       - binary
     name_template: "nyala-{{ .Os }}-{{ .Arch }}"
 
+  # Linux-only tarballs for the AUR, with no OS word, so that bin picks the bare binary.
   - id: compressed
     formats:
       - tar.gz
-    name_template: "nyala_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: darwin
+        formats:
+          - none
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Arch }}"
     files:
       - LICENSE
 
@@ -56,28 +65,17 @@ release:
   footer: |
     ## Install
 
-    **bin** (any platform):
-    ```shell
-    bin install github.com/wimpysworld/nyala
-    ```
-    Requires [`bin`](https://github.com/marcosnils/bin).
+    - Debian and Ubuntu: [apt.wimpys.world](https://apt.wimpys.world/#nyala)
+    - Fedora and openSUSE: [rpm.wimpys.world](https://rpm.wimpys.world/#nyala)
+    - Arch Linux: [pkg.wimpys.world](https://pkg.wimpys.world/#nyala)
+    - Alpine Linux: [apk.wimpys.world](https://apk.wimpys.world/#nyala)
+    - macOS (Homebrew): [brew.wimpys.world](https://brew.wimpys.world/#nyala)
+    - Nix and NixOS: [nix.wimpys.world](https://nix.wimpys.world/#nyala)
+    - Linux and macOS, with [bin](https://github.com/marcosnils/bin): `bin install github.com/wimpysworld/nyala`
+    - Container: `docker run --rm ghcr.io/wimpysworld/nyala --version`
+    - GitHub Actions: `uses: wimpysworld/nyala@v0`
 
-    **Homebrew** (macOS):
-    ```shell
-    brew tap wimpysworld/tap https://brew.wimpys.world/tap.git
-    brew install --cask wimpysworld/tap/nyala
-    ```
-
-    **Nix**: `nix run github:wimpysworld/nyala`
-
-    **Docker**: `docker run --rm ghcr.io/wimpysworld/nyala`
-
-    **Native packages**: download `.deb`, `.rpm`, `.apk`, or Arch Linux packages from the assets above. AUR: [`nyala-bin`](https://aur.archlinux.org/packages/nyala-bin).
-
-    **GitHub Actions**:
-    ```yaml
-    - uses: wimpysworld/nyala@v0
-    ```
+    Nyala needs Chrome or Chromium at runtime.
 
 nfpms:
   - id: packages
@@ -87,6 +85,7 @@ nfpms:
     description: "A browser for the terminal."
     homepage: https://github.com/wimpysworld/nyala
     license: BlueOak-1.0.0
+    file_name_template: "{{ .ConventionalFileName }}"
     formats:
       - deb
       - rpm
@@ -95,7 +94,9 @@ nfpms:
 
 
 aurs:
-  - name: nyala-bin
+  - ids:
+      - compressed
+    name: nyala-bin
     description: "A browser for the terminal."
     homepage: https://github.com/wimpysworld/nyala
     maintainers:

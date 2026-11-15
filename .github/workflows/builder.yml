@@ -445,6 +445,22 @@ jobs:
           git push origin "${major}" --force
         env:
           RELEASE_TAG: ${{ github.ref_name }}
+      - name: Move latest tag
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          # Nix cannot see the tag, so record the version in a commit on top of it.
+          git checkout --detach "${RELEASE_TAG}^{commit}"
+          if [[ -f nix/package.nix ]]; then
+            printf '%s\n' "${RELEASE_TAG#v}" > nix/version
+            git add nix/version
+            git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit --message "chore(nix): set the package version to ${RELEASE_TAG#v}"
+          fi
+          git tag --force latest HEAD
+          git push --force origin refs/tags/latest
       - name: Update Go Report Card
         if: ${{ !contains(github.ref_name, '-') }}
         run: curl -X POST -F "repo=github.com/$GITHUB_REPOSITORY" https://goreportcard.com/checks || true
