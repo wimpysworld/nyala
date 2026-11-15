@@ -24,14 +24,28 @@ func lockRange() *windows.Overlapped {
 	return &windows.Overlapped{OffsetHigh: lockRangeHigh}
 }
 
-// tryLockFile takes mode on f without waiting. isLockBusy reports the error
-// when another handle holds a conflicting lock.
-func tryLockFile(f *os.File, mode int) error {
+// lockHandle takes mode on h without waiting.
+func lockHandle(h windows.Handle, mode int) error {
 	flags := uint32(windows.LOCKFILE_FAIL_IMMEDIATELY)
 	if mode == lockExclusive {
 		flags |= windows.LOCKFILE_EXCLUSIVE_LOCK
 	}
-	return windows.LockFileEx(windows.Handle(f.Fd()), flags, 0, 1, 0, lockRange())
+	return windows.LockFileEx(h, flags, 0, 1, 0, lockRange())
+}
+
+// tryLockFile takes mode on f without waiting. isLockBusy reports the error
+// when another handle holds a conflicting lock. Like flock, it converts a lock
+// that f already holds: a Windows handle conflicts with its own shared lock, so
+// the held lock is dropped first and taken back as shared when an exclusive
+// request fails.
+func tryLockFile(f *os.File, mode int) error {
+	h := windows.Handle(f.Fd())
+	held := windows.UnlockFileEx(h, 0, 1, 0, lockRange()) == nil
+	err := lockHandle(h, mode)
+	if err != nil && held && mode == lockExclusive {
+		_ = lockHandle(h, lockShared)
+	}
+	return err
 }
 
 // isLockBusy reports whether err from tryLockFile means another holder.
@@ -44,10 +58,11 @@ func isLockBusy(err error) bool {
 // range, and the next unlock drops the exclusive lock first, so no other
 // process can take the exclusive lock in between.
 func downgradeLockFile(f *os.File) error {
-	if err := tryLockFile(f, lockShared); err != nil {
+	h := windows.Handle(f.Fd())
+	if err := lockHandle(h, lockShared); err != nil {
 		return err
 	}
-	return windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, lockRange())
+	return windows.UnlockFileEx(h, 0, 1, 0, lockRange())
 }
 
 // unlockFile releases the lock on f. Like flock, it succeeds when f holds no

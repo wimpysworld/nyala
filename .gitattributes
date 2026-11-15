@@ -1,0 +1,3 @@
+# Check out text as LF on every OS, so embedded scripts and golden archives
+# keep the bytes the tests compare.
+* text=auto eol=lf
