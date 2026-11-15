@@ -8,3 +8,6 @@ dist/
 /testdata/diagnostics/
 RESEARCH-PLAN.md
 /coverage.out
+
+# Personal Claude Code settings
+.claude/settings.local.json
