@@ -96,7 +96,8 @@ func TestBrowserDiscoveryPlatformPriority(t *testing.T) {
 	programFiles := `C:\Program Files`
 	programFilesX86 := `C:\Program Files (x86)`
 	localAppData := `C:\Users\browser\AppData\Local`
-	chromeApp := "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+	chromeApp := filepath.Join("/Applications", "Google Chrome.app", "Contents", "MacOS", "Google Chrome")
+	edgeApp := filepath.Join("/Applications", "Microsoft Edge.app", "Contents", "MacOS", "Microsoft Edge")
 	windowsChrome := programFiles + `\Google\Chrome\Application\chrome.exe`
 	windowsUserChrome := localAppData + `\Google\Chrome\Application\chrome.exe`
 	windowsBrave := programFiles + `\BraveSoftware\Brave-Browser\Application\brave.exe`
@@ -118,7 +119,7 @@ func TestBrowserDiscoveryPlatformPriority(t *testing.T) {
 		{"packaged Chromium beats Brave PATH", "linux", []string{"/var/lib/flatpak/exports/bin/org.chromium.Chromium", "brave-browser"}, "/var/lib/flatpak/exports/bin/org.chromium.Chromium"},
 		{"macOS native Chrome beats Brave PATH", "darwin", []string{chromeApp, "brave-browser"}, chromeApp},
 		{"macOS user Brave is a fallback", "darwin", []string{userBraveApp}, userBraveApp},
-		{"macOS native Edge is a fallback", "darwin", []string{"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"}, "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"},
+		{"macOS native Edge is a fallback", "darwin", []string{edgeApp}, edgeApp},
 		{"Windows native Chrome beats Brave PATH", "windows", []string{windowsChrome, "brave"}, windowsChrome},
 		{"Windows per-user Chrome beats Edge PATH", "windows", []string{windowsUserChrome, "msedge"}, windowsUserChrome},
 		{"Windows native Brave is a fallback", "windows", []string{windowsBrave}, windowsBrave},
@@ -163,8 +164,12 @@ func TestBrowserDiscoverySkipsUnsetOrRelativeRoots(t *testing.T) {
 			for _, root := range []string{"", "relative-root"} {
 				d := browserDiscovery{goos: goos, home: root, getenv: func(string) string { return root }}
 				for _, candidate := range d.candidates() {
-					path := candidate.path
-					if strings.ContainsAny(path, `/\`) && !filepath.IsAbs(path) {
+					path := filepath.ToSlash(candidate.path)
+					absolute := filepath.IsAbs(path)
+					if goos != "windows" {
+						absolute = strings.HasPrefix(path, "/")
+					}
+					if strings.ContainsAny(path, `/\`) && !absolute {
 						t.Errorf("root %q produced relative install path %q", root, path)
 					}
 					if strings.HasPrefix(path, "/.nix-profile/") || strings.HasPrefix(path, "/.local/") {
