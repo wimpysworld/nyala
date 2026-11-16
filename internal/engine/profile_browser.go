@@ -22,6 +22,11 @@ func browserIdentity(path string) string {
 }
 
 func checkProfileBrowser(guard *profileGuard, cfg allocatorConfig, exclusive bool) error {
+	if exclusive {
+		if err := clearStaleProfilePID(guard, cfg.profileDir); err != nil {
+			return err
+		}
+	}
 	identity := browserIdentity(cfg.execPath)
 	marker := filepath.Join(cfg.profileDir, profileBrowserName)
 	stored, err := os.ReadFile(marker)
@@ -44,6 +49,21 @@ func checkProfileBrowser(guard *profileGuard, cfg allocatorConfig, exclusive boo
 		return nil
 	}
 	return writeProfileBrowser(marker, identity)
+}
+
+func clearStaleProfilePID(guard *profileGuard, profileDir string) error {
+	pid, recorded := guard.readPID()
+	if !recorded || !processAlive(pid) {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), adoptConnectTimeout)
+	defer cancel()
+	args, ok := processCommandLine(ctx, pid)
+	if ok && args != "" && !commandLineHasArg(args, "--user-data-dir="+profileDir) {
+		// Clear a reused PID under LOCK_EX so spawnShared cannot adopt its stale port.
+		return guard.writePID(0)
+	}
+	return nil
 }
 
 func checkLegacyProfileBrowser(guard *profileGuard, cfg allocatorConfig, identity string, exclusive bool) error {
