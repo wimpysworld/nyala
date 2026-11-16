@@ -924,7 +924,7 @@ func TestLaunchAdoptsLiveBrowser(t *testing.T) {
 	// LOCK_EX winner adopts the browser: it connects to the published URL,
 	// spawns nothing, and keeps Default/Sessions. spawnShared is the seam,
 	// because launchShared goes on to newInstanceTarget, which needs a real
-	// Browser. The current process stands in for the live browser pid.
+	// Browser. A test subprocess stands in for the live browser pid.
 	profileDir := filepath.Join(t.TempDir(), "profile")
 	sessionFile := filepath.Join(profileDir, "Default", "Sessions", "x")
 	if err := os.MkdirAll(filepath.Dir(sessionFile), 0o700); err != nil {
@@ -948,7 +948,8 @@ func TestLaunchAdoptsLiveBrowser(t *testing.T) {
 	if err := checkProfileBrowser(guard, cfg, true); err != nil {
 		t.Fatalf("record browser identity: %v", err)
 	}
-	if err := guard.writePID(os.Getpid()); err != nil {
+	pid := profileBrowserOwner(t, cfg.execPath, profileDir)
+	if err := guard.writePID(pid); err != nil {
 		t.Fatalf("writePID: %v", err)
 	}
 
@@ -978,8 +979,8 @@ func TestLaunchAdoptsLiveBrowser(t *testing.T) {
 	if _, err := os.Stat(sessionFile); err != nil {
 		t.Errorf("adopt purged Default/Sessions: %v", err)
 	}
-	if pid, ok := guard.readPID(); !ok || pid != os.Getpid() {
-		t.Errorf("adopt rewrote the lock file pid to (%d, %v), want own pid kept", pid, ok)
+	if got, ok := guard.readPID(); !ok || got != pid {
+		t.Errorf("adopt rewrote the lock file pid to (%d, %v), want %d", got, ok, pid)
 	}
 }
 

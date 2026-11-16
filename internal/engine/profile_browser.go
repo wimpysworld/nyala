@@ -29,6 +29,9 @@ func checkProfileBrowser(guard *profileGuard, cfg allocatorConfig, exclusive boo
 		if string(stored) != identity {
 			return fmt.Errorf("profile %q belongs to browser %q, not %q; use a separate --profile", cfg.profileDir, stored, identity)
 		}
+		if pid, recorded := guard.readPID(); recorded && processAlive(pid) {
+			return checkProfileBrowserProcess(pid, cfg, browserFamily(cfg.execPath))
+		}
 		return nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
@@ -46,18 +49,10 @@ func checkProfileBrowser(guard *profileGuard, cfg allocatorConfig, exclusive boo
 func checkLegacyProfileBrowser(guard *profileGuard, cfg allocatorConfig, identity string, exclusive bool) error {
 	pid, recorded := guard.readPID()
 	if !exclusive || recorded && processAlive(pid) {
-		ctx, cancel := context.WithTimeout(context.Background(), adoptConnectTimeout)
-		defer cancel()
-		args, ok := processCommandLine(ctx, pid)
-		command, _, _ := strings.Cut(args, "\x00")
-		if command == args {
-			command, _, _ = strings.Cut(args, " --")
-		}
-		command = strings.Trim(strings.TrimSpace(command), `"`)
-		if identity != "chromium" || !ok || browserFamily(command) != "chromium" || !commandLineHasArg(args, "--user-data-dir="+cfg.profileDir) {
+		if identity != "chromium" {
 			return fmt.Errorf("profile %q has a running browser without a matching identity; close its existing Nyala clients or use a separate --profile", cfg.profileDir)
 		}
-		return nil
+		return checkProfileBrowserProcess(pid, cfg, "chromium")
 	}
 	if identity != "chromium" {
 		for _, name := range []string{"Default", "Local State"} {
@@ -65,6 +60,26 @@ func checkLegacyProfileBrowser(guard *profileGuard, cfg allocatorConfig, identit
 				return fmt.Errorf("profile %q has browser data without an identity; use a new --profile for %q", cfg.profileDir, identity)
 			}
 		}
+	}
+	return nil
+}
+
+func checkProfileBrowserProcess(pid int, cfg allocatorConfig, family string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), adoptConnectTimeout)
+	defer cancel()
+	args, ok := processCommandLine(ctx, pid)
+	command, _, _ := strings.Cut(args, "\x00")
+	command, _, _ = strings.Cut(command, " --")
+	command = strings.Trim(strings.TrimSpace(command), `"`)
+	// Nix wrappers exec a hidden binary with the original browser name.
+	name := filepath.Base(command)
+	if strings.HasPrefix(name, ".") && strings.HasSuffix(name, "-wrapped") {
+		command = strings.TrimSuffix(strings.TrimPrefix(name, "."), "-wrapped")
+	}
+	// Custom launchers can exec a differently named browser, so their marker
+	// identifies the launcher and only profile ownership is checked here.
+	if !ok || family != "" && browserFamily(command) != family || !commandLineHasArg(args, "--user-data-dir="+cfg.profileDir) {
+		return fmt.Errorf("profile %q has a running browser without a matching identity; close its existing Nyala clients or use a separate --profile", cfg.profileDir)
 	}
 	return nil
 }
