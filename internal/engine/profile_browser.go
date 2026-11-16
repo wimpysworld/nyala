@@ -96,12 +96,36 @@ func checkProfileBrowserProcess(pid int, cfg allocatorConfig, family string) err
 	if strings.HasPrefix(name, ".") && strings.HasSuffix(name, "-wrapped") {
 		command = strings.TrimSuffix(strings.TrimPrefix(name, "."), "-wrapped")
 	}
+	ownerFamily := browserFamily(command)
+	if filepath.Base(command) == "flatpak" {
+		ownerFamily = flatpakBrowserFamily(args)
+	}
 	// Custom launchers can exec a differently named browser, so their marker
 	// identifies the launcher and only profile ownership is checked here.
-	if !ok || family != "" && browserFamily(command) != family || !commandLineHasArg(args, "--user-data-dir="+cfg.profileDir) {
+	if !ok || family != "" && ownerFamily != family || !commandLineHasArg(args, "--user-data-dir="+cfg.profileDir) {
 		return fmt.Errorf("profile %q has a running browser without a matching identity; close its existing Nyala clients or use a separate --profile", cfg.profileDir)
 	}
 	return nil
+}
+
+func flatpakBrowserFamily(commandLine string) string {
+	args := strings.Split(commandLine, "\x00")
+	if len(args) < 3 || args[1] != "run" {
+		return ""
+	}
+	for _, arg := range args[2:] {
+		// Export wrappers put these options before the application ID.
+		if strings.HasPrefix(arg, "--branch=") || strings.HasPrefix(arg, "--arch=") {
+			continue
+		}
+		switch arg {
+		case "org.chromium.Chromium", "com.google.Chrome", "com.brave.Browser", "com.microsoft.Edge":
+			return browserFamily(arg)
+		default:
+			return ""
+		}
+	}
+	return ""
 }
 
 func writeProfileBrowser(marker, identity string) error {

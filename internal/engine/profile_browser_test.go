@@ -7,10 +7,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestMain(m *testing.M) {
+	if os.Getenv("NYALA_TEST_PROFILE_OWNER") == "1" {
+		os.Args = []string{os.Args[0], "--test.run=^TestProfileBrowserOwnerProcess$"}
+	}
+	os.Exit(m.Run())
+}
 
 func TestProfileBrowserOwnerProcess(t *testing.T) {
 	if os.Getenv("NYALA_TEST_PROFILE_OWNER") != "1" {
@@ -24,7 +32,7 @@ func TestProfileBrowserOwnerProcess(t *testing.T) {
 	}
 }
 
-func profileBrowserOwner(t *testing.T, command, profileDir string) int {
+func profileBrowserOwner(t *testing.T, command, profileDir string, args ...string) int {
 	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
@@ -32,7 +40,8 @@ func profileBrowserOwner(t *testing.T, command, profileDir string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
-	cmd := exec.CommandContext(ctx, executable, "--test.run=^TestProfileBrowserOwnerProcess$", "--", "--user-data-dir="+profileDir)
+	args = append(args, "--test.run=^TestProfileBrowserOwnerProcess$", "--", "--user-data-dir="+profileDir)
+	cmd := exec.CommandContext(ctx, executable, args...)
 	cmd.Args[0] = command
 	cmd.Env = append(os.Environ(), "NYALA_TEST_PROFILE_OWNER=1")
 	input, err := cmd.StdinPipe()
@@ -62,21 +71,40 @@ func TestProfileBrowserMatchingMarkerChecksLiveOwner(t *testing.T) {
 	for _, tc := range []struct {
 		name, selected, owner              string
 		wrongProfile, reject, connectFails bool
+		args                               []string
 	}{
-		{"different family", "chromium", "brave", false, true, false},
-		{"different family recovery", "chromium", "brave", false, true, true},
-		{"unrecognised owner", "chromium", "unrelated", false, true, false},
-		{"wrong profile", "chromium", "chrome", true, true, false},
-		{"same family alias", "chromium", "google-chrome", false, false, false},
-		{"Brave alias", "brave-browser", "brave", false, false, false},
-		{"Edge alias", "microsoft-edge", "msedge", false, false, false},
-		{"Nix Chromium wrapper", "chromium", ".chromium-wrapped", false, false, false},
-		{"rewritten command line", "chromium", ".chromium-wrapped --headless", false, false, false},
-		{"Nix Brave wrapper", "brave-browser", ".brave-wrapped", false, false, false},
-		{"Nix Edge wrapper", "microsoft-edge", ".msedge-wrapped", false, false, false},
-		{"custom wrapper", "custom-launcher", "chrome", false, false, false},
-		{"custom wrong profile", "custom-launcher", "chrome", true, true, false},
+		{"different family", "chromium", "brave", false, true, false, nil},
+		{"different family recovery", "chromium", "brave", false, true, true, nil},
+		{"unrecognised owner", "chromium", "unrelated", false, true, false, nil},
+		{"wrong profile", "chromium", "chrome", true, true, false, nil},
+		{"same family alias", "chromium", "google-chrome", false, false, false, nil},
+		{"Brave alias", "brave-browser", "brave", false, false, false, nil},
+		{"Edge alias", "microsoft-edge", "msedge", false, false, false, nil},
+		{"Nix Chromium wrapper", "chromium", ".chromium-wrapped", false, false, false, nil},
+		{"rewritten command line", "chromium", ".chromium-wrapped --headless", false, false, false, nil},
+		{"Nix Brave wrapper", "brave-browser", ".brave-wrapped", false, false, false, nil},
+		{"Nix Edge wrapper", "microsoft-edge", ".msedge-wrapped", false, false, false, nil},
+		{"custom wrapper", "custom-launcher", "chrome", false, false, false, nil},
+		{"custom wrong profile", "custom-launcher", "chrome", true, true, false, nil},
+		{"Flatpak Chromium", "org.chromium.Chromium", "flatpak", false, false, false, []string{"run", "--branch=stable", "--arch=x86_64", "org.chromium.Chromium"}},
+		{"Flatpak Chrome", "com.google.Chrome", "flatpak", false, false, false, []string{"run", "--branch=stable", "--arch=aarch64", "com.google.Chrome"}},
+		{"Flatpak Brave", "com.brave.Browser", "flatpak", false, false, false, []string{"run", "--branch=stable", "--arch=x86_64", "com.brave.Browser"}},
+		{"Flatpak Edge", "com.microsoft.Edge", "flatpak", false, false, false, []string{"run", "--branch=stable", "--arch=x86_64", "com.microsoft.Edge"}},
+		{"Flatpak without options", "chromium", "flatpak", false, false, false, []string{"run", "org.chromium.Chromium"}},
+		{"Nix Flatpak wrapper", "chromium", ".flatpak-wrapped", false, false, false, []string{"run", "--branch=stable", "--arch=x86_64", "org.chromium.Chromium"}},
+		{"Flatpak wrong family", "chromium", "flatpak", false, true, false, []string{"run", "com.brave.Browser"}},
+		{"Flatpak wrong profile", "chromium", "flatpak", true, true, false, []string{"run", "org.chromium.Chromium"}},
+		{"Flatpak unknown app", "chromium", "flatpak", false, true, false, []string{"run", "org.example.Unknown"}},
+		{"Flatpak later known ID", "chromium", "flatpak", false, true, false, []string{"run", "org.example.Unknown", "org.chromium.Chromium"}},
+		{"Flatpak ID in option value", "chromium", "flatpak", false, true, false, []string{"run", "--branch=org.chromium.Chromium", "org.example.Unknown"}},
+		{"Flatpak separate option value", "chromium", "flatpak", false, true, false, []string{"run", "--command", "org.chromium.Chromium", "org.example.Unknown"}},
+		{"Flatpak ID substring", "chromium", "flatpak", false, true, false, []string{"run", "org.chromium.Chromium.Unknown"}},
+		{"Flatpak wrong subcommand", "chromium", "flatpak", false, true, false, []string{"info", "org.chromium.Chromium"}},
+		{"Flatpak missing ID", "chromium", "flatpak", false, true, false, []string{"run", "--branch=stable"}},
 	} {
+		if len(tc.args) > 0 && runtime.GOOS != "linux" {
+			continue
+		}
 		for _, exclusive := range []bool{false, true} {
 			t.Run(tc.name+map[bool]string{false: "/shared", true: "/exclusive"}[exclusive], func(t *testing.T) {
 				dir := t.TempDir()
@@ -92,7 +120,7 @@ func TestProfileBrowserMatchingMarkerChecksLiveOwner(t *testing.T) {
 				if tc.wrongProfile {
 					ownerProfile += "-other"
 				}
-				pid := profileBrowserOwner(t, filepath.Join(t.TempDir(), tc.owner), ownerProfile)
+				pid := profileBrowserOwner(t, filepath.Join(t.TempDir(), tc.owner), ownerProfile, tc.args...)
 				if err := guard.writePID(pid); err != nil {
 					t.Fatal(err)
 				}
