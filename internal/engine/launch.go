@@ -420,12 +420,15 @@ func newInstanceTarget(holder context.Context) (context.Context, context.CancelF
 	return ctx, cancel, nil
 }
 
-// terminateBrowser sends SIGTERM to pid and polls with a null signal until the
-// process is gone or ctx ends. An initial ESRCH counts as success, since the
-// browser has already exited. Chromium refuses Browser.close from a remote
-// client, so the last client terminates the shared browser this way.
+// terminateBrowser sends SIGTERM to the browser's private process group, or its
+// PID without one, and polls until it is gone or ctx ends. An initial ESRCH counts
+// as success. The last client uses this path to stop the shared browser.
 func terminateBrowser(ctx context.Context, pid int) error {
-	if gone, err := signalTerminate(pid); gone {
+	return terminateBrowserTarget(ctx, pid, browserSignalTarget(pid))
+}
+
+func terminateBrowserTarget(ctx context.Context, pid, signalTarget int) error {
+	if gone, err := signalTerminate(signalTarget); gone {
 		return nil
 	} else if err != nil {
 		return fmt.Errorf("terminate browser %d: %w", pid, err)
@@ -433,7 +436,7 @@ func terminateBrowser(ctx context.Context, pid int) error {
 	ticker := time.NewTicker(launchPollInterval)
 	defer ticker.Stop()
 	for {
-		if processGone(pid) {
+		if processGone(signalTarget) {
 			return nil
 		}
 		select {
@@ -485,10 +488,10 @@ func terminateOwnedBrowser(ctx context.Context, pid int, profileDir string) erro
 	return terminateBrowser(ctx, pid)
 }
 
-// stopBrowser terminates pid with SIGTERM bounded by browserExitTimeout, then
-// SIGKILL when it is still alive. launchShared uses it on a browser that
-// answers no connection, or that it spawned and then failed to reach, because a
-// fresh spawn on the same profile would collide with Chromium's ProcessSingleton.
+// stopBrowser terminates the browser with SIGTERM bounded by browserExitTimeout,
+// then SIGKILL when its private process group or PID survives. launchShared uses
+// it on a browser that answers no connection, or that it spawned and failed to
+// reach. A fresh spawn on the same profile would collide with ProcessSingleton.
 // A pid whose command line does not name profileDir is left alone.
 func stopBrowser(pid int, profileDir string) {
 	ctx, cancel := context.WithTimeout(context.Background(), browserExitTimeout)
@@ -496,8 +499,13 @@ func stopBrowser(pid int, profileDir string) {
 	if !browserOwnsProfile(ctx, pid, profileDir) {
 		return
 	}
-	if err := terminateBrowser(ctx, pid); err != nil && browserOwnsProfile(ctx, pid, profileDir) {
-		killProcess(pid)
+	signalTarget := browserSignalTarget(pid)
+	if err := terminateBrowserTarget(ctx, pid, signalTarget); err != nil {
+		// A private group can outlive its wrapper. Its surviving members retain
+		// the group identifier, so escalation does not need the departed leader.
+		if signalTarget < -1 || browserOwnsProfile(ctx, pid, profileDir) {
+			killProcess(signalTarget)
+		}
 	}
 }
 

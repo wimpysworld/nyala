@@ -19,6 +19,11 @@ func detachedSysProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP}
 }
 
+// browserSignalTarget retains the PID on Windows, which has no group signals.
+func browserSignalTarget(pid int) int {
+	return pid
+}
+
 // errNoProcess stands in for ESRCH: no process has the pid.
 var errNoProcess = errors.New("no such process")
 
