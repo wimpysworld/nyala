@@ -89,7 +89,18 @@ func checkProfileBrowserProcess(pid int, cfg allocatorConfig, family string) err
 	ctx, cancel := context.WithTimeout(context.Background(), adoptConnectTimeout)
 	defer cancel()
 	args, ok := processCommandLine(ctx, pid)
-	command, _, _ := strings.Cut(args, "\x00")
+	ownerArgs := args
+	command, rest, _ := strings.Cut(ownerArgs, "\x00")
+	switch filepath.Base(command) {
+	case "bash", "sh":
+		// Non-exec shell wrappers retain the script as the next argument.
+		// Do not search shell options or command payloads for browser names.
+		ownerArgs = rest
+		command, _, _ = strings.Cut(ownerArgs, "\x00")
+		if strings.HasPrefix(command, "-") {
+			command = ""
+		}
+	}
 	command, _, _ = strings.Cut(command, " --")
 	command = strings.Trim(strings.TrimSpace(command), `"`)
 	// Nix wrappers exec a hidden binary with the original browser name.
@@ -99,7 +110,7 @@ func checkProfileBrowserProcess(pid int, cfg allocatorConfig, family string) err
 	}
 	ownerFamily := browserFamily(command)
 	if filepath.Base(command) == "flatpak" {
-		ownerFamily = flatpakBrowserFamily(args)
+		ownerFamily = flatpakBrowserFamily(ownerArgs)
 	}
 	// Custom launchers can exec a differently named browser, so their marker
 	// identifies the launcher and only profile ownership is checked here.
