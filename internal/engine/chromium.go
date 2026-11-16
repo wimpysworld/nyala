@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"os"
 	"sync"
 	"time"
 
@@ -108,11 +109,13 @@ type ChromiumEngine struct {
 	cellW int // resolved cell width in pixels
 	cellH int // resolved cell height in pixels
 
-	backend      render.Backend // active terminal rendering backend
-	browserFlag  string         // --browser value, empty for env/PATH discovery
-	profileDir   string         // resolved profile directory, empty until configured
-	remoteURL    string         // running Chromium to attach to, empty for a managed launch
-	profileGuard *profileGuard  // held for the engine lifetime, including recovery
+	backend        render.Backend // active terminal rendering backend
+	browserFlag    string         // --browser value, empty for env/PATH discovery
+	execPath       string         // selected public launcher, retained across recovery
+	defaultProfile bool           // profile has no flag or environment override
+	profileDir     string         // resolved profile directory, empty until configured
+	remoteURL      string         // running Chromium to attach to, empty for a managed launch
+	profileGuard   *profileGuard  // held for the engine lifetime, including recovery
 	// disableFrameRateLimit passes Chromium's launch-time
 	// --disable-frame-rate-limit switch. It is set before Navigate and remains
 	// false by default, preserving Chromium's normal frame scheduling.
@@ -371,6 +374,7 @@ func (e *ChromiumEngine) SetProfileDir(flag string) error {
 	}
 	e.mu.Lock()
 	e.profileDir = profileDir
+	e.defaultProfile = flag == "" && os.Getenv("NYALA_PROFILE") == ""
 	e.mu.Unlock()
 	return nil
 }

@@ -71,9 +71,21 @@ nyala example.com
 
 A bare host gains an `https://` scheme. The `http`, `https`, and `file` schemes are accepted; others are rejected. Nyala launches headless Chromium, streams the live page, and renders it to the TTY. The mouse works too: the wheel scrolls the page at the pointer, clicks reach the page, and dragging works on sliders, maps, scrollbars, and page text. Pages also see the pointer move, so links highlight under it and menus that open on hover open.
 
-Nyala needs a Chromium executable at runtime. It resolves the path from `--browser`, then `NYALA_BROWSER`, then `CHROME_PATH`, then a `PATH` lookup.
+Nyala needs a Chromium-based browser at runtime. An explicit `--browser` takes precedence over `NYALA_BROWSER`, then `CHROME_PATH`. Without an override, Nyala searches for Chrome/Chromium before Brave, then Microsoft Edge. Within each browser family, it checks `PATH`, known installation paths, active Nix profiles on Linux and macOS, then known packaged launchers.
 
-Nyala keeps cookies, logins, site data, and browser settings between runs. It resolves the profile directory from `--profile`, then `NYALA_PROFILE`, then `$XDG_DATA_HOME/nyala/profile`, then `~/.local/share/nyala/profile`. The last path is the normal default when the environment does not override it.
+Automatic discovery uses ordinary installation names and stable-channel paths. Use an explicit executable path for preview channels, portable builds, or custom installation directories. Nyala keeps the selected browser during crash recovery. A launch or protocol failure reports that browser instead of trying another family.
+
+Snap and Flatpak launchers are detected, but their confinement can block profile access or browser startup. Nyala does not change their permissions or sandbox settings. Use a native package if a confined browser cannot start.
+
+Nyala keeps cookies, logins, site data, and browser settings between runs. An explicit `--profile` takes precedence over `NYALA_PROFILE`. Otherwise, Nyala uses `$XDG_DATA_HOME/nyala` or `~/.local/share/nyala`, with a separate default directory for each browser family:
+
+| Browser family | Profile directory |
+|---|---|
+| Chrome/Chromium | `profile` |
+| Brave | `profile-brave` |
+| Microsoft Edge | `profile-edge` |
+
+Explicit profile paths stay unchanged. Nyala does not migrate cookies or logins between browser families. A persistent profile records its browser family and rejects a different family. Choose a separate Nyala profile when switching families, not your personal browser profile.
 
 Choose another persistent profile or start with a disposable one:
 
@@ -137,8 +149,8 @@ Behind a proxy? Nyala reads the standard proxy environment variables and routes 
 | Flag | Default | Description |
 |---|---|---|
 | `<url>` | required | Page to open. |
-| `--browser` | auto | Path to the Chromium executable to drive. |
-| `--profile` | `~/.local/share/nyala/profile` | Persistent browser profile directory. `NYALA_PROFILE` and `XDG_DATA_HOME` can change the default. |
+| `--browser` | auto | Browser executable. Chrome/Chromium takes precedence over Brave, then Microsoft Edge. |
+| `--profile` | browser-specific | Persistent browser profile directory, described above. `NYALA_PROFILE` and `XDG_DATA_HOME` can change the default. |
 | `--private` | off | Use a disposable browser profile and ignore persistent profile settings. |
 | `--remote-debugging-url` | off | Attach to a running Chromium at `http://host:port` or `ws://host:port/devtools/browser/<id>` instead of launching one. `NYALA_REMOTE_DEBUGGING_URL` sets the same value. Excludes `--browser`, `--profile`, and `--private`. |
 | `--backend` | `auto` | Renderer backend: `auto`, `block`, `kitty`, or `sixel`. `auto` picks the terminal's best supported backend. A named backend sets the starting renderer and fails fast if the terminal cannot run it. |

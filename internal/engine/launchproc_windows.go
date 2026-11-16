@@ -6,8 +6,6 @@ import (
 	"context"
 	"errors"
 	"math"
-	"os"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -19,6 +17,11 @@ import (
 // Ctrl+C does not reach it.
 func detachedSysProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP}
+}
+
+// browserSignalTarget retains the PID on Windows, which has no group signals.
+func browserSignalTarget(pid int) int {
+	return pid
 }
 
 // errNoProcess stands in for ESRCH: no process has the pid.
@@ -112,21 +115,4 @@ func processCommandLine(_ context.Context, pid int) (string, bool) {
 		return line, true
 	}
 	return strings.Join(args, "\x00"), true
-}
-
-// chromiumInstallPaths lists the standard per-machine and per-user install
-// paths of Chrome and Chromium, tried after PATH.
-func chromiumInstallPaths() []string {
-	var paths []string
-	for _, env := range []string{"ProgramFiles", "ProgramFiles(x86)", "LocalAppData"} {
-		dir := os.Getenv(env)
-		if dir == "" {
-			continue
-		}
-		paths = append(paths,
-			filepath.Join(dir, "Google", "Chrome", "Application", "chrome.exe"),
-			filepath.Join(dir, "Chromium", "Application", "chrome.exe"),
-		)
-	}
-	return paths
 }

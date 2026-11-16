@@ -138,13 +138,65 @@ thin orchestration.
 
 ### Launch and Chromium discovery
 
-`resolveExecutable` (`launch.go`) tries, in order: the `--browser` flag,
-`NYALA_BROWSER`, `CHROME_PATH`, then a PATH lookup over `chromium`,
-`chromium-browser`, `google-chrome`, and `google-chrome-stable`. It fails fast
-with an error naming that order.
+`resolveExecutable` (`discovery.go`) gives explicit settings precedence:
+`--browser`, `NYALA_BROWSER`, then
+`CHROME_PATH`. An invalid explicit setting fails rather than selecting another
+browser. Automatic discovery searches Chrome/Chromium first, Brave second,
+and Microsoft Edge last. Each family searches `PATH`, known native installation
+paths, active Nix profiles on Linux and macOS, then known packaged launchers.
+Every primary-family candidate precedes every fallback-family candidate, so
+Brave on `PATH` cannot override Chrome in a native installation.
 
-The app owns profile policy. Persistent mode calls `SetProfileDir` before the
-viewer starts; private mode bypasses that call, even when `--profile` or
+The primary `PATH` names retain their order: `chromium`, `chromium-browser`,
+`google-chrome`, `google-chrome-stable`, and `chrome`. Automatic candidates use
+ordinary installation names and stable-channel paths. Preview channels,
+portable builds, and custom installation directories need an explicit override.
+Discovery checks a bounded list rather than scanning directories, package-manager
+caches, the Nix store, or historical profile generations. The selected public
+launcher remains the executable, including package wrappers and symlinks.
+
+| Platform | Native locations |
+|---|---|
+| Linux | Public launchers in `/usr/bin` and the vendor wrappers under `/opt`. |
+| macOS | Browser bundle executables under `/Applications` and `~/Applications`. |
+| Windows | Vendor application paths under `ProgramFiles`, `ProgramFiles(x86)`, `LOCALAPPDATA`, and `ProgramW6432`. Empty or relative roots are ignored. |
+
+Active Nix directories include the configured `NIX_STATE_HOME` profile, the
+XDG state profile, `~/.nix-profile`, the per-user system profile, the current
+system environment, and the default system profile. The resolver retains their
+public wrapper paths rather than replacing them with Nix store targets.
+Linux packaged candidates include the standard Snap launcher directories and
+the default system and user Flatpak export directories. Custom package roots
+need an explicit override.
+
+Known Snap and Flatpak launchers use the ordinary launch path. Launch failures
+include a confinement/profile hint. Discovery alone does not qualify confined
+profile visibility, the debugging connection, or process cleanup. Nyala does not
+change filesystem permissions or sandbox flags to accommodate them.
+
+Selection is separate from launch failover. Missing automatic candidates allow
+the next lookup, but a selected browser's launch, profile, or protocol failure
+stops that launch. Recovery retains the selected executable and browser family
+for the engine lifetime, so cached browser metadata cannot describe a different
+browser after a crash.
+
+Default profiles separate browser families. Chrome/Chromium keeps `profile`,
+Brave uses `profile-brave`, and Edge uses `profile-edge`, under
+`$XDG_DATA_HOME/nyala` or `~/.local/share/nyala`. Explicit `--profile` and
+`NYALA_PROFILE` paths stay unchanged. No automatic profile migration takes place.
+The `.nyala-browser` file (`profile_browser.go`) records browser identity, so a
+different family cannot silently share or adopt that profile's browser.
+Known browser families use
+`chromium`, `brave`, or `edge` identity, allowing same-family launcher aliases.
+Unknown custom launchers use their canonical absolute path. An unmarked live
+legacy browser is accepted only when its process command identifies
+Chrome/Chromium. Other unmarked live browsers fail with an actionable error.
+An offline legacy primary-family profile remains usable. Other families and
+custom launchers reject unmarked profiles that contain `Default` or `Local State`
+browser data.
+
+The app owns explicit profile policy. Persistent mode calls `SetProfileDir`
+before the viewer starts; private mode bypasses that call, even when `--profile` or
 `NYALA_PROFILE` is set. The engine owns the directory and its lifetime. It
 resolves a persistent path once, records it without touching the file system,
 then creates the directory lazily with `0700` permissions on first launch. It

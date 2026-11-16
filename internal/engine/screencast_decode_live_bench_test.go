@@ -88,7 +88,7 @@ func BenchmarkCDPScreencastDecode(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {
-				img, err := decodeJPEGFast(payload.raw)
+				img, err := decodeFrameImage(payload.raw)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -487,7 +487,7 @@ func TestCDPScreencastJPEGFidelity(t *testing.T) {
 	payloads := collectScreencastBenchPayloads(t)
 	var reference *image.RGBA
 	for _, payload := range payloads {
-		img, err := decodeJPEGFast(payload.raw)
+		img, err := decodeFrameImage(payload.raw)
 		if err != nil {
 			t.Fatalf("decode %s: %v", payload.name, err)
 		}

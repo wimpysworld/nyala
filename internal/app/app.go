@@ -40,13 +40,13 @@ type CLI struct {
 	// supports it and degrade to quadrant otherwise; quadrant forces quadrant.
 	Blocks string `help:"Block glyph mode: auto, sextant, or quadrant." name:"blocks" default:"auto" enum:"auto,sextant,quadrant"`
 
-	// Browser is the path to the Chromium executable to drive. Empty falls back
-	// to NYALA_BROWSER, CHROME_PATH, then a PATH lookup at launch.
-	Browser string `help:"Path to the Chromium executable to drive." name:"browser"`
+	// Browser is the browser launcher to drive. Empty uses environment overrides,
+	// then Chrome/Chromium discovery, then Brave and Edge.
+	Browser string `help:"Browser executable. Defaults to $NYALA_BROWSER, $CHROME_PATH, then Chrome/Chromium, Brave and Edge discovery." name:"browser"`
 
 	// Profile is the directory used for persistent browser profile data. Empty
 	// resolves from the environment and the user's data directory.
-	Profile string `help:"Browser profile directory. Defaults to $NYALA_PROFILE, $XDG_DATA_HOME/nyala/profile, or ~/.local/share/nyala/profile."`
+	Profile string `help:"Browser profile directory. Defaults to $NYALA_PROFILE, $XDG_DATA_HOME/nyala/profile, or ~/.local/share/nyala/profile. Brave and Edge defaults add -brave or -edge."`
 
 	// Private uses a disposable browser profile and ignores persistent profile settings.
 	Private bool `help:"Use a disposable browser profile and ignore --profile." name:"private"`

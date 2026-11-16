@@ -155,11 +155,6 @@ diagnostics:
     set -uo pipefail
     fail=0
     run_leg() { printf '\n== %s ==\n' "$1"; shift; "$@" || fail=1; }
-    chromium_found=0
-    if [ -n "${NYALA_BROWSER:-}" ] || [ -n "${CHROME_PATH:-}" ]; then chromium_found=1; fi
-    for name in chromium chromium-browser google-chrome google-chrome-stable chrome; do
-        if command -v "$name" >/dev/null 2>&1; then chromium_found=1; break; fi
-    done
     sixel_found=0
     if command -v sixel2png >/dev/null 2>&1; then sixel_found=1; fi
     run_leg 'browser-free quality' go test -count=1 -tags diagnostics ./internal/harness/
@@ -171,24 +166,19 @@ diagnostics:
         printf '\n== Sixel protocol interop ==\nSKIP: sixel2png not found\n' >&2
         fail=1
     fi
-    if [ "$chromium_found" -eq 1 ]; then
-        profile_dir=""
-        if ! profile_dir="$(mktemp -d)" || [ -z "$profile_dir" ] || [ ! -d "$profile_dir" ]; then
-            printf '%s\n' 'just diagnostics: could not create a disposable Chromium profile' >&2
-            exit 1
-        fi
-        readonly profile_dir
-        cleanup_profile() {
-            if [ -n "${profile_dir:-}" ] && [ -d "$profile_dir" ]; then
-                rm -rf -- "$profile_dir"
-            fi
-        }
-        trap cleanup_profile EXIT
-        run_leg 'CDP-fed correctness' env NYALA_PROFILE="$profile_dir" FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" go test -count=1 -tags cdpinterop ./internal/viewer/ -run '^TestCDP'
-    else
-        printf '\n== CDP-fed correctness ==\nSKIP: Chromium not found; set NYALA_BROWSER or CHROME_PATH, or add Chromium/Chrome to PATH\n' >&2
-        fail=1
+    profile_dir=""
+    if ! profile_dir="$(mktemp -d)" || [ -z "$profile_dir" ] || [ ! -d "$profile_dir" ]; then
+        printf '%s\n' 'just diagnostics: could not create a disposable Chromium profile' >&2
+        exit 1
     fi
+    readonly profile_dir
+    cleanup_profile() {
+        if [ -n "${profile_dir:-}" ] && [ -d "$profile_dir" ]; then
+            rm -rf -- "$profile_dir"
+        fi
+    }
+    trap cleanup_profile EXIT
+    run_leg 'CDP-fed correctness' env NYALA_PROFILE="$profile_dir" FENCE_DEBUG_CHROMIUM_NO_SANDBOX="${FENCE_SANDBOX:-0}" go test -count=1 -tags cdpinterop ./internal/viewer/ -run '^TestCDP'
     exit "$fail"
 
 # Run the synthetic Block terminal protocol gate
@@ -272,19 +262,6 @@ live:
     }
     trap cleanup EXIT
 
-    # The live tests skip themselves when no Chromium resolves, so without this
-    # check the whole leg passes by running nothing. Same resolution order the
-    # binary uses, mirroring just diagnostics.
-    chromium_found=0
-    if [ -n "${NYALA_BROWSER:-}" ] || [ -n "${CHROME_PATH:-}" ]; then chromium_found=1; fi
-    for name in chromium chromium-browser google-chrome google-chrome-stable chrome; do
-        if command -v "$name" >/dev/null 2>&1; then chromium_found=1; break; fi
-    done
-    if [ "$chromium_found" -eq 0 ]; then
-        printf '%s\n' 'just live: Chromium not found; set NYALA_BROWSER or CHROME_PATH, or add Chromium/Chrome to PATH. Every live test would skip, and a skip is not a pass.' >&2
-        exit 1
-    fi
-
     log="$(mktemp)"
     # -v is what makes a skip visible at all: go test prints nothing for a skipped
     # test without it. The === RUN lines are dropped again for readability.
@@ -293,8 +270,8 @@ live:
         | tee "$log" | grep -Ev '^=== (RUN|PAUSE|CONT)'
     rc=${PIPESTATUS[0]}
 
-    # No test in this package skips on Linux or macOS today. A skip here means a
-    # Chromium that resolved but would not launch, which is a failure, not a pass.
+    # No platform skips are expected on Linux or macOS. Browser discovery uses
+    # the engine resolver; a missing browser skips tests and must fail this gate.
     # A legitimate new platform skip needs an explicit exception right here.
     skipped="$(grep -E '^[[:space:]]*--- SKIP: ' "$log" | sed -E 's/^[[:space:]]*--- SKIP: ([^ ]+).*/\1/' || true)"
     if [ -n "$skipped" ]; then

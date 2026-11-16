@@ -41,6 +41,9 @@ func TestResolveExecutablePrecedence(t *testing.T) {
 	// A fake chromium on a temp dir prepended to PATH is the lowest-precedence
 	// source. Each higher source must beat it.
 	pathDir, pathExec := fakeExecutable(t, "chromium", "")
+	_, flagExec := fakeExecutable(t, "flag-browser", "")
+	_, nyalaExec := fakeExecutable(t, "nyala-browser", "")
+	_, chromeExec := fakeExecutable(t, "chrome-browser", "")
 
 	cases := []struct {
 		name         string
@@ -49,9 +52,9 @@ func TestResolveExecutablePrecedence(t *testing.T) {
 		chromePath   string
 		want         string
 	}{
-		{"flag wins over all", "/from/flag", "/from/nyala", "/from/chrome", "/from/flag"},
-		{"nyala wins over chrome and path", "", "/from/nyala", "/from/chrome", "/from/nyala"},
-		{"chrome wins over path", "", "", "/from/chrome", "/from/chrome"},
+		{"flag wins over all", flagExec, nyalaExec, chromeExec, flagExec},
+		{"nyala wins over chrome and path", "", nyalaExec, chromeExec, nyalaExec},
+		{"chrome wins over path", "", "", chromeExec, chromeExec},
 		{"path lookup is the fallback", "", "", "", pathExec},
 	}
 	for _, c := range cases {
@@ -75,13 +78,12 @@ func TestResolveExecutableNoneResolves(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("PATH lookup semantics differ on windows")
 	}
-	// Empty flag, unset envs, and an empty PATH leave nothing to find, so the
-	// call must report a clear error rather than return a stray path.
-	t.Setenv("PATH", t.TempDir())
-	t.Setenv("NYALA_BROWSER", "")
-	t.Setenv("CHROME_PATH", "")
-
-	got, err := resolveExecutable("")
+	discovery := browserDiscovery{
+		goos:     runtime.GOOS,
+		getenv:   func(string) string { return "" },
+		lookPath: func(string) (string, error) { return "", exec.ErrNotFound },
+	}
+	got, err := discovery.resolve("")
 	if err == nil {
 		t.Fatalf("resolveExecutable(\"\") = %q, want error", got)
 	}
@@ -193,7 +195,7 @@ func TestLaunchResolvesExecutableBeforeTouchingProfile(t *testing.T) {
 	}
 
 	err := e.launch("")
-	if err == nil || !strings.Contains(err.Error(), "no Chromium found") {
+	if err == nil || !strings.Contains(err.Error(), "selected browser") {
 		t.Fatalf("launch error = %v, want executable resolution error", err)
 	}
 	if _, err := os.Stat(profileDir); !os.IsNotExist(err) {
@@ -226,13 +228,11 @@ func setHome(t *testing.T, home string) {
 	t.Setenv("USERPROFILE", home)
 }
 
-// hideInstalledBrowsers empties the directories chromiumInstallPaths reads, so
-// a browser installed on the host cannot satisfy a test that expects none.
+// hideInstalledBrowsers selects an absent explicit launcher, so host native
+// installations cannot satisfy a test that needs executable resolution to fail.
 func hideInstalledBrowsers(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"ProgramFiles", "ProgramFiles(x86)", "LocalAppData"} {
-		t.Setenv(name, "")
-	}
+	t.Setenv("NYALA_BROWSER", filepath.Join(t.TempDir(), "missing-browser"))
 }
 
 // flockNB tries a non-blocking flock in mode on f and reports whether it won.
@@ -924,7 +924,7 @@ func TestLaunchAdoptsLiveBrowser(t *testing.T) {
 	// LOCK_EX winner adopts the browser: it connects to the published URL,
 	// spawns nothing, and keeps Default/Sessions. spawnShared is the seam,
 	// because launchShared goes on to newInstanceTarget, which needs a real
-	// Browser. The current process stands in for the live browser pid.
+	// Browser. A test subprocess stands in for the live browser pid.
 	profileDir := filepath.Join(t.TempDir(), "profile")
 	sessionFile := filepath.Join(profileDir, "Default", "Sessions", "x")
 	if err := os.MkdirAll(filepath.Dir(sessionFile), 0o700); err != nil {
@@ -945,7 +945,11 @@ func TestLaunchAdoptsLiveBrowser(t *testing.T) {
 	if won, err := guard.tryExclusive(); err != nil || !won {
 		t.Fatalf("tryExclusive = (%v, %v), want (true, nil)", won, err)
 	}
-	if err := guard.writePID(os.Getpid()); err != nil {
+	if err := checkProfileBrowser(guard, cfg, true); err != nil {
+		t.Fatalf("record browser identity: %v", err)
+	}
+	pid := profileBrowserOwner(t, cfg.execPath, profileDir)
+	if err := guard.writePID(pid); err != nil {
 		t.Fatalf("writePID: %v", err)
 	}
 
@@ -975,8 +979,8 @@ func TestLaunchAdoptsLiveBrowser(t *testing.T) {
 	if _, err := os.Stat(sessionFile); err != nil {
 		t.Errorf("adopt purged Default/Sessions: %v", err)
 	}
-	if pid, ok := guard.readPID(); !ok || pid != os.Getpid() {
-		t.Errorf("adopt rewrote the lock file pid to (%d, %v), want own pid kept", pid, ok)
+	if got, ok := guard.readPID(); !ok || got != pid {
+		t.Errorf("adopt rewrote the lock file pid to (%d, %v), want %d", got, ok, pid)
 	}
 }
 
