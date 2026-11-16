@@ -3,11 +3,15 @@
 package engine
 
 import (
+	"context"
 	"net/url"
 	"os/exec"
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto"
+	"github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/chromedp"
 	"golang.org/x/sys/unix"
 )
 
@@ -36,7 +40,27 @@ func TestLiveRemoteAttach(t *testing.T) {
 	// that still answers the null signal the liveness check sends.
 	waited := make(chan error, 1)
 	go func() { waited <- cmd.Wait() }()
+	var wsURL string
 	t.Cleanup(func() {
+		// Let Chromium stop its children before TempDir removes their profile.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if conn, err := chromedp.DialContext(ctx, wsURL); err == nil {
+			defer func() { _ = conn.Close() }()
+			stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+			defer stop()
+			if err := conn.Write(ctx, &cdproto.Message{ID: 1, Method: browser.CommandClose}); err != nil {
+				t.Logf("close chromium pid %d: %v", pid, err)
+			}
+			select {
+			case <-waited:
+				return
+			case <-ctx.Done():
+				t.Logf("chromium pid %d did not exit within 5 s of Browser.close", pid)
+			}
+		} else {
+			t.Logf("connect for chromium pid %d cleanup: %v", pid, err)
+		}
 		_ = cmd.Process.Kill()
 		select {
 		case <-waited:
@@ -45,7 +69,7 @@ func TestLiveRemoteAttach(t *testing.T) {
 		}
 	})
 
-	wsURL := livePortURL(t, dir)
+	wsURL = livePortURL(t, dir)
 	parsed, err := url.Parse(wsURL)
 	if err != nil {
 		t.Fatalf("parse %q: %v", wsURL, err)
