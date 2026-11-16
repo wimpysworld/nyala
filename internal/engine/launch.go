@@ -24,51 +24,6 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/font"
 )
 
-// chromiumNames lists the executable names tried on PATH, in order, when no
-// explicit path is given. They cover the common Chromium and Chrome binaries
-// across distributions.
-var chromiumNames = []string{
-	"chromium",
-	"chromium-browser",
-	"google-chrome",
-	"google-chrome-stable",
-	"chrome",
-}
-
-// resolveExecutable returns the Chromium or Chrome executable to launch. It
-// tries, in order: the --browser flag value, the NYALA_BROWSER environment
-// variable, the CHROME_PATH environment variable, then a PATH lookup for a
-// known Chromium or Chrome binary name, then the standard install paths on
-// Windows. It returns the first non-empty result and a clear error naming the
-// search order when none resolve. The function is pure beyond reading the
-// environment, PATH, and the install paths, so it is hermetically testable.
-func resolveExecutable(flag string) (string, error) {
-	if flag != "" {
-		return flag, nil
-	}
-	if v := os.Getenv("NYALA_BROWSER"); v != "" {
-		return v, nil
-	}
-	if v := os.Getenv("CHROME_PATH"); v != "" {
-		return v, nil
-	}
-	for _, name := range chromiumNames {
-		if path, err := exec.LookPath(name); err == nil {
-			return path, nil
-		}
-	}
-	for _, path := range chromiumInstallPaths() {
-		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
-			return path, nil
-		}
-	}
-	return "", fmt.Errorf(
-		"no Chromium found: set --browser, or the NYALA_BROWSER or CHROME_PATH "+
-			"environment variable, or put one of %v on PATH",
-		chromiumNames,
-	)
-}
-
 // resolveProfileDir returns the profile directory to use. It tries, in order:
 // the --profile flag value, the NYALA_PROFILE environment variable, a profile
 // beneath XDG_DATA_HOME, then a profile beneath the user's home directory. It
@@ -812,6 +767,9 @@ func attachShared(guard *profileGuard, cfg allocatorConfig, connect connectFunc)
 	if err := guard.acquireShared(lockCtx); err != nil {
 		return nil, nil, err
 	}
+	if err := checkProfileBrowser(guard, cfg, false); err != nil {
+		return nil, nil, err
+	}
 	wsURL, err := readDevToolsActivePort(cfg.profileDir)
 	if err != nil {
 		return nil, nil, err
@@ -840,6 +798,9 @@ func readDevToolsActivePort(profileDir string) (string, error) {
 // pid stays truthful after the browser exits.
 func spawnShared(guard *profileGuard, cfg allocatorConfig, connect connectFunc) (context.Context, context.CancelFunc, error) {
 	profileDir := cfg.profileDir
+	if err := checkProfileBrowser(guard, cfg, true); err != nil {
+		return nil, nil, err
+	}
 	if pid, ok := guard.readPID(); ok && processAlive(pid) {
 		if wsURL, err := readDevToolsActivePort(profileDir); err == nil {
 			if holder, closeSocket, err := connect(context.Background(), wsURL, adoptConnectTimeout); err == nil {
@@ -1027,7 +988,6 @@ func (e *ChromiumEngine) launch(flag string) error {
 	forcing := e.backend.UsesTextOverlay()
 	z := e.layoutScale()
 	disableFrameRateLimit := e.disableFrameRateLimit
-	profileDir := e.profileDir
 	remoteURL := e.remoteURL
 	e.mu.Unlock()
 	var (
@@ -1038,17 +998,21 @@ func (e *ChromiumEngine) launch(flag string) error {
 	)
 	// wrap names the remote endpoint on every session setup error after the
 	// attach, so a raw CDP failure never hides which browser refused it.
-	wrap := func(err error) error { return err }
+	var wrap func(error) error
 	if remoteURL != "" {
 		wrap = func(err error) error { return remoteError(remoteURL, err) }
 		if ctx, cancel, closeBrowser, err = e.launchRemote(remoteURL); err != nil {
 			return err
 		}
 	} else {
-		execPath, rerr := resolveExecutable(flag)
+		execPath, rerr := e.resolveBrowser(flag)
 		if rerr != nil {
 			return rerr
 		}
+		wrap = func(err error) error { return managedBrowserError(execPath, err) }
+		e.mu.Lock()
+		profileDir := e.profileDir
+		e.mu.Unlock()
 		cfg := allocatorConfig{
 			execPath:              execPath,
 			profileDir:            profileDir,
@@ -1063,7 +1027,7 @@ func (e *ChromiumEngine) launch(flag string) error {
 		if profileDir == "" {
 			ctx, cancel, closeBrowser = launchPrivate(cfg)
 		} else if ctx, cancel, closeBrowser, err = e.launchShared(cfg); err != nil {
-			return err
+			return wrap(err)
 		}
 	}
 	e.mu.Lock()

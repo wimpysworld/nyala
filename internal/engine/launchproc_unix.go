@@ -58,8 +58,3 @@ func processCommandLine(ctx context.Context, pid int) (string, bool) {
 	}
 	return strings.TrimRight(string(out), "\n"), true
 }
-
-// chromiumInstallPaths lists no install paths: PATH covers Linux and macOS.
-func chromiumInstallPaths() []string {
-	return nil
-}
