@@ -40,7 +40,10 @@ func profileBrowserOwner(t *testing.T, command, profileDir string, args ...strin
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
-	args = append(args, "--test.run=^TestProfileBrowserOwnerProcess$", "--", "--user-data-dir="+profileDir)
+	args = append(args, "--test.run=^TestProfileBrowserOwnerProcess$", "--")
+	if profileDir != "" {
+		args = append(args, "--user-data-dir="+profileDir)
+	}
 	cmd := exec.CommandContext(ctx, executable, args...)
 	cmd.Args[0] = command
 	cmd.Env = append(os.Environ(), "NYALA_TEST_PROFILE_OWNER=1")
@@ -153,23 +156,6 @@ func TestProfileBrowserMatchingMarkerChecksLiveOwner(t *testing.T) {
 					client := &profileGuard{file: openLockFD(t, dir)}
 					_, _, err = attachShared(client, cfg, connect)
 				}
-				if exclusive && tc.wrongProfile {
-					if err == nil || !strings.Contains(err.Error(), "spawn shared browser") || connected {
-						t.Fatalf("stale PID did not reach fresh launch: error = %v, connected = %v", err, connected)
-					}
-					if pid, recorded := guard.readPID(); recorded {
-						t.Fatalf("stale PID remains recorded: %d", pid)
-					}
-					for _, path := range []string{keep, devToolsActivePortPath(dir)} {
-						if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-							t.Fatalf("fresh launch retained stale file %q: %v", path, err)
-						}
-					}
-					if !processAlive(pid) {
-						t.Fatal("process using another profile was stopped")
-					}
-					return
-				}
 				if (err != nil) != tc.reject || connected == tc.reject {
 					t.Fatalf("owner check: error = %v, connected = %v, want rejection = %v", err, connected, tc.reject)
 				}
@@ -178,6 +164,9 @@ func TestProfileBrowserMatchingMarkerChecksLiveOwner(t *testing.T) {
 				}
 				if content, err := os.ReadFile(devToolsActivePortPath(dir)); err != nil || string(content) != string(port) {
 					t.Fatalf("port file changed: %q, %v", content, err)
+				}
+				if got, recorded := guard.readPID(); !recorded || got != pid {
+					t.Fatalf("live PID changed: %d, %v, want %d", got, recorded, pid)
 				}
 			})
 		}
@@ -238,6 +227,49 @@ func TestProfileBrowserMismatchDoesNotAdoptOrPurge(t *testing.T) {
 	}
 }
 
+func TestProfileBrowserPathAliasDoesNotPurge(t *testing.T) {
+	for _, marked := range []bool{false, true} {
+		t.Run(map[bool]string{false: "legacy", true: "marked"}[marked], func(t *testing.T) {
+			dir := t.TempDir()
+			guard := &profileGuard{file: openLockFD(t, dir)}
+			if won, err := guard.tryExclusive(); err != nil || !won {
+				t.Fatalf("exclusive lock = %v, %v", won, err)
+			}
+			cfg := allocatorConfig{execPath: filepath.Join(t.TempDir(), "chromium"), profileDir: dir}
+			if marked {
+				if err := checkProfileBrowser(guard, cfg, true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			alias := dir + string(filepath.Separator) + ".." + string(filepath.Separator) + filepath.Base(dir)
+			pid := profileBrowserOwner(t, cfg.execPath, alias)
+			if err := guard.writePID(pid); err != nil {
+				t.Fatal(err)
+			}
+			keep := filepath.Join(dir, "Default", "Sessions", "keep")
+			if err := os.MkdirAll(filepath.Dir(keep), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(keep, []byte("unchanged"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			connect := func(context.Context, string, time.Duration) (context.Context, context.CancelFunc, error) {
+				t.Fatal("connected to an unverified profile owner")
+				return nil, nil, nil
+			}
+			if _, _, err := spawnShared(guard, cfg, connect); err == nil || !strings.Contains(err.Error(), "matching identity") {
+				t.Errorf("profile alias rejection = %v", err)
+			}
+			if content, err := os.ReadFile(keep); err != nil || string(content) != "unchanged" {
+				t.Errorf("live session changed: %q, %v", content, err)
+			}
+			if got, recorded := guard.readPID(); !recorded || got != pid {
+				t.Errorf("live PID changed: %d, %v, want %d", got, recorded, pid)
+			}
+		})
+	}
+}
+
 func TestProfileBrowserReusedPIDLaunchesFresh(t *testing.T) {
 	for _, marked := range []bool{false, true} {
 		for _, exclusive := range []bool{false, true} {
@@ -256,7 +288,7 @@ func TestProfileBrowserReusedPIDLaunchesFresh(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				pid := profileBrowserOwner(t, "unrelated", dir+"-other")
+				pid := profileBrowserOwner(t, "unrelated", "")
 				if err := guard.writePID(pid); err != nil {
 					t.Fatal(err)
 				}

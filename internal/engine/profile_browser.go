@@ -23,7 +23,7 @@ func browserIdentity(path string) string {
 
 func checkProfileBrowser(guard *profileGuard, cfg allocatorConfig, exclusive bool) error {
 	if exclusive {
-		if err := clearStaleProfilePID(guard, cfg.profileDir); err != nil {
+		if err := clearStaleProfilePID(guard); err != nil {
 			return err
 		}
 	}
@@ -51,7 +51,7 @@ func checkProfileBrowser(guard *profileGuard, cfg allocatorConfig, exclusive boo
 	return writeProfileBrowser(marker, identity)
 }
 
-func clearStaleProfilePID(guard *profileGuard, profileDir string) error {
+func clearStaleProfilePID(guard *profileGuard) error {
 	pid, recorded := guard.readPID()
 	if !recorded || !processAlive(pid) {
 		return nil
@@ -59,8 +59,9 @@ func clearStaleProfilePID(guard *profileGuard, profileDir string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), adoptConnectTimeout)
 	defer cancel()
 	args, ok := processCommandLine(ctx, pid)
-	if ok && args != "" && !commandLineHasArg(args, "--user-data-dir="+profileDir) {
-		// Clear a reused PID under LOCK_EX so spawnShared cannot adopt its stale port.
+	if ok && args != "" && !strings.Contains(args, "--user-data-dir") {
+		// A different path spelling can name the same profile. Only clear a PID
+		// with no profile argument, so spawnShared cannot adopt its stale port.
 		return guard.writePID(0)
 	}
 	return nil
