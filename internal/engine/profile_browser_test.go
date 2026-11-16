@@ -32,7 +32,7 @@ func profileBrowserOwner(t *testing.T, command, profileDir string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
-	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestProfileBrowserOwnerProcess$", "--", "--user-data-dir="+profileDir)
+	cmd := exec.CommandContext(ctx, executable, "--test.run=^TestProfileBrowserOwnerProcess$", "--", "--user-data-dir="+profileDir)
 	cmd.Args[0] = command
 	cmd.Env = append(os.Environ(), "NYALA_TEST_PROFILE_OWNER=1")
 	input, err := cmd.StdinPipe()
