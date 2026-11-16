@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" content="#fcfaf8" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#161219" media="(prefers-color-scheme: dark)">
+    <meta name="description" content="Nyala is a fast, high-fidelity web browser for the terminal. It drives headless Chromium over CDP and renders through Block, Sixel, and Kitty backends.">
+    <title>Nyala - A web browser for the terminal</title>
+    <link rel="canonical" href="https://nyala.wimpys.world/">
+    <link rel="icon" href="icon.svg" type="image/svg+xml">
+    <script src="theme.js"></script>
+    <script src="copy.js" defer></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@digicreon/mucss@1.4.9/dist/mu.css">
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="container site-header">
+      <a class="brand" href="./" aria-label="Nyala home">
+        <img class="brand-mark" src="icon.svg" alt="" width="34" height="34">
+        <span class="brand-name">Nyala</span>
+      </a>
+      <nav aria-label="Main navigation">
+        <ul>
+          <li><a href="#rendering">Rendering</a></li>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#workflow">Workflow</a></li>
+          <li><a href="#install">Install</a></li>
+          <!-- tailor:navigation:start -->
+          <li><a target="_blank" rel="noopener noreferrer" href="https://github.com/wimpysworld/nyala?tab=readme-ov-file">Documentation</a></li>
+          <li><a target="_blank" rel="noopener noreferrer" href="https://github.com/wimpysworld/nyala/releases">Download</a></li>
+          <!-- tailor:navigation:end -->
+        </ul>
+      </nav>
+      <div class="header-tools">
+        <a class="icon-button" target="_blank" rel="noopener noreferrer" href="https://github.com/wimpysworld/nyala" aria-label="Nyala on GitHub" title="Nyala on GitHub">
+          <span class="octicon github-icon" aria-hidden="true"></span>
+        </a>
+        <label id="theme-picker" class="theme-picker" hidden>
+          <span id="theme-sun" class="octicon" aria-hidden="true"></span>
+          <span id="theme-moon" class="octicon" aria-hidden="true" hidden></span>
+          <span class="visually-hidden">Theme</span>
+          <select id="theme-select" title="Theme">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+      </div>
+    </header>
+
+    <main id="main" class="container" tabindex="-1">
+      <section class="site-hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <img class="hero-icon" src="icon.svg" alt="" width="84" height="84" fetchpriority="high">
+          <p class="eyebrow">A web browser for the terminal</p>
+          <h1 id="hero-title">The fastest, highest-fidelity browser in your terminal.</h1>
+          <p class="lead">Nyala drives headless Chromium over the Chrome DevTools Protocol (CDP). It composites a crisp Unicode text layer over a block bitmap, or renders full pixels through Kitty and Sixel.</p>
+          <div class="site-hero-actions">
+            <a class="primary-action" href="#install">Get Nyala <span class="octicon inline-icon arrow-down" aria-hidden="true"></span></a>
+            <a class="text-link" href="https://github.com/wimpysworld/nyala?tab=readme-ov-file#usage">Quick start <span class="octicon inline-icon link-external" aria-hidden="true"></span></a>
+          </div>
+          <p class="hero-note">Runs on Linux, macOS, and Windows, down to a bare Linux console under <a href="https://github.com/kmscon/kmscon">KMSCON</a> with no display server.</p>
+        </div>
+        <figure class="hero-shot">
+          <div class="terminal-frame">
+            <img id="hero-gif" src="images/nyala.gif" alt="Nyala browsing bbc.co.uk in a terminal, cycling colour modes" width="1280" height="720" fetchpriority="high" decoding="async">
+          </div>
+          <figcaption class="hero-caption">
+            <span>Live Chromium screencast in a terminal, cycling truecolour, adaptive 256-colour, and greyscale Block modes.</span>
+            <button type="button" class="motion-toggle" id="hero-motion-toggle" aria-pressed="false" hidden>Pause animation</button>
+          </figcaption>
+        </figure>
+      </section>
+
+      <section id="rendering" class="rendering section-rule" aria-labelledby="rendering-title">
+        <div class="section-heading">
+          <p class="eyebrow">Three backends, one renderer</p>
+          <h2 id="rendering-title">Universal floor to full pixels.</h2>
+          <p>Nyala detects your terminal at startup and selects the highest-fidelity backend that it supports: Kitty, then Sixel, then Block. Press <kbd>Alt</kbd>+<kbd>R</kbd> to cycle backends live.</p>
+        </div>
+        <div class="backend-grid">
+          <article class="backend-card">
+            <div class="backend-media">
+              <img src="images/01-nyala-block.png" alt="Nyala rendering a web page with the Block Unicode backend" width="1266" height="1426" loading="lazy" decoding="async">
+            </div>
+            <div class="backend-body">
+              <span class="backend-badge">Universal floor</span>
+              <h3>Block</h3>
+              <p>Sextant 2x3 and quadrant 2x2 Unicode glyphs on any TTY, paired with the crisp DOM text overlay.</p>
+            </div>
+          </article>
+          <article class="backend-card">
+            <div class="backend-media">
+              <img src="images/02-nyala-sixel.png" alt="Nyala rendering the same web page with the Sixel bitmap backend" width="1266" height="1426" loading="lazy" decoding="async">
+            </div>
+            <div class="backend-body">
+              <span class="backend-badge">Sixel graphics</span>
+              <h3>Sixel</h3>
+              <p>Bitmap output with a temporally stable adaptive palette on terminals and tmux 3.6+ sessions.</p>
+            </div>
+          </article>
+          <article class="backend-card">
+            <div class="backend-media">
+              <img src="images/03-nyala-kitty.png" alt="Nyala rendering the same web page at full pixel resolution with the Kitty backend" width="1266" height="1426" loading="lazy" decoding="async">
+            </div>
+            <div class="backend-body">
+              <span class="backend-badge">Kitty graphics</span>
+              <h3>Kitty</h3>
+              <p>POSIX shared-memory RGBA or direct PNG pass-through with no re-encoding.</p>
+            </div>
+          </article>
+        </div>
+        <div class="perf-callout" aria-labelledby="perf-title">
+          <div class="perf-intro">
+            <p class="eyebrow">WebGL Aquarium (2560x1440)</p>
+            <h3 id="perf-title">Full terminal surface, measured</h3>
+            <p>Nyala renders the full terminal surface (<code translate="no">cols*cellW</code> by <code translate="no">rows*cellH</code>) at native resolution instead of magnifying or downscaling the page.</p>
+          </div>
+          <dl class="perf-stats">
+            <div class="perf-stat">
+              <dt>Block</dt>
+              <dd>
+                <strong class="perf-fps">85.5&nbsp;fps</strong>
+                <span class="perf-detail">3364 of 3374 frames delivered by Chromium (kitty, uncapped)</span>
+              </dd>
+            </div>
+            <div class="perf-stat">
+              <dt>Kitty graphics</dt>
+              <dd>
+                <strong class="perf-fps">71.5&nbsp;fps</strong>
+                <span class="perf-detail">Full RGBA pixels over shared memory (kitty, uncapped)</span>
+              </dd>
+            </div>
+            <div class="perf-stat">
+              <dt>Sixel</dt>
+              <dd>
+                <strong class="perf-fps">19.4&nbsp;fps</strong>
+                <span class="perf-detail">Alacritty, capped at 60&nbsp;fps to prevent write contention</span>
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section id="features" class="features section-rule" aria-labelledby="features-title">
+        <div>
+          <p class="eyebrow">Built for the TTY</p>
+          <h2 id="features-title">Real Chromium.<br>Sharp terminal text.</h2>
+          <p>Nyala streams HTML5, CSS, and JavaScript pages from headless Chromium while keeping text sharp and terminal input direct.</p>
+          <a class="text-link" href="https://github.com/wimpysworld/nyala/blob/HEAD/docs/ARCHITECTURE.md">Read the architecture <span class="octicon inline-icon link-external" aria-hidden="true"></span></a>
+        </div>
+        <dl class="feature-list">
+          <div>
+            <dt><span class="feature-number" aria-hidden="true">01</span> Crisp DOM text overlay</dt>
+            <dd>Block mode draws real terminal characters over the bitmap so text stays sharp instead of fuzzy.</dd>
+          </div>
+          <div>
+            <dt><span class="feature-number" aria-hidden="true">02</span> Scene-fitted 240-colour palettes</dt>
+            <dd>Block <code translate="no">256</code> and <code translate="no">grey</code> modes fit 240 palette entries (<code translate="no">OSC 4</code> indexes 16..255) to each frame and automatically fall back from <code translate="no">truecolor</code> under sustained terminal write pressure.</dd>
+          </div>
+          <div>
+            <dt><span class="feature-number" aria-hidden="true">03</span> Mouse, find, and clipboard</dt>
+            <dd>Pointer hover, wheel scroll, drag selection, <kbd>Ctrl</kbd>+<kbd>F</kbd> search, 1&nbsp;MiB bracketed paste, and <code translate="no">OSC 52</code> copy (<kbd>Alt</kbd>+<kbd>W</kbd>, up to 74,994 bytes) work in the terminal.</dd>
+          </div>
+          <div>
+            <dt><span class="feature-number" aria-hidden="true">04</span> Terminal and multiplexer support</dt>
+            <dd>Auto-detects Kitty, Ghostty, WezTerm, Contour, Alacritty, Foot, Rio, and mlterm, plus tmux (Sixel in 3.6+), zellij, herdr, and GNU screen.</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section id="workflow" class="workflow section-rule" aria-labelledby="workflow-title">
+        <div class="section-heading">
+          <p class="eyebrow">Daily workflow</p>
+          <h2 id="workflow-title">Local profiles, remote Chrome over SSH, and keyboard control.</h2>
+          <p>Run headless Chromium locally with a persistent profile, or tunnel a laptop Chrome session into a remote SSH host.</p>
+        </div>
+        <ol class="steps">
+          <li>
+            <code translate="no">nyala example.com</code>
+            <h3>Persistent profile</h3>
+            <p>Launch headless Chromium with persistent cookies and logins in <code translate="no">~/.local/share/nyala/profile</code>.</p>
+          </li>
+          <li>
+            <code translate="no">nyala --private example.com</code>
+            <h3>Disposable session</h3>
+            <p>Start a disposable session that ignores saved state.</p>
+          </li>
+          <li>
+            <code translate="no">ssh -R 9222:127.0.0.1:9222 devbox</code>
+            <h3>Tunnel local Chrome</h3>
+            <p>Tunnel a local Chrome debugging port (<code translate="no">--remote-debugging-port=9222</code> with a dedicated <code translate="no">--user-data-dir</code>) to a remote machine.</p>
+          </li>
+          <li>
+            <code translate="no">nyala --remote-debugging-url http://127.0.0.1:9222 example.com</code>
+            <h3>Browse over SSH</h3>
+            <p>Browse inside the remote SSH session using the logins on your laptop.</p>
+          </li>
+        </ol>
+        <h3 id="keys-title" class="keys-heading">Keyboard shortcuts</h3>
+        <div class="overflow-auto keys-table-wrap">
+          <table class="striped keys-table" aria-labelledby="keys-title">
+            <thead>
+              <tr>
+                <th scope="col">Shortcut</th>
+                <th scope="col">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row"><kbd>Alt</kbd>+<kbd>R</kbd></th>
+                <td>Cycle rendering backend (Block, Sixel, Kitty)</td>
+              </tr>
+              <tr>
+                <th scope="row"><kbd>Alt</kbd>+<kbd>B</kbd></th>
+                <td>Cycle Block glyph mode (quadrant 2x2 and sextant 2x3)</td>
+              </tr>
+              <tr>
+                <th scope="row"><kbd>Alt</kbd>+<kbd>C</kbd></th>
+                <td>Cycle Block colour mode (<code translate="no">truecolor</code>, <code translate="no">256</code>, <code translate="no">grey</code>)</td>
+              </tr>
+              <tr>
+                <th scope="row"><kbd>Alt</kbd>+<kbd>P</kbd></th>
+                <td>Toggle adaptive and static palettes (<code translate="no">256</code> and <code translate="no">grey</code> Block modes)</td>
+              </tr>
+              <tr>
+                <th scope="row"><kbd>Ctrl</kbd>+<kbd>F</kbd></th>
+                <td>Find on page (<kbd>Enter</kbd> searches, <kbd>Up</kbd> and <kbd>Down</kbd> step matches, <kbd>Esc</kbd> closes)</td>
+              </tr>
+              <tr>
+                <th scope="row"><kbd>Alt</kbd>+<kbd>W</kbd></th>
+                <td>Copy selection to the terminal clipboard via <code translate="no">OSC 52</code></td>
+              </tr>
+              <tr>
+                <th scope="row"><span class="key-chord"><kbd>Alt</kbd>+<kbd>Left</kbd></span> / <span class="key-chord"><kbd>Alt</kbd>+<kbd>Right</kbd></span></th>
+                <td>Go back and forward in page history</td>
+              </tr>
+              <tr>
+                <th scope="row"><kbd>Ctrl</kbd>+<kbd>Q</kbd></th>
+                <td>Quit Nyala</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="install" class="install section-rule" aria-labelledby="install-title">
+        <div class="section-heading">
+          <p class="eyebrow">Get started</p>
+          <h2 id="install-title">Pick your platform.</h2>
+          <p>Each repository is signed and keeps Nyala up to date.</p>
+        </div>
+        <!-- Install tiles: signed package repositories, then command tiles for bin, Container, and GitHub Actions. -->
+        <ul class="install-grid">
+          <li class="install-linux">
+            <a class="install-tile" data-repo="apt" href="https://apt.wimpys.world/#nyala">
+              <img class="install-logo" src="https://apt.wimpys.world/logo.svg" alt="" width="36" height="36" decoding="async">
+              <span class="install-text">
+                <span class="install-platform">Linux</span>
+                <span class="install-name">Debian and Ubuntu</span>
+                <span class="install-host" translate="no">apt.wimpys.world</span>
+              </span>
+              <span class="octicon inline-icon arrow-up-right" aria-hidden="true"></span>
+            </a>
+          </li>
+          <li class="install-linux">
+            <a class="install-tile" data-repo="rpm" href="https://rpm.wimpys.world/#nyala">
+              <img class="install-logo" src="https://rpm.wimpys.world/logo.svg" alt="" width="36" height="36" decoding="async">
+              <span class="install-text">
+                <span class="install-platform">Linux</span>
+                <span class="install-name">Fedora and openSUSE</span>
+                <span class="install-host" translate="no">rpm.wimpys.world</span>
+              </span>
+              <span class="octicon inline-icon arrow-up-right" aria-hidden="true"></span>
+            </a>
+          </li>
+          <li class="install-linux">
+            <a class="install-tile" data-repo="pkg" href="https://pkg.wimpys.world/#nyala">
+              <img class="install-logo" src="https://pkg.wimpys.world/logo.svg" alt="" width="36" height="36" decoding="async">
+              <span class="install-text">
+                <span class="install-platform">Linux</span>
+                <span class="install-name">Arch Linux</span>
+                <span class="install-host" translate="no">pkg.wimpys.world</span>
+              </span>
+              <span class="octicon inline-icon arrow-up-right" aria-hidden="true"></span>
+            </a>
+          </li>
+          <li class="install-linux">
+            <a class="install-tile" data-repo="apk" href="https://apk.wimpys.world/#nyala">
+              <img class="install-logo" src="https://apk.wimpys.world/logo.svg" alt="" width="36" height="36" decoding="async">
+              <span class="install-text">
+                <span class="install-platform">Linux</span>
+                <span class="install-name">Alpine Linux</span>
+                <span class="install-host" translate="no">apk.wimpys.world</span>
+              </span>
+              <span class="octicon inline-icon arrow-up-right" aria-hidden="true"></span>
+            </a>
+          </li>
+          <li class="install-other">
+            <a class="install-tile" data-repo="brew" href="https://brew.wimpys.world/#nyala">
+              <img class="install-logo" src="https://brew.wimpys.world/logo.svg" alt="" width="36" height="36" decoding="async">
+              <span class="install-text">
+                <span class="install-platform">macOS</span>
+                <span class="install-name">Homebrew</span>
+                <span class="install-host" translate="no">brew.wimpys.world</span>
+              </span>
+              <span class="octicon inline-icon arrow-up-right" aria-hidden="true"></span>
+            </a>
+          </li>
+          <li class="install-other">
+            <a class="install-tile" data-repo="scoop" href="https://scoop.wimpys.world/#nyala">
+              <img class="install-logo" src="https://scoop.wimpys.world/logo.svg" alt="" width="36" height="36" decoding="async">
+              <span class="install-text">
+                <span class="install-platform">Windows</span>
+                <span class="install-name">Scoop</span>
+                <span class="install-host" translate="no">scoop.wimpys.world</span>
+              </span>
+              <span class="octicon inline-icon arrow-up-right" aria-hidden="true"></span>
+            </a>
+          </li>
+          <li class="install-other">
+            <a class="install-tile" data-repo="nix" href="https://nix.wimpys.world/#nyala">
+              <img class="install-logo" src="https://nix.wimpys.world/logo.svg" alt="" width="36" height="36" decoding="async">
+              <span class="install-text">
+                <span class="install-platform">Nix</span>
+                <span class="install-name">Nix and NixOS</span>
+                <span class="install-host" translate="no">nix.wimpys.world</span>
+              </span>
+              <span class="octicon inline-icon arrow-up-right" aria-hidden="true"></span>
+            </a>
+          </li>
+          <li class="install-any">
+            <div class="install-tile install-command-tile">
+              <span class="octicon install-glyph terminal-icon" aria-hidden="true"></span>
+              <span class="install-text">
+                <span class="install-platform">Any platform</span>
+                <a class="install-name" href="https://github.com/marcosnils/bin" translate="no">bin</a>
+              </span>
+              <code class="install-command" id="bin-command" translate="no">bin install github.com/wimpysworld/nyala</code>
+              <button class="copy-button" type="button" data-copy="bin-command" aria-label="Copy the bin command" title="Copy" hidden>
+                <span class="octicon copy-icon" aria-hidden="true"></span>
+              </button>
+              <span class="visually-hidden" role="status"></span>
+            </div>
+          </li>
+          <li class="install-any">
+            <div class="install-tile install-command-tile">
+              <span class="octicon install-glyph container-icon" aria-hidden="true"></span>
+              <span class="install-text">
+                <span class="install-platform">Container</span>
+                <a class="install-name" href="https://github.com/wimpysworld/nyala/pkgs/container/nyala">Container</a>
+              </span>
+              <code class="install-command" id="container-command" translate="no">docker run --rm ghcr.io/wimpysworld/nyala</code>
+              <button class="copy-button" type="button" data-copy="container-command" aria-label="Copy the container command" title="Copy" hidden>
+                <span class="octicon copy-icon" aria-hidden="true"></span>
+              </button>
+              <span class="visually-hidden" role="status"></span>
+            </div>
+          </li>
+          <li class="install-any">
+            <div class="install-tile install-command-tile">
+              <span class="octicon install-glyph actions-icon" aria-hidden="true"></span>
+              <span class="install-text">
+                <span class="install-platform">CI workflow</span>
+                <a class="install-name" href="https://github.com/wimpysworld/nyala/blob/HEAD/action.yml">GitHub Actions</a>
+              </span>
+              <code class="install-command" id="actions-command" translate="no">- uses: wimpysworld/nyala@v0</code>
+              <button class="copy-button" type="button" data-copy="actions-command" aria-label="Copy the GitHub Actions step" title="Copy" hidden>
+                <span class="octicon copy-icon" aria-hidden="true"></span>
+              </button>
+              <span class="visually-hidden" role="status"></span>
+            </div>
+          </li>
+        </ul>
+        <p class="install-note">The Nix package includes Chromium. Every other install method needs Chrome or Chromium on your system, resolved from <code translate="no">--browser</code>, <code translate="no">NYALA_BROWSER</code>, <code translate="no">CHROME_PATH</code>, or <code translate="no">PATH</code>.</p>
+        <div class="install-links">
+          <a class="text-link" href="https://github.com/wimpysworld/nyala?tab=readme-ov-file#install">All install options <span class="octicon inline-icon link-external" aria-hidden="true"></span></a>
+          <a class="text-link" href="https://github.com/wimpysworld/nyala/releases/latest">Download a release <span class="octicon inline-icon link-external" aria-hidden="true"></span></a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="container site-footer">
+      <div class="footer-main">
+        <div class="footer-brand">
+          <a class="brand" href="./" aria-label="Nyala home">
+            <img class="brand-mark" src="icon.svg" alt="" width="34" height="34">
+            <span class="brand-name">Nyala</span>
+          </a>
+          <p>The fastest, highest-fidelity browser in your terminal.</p>
+        </div>
+        <nav class="footer-links" aria-label="Footer navigation">
+          <div><h3>Resources</h3><ul>
+            <!-- tailor:footer-navigation:start -->
+            <li><a href="https://github.com/wimpysworld/nyala?tab=readme-ov-file">Documentation</a></li>
+            <li><a href="https://github.com/wimpysworld/nyala/blob/HEAD/SUPPORT.md">Support</a></li>
+            <!-- tailor:footer-navigation:end -->
+          </ul></div>
+          <div><h3>Project</h3><ul>
+            <li><a href="https://github.com/wimpysworld/nyala">Source code</a></li>
+            <li><a href="https://github.com/wimpysworld/nyala/releases">Releases</a></li>
+            <!-- tailor:license:start -->
+            <li><a href="https://github.com/wimpysworld/nyala?tab=BlueOak-1.0.0-1-ov-file">License</a></li>
+            <!-- tailor:license:end -->
+          </ul></div>
+          <div><h3>Community</h3><ul>
+            <li><a href="https://github.com/wimpysworld/nyala?tab=coc-ov-file">Code of Conduct</a></li>
+            <li><a href="https://github.com/wimpysworld/nyala?tab=contributing-ov-file">Contributing</a></li>
+            <li><a href="https://github.com/wimpysworld/nyala?tab=security-ov-file">Security</a></li>
+          </ul></div>
+        </nav>
+      </div>
+      <div class="footer-bottom">
+        <p><small>© <span id="copyright-year">2026</span> <a href="https://github.com/flexiondotorg">Martin Wimpress <span class="octicon inline-icon link-external" aria-hidden="true"></span></a></small></p>
+        <!-- tailor:links:start -->
+        <nav class="connection-links" aria-label="Connect" style="display:flex;flex-wrap:wrap;gap:0.4rem">
+          <a class="icon-button" href="https://wimpys.world/" aria-label="Website" title="Website" style="display:inline-flex;padding:10px;color:inherit"><span aria-hidden="true" style="display:block;width:24px;height:24px;background-color:currentColor;-webkit-mask:url('https://cdn.jsdelivr.net/npm/@primer/octicons@19.36.0/build/svg/globe-24.svg') center/contain no-repeat;mask:url('https://cdn.jsdelivr.net/npm/@primer/octicons@19.36.0/build/svg/globe-24.svg') center/contain no-repeat"></span></a>
+          <a class="icon-button" href="https://bsky.app/profile/wimpys.world" aria-label="Bluesky" title="Bluesky" style="display:inline-flex;padding:10px;color:inherit"><span aria-hidden="true" style="display:block;width:24px;height:24px;background-color:currentColor;-webkit-mask:url('https://cdn.jsdelivr.net/npm/simple-icons@16.30.0/icons/bluesky.svg') center/contain no-repeat;mask:url('https://cdn.jsdelivr.net/npm/simple-icons@16.30.0/icons/bluesky.svg') center/contain no-repeat"></span></a>
+          <a class="icon-button" href="https://wimpysworld.social/@martin" aria-label="Mastodon" title="Mastodon" style="display:inline-flex;padding:10px;color:inherit"><span aria-hidden="true" style="display:block;width:24px;height:24px;background-color:currentColor;-webkit-mask:url('https://cdn.jsdelivr.net/npm/simple-icons@16.30.0/icons/mastodon.svg') center/contain no-repeat;mask:url('https://cdn.jsdelivr.net/npm/simple-icons@16.30.0/icons/mastodon.svg') center/contain no-repeat"></span></a>
+          <a class="icon-button" href="https://linkedin.com/in/martinwimpress" aria-label="LinkedIn" title="LinkedIn" style="display:inline-flex;padding:10px;color:inherit"><span aria-hidden="true" style="display:block;width:24px;height:24px;background-color:currentColor;-webkit-mask:url('https://cdn.jsdelivr.net/npm/@primer/octicons@19.36.0/build/svg/briefcase-24.svg') center/contain no-repeat;mask:url('https://cdn.jsdelivr.net/npm/@primer/octicons@19.36.0/build/svg/briefcase-24.svg') center/contain no-repeat"></span></a>
+          <a class="icon-button" href="https://discord.com/invite/vUsydfP" aria-label="Discord" title="Discord" style="display:inline-flex;padding:10px;color:inherit"><span aria-hidden="true" style="display:block;width:24px;height:24px;background-color:currentColor;-webkit-mask:url('https://cdn.jsdelivr.net/npm/simple-icons@16.30.0/icons/discord.svg') center/contain no-repeat;mask:url('https://cdn.jsdelivr.net/npm/simple-icons@16.30.0/icons/discord.svg') center/contain no-repeat"></span></a>
+          <a class="icon-button" href="https://linuxmatters.sh" aria-label="Podcast" title="Podcast" style="display:inline-flex;padding:10px;color:inherit"><span aria-hidden="true" style="display:block;width:24px;height:24px;background-color:currentColor;-webkit-mask:url('https://cdn.jsdelivr.net/npm/@primer/octicons@19.36.0/build/svg/broadcast-24.svg') center/contain no-repeat;mask:url('https://cdn.jsdelivr.net/npm/@primer/octicons@19.36.0/build/svg/broadcast-24.svg') center/contain no-repeat"></span></a>
+          <a class="icon-button" href="https://github.com/sponsors/flexiondotorg" aria-label="GitHub Sponsors" title="GitHub Sponsors" style="display:inline-flex;padding:10px;color:inherit"><span aria-hidden="true" style="display:block;width:24px;height:24px;background-color:currentColor;-webkit-mask:url('https://cdn.jsdelivr.net/npm/simple-icons@16.30.0/icons/githubsponsors.svg') center/contain no-repeat;mask:url('https://cdn.jsdelivr.net/npm/simple-icons@16.30.0/icons/githubsponsors.svg') center/contain no-repeat"></span></a>
+        </nav>
+        <!-- tailor:links:end -->
+      </div>
+    </footer>
+  </body>
+</html>

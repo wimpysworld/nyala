@@ -9,6 +9,7 @@ mcp:
 
 repository:
   description: "A browser for the terminal 🦌"
+  homepage: https://nyala.wimpys.world/
   has_wiki: false
   has_discussions: false
   has_projects: false
@@ -135,6 +136,20 @@ ruleset:
           - tool: CodeQL
             alerts_threshold: errors
             security_alerts_threshold: high_or_higher
+
+pages:
+  enabled: true
+  generator: static
+  path: pages
+  cname: nyala.wimpys.world
+  links:
+    website: https://wimpys.world/
+    bluesky: https://bsky.app/profile/wimpys.world
+    mastodon: "https://wimpysworld.social/@martin"
+    linkedin: https://linkedin.com/in/martinwimpress
+    discord: https://discord.com/invite/vUsydfP
+    podcast: https://linuxmatters.sh
+    github_sponsors: https://github.com/sponsors/flexiondotorg
 
 labels:
   - name: bug
