@@ -22,7 +22,7 @@ buildGoModule {
   inherit version;
   src = pkgs.lib.cleanSource ../.;
   subPackages = [ "cmd/nyala" ];
-  vendorHash = "sha256-0w90+L2XAHUawniM7m07MQeDq+HN0YLKxzLWIzhxuvU=";
+  vendorHash = "sha256-akpXXKXpaCxD9ejatCoIHZjY+bBcyDn0Rw1+ebTa+Ls=";
   # The shipped binary is static and cgo-free.
   env.CGO_ENABLED = "0";
   nativeBuildInputs = [
