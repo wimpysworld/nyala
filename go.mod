@@ -16,7 +16,7 @@ require (
 	github.com/emmansun/base64 v0.11.0
 	github.com/ericpauley/go-quantize v0.0.0-20200331213906-ae555eb2afa4
 	github.com/gen2brain/jpegn v0.6.2
-	github.com/klauspost/compress v1.20.3
+	github.com/klauspost/compress v1.20.4
 	github.com/lucasb-eyer/go-colorful v1.4.1
 	github.com/mattn/go-runewidth v0.0.31
 	github.com/mattn/go-sixel v0.0.14
@@ -51,11 +51,11 @@ require (
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/exp v0.0.0-20260603202125-055de637280b // indirect
-	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/term v0.38.0 // indirect
 )
 
 require (
-	golang.org/x/image v0.47.0
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/image v0.48.0
+	golang.org/x/text v0.44.0 // indirect
 )
