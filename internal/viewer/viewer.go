@@ -155,9 +155,10 @@ type State struct {
 	// keep the legacy parser.
 	kittyKeyboard bool
 
-	// probe is the terminal handshake result configureBackends recorded, so
-	// the About bar reads the terminal identity from one source. It stays the
-	// zero value under GNU screen and herdr, which run no handshake.
+	// probe is the handshake result that the About bar uses for terminal identity.
+	// A bare terminal uses the full handshake. Tmux, Zellij and Herdr use reduced
+	// handshakes. Only Herdr includes a Kitty query in its reduced handshake.
+	// GNU Screen runs no handshake, so probe stays at its zero value.
 	probe probeResult
 
 	// pointerShapeOK records that the startup handshake confirmed OSC 22
