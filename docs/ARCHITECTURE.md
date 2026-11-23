@@ -1744,9 +1744,11 @@ Sixel overwhelms it. The viewer survives this with tmux-only machinery
 keep normal behaviour.
 
 - Hard byte limit: Nyala reads `input-buffer-size` without changing the
-  server. It sets the limit below tmux's discard threshold, with a cap of
-  15 MiB (900 KB for a buffer of at most 1 MiB). Nyala drops any
-  image that exceeds the hard limit, even after the last downscale step.
+  server. It disables native Sixel if the value is unknown or below 1 MiB.
+  The hard limit is 900,000 bytes for settings from 1 MiB to below 2 MiB.
+  For larger settings, Nyala rounds down to a power of two, subtracts one
+  byte and caps the result at 15 MiB. Nyala drops any image that exceeds
+  the hard limit, even after the last downscale step.
 - Motion target: tmux 3.6.x also caps the target at 1.5 MB to limit the
   re-encoded output rate. Over-target frames try downscale factors 1.5, 2,
   3, and 4, then scale back to the exact grid extent. At the last factor,
