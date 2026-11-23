@@ -41,10 +41,10 @@ func TestHandleKeyForwardsPageKeys(t *testing.T) {
 			st.SetEnabled([]Backend{BackendKitty, BackendBlock})
 			startBackend := st.Backend
 			var sent []string
-			var backends []string
+			var captureBackends []string
 			s := dispatchSession(streamTestEngine{
-				sendKey:    func(code string) { sent = append(sent, code) },
-				setBackend: func(name string) { backends = append(backends, name) },
+				sendKey:            func(code string) { sent = append(sent, code) },
+				onConfigureCapture: func(name string) { captureBackends = append(captureBackends, name) },
 			}, &st)
 
 			if quit := s.handleKey(c.ev); quit {
@@ -53,8 +53,8 @@ func TestHandleKeyForwardsPageKeys(t *testing.T) {
 			if len(sent) != 1 || sent[0] != c.want {
 				t.Fatalf("SendKey calls = %v, want [%s]", sent, c.want)
 			}
-			if st.Backend != startBackend || len(backends) != 0 {
-				t.Fatalf("%s cycled the backend: state %v, SetBackend calls %v", c.name, st.Backend, backends)
+			if st.Backend != startBackend || len(captureBackends) != 0 {
+				t.Fatalf("%s changed capture: backend %v, ConfigureCapture calls %v", c.name, st.Backend, captureBackends)
 			}
 		})
 	}
@@ -873,8 +873,8 @@ func TestHandleKeyBlockCycleRecomposes(t *testing.T) {
 
 			// The restart runs on the control goroutine, so collect it over a
 			// channel rather than a shared slice.
-			backendCh := make(chan string, 2)
-			eng := streamTestEngine{setBackend: func(name string) { backendCh <- name }}
+			captureCh := make(chan string, 2)
+			eng := streamTestEngine{onConfigureCapture: func(name string) { captureCh <- name }}
 			done := make(chan struct{})
 			defer close(done)
 			out := &syncBuf{}
@@ -884,7 +884,7 @@ func TestHandleKeyBlockCycleRecomposes(t *testing.T) {
 			s.handleKey(c.ev)
 
 			select {
-			case name := <-backendCh:
+			case name := <-captureCh:
 				if name != "block" {
 					t.Fatalf("cycle restarted the stream on %q, want block", name)
 				}
@@ -931,7 +931,7 @@ func TestHandleKeyBlockCycleOffBlockIsNoOp(t *testing.T) {
 			startScheme, startColour := st.Scheme, st.Colour
 
 			var restarts []string
-			eng := streamTestEngine{setBackend: func(name string) { restarts = append(restarts, name) }}
+			eng := streamTestEngine{onConfigureCapture: func(name string) { restarts = append(restarts, name) }}
 			out := &bytes.Buffer{}
 			s := dispatchSession(eng, &st)
 			s.tty = out

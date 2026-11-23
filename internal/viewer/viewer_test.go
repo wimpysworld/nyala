@@ -344,14 +344,14 @@ func TestWaitForNavigateIgnoresBrowserKeysWhileNavigatePending(t *testing.T) {
 			st := NewState(80, 24)
 			startBackend := st.Backend
 			var sentKeys []string
-			var backends []string
+			var captureBackends []string
 			eng := streamTestEngine{
 				frames: make(chan render.Frame),
 				sendKey: func(code string) {
 					sentKeys = append(sentKeys, code)
 				},
-				setBackend: func(name string) {
-					backends = append(backends, name)
+				onConfigureCapture: func(name string) {
+					captureBackends = append(captureBackends, name)
 				},
 			}
 			s := &streamSession{eng: eng, st: &st}
@@ -366,8 +366,8 @@ func TestWaitForNavigateIgnoresBrowserKeysWhileNavigatePending(t *testing.T) {
 			if len(sentKeys) != 0 {
 				t.Fatalf("SendKey calls = %v, want none before Navigate completes", sentKeys)
 			}
-			if len(backends) != 0 {
-				t.Fatalf("SetBackend calls = %v, want none before Navigate completes", backends)
+			if len(captureBackends) != 0 {
+				t.Fatalf("ConfigureCapture calls = %v, want none before Navigate completes", captureBackends)
 			}
 			if st.Backend != startBackend {
 				t.Fatalf("Backend = %v, want %v before Navigate completes", st.Backend, startBackend)
@@ -751,31 +751,31 @@ func TestFitSixelToGridHonoursBottomRowReservation(t *testing.T) {
 }
 
 type streamTestEngine struct {
-	frames         chan render.Frame
-	sendKey        func(string)
-	sendText       func(string)
-	sendPaste      func(string)
-	setBackend     func(string)
-	sendNav        func(NavAction)
-	sendMouse      func(MouseEvent)
-	openURL        func(string)
-	currentURL     string
-	currentTitle   string
-	browserVersion string
-	find           func(string)
-	findNext       func()
-	findPrev       func()
-	findClear      func()
-	findState      *FindState
-	selection      func() (string, bool)
+	frames             chan render.Frame
+	sendKey            func(string)
+	sendText           func(string)
+	sendPaste          func(string)
+	onConfigureCapture func(string)
+	sendNav            func(NavAction)
+	sendMouse          func(MouseEvent)
+	openURL            func(string)
+	currentURL         string
+	currentTitle       string
+	browserVersion     string
+	find               func(string)
+	findNext           func()
+	findPrev           func()
+	findClear          func()
+	findState          *FindState
+	selection          func() (string, bool)
 	// pasteDiscarded is what SendPaste reports: true stands for a page that
 	// held no editable target, so the viewer signals the discarded paste.
 	pasteDiscarded bool
 }
 
 func (e streamTestEngine) ConfigureCapture(backend Backend, _, _, _, _ int, _ bool) error {
-	if e.setBackend != nil {
-		e.setBackend(backend.String())
+	if e.onConfigureCapture != nil {
+		e.onConfigureCapture(backend.String())
 	}
 	return nil
 }
