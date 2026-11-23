@@ -228,10 +228,9 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	var tmuxTTY *tmuxKittyTTY
 	if st.kittyTmux {
 		st.kittyTmuxPaint = newTmuxKittyPlacement()
-		tmuxTTY = &tmuxKittyTTY{tty: tty}
+		tmuxTTY = &tmuxKittyTTY{tty: tty, deletes: st.kittyTmuxPaint.deletes}
 		sessionTTY = tmuxTTY
 	}
-	tmuxPaint := st.kittyTmuxPaint
 	// restoreTerminal is the one terminal-restore path: the exit escapes
 	// (mouse reporting off, auto-wrap and cursor back, and, once a frame
 	// drew, the cursor moved below the frame), then the termios restore. The
@@ -257,7 +256,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 			if tmuxTTY == nil {
 				_, _ = io.WriteString(tty, exit)
 			} else {
-				tmuxTTY.finish(tmuxPaint.exitSequence() + exit)
+				tmuxTTY.finish(exit)
 			}
 			restore()
 		})
@@ -528,6 +527,8 @@ type streamSession struct {
 	// assembledTmuxSixel marks the assembled frame as a tmux Sixel frame, so
 	// the handoff to the writer stamps the emit-rate pacing gate. Producer only.
 	assembledTmuxSixel bool
+	// assembledTmuxKitty records a Kitty paint for the writer to commit.
+	assembledTmuxKitty tmuxKittyWrite
 	// lastTmuxSixel is the instant of the last tmux Sixel frame handoff; the
 	// pacing gate holds the next encode until the effective emit interval
 	// (tmuxSixelInterval) has passed. Producer only. The zero value leaves the
@@ -925,6 +926,7 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			item = writeItem{
 				buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed,
 				tmuxSixel: s.assembledTmuxSixel, kittySHM: s.assembledSHM.id != 0,
+				tmuxKitty:      s.assembledTmuxKitty,
 				pressureSample: s.assembledPressureSample, pressureGen: s.assembledPressureGen,
 			}
 		}
@@ -997,6 +999,7 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			s.assembledEncodeMS = 0
 			s.assembledTimed = false
 			s.assembledTmuxSixel = true
+			s.assembledTmuxKitty = 0
 		case <-winch:
 			if err := s.resize(); err != nil {
 				return err
@@ -1588,6 +1591,7 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	}
 	sixelStart := buf.Len()
 	kittyBelowText := timed && s.st.Backend == BackendKitty
+	previousKittyID := s.st.kittyID
 	if rerr := s.st.renderStreamFrame(frame, buf, kittyBelowText, timed); rerr != nil {
 		return 0, rerr
 	}
@@ -1609,6 +1613,10 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	// Tag an shm transmit for reply correlation and the pacing gate.
 	s.markKittySHMAssembled(s.st.takeKittySHMID())
 	s.assembledTmuxSixel = nonScrollingSixel && s.st.mux == muxTmux
+	s.assembledTmuxKitty = 0
+	if s.st.kittyTmux && s.st.kittyID != previousKittyID {
+		s.assembledTmuxKitty = tmuxKittyPaint
+	}
 	s.assembledPressureSample, s.assembledPressureGen = s.nextWritePressureSample()
 
 	if s.fps != nil {
@@ -1642,6 +1650,7 @@ func (s *streamSession) flushAssembled() {
 	s.writer.send(writeItem{
 		buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed,
 		tmuxSixel: s.assembledTmuxSixel, kittySHM: s.assembledSHM.id != 0,
+		tmuxKitty:      s.assembledTmuxKitty,
 		pressureSample: s.assembledPressureSample, pressureGen: s.assembledPressureGen,
 	})
 	s.assembled = nil
@@ -1665,12 +1674,16 @@ func (s *streamSession) flushAssembled() {
 // only on a rare resize, backend cycle, or startup spinner tick, because the
 // per-second heartbeat runs only when the fps meter is armed.
 func (s *streamSession) emitControl(b []byte) error {
+	return s.emitControlWithTmuxKitty(b, 0)
+}
+
+func (s *streamSession) emitControlWithTmuxKitty(b []byte, effect tmuxKittyWrite) error {
 	if s.writer == nil {
-		_, err := s.tty.Write(b)
+		_, err := writeTerminal(s.tty, b, effect)
 		return err
 	}
 	s.flushAssembled()
-	s.writer.send(writeItem{ctrl: append([]byte(nil), b...), timed: s.fps != nil})
+	s.writer.send(writeItem{ctrl: append([]byte(nil), b...), timed: s.fps != nil, tmuxKitty: effect})
 	return nil
 }
 
@@ -1723,9 +1736,13 @@ func (s *streamSession) resize() error {
 		// first post-resize frame.
 		_ = s.resetKitty(&ctl)
 	}
+	var effect tmuxKittyWrite
+	if s.st.kittyTmux && ctl.Len() > 0 {
+		effect = tmuxKittyReset
+	}
 	ctl.WriteString(clearScreen)
 	s.appendBar(&ctl)
-	return s.emitControl(ctl.Bytes())
+	return s.emitControlWithTmuxKitty(ctl.Bytes(), effect)
 }
 
 // handleMouse routes one decoded mouse event by bar mode and row and reports
@@ -2169,6 +2186,10 @@ func (s *streamSession) cycleBackend(reverse bool) {
 		// Free Kitty images before the new backend draws.
 		_ = s.resetKitty(&ctl)
 	}
+	var effect tmuxKittyWrite
+	if s.st.kittyTmux && ctl.Len() > 0 {
+		effect = tmuxKittyReset
+	}
 	if s.st.Backend != previous {
 		// Every backend change erases the screen before the new backend's
 		// first frame, one shared rule for all transitions. Leaving Block,
@@ -2197,7 +2218,7 @@ func (s *streamSession) cycleBackend(reverse bool) {
 		s.appendBar(&ctl)
 	}
 	if ctl.Len() > 0 {
-		_ = s.emitControl(ctl.Bytes())
+		_ = s.emitControlWithTmuxKitty(ctl.Bytes(), effect)
 	}
 	s.ctl.submit(captureConfigFor(s.st))
 }

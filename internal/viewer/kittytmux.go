@@ -6,7 +6,6 @@ import (
 	"io"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/wimpysworld/nyala/internal/render/kitty"
@@ -14,18 +13,11 @@ import (
 
 const kittyPlaceholder = '\U0010EEEE'
 
-const (
-	tmuxKittyActive = iota + 1
-	tmuxKittyCleared
-)
-
 // tmuxKittyPlacement owns the two pane image IDs and the reused cell buffer.
-// Only the stream producer paints or resets the grid. The signal watcher can
-// read the immutable deletes and the atomic paint state during teardown.
+// The producer owns the grid. The terminal writer shares the immutable deletes.
 type tmuxKittyPlacement struct {
 	ids     [2]int
 	deletes string
-	phase   atomic.Uint32
 	cells   []byte
 }
 
@@ -79,7 +71,6 @@ func (s *State) encodeTmuxKittyPNG(data string, w io.Writer) error {
 	if err := s.kittyEnc.EncodeTmuxPNGID(data, next, cols, rows, w); err != nil {
 		return err
 	}
-	p.phase.Store(tmuxKittyActive)
 	p.cells = appendTmuxKittyCells(p.cells[:0], next, cols, rows)
 	if _, err := w.Write(p.cells); err != nil {
 		return err
@@ -119,54 +110,69 @@ func appendTmuxKittyCells(dst []byte, id, cols, rows int) []byte {
 
 func (s *State) resetTmuxKitty(w io.Writer) error {
 	p := s.kittyTmuxPaint
-	if p == nil || p.phase.Load() != tmuxKittyActive {
+	if p == nil || s.kittyID == 0 {
 		return nil
 	}
 	if _, err := io.WriteString(w, p.deletes); err != nil {
 		return err
 	}
-	p.phase.Store(tmuxKittyCleared)
 	s.kittyID = 0
 	return nil
 }
 
-func (p *tmuxKittyPlacement) exitSequence() string {
-	if p == nil {
-		return ""
-	}
-	switch p.phase.Load() {
-	case tmuxKittyActive:
-		// The image delete does not erase placeholder text from the tmux pane.
-		return p.deletes + sgrReset + clearScreen
-	case tmuxKittyCleared:
-		// A fatal signal can interrupt a queued reset before the delete writes.
-		return p.deletes
-	default:
-		return ""
-	}
-}
+// tmuxKittyWrite records a Kitty frame or a reset that deletes its images and
+// clears its cells. The zero value leaves the terminal paint state unchanged.
+type tmuxKittyWrite uint8
+
+const (
+	tmuxKittyPaint tmuxKittyWrite = iota + 1
+	tmuxKittyReset
+)
 
 // tmuxKittyTTY keeps scoped deletion last, including when a fatal signal
 // arrives while the stream writer has another frame queued.
 type tmuxKittyTTY struct {
-	mu     sync.Mutex
-	tty    io.Writer
-	closed bool
+	mu      sync.Mutex
+	tty     io.Writer
+	deletes string
+	painted bool
+	closed  bool
 }
 
-// Write sends terminal data unless teardown already ran.
-func (t *tmuxKittyTTY) Write(data []byte) (int, error) {
+func writeTerminal(tty io.Writer, data []byte, effect tmuxKittyWrite) (int, error) {
+	if t, ok := tty.(*tmuxKittyTTY); ok {
+		return t.write(data, effect)
+	}
+	return tty.Write(data)
+}
+
+// Write sends terminal data without changing the Kitty paint state.
+func (t *tmuxKittyTTY) Write(data []byte) (int, error) { return t.write(data, 0) }
+
+func (t *tmuxKittyTTY) write(data []byte, effect tmuxKittyWrite) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
 		return 0, io.ErrClosedPipe
 	}
-	return t.tty.Write(data)
+	n, err := t.tty.Write(data)
+	switch {
+	case effect == tmuxKittyPaint && n > 0:
+		// Even a partial frame can leave an image or placeholder on the pane.
+		t.painted = true
+	case effect == tmuxKittyReset && n == len(data):
+		t.painted = false
+	}
+	return n, err
 }
 
 func (t *tmuxKittyTTY) finish(sequence string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.closed = true
+	if t.painted {
+		// The image delete alone does not erase the placeholder text.
+		sequence = t.deletes + sgrReset + clearScreen + sequence
+	}
 	_, _ = io.WriteString(t.tty, sequence)
 }

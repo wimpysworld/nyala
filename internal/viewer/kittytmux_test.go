@@ -74,9 +74,6 @@ func TestTmuxKittyScopedLifecycle(t *testing.T) {
 	if first == second || first <= 255 || second <= 255 || first > 0xffffff || second > 0xffffff {
 		t.Fatalf("invalid tmux Kitty image IDs: %d, %d", first, second)
 	}
-	if got := st.kittyTmuxPaint.exitSequence(); got != "" {
-		t.Fatalf("untouched pane emits a Kitty teardown: %q", got)
-	}
 	frame := render.Frame{EncodedPNG: encodedPNG(t, solidImageSize(8, 8, color.RGBA{R: 0x31, A: 0xff}))}
 	var out bytes.Buffer
 	if err := st.RenderStreamFrame(frame, &out); err != nil {
@@ -97,7 +94,6 @@ func TestTmuxKittyScopedLifecycle(t *testing.T) {
 	assertDelete(t, cmds[1], strconv.Itoa(first))
 
 	out.Reset()
-	exit := st.kittyTmuxPaint.exitSequence()
 	st.Resize(2, 1)
 	if err := st.resetKitty(&out); err != nil {
 		t.Fatal(err)
@@ -109,11 +105,75 @@ func TestTmuxKittyScopedLifecycle(t *testing.T) {
 	}
 	assertDelete(t, cmds[0], strconv.Itoa(first))
 	assertDelete(t, cmds[1], strconv.Itoa(second))
-	if got, want := exit, out.String()+sgrReset+clearScreen; got != want {
-		t.Fatalf("active exit = %q, want %q", got, want)
-	}
-	if got := st.kittyTmuxPaint.exitSequence(); strings.Contains(got, clearScreen) {
-		t.Fatal("exit after reset cleared the pane")
+}
+
+func TestTmuxKittyTTYTracksWrittenPaint(t *testing.T) {
+	frame := render.Frame{EncodedPNG: encodedPNG(t, solidImageSize(8, 8, color.RGBA{R: 0x31, A: 0xff}))}
+	for _, tc := range []struct {
+		name       string
+		writePaint bool
+		stageReset bool
+		writeReset bool
+		wantClear  bool
+	}{
+		{name: "Kitty frame still assembled"},
+		{name: "Kitty frame written", writePaint: true, wantClear: true},
+		{name: "reset still assembled", writePaint: true, stageReset: true, wantClear: true},
+		{name: "reset written before Block", writePaint: true, writeReset: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := NewState(2, 1)
+			st.SetEnabled([]Backend{BackendKitty, BackendBlock})
+			st.kittyTmux = true
+			p := newTmuxKittyPlacement()
+			st.kittyTmuxPaint = p
+
+			var out bytes.Buffer
+			tty := &tmuxKittyTTY{tty: &out, deletes: p.deletes}
+			s := &streamSession{st: &st, tty: tty, ctl: &control{pending: make(chan captureConfig, 1)}}
+			if _, err := tty.Write([]byte("Block frame")); err != nil {
+				t.Fatal(err)
+			}
+			s.assembled = &bytes.Buffer{}
+			if _, err := s.assemble(s.assembled, frame); err != nil {
+				t.Fatal(err)
+			}
+			s.writer = newStreamWriter(tty)
+			if tc.writePaint {
+				s.flushAssembled()
+			}
+			if tc.writeReset {
+				s.cycleBackend(false)
+			}
+			s.writer.stop()
+			if tc.stageReset {
+				var reset bytes.Buffer
+				if err := s.resetKitty(&reset); err != nil || reset.Len() == 0 {
+					t.Fatalf("assemble reset: %v, %d bytes", err, reset.Len())
+				}
+			}
+			if tc.writeReset {
+				if _, err := tty.Write([]byte("next Block frame")); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			start := out.Len()
+			tty.finish("restore")
+			apcs, plain, count := splitTmuxKittyTestWire(t, out.String()[start:])
+			if !tc.wantClear {
+				if count != 0 || plain != "restore" {
+					t.Fatalf("unexpected Kitty cleanup: %q", out.String()[start:])
+				}
+				return
+			}
+			cmds := kittyCommands(string(apcs))
+			if count != 2 || len(cmds) != 2 || plain != sgrReset+clearScreen+"restore" {
+				t.Fatalf("expected scoped Kitty cleanup before restore, got %q", out.String()[start:])
+			}
+			assertDelete(t, cmds[0], strconv.Itoa(p.ids[0]))
+			assertDelete(t, cmds[1], strconv.Itoa(p.ids[1]))
+		})
 	}
 }
 
