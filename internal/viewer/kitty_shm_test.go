@@ -1,7 +1,6 @@
 package viewer
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/base64"
 	"errors"
@@ -281,12 +280,12 @@ func TestKittySHMEncodedPNGFallsBackDirect(t *testing.T) {
 // response into an apc event, drops non-graphics APCs, and keeps later keys
 // intact.
 func TestNextEventAPCResponse(t *testing.T) {
-	br := bufio.NewReader(strings.NewReader("\x1b_Gi=1;OK\x1b\\\x1b_Xother\x1b\\q"))
+	br := newKeyDecoder(strings.NewReader("\x1b_Gi=1;OK\x1b\\\x1b_Xother\x1b\\q"), nil)
 	first, err := br.ReadByte()
 	if err != nil {
 		t.Fatalf("read first byte: %v", err)
 	}
-	ev, emit := nextEvent(br, first)
+	ev, emit := br.nextEvent(first)
 	if !emit || ev.apc != "i=1;OK" {
 		t.Fatalf("graphics APC event = %+v emit %v, want apc %q", ev, emit, "i=1;OK")
 	}
@@ -295,7 +294,7 @@ func TestNextEventAPCResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read next byte: %v", err)
 	}
-	if _, emit := nextEvent(br, next); emit {
+	if _, emit := br.nextEvent(next); emit {
 		t.Fatal("non-graphics APC must be dropped")
 	}
 
@@ -303,7 +302,7 @@ func TestNextEventAPCResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read trailing byte: %v", err)
 	}
-	ev, emit = nextEvent(br, last)
+	ev, emit = br.nextEvent(last)
 	if !emit || ev.b != 'q' || ev.apc != "" {
 		t.Fatalf("trailing key = %+v emit %v, want byte q", ev, emit)
 	}

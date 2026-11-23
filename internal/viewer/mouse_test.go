@@ -1,7 +1,6 @@
 package viewer
 
 import (
-	"bufio"
 	"fmt"
 	"strings"
 	"testing"
@@ -247,14 +246,14 @@ func TestDecodeSGRMouse(t *testing.T) {
 // would receive: no dropped sequence may leak bytes as key events.
 func collectEvents(t *testing.T, in string) []keyEvent {
 	t.Helper()
-	br := bufio.NewReader(strings.NewReader(in))
+	br := newKeyDecoder(strings.NewReader(in), nil)
 	var events []keyEvent
 	for {
 		b, err := br.ReadByte()
 		if err != nil {
 			return events
 		}
-		if ev, emit := nextEvent(br, b); emit {
+		if ev, emit := br.nextEvent(b); emit {
 			events = append(events, ev)
 		}
 	}

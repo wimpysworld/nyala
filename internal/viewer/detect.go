@@ -141,7 +141,7 @@ const probePollTimeout = 120 * time.Millisecond
 // raw fd instead of reaching the page as typed text.
 func queryBytes(shmName string) []byte {
 	var b bytes.Buffer
-	b.WriteString(ansi.KittyGraphics([]byte("AAAA"), "i="+kittyDirectID, "s=1", "v=1", "a=q", "t=d", "f=24"))
+	b.WriteString(kittyDirectQuery())
 	if shmName != "" {
 		payload := emmb64.StdEncoding.EncodeToString([]byte(shmName))
 		b.WriteString(ansi.KittyGraphics([]byte(payload), "i="+kittySHMID, "s=1", "v=1", "a=q", "t=s", "f=24"))
@@ -163,6 +163,11 @@ func queryBytes(shmName string) []byte {
 	b.WriteString(paletteQuery)
 	b.WriteString(ansi.RequestPrimaryDeviceAttributes)
 	return b.Bytes()
+}
+
+// kittyDirectQuery asks whether the terminal can read an in-band Kitty image.
+func kittyDirectQuery() string {
+	return ansi.KittyGraphics([]byte("AAAA"), "i="+kittyDirectID, "s=1", "v=1", "a=q", "t=d", "f=24")
 }
 
 // reducedQueryBytes builds the multiplexer handshake write: the three
@@ -188,18 +193,21 @@ func reducedQueryBytes() []byte {
 	return b.Bytes()
 }
 
-// probeTerminalReduced runs the multiplexer handshake on the raw tty: it
-// writes reducedQueryBytes, reads to the DA1 fence, and parses the Sixel
-// attribute, the XTVERSION identity, and the cell pixel size. Kitty and
-// KittySHM stay false because no Kitty probe is sent. On any I/O error it
-// returns a zero result, so detection fails closed to block only.
-func probeTerminalReduced(tty *os.File, cols, rows int) probeResult {
+// probeTerminalReduced asks for terminal identity and geometry without the
+// full capability handshake. Herdr handles Kitty graphics in the pane, so
+// probeKitty adds the direct query there. The shared-memory query stays off.
+func probeTerminalReduced(tty *os.File, cols, rows int, probeKitty bool) probeResult {
 	res := probeResult{cellPx: cellPx{W: cellraster.CellPxW, H: cellraster.CellPxH}}
-	if _, err := tty.Write(reducedQueryBytes()); err != nil {
+	query := reducedQueryBytes()
+	if probeKitty {
+		query = append([]byte(kittyDirectQuery()), query...)
+	}
+	if _, err := tty.Write(query); err != nil {
 		return res
 	}
 	buf := readUntilDA1(int(tty.Fd()))
 	res.Sixel = parseDA1Sixel(buf)
+	res.Kitty = probeKitty && parseKittySupport(buf, kittyDirectID)
 	res.TermID = parseXTVersion(buf)
 	if px, ok := parseCellPixels(buf, cols, rows); ok {
 		res.cellPx = px
@@ -597,7 +605,7 @@ func parseCellPixels(buf []byte, cols, rows int) (cellPx, bool) {
 		if rr, cc, ok18 := parseCSIt(buf, 8); ok18 && cc > 0 && rr > 0 {
 			c, r = cc, rr
 		}
-		if c > 0 && r > 0 {
+		if c > 0 && r > 0 && w >= c && h >= r {
 			return cellPx{W: w / c, H: h / r}, true
 		}
 	}

@@ -115,6 +115,10 @@ type State struct {
 	// sixel paths.
 	kittyID int
 
+	// kittyTmux selects inline Kitty passthrough with pane-local placeholders.
+	kittyTmux      bool
+	kittyTmuxPaint *tmuxKittyPlacement
+
 	// kittyEnc is the reused Kitty live encoder. It holds the APC frame assembly
 	// buffer across direct PNG frames. It is lazily built on the
 	// first kitty frame and driven from the single draw goroutine, so it never
@@ -364,6 +368,9 @@ func (s *State) SetEnabled(enabled []Backend) {
 		enabled = []Backend{BackendBlock}
 	}
 	s.Enabled = enabled
+	if s.Backend != enabled[0] {
+		s.sixelBudget.invalidateFrame()
+	}
 	s.Backend = enabled[0]
 }
 
@@ -395,7 +402,11 @@ func (s *State) cycleBackendStep(dir int) Backend {
 		}
 	}
 	n := len(s.Enabled)
-	s.Backend = s.Enabled[(idx+dir+n)%n]
+	next := s.Enabled[(idx+dir+n)%n]
+	if s.Backend != next {
+		s.sixelBudget.invalidateFrame()
+	}
+	s.Backend = next
 	return s.Backend
 }
 
@@ -496,6 +507,8 @@ func cycleValue[T comparable](cycle []T, current T, reverse bool, allowed func(T
 // Resize records a new terminal size in cells. The next frame reflects the new
 // size.
 func (s *State) Resize(cols, rows int) {
+	// A resize can also change cell pixels without changing the grid.
+	s.sixelBudget.invalidateFrame()
 	s.Cols = cols
 	s.Rows = rows
 }

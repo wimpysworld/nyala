@@ -1399,16 +1399,16 @@ override beats the whole ladder.
 
 ### Multiplexers
 
-Detection is env identity, which survives a multiplexer where glyph probing
-does not (`detectMultiplexer`): tmux is `TMUX` set; zellij is `ZELLIJ` present
-with any value, including "0", so the check tests presence; herdr is
-`HERDR_ENV=1` plus `HERDR_PANE_ID`; screen is `STY` set. Under tmux and zellij
-a reduced handshake runs with no Kitty APC probe, because both consume APC
-without passthrough and the probe would vanish unanswered. It also omits the
-keyboard-protocol query, for the reason under Key bindings and text input, so
-every multiplexer session keeps the legacy key parser. Screen and herdr get
-no handshake and stay Block. Kitty is never offered under a multiplexer; tmux
-3.6 and later may offer Sixel, gated in Multiplexer graphics below.
+`detectMultiplexer` uses environment variables because glyph probes fail in
+multiplexers. It checks `TMUX` for tmux, `ZELLIJ` for zellij (including a value
+of "0"), `HERDR_ENV=1` plus `HERDR_PANE_ID` for Herdr, and `STY` for screen.
+
+tmux and zellij use a reduced handshake without the Kitty graphics query.
+Herdr uses a reduced handshake that sends the standard Kitty graphics query,
+but not the shared-memory probe. Screen skips the handshake. Every
+multiplexer keeps the legacy key parser because none of these handshakes
+queries the Kitty keyboard protocol. See [Multiplexer graphics](#multiplexer-graphics)
+for the backend checks.
 
 ### The sextant allow-list
 
@@ -1676,30 +1676,62 @@ change.
 
 ## Multiplexer graphics
 
-Multiplexer detection and the reduced handshake live in Capability detection
-above. Graphics gating under each multiplexer:
+### Native Sixel in tmux
 
-tmux Sixel is gated three ways:
+tmux must report Sixel (attribute 4 in DA1) and identify as version 3.6 or
+later in XTVERSION. Nyala also requires valid cell pixel geometry and checks
+its terminal compatibility rules. Versions 3.4 through 3.5a have a fixed
+1 MiB device control string (DCS) limit. Larger frames disappear without an
+error.
 
-- DA1 must advertise attribute 4. tmux reports it only when both its build
-  and its outer terminal support Sixel, so the reply is honest.
-- Real cell pixel geometry must be present, or the surface would be sized
-  from the 8x16 fallback and render at the wrong physical scale.
-- XTVERSION must name tmux 3.6 or later. Versions 3.4 through 3.5a compile
-  in a 1 MiB DCS input cap with no option to raise it, so any busy frame over
-  1 MiB is silently discarded as a black screen. Those versions get no Sixel
-  at all; `--backend=sixel` fails with the standard unsupported error.
+Nyala uses the socket in `TMUX` for read-only queries. It matches `TMUX_PANE`
+to the current terminal device before it trusts the pane ID. Every attached
+client that can view the pane's window must advertise Sixel. This includes
+linked sessions and clients on another window in those sessions, but excludes
+control-mode clients. Nyala also needs a readable server `input-buffer-size`.
+If any check fails, automatic selection falls back to Block unless the
+experimental Kitty path qualifies. `--backend=sixel` reports an unsupported
+backend. Nyala checks at startup, so restart it after a client change.
 
-The bar's unconditional bottom-row reservation absorbs tmux's image-crop
-rule; the mechanism lives in The bottom bar.
+The reserved bottom row accounts for tmux's image height limit. See
+[The bottom bar](#the-bottom-bar).
+
+### Kitty graphics in Herdr
+
+Nyala enables Kitty when Herdr answers the standard graphics query with
+`OK` for the probe image ID and Nyala has valid cell pixel geometry. The
+transport passes Chromium's PNG directly. Nyala neither probes shared memory
+nor calls a Herdr-specific API. Herdr owns image placement within the pane.
+
+### Experimental Kitty passthrough in tmux
+
+This path uses Kitty Unicode placeholders and direct PNG, not shared
+memory. It applies to passthrough on tmux 3.6 and later, including tmux 3.8.
+It does not use native Kitty graphics from development versions of tmux.
+tmux does not forward replies to wrapped Kitty probes, so
+`NYALA_TMUX_KITTY=1` is the user's assertion that the outer terminal supports
+Kitty Unicode placeholders.
+
+Nyala checks the pane against the current terminal device, requires valid
+cell pixel geometry, and rejects known nested multiplexer sessions. It
+requires one attached client that can see the pane's window, with UTF-8 and
+truecolour. The pane's effective `allow-passthrough` must be `on`, not `all`.
+The server's `input-buffer-size` must be at least 8192 bytes to accept a
+wrapped 4096-byte Kitty chunk and its framing.
+
+Nyala checks those conditions at startup and does not monitor client changes.
+Restart Nyala after reattaching or changing clients. Nested tmux and
+concurrent Kitty applications are outside this experimental setup. If a
+check fails, automatic selection still considers native Sixel and Block.
+
+### zellij and screen
 
 zellij Sixel is blocked outright, regardless of DA1 and geometry. Two
 zellij-side defects, root-caused in zellij source, would present as Nyala
 bugs: an image-id collision that drops every third full-replacement frame,
 and bare re-emission of image chunks to the host that breaks page scrolling.
-No Nyala-side workaround exists, so Block is the zellij backend. The block
-lifts through the compatibility policy, keyed on the `Zellij(<version>)`
-XTVERSION identity, once upstream fixes ship.
+Nyala uses Block in zellij. The compatibility policy identifies zellij by
+its `Zellij(<version>)` XTVERSION reply. Screen also uses Block.
 
 ### tmux Sixel pacing and quality ladder
 
@@ -1708,16 +1740,14 @@ Sixel overwhelms it. The viewer survives this with tmux-only machinery
 (`internal/viewer/sixelbudget.go`); native terminals and other multiplexers
 keep normal behaviour.
 
-- Byte budget: 15 MiB per frame on tmux 3.7+, 1.5 MB on 3.6.x (a byte-rate
-  cap on 3.6's re-encoded output stage), 900 KB fallback that stays under
-  tmux's silent 1 MiB DCS discard. An over-budget frame downscales by a
-  ladder factor (1.5, 2, 3, 4) and upscales back to the exact grid extent,
-  trading blur for delivery; if even the floor factor does not fit, the
-  smallest encode is sent anyway.
-- Input-buffer raise: on a gated version Nyala runs
-  `tmux set -s input-buffer-size 16777216` once at startup. Success carries
-  the version-tuned budget, failure keeps the fallback; the option persists
-  for the tmux server lifetime.
+- Hard byte limit: Nyala reads `input-buffer-size` without changing the
+  server. It sets the limit below tmux's discard threshold, with a cap of
+  15 MiB (900 KB for a buffer of at most 1 MiB). Nyala drops any
+  image that exceeds the hard limit, even after the last downscale step.
+- Motion target: tmux 3.6.x also caps the target at 1.5 MB to limit the
+  re-encoded output rate. Over-target frames try downscale factors 1.5, 2,
+  3, and 4, then scale back to the exact grid extent. At the last factor,
+  Nyala can send an image above the motion target if it fits the hard limit.
 - Emit pacing: a version-tuned floor (250 ms on 3.7+, 300 ms below or
   unknown) at the latest-wins coalescing seam, backing off to the last write
   duration plus 50 ms, capped at 1 s. The pty write blocks at tmux's read
@@ -1731,9 +1761,10 @@ keep normal behaviour.
   write window; a failed probe retreats and silences probing until the next
   settle. Band judgement exists because tmux's buffers absorb a failing
   sharper factor and hide it from the escalation threshold.
-- Idle settle-to-sharp: after two idle pacing intervals a blurred final frame
-  re-emits once at factor 1, so a settled page always reads crisp. The next
-  motion episode resumes at the remembered pre-settle factor.
+- Idle settle-to-sharp: after two idle pacing intervals, Nyala re-encodes a
+  blurred final frame at factor 1. Nyala sends the sharper image only if it
+  fits the hard limit. The next motion episode resumes at the pre-settle
+  factor. A resize invalidates retained frames from the old geometry.
 - No per-frame erase: a steady frame carries a bare cursor-home prefix; new
   images paint over old, and tmux's stored-image LRU (capped at 20 on 3.6b+)
   bounds the stack. An erase prefix caused visible strobe. DEC 2026 is
@@ -1956,11 +1987,9 @@ reverse video, a ❯ prompt, and a hand-rolled readline subset (Ctrl+A/E/U/K/W,
 arrows, Home, End, Delete, Backspace) over a rune slice with a horizontal
 viewport. Enter commits; schemeless input with a dot gains `https://`, and
 only http, https, and file schemes pass, so a committed `javascript:` URL can
-never execute in the page origin. Esc cancels; a lone Esc is told apart from
-an escape sequence by the buffered-byte check on the reader. Registered Alt
-bindings run first. A focus flag routes every other key, and any paste, to the
-editor and none to CDP while editing. A
-bar-row press places the caret at the clicked cell, walking the visible runes by
+never execute in the page origin. Escape cancels. Registered Alt bindings run
+first. A focus flag routes other keys and paste to the editor instead of CDP.
+A bar-row press places the caret at the clicked cell, walking the visible runes by
 `go-runewidth` width from the viewport offset, so a wide or ambiguous-width
 glyph counts the cells it really occupies. The cursor is a rune index
 throughout, so no mapping can split UTF-8. Every cell of a wide grapheme places
@@ -2112,6 +2141,13 @@ for that chord. The capability comes from the startup handshake, under The
 handshake above. The reduced multiplexer handshake omits the query, so tmux,
 zellij, screen, and herdr sessions keep the legacy parser: a multiplexer would
 have to translate the reports back for its own key handling.
+
+The legacy decoder waits briefly for the byte after Escape, even when it
+arrives in a separate read. A lone Escape takes effect when the lookahead
+expires. The decoder also uses bounded lookahead to tell terminal replies
+from legacy Alt chords. The change fixes the decoder's handling of split
+Escape sequences. It does not establish why input failed in Herdr with remote
+Chromium.
 
 Nyala pushes flag 1, disambiguate escape codes, and nothing else. That alone
 delivers what Nyala binds, and it leaves plain typing on the normal UTF-8 path.

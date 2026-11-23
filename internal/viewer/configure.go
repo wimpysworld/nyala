@@ -7,16 +7,11 @@ import (
 	cterm "github.com/charmbracelet/x/term"
 )
 
-// configureBackends decides which backends the cycle offers and resolves the
-// real cell pixel size, then writes both into st. Under GNU screen or herdr it
-// runs no handshake and offers block only: screen blocks graphics passthrough
-// and herdr consumes graphics sequences. Under tmux or zellij it runs the
-// reduced handshake (no Kitty APC probe, which both consume silently) and
-// offers Sixel per multiplexerBackends, which admits tmux only and keeps
-// zellij block only; Kitty is never offered under a multiplexer, and the auto
-// start is the cycle head SetEnabled nominates. Otherwise
-// it runs the full terminal handshake and offers a
-// graphics backend only when the terminal confirms it. The colour mode resolves
+// configureBackends resolves cell geometry, the backend cycle and its starting
+// backend. Screen uses Block without a handshake. Herdr uses a reduced
+// handshake with a native Kitty query. Tmux and zellij use a reduced
+// handshake without Kitty. A bare terminal gets the full handshake.
+// The colour mode resolves
 // on every path after terminal compatibility, so no multiplexer early return
 // can strand it at the NewState default. The bar's SGR opener resolves on
 // every path beside it, from the OSC 11 reply the full handshake collects;
@@ -53,7 +48,7 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 	mux := detectMultiplexer()
 	st.mux = mux
 	switch mux {
-	case muxScreen, muxHerdr:
+	case muxScreen:
 		st.setTerminalCompatibility("", environ)
 		st.configureColour(colourFlag, environ, detected, isTTY)
 		st.barSGR = resolveBarStyle(false, false)
@@ -63,8 +58,26 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 		st.kittyTransport = resolveKittyTransport(transportFlag, "", false, runtime.GOOS)
 		st.SetEnabled([]Backend{BackendBlock})
 		return nil
+	case muxHerdr:
+		res := probeTerminalReduced(tty, cols, rows, true)
+		st.probe = res
+		if !overrideOK && !winOK {
+			st.cellPx = res.cellPx
+		}
+		st.setTerminalCompatibility(res.TermID, environ)
+		st.configureColour(colourFlag, environ, detected, isTTY)
+		st.barSGR = resolveBarStyle(false, false)
+		// Herdr owns image placement and may not share Nyala's memory namespace.
+		st.kittyTransport = KittyTransportDirect
+		realGeometry := overrideOK || winOK || res.cellPxOK
+		if res.Kitty && realGeometry && KittyTransport(transportFlag) != KittyTransportSHM {
+			st.SetEnabled([]Backend{BackendKitty, BackendBlock})
+		} else {
+			st.SetEnabled([]Backend{BackendBlock})
+		}
+		return nil
 	case muxTmux, muxZellij:
-		res := probeTerminalReduced(tty, cols, rows)
+		res := probeTerminalReduced(tty, cols, rows, false)
 		st.probe = res
 		if !overrideOK && !winOK {
 			st.cellPx = res.cellPx
@@ -78,26 +91,6 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 			// Sixel via syncUpdatesEnabled, so Block under tmux keeps its
 			// fence.
 			st.compat.sixelSyncUpdatesDisabled = true
-			// Sixel is version-gated to tmux 3.6 and later
-			// (tmuxSixelSupported). When the gate fails no Sixel flows, so
-			// the tmux server mutation inside resolveTmuxSixelBudget is
-			// skipped and the budget and floor stay unarmed.
-			if tmuxSixelSupported(res.TermID) {
-				// A successful input-buffer-size raise carries a
-				// version-tuned budget: the raised full-quality budget on
-				// 3.7+, where rate pacing alone suffices, and the 1.5 MB
-				// output-stage rate cap on 3.6.x, whose re-encoded output
-				// toward the host terminal saturates invisibly at higher
-				// byte rates. A failed set keeps the 900 KB fallback under
-				// the default 1 MiB input buffer.
-				st.sixelBudget.limit = resolveTmuxSixelBudget(res.TermID, runTmux)
-				// The pacing floor is version-tuned: tmux 3.7 and later
-				// drain their output scheduler at 250 ms, while 3.6.x needs
-				// 300 ms to avoid stall-and-burst release toward the host
-				// terminal.
-				st.sixelBudget.minInterval = resolveTmuxSixelMinInterval(res.TermID)
-				st.sixelBudget.debug = os.Getenv(debugTimingEnv) != ""
-			}
 		}
 		st.configureColour(colourFlag, environ, detected, isTTY)
 		// The reduced handshake sent no OSC 11 query, so the bar keeps reverse
@@ -109,7 +102,26 @@ func configureBackends(st *State, tty *os.File, cols, rows int, colourFlag, tran
 		// wins and auto falls back to direct.
 		st.kittyTransport = resolveKittyTransport(transportFlag, "", false, runtime.GOOS)
 		realGeometry := overrideOK || winOK || res.cellPxOK
-		st.SetEnabled(multiplexerBackends(mux, res.TermID, res.Sixel, realGeometry, st.compat))
+		var session tmuxSession
+		var verified bool
+		if mux == muxTmux && realGeometry {
+			session, verified = inspectTmux(tty)
+		}
+		hostSixel := verified && !hasOuterMultiplexer(environ) && session.supportsSixel()
+		enabled := multiplexerBackends(mux, res.TermID, res.Sixel, realGeometry, hostSixel, st.compat)
+		if enabled[0] == BackendSixel {
+			st.sixelBudget.limit, st.sixelBudget.hardLimit = resolveTmuxSixelBudget(res.TermID, session.query)
+			if st.sixelBudget.limit == 0 {
+				enabled = []Backend{BackendBlock}
+			} else {
+				st.sixelBudget.minInterval = resolveTmuxSixelMinInterval(res.TermID)
+				st.sixelBudget.debug = os.Getenv(debugTimingEnv) != ""
+			}
+		}
+		if configureTmuxKitty(st, session, verified, res.TermID, realGeometry, transportFlag) {
+			enabled = append([]Backend{BackendKitty}, enabled...)
+		}
+		st.SetEnabled(enabled)
 		return nil
 	}
 

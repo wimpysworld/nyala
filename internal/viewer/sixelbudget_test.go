@@ -801,52 +801,35 @@ func TestParseTmuxVersion(t *testing.T) {
 	}
 }
 
-// TestResolveTmuxSixelBudget pins the resolution through a seamed command
-// runner: no shell-out happens in tests. A successful input-buffer-size
-// raise returns the raised full-quality budget on tmux 3.7 and later and
-// the 1.5 MB output-stage rate cap on 3.6.x; tmux 3.5a, an unknown
-// identity, and a failed set keep the 900 KB fallback.
 func TestResolveTmuxSixelBudget(t *testing.T) {
 	cases := []struct {
-		name    string
-		termID  string
-		runErr  error
-		want    int
-		wantRun bool
+		name, termID, output string
+		runErr               error
+		wantTarget, wantHard int
 	}{
-		{"3.5a keeps the fallback without running tmux", "tmux 3.5a", nil, sixelBudgetDefault, false},
-		{"3.6 successful raise returns the legacy rate cap", "tmux 3.6", nil, sixelBudgetLegacyRate, true},
-		{"3.6a successful raise returns the legacy rate cap", "tmux 3.6a", nil, sixelBudgetLegacyRate, true},
-		{"3.7 successful raise returns the raised budget", "tmux 3.7", nil, sixelBudgetRaised, true},
-		{"3.7b successful raise returns the raised budget", "tmux 3.7b", nil, sixelBudgetRaised, true},
-		{"unknown version keeps the fallback without running tmux", "", nil, sixelBudgetDefault, false},
-		{"failed option set keeps the fallback", "tmux 3.6a", errTmuxRun, sixelBudgetDefault, true},
+		{"default buffer", "tmux 3.8", "1048576\n", nil, sixelBudgetDefault, sixelBudgetDefault},
+		{"large legacy buffer", "tmux 3.6a", "16777216\n", nil, sixelBudgetLegacyRate, sixelBudgetRaised},
+		{"large current buffer", "tmux 3.7b", "16777216\n", nil, sixelBudgetRaised, sixelBudgetRaised},
+		{"unsupported buffer", "tmux 3.8", "524288\n", nil, 0, 0},
+		{"non-power-of-two buffer", "tmux 3.8", "1572864\n", nil, sixelBudgetDefault, sixelBudgetDefault},
+		{"malformed buffer", "tmux 3.8", "1048576 extra\n", nil, 0, 0},
+		{"failed query", "tmux 3.8", "1048576\n", errors.New("tmux query failed"), 0, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var gotArgs []string
-			run := func(args ...string) error {
-				gotArgs = args
-				return tc.runErr
-			}
-			if got := resolveTmuxSixelBudget(tc.termID, run); got != tc.want {
-				t.Fatalf("budget = %d, want %d", got, tc.want)
-			}
-			if ran := gotArgs != nil; ran != tc.wantRun {
-				t.Fatalf("tmux command ran = %v, want %v", ran, tc.wantRun)
-			}
-			if tc.wantRun {
-				want := []string{"set", "-s", "input-buffer-size", tmuxInputBufferSize}
-				if strings.Join(gotArgs, " ") != strings.Join(want, " ") {
-					t.Fatalf("tmux command args = %v, want %v", gotArgs, want)
+			query := func(args ...string) (string, error) {
+				if got := strings.Join(args, " "); got != "show-options -sv input-buffer-size" {
+					t.Fatalf("tmux query = %q", got)
 				}
+				return tc.output, tc.runErr
+			}
+			target, hard := resolveTmuxSixelBudget(tc.termID, query)
+			if target != tc.wantTarget || hard != tc.wantHard {
+				t.Fatalf("budget = (%d, %d), want (%d, %d)", target, hard, tc.wantTarget, tc.wantHard)
 			}
 		})
 	}
 }
-
-// errTmuxRun stands in for a failed tmux client invocation.
-var errTmuxRun = errors.New("tmux set failed")
 
 // TestResolveTmuxSixelMinInterval pins the version-tuned pacing floor: tmux
 // 3.7 and later drain their output scheduler at the 250 ms floor, while older
@@ -1272,6 +1255,78 @@ func TestSixelSettleReencodesSharp(t *testing.T) {
 	}
 	if st.sixelSettleNeeded() {
 		t.Fatal("settle emit stayed armed; a second settle would loop without a new frame")
+	}
+}
+
+func TestTmuxSixelHardLimit(t *testing.T) {
+	st := tmuxSixelState()
+	st.sixelBudget.hardLimit = sixelBudgetDefault
+	s := &streamSession{st: &st}
+	frame := render.Frame{Img: noisyImage(640, 464)}
+	var motion, settle bytes.Buffer
+	if _, err := s.assemble(&motion, frame); err != nil {
+		t.Fatal(err)
+	}
+	dcsStart := bytes.Index(motion.Bytes(), []byte("\x1bP"))
+	dcsEnd := bytes.Index(motion.Bytes(), []byte("\x1b\\"))
+	if dcsStart < 0 || dcsEnd < dcsStart || dcsEnd+2-dcsStart > st.sixelBudget.hardLimit {
+		t.Fatalf("motion Sixel DCS bounds: start %d, end %d, cap %d", dcsStart, dcsEnd, st.sixelBudget.hardLimit)
+	}
+	if !s.tmuxSixelSettlePending() {
+		t.Fatal("motion did not arm a sharp settle")
+	}
+	if err := s.assembleSettle(&settle); err != nil {
+		t.Fatal(err)
+	}
+	if settle.Len() != 0 || s.tmuxSixelSettlePending() {
+		t.Fatal("oversized idle settle wrote bytes or remained pending")
+	}
+
+	// Test a cap too small for any quality. Do not clear the last image or
+	// schedule a settle when the encoder cannot send this new frame.
+	st.sixelBudget.limit = 32
+	st.sixelBudget.hardLimit = 32
+	if _, err := s.assemble(&motion, frame); err != nil {
+		t.Fatal(err)
+	}
+	if motion.Len() != 0 || s.tmuxSixelSettlePending() {
+		t.Fatal("oversized motion frame wrote bytes or armed a settle")
+	}
+	// The resize clears the displayed image but the session still counts
+	// as drawn. A failure to paint the new grid must not leave it blank.
+	st.Resize(st.Cols, st.Rows)
+	if _, err := s.assemble(&motion, frame); err == nil || !strings.Contains(err.Error(), "--backend=block") {
+		t.Fatalf("first oversized Sixel frame after resize error = %v, want Block advice", err)
+	}
+}
+
+func TestTmuxSixelInvalidatesPendingSettle(t *testing.T) {
+	for _, change := range []struct {
+		name  string
+		apply func(*State)
+	}{
+		{"resize", func(st *State) { st.Resize(70, 28) }},
+		{"resize at same grid", func(st *State) { st.Resize(st.Cols, st.Rows) }},
+		{"cycle away and back", func(st *State) { st.CycleBackend(); st.CycleBackendReverse() }},
+		{"replace enabled backends", func(st *State) {
+			st.SetEnabled([]Backend{BackendBlock})
+			st.SetEnabled([]Backend{BackendSixel, BackendBlock})
+		}},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			st := tmuxSixelState()
+			s := &streamSession{st: &st}
+			st.sixelBudget.idx = 2
+			st.sixelBudget.lastImg = noisyImage(640, 464)
+			st.sixelBudget.hasFrame = true
+			if !s.tmuxSixelSettlePending() {
+				t.Fatal("test did not arm a settle")
+			}
+			change.apply(&st)
+			if s.tmuxSixelSettlePending() || st.sixelBudget.hasFrame {
+				t.Fatal("old Sixel frame stayed valid across a resize or backend change")
+			}
+		})
 	}
 }
 

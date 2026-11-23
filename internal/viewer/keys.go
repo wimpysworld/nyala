@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"io"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -470,27 +471,46 @@ type keyEvent struct {
 	mouse  *MouseEvent // decoded SGR mouse report; nil otherwise
 }
 
-// readKeys reads keys from r and sends them on the returned channel, closing it
-// on EOF or read error. It runs in its own goroutine so Run can select between
-// keys and resize signals. A CSI escape sequence (ESC [ ... final) is parsed
-// into a scroll key via decodeCSI; a recognised sequence emits one scroll
-// keyEvent and an unrecognised one is dropped. Every other byte emits a byte
-// keyEvent. The returned channel is buffered size 1, and each send selects on
-// done, so a send cannot block forever once the consumer stops: the goroutine
-// exits when done closes or on read EOF/error. A blocking raw-fd Read may keep
-// the goroutine parked until the next byte arrives, after which the done select
-// returns; this is not instant teardown.
-func readKeys(r io.Reader, done <-chan struct{}) <-chan keyEvent {
+// escapeLookahead bounds the wait for a byte that distinguishes a bare
+// Escape or unbound Alt chord from a terminal sequence.
+const escapeLookahead = 25 * time.Millisecond
+
+type keyDecoder struct {
+	*bufio.Reader
+	setDeadline func(time.Time)
+}
+
+func newKeyDecoder(r io.Reader, setDeadline func(time.Time)) *keyDecoder {
+	return &keyDecoder{Reader: bufio.NewReader(r), setDeadline: setDeadline}
+}
+
+func (d *keyDecoder) peekEscape(n int) ([]byte, error) {
+	if d.Buffered() < n && d.setDeadline != nil {
+		d.setDeadline(time.Now().Add(escapeLookahead))
+		defer d.setDeadline(time.Time{})
+	}
+	return d.Peek(n)
+}
+
+// readKeys decodes input in order until EOF, a read error, or cancellation.
+// The caller must interrupt a blocked read when it closes done.
+func readKeys(d *keyDecoder, done <-chan struct{}) (<-chan keyEvent, <-chan struct{}) {
 	out := make(chan keyEvent, 1)
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		defer close(out)
-		br := bufio.NewReader(r)
 		for {
-			b, err := br.ReadByte()
+			select {
+			case <-done:
+				return
+			default:
+			}
+			b, err := d.ReadByte()
 			if err != nil {
 				return
 			}
-			ev, emit := nextEvent(br, b)
+			ev, emit := d.nextEvent(b)
 			if emit {
 				select {
 				case out <- ev:
@@ -500,7 +520,7 @@ func readKeys(r io.Reader, done <-chan struct{}) <-chan keyEvent {
 			}
 		}
 	}()
-	return out
+	return out, stopped
 }
 
 // nextEvent turns one read byte into a keyEvent. A non-escape ASCII byte is a
@@ -513,29 +533,23 @@ func readKeys(r io.Reader, done <-chan struct{}) <-chan keyEvent {
 // (next byte '_') is read to its String Terminator; a Kitty graphics response
 // (body leading with 'G') emits an apc event for the shm pacing gate, any
 // other APC is dropped. An ESC followed by an Alt-chord letter (altKeyAction)
-// is that chord's action event. A lone Esc press is detected by the
-// buffered-byte check: a terminal delivers an escape sequence in one write,
-// so its bytes share one read burst and sit buffered behind the ESC, while a
-// bare Esc key arrives with nothing buffered and emits an ESC byte event
-// immediately. An ESC followed by any other buffered byte also passes through
-// as an ESC byte event so it is not swallowed. It reads only the bytes the
-// sequence needs, so it does not block on the next key.
-func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
+// is that chord's action event. The decoder waits briefly for the byte after
+// ESC, even across a read boundary. A lone Esc or an ESC followed by an
+// unrecognised byte passes through as an ESC byte event.
+func (d *keyDecoder) nextEvent(b byte) (keyEvent, bool) {
+	br := d.Reader
 	if b != keyEsc {
 		if b >= 0x80 {
 			return assembleUTF8(br, b)
 		}
 		return keyEvent{b: b}, true
 	}
-	if br.Buffered() == 0 {
-		return keyEvent{b: b}, true
-	}
-	peeked, err := br.Peek(1)
+	peeked, err := d.peekEscape(1)
 	if err != nil {
 		return keyEvent{b: b}, true
 	}
 	next := peeked[0]
-	if (next == ']' || next == 'P') && !replyBodyFollows(br, next == 'P') {
+	if (next == ']' || next == 'P') && !d.replyBodyFollows(next == 'P') {
 		// ESC ] or ESC P with no reply body behind it is a typed Alt chord
 		// (Alt+] arrives as ESC ]). Emit the Escape byte and leave the
 		// introducer buffered, so the next loop iteration delivers it as
@@ -553,11 +567,7 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 		return keyEvent{apc: string(body[1:])}, true
 	}
 	if next == ']' {
-		// An OSC reply from the terminal (colour, title, clipboard): its body
-		// starts with a digit, checked by replyBodyFollows above. Consume it
-		// so its bytes do not leak as keys, and carry the body for a future
-		// handler. Truncation at a read boundary needs no handling here:
-		// ReadByte blocks until the rest of the reply arrives.
+		// Consume the confirmed OSC reply so its bytes do not leak as keys.
 		body, ok := readOSCBody(br)
 		if !ok || len(body) == 0 {
 			return keyEvent{}, false
@@ -565,12 +575,7 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 		return keyEvent{osc: string(body)}, true
 	}
 	if next == 'P' {
-		// A DCS reply from the terminal: its body starts with a digit
-		// (DECRPSS "1$r"/"0$r") or '>' (XTVERSION ">|"), checked by
-		// replyBodyFollows above. A DCS ends on ST only, so the APC reader is
-		// exact. Consume it and carry the body for a future handler.
-		// Truncation at a read boundary needs no handling here: ReadByte
-		// blocks until the rest of the reply arrives.
+		// DCS and APC both end on the String Terminator.
 		body, ok := readAPCBody(br)
 		if !ok || len(body) == 0 {
 			return keyEvent{}, false
@@ -625,25 +630,49 @@ func nextEvent(br *bufio.Reader, b byte) (keyEvent, bool) {
 	return keyEvent{}, false
 }
 
-// replyBodyFollows reports whether a still-buffered ESC ] or ESC P introducer
-// has a terminal reply body behind it. A reply body starts with a digit (OSC
-// "0;", "11;", "22;", "52;"; DCS "1$r", "0$r") or, for a DCS, '>' (XTVERSION
-// ">|"). Anything else, including no buffered byte at all (a reply arrives in
-// one write burst, so its body sits buffered behind the introducer), is a
-// typed Alt chord and keeps the legacy passthrough. The check is a heuristic:
-// an unsolicited reply with a non-numeric body falls to the legacy path, the
-// pre-existing behaviour, which never hangs the reader. It peeks without
-// consuming, so both outcomes see the bytes again.
-func replyBodyFollows(br *bufio.Reader, dcs bool) bool {
-	if br.Buffered() < 2 {
+// replyBodyFollows distinguishes a terminal reply from Alt+] or Alt+P
+// without consuming the introducer or prefix. Do not treat the first digit
+// alone as a reply: it can be a key pressed after the Alt chord.
+func (d *keyDecoder) replyBodyFollows(dcs bool) bool {
+	if d.setDeadline != nil {
+		d.setDeadline(time.Now().Add(escapeLookahead))
+		defer d.setDeadline(time.Time{})
+	}
+	if !dcs {
+		return d.oscReplyFollows()
+	}
+	p, err := d.Peek(2)
+	if err != nil {
 		return false
 	}
-	p, err := br.Peek(2)
-	if err != nil || len(p) < 2 {
+	switch p[1] {
+	case '>':
+		p, err := d.Peek(3)
+		return err == nil && p[2] == '|'
+	case '0', '1':
+		p, err := d.Peek(4)
+		return err == nil && p[2] == '$' && p[3] == 'r'
+	default:
 		return false
 	}
-	c := p[1]
-	return (c >= '0' && c <= '9') || (dcs && c == '>')
+}
+
+// oscReplyFollows recognises an OSC command number followed by a semicolon.
+// At most eight digits are enough for terminal reply codes.
+func (d *keyDecoder) oscReplyFollows() bool {
+	for i := 1; i <= 9; i++ {
+		p, err := d.Peek(i + 1)
+		if err != nil {
+			return false
+		}
+		if p[i] == ';' {
+			return i > 1
+		}
+		if p[i] < '0' || p[i] > '9' {
+			return false
+		}
+	}
+	return false
 }
 
 // assembleUTF8 assembles one multi-byte UTF-8 rune from its leading byte and

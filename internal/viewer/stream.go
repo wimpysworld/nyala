@@ -252,6 +252,14 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	if err != nil {
 		return err
 	}
+	var sessionTTY io.Writer = tty
+	var tmuxTTY *tmuxKittyTTY
+	if st.kittyTmux {
+		st.kittyTmuxPaint = newTmuxKittyPlacement()
+		tmuxTTY = &tmuxKittyTTY{tty: tty}
+		sessionTTY = tmuxTTY
+	}
+	tmuxPaint := st.kittyTmuxPaint
 	// restoreTerminal is the one terminal-restore path: the exit escapes
 	// (mouse reporting off, auto-wrap and cursor back, and, once a frame
 	// drew, the cursor moved below the frame), then the termios restore. The
@@ -261,6 +269,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	// never races the producer's write.
 	var restoreOnce sync.Once
 	var session *streamSession
+	var stopKeys func()
 	// titlePushed records that the enterTerminalModes write below reached the
 	// terminal, so the teardown pops the title stack only after a matching
 	// push. It is an atomic because the fatal-signal watcher goroutine reads
@@ -268,8 +277,16 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	var titlePushed atomic.Bool
 	restoreTerminal := func() {
 		restoreOnce.Do(func() {
+			if stopKeys != nil {
+				stopKeys()
+			}
 			drawn := session != nil && session.firstDrawn.Load()
-			_, _ = io.WriteString(tty, exitTerminalWithTitle(st.Rows, drawn, st.kittyKeyboard, titlePushed.Load(), st.paletteDisturbed(), st.compat.titlePopIgnored))
+			exit := exitTerminalWithTitle(st.Rows, drawn, st.kittyKeyboard, titlePushed.Load(), st.paletteDisturbed(), st.compat.titlePopIgnored)
+			if tmuxTTY == nil {
+				_, _ = io.WriteString(tty, exit)
+			} else {
+				tmuxTTY.finish(tmuxPaint.exitSequence() + exit)
+			}
 			restore()
 		})
 	}
@@ -317,8 +334,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	winch, stopResize := notifyResize(fd)
 	defer stopResize()
 
-	// done stops the key-reader goroutine when Stream returns, so a goroutine
-	// blocked on a send after the consumer stops selecting cannot leak.
+	// done stops the control and signal goroutines when Stream returns.
 	done := make(chan struct{})
 	defer close(done)
 
@@ -343,7 +359,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	diff := &block.GridDiff{}
 	st.SetDiff(diff)
 
-	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, outcomes: outcomes, ctl: ctl, diff: diff, fps: fps, launchURL: url, version: version, pointerWake: make(chan struct{}, 1)}
+	s := &streamSession{eng: eng, st: st, tty: sessionTTY, fd: fd, keySender: keySender, outcomes: outcomes, ctl: ctl, diff: diff, fps: fps, launchURL: url, version: version, pointerWake: make(chan struct{}, 1)}
 	session = s
 	// Clear the screen and draw the bar immediately, with a blank page region
 	// and the launch URL: the first user feedback is the bar, not a text cue.
@@ -359,6 +375,11 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	// launch URL host while the page loads.
 	s.maybeEmitTitle()
 	s.maybeEmitProgress()
+	keys, stopInput, keyErr := readTerminalKeys(tty)
+	if keyErr != nil {
+		return fmt.Errorf("viewer: start terminal input: %w", keyErr)
+	}
+	stopKeys = stopInput
 	// A caught signal restores the terminal before bounded browser teardown can
 	// wait, or raw mode and mouse reporting could remain active during that wait.
 	// The watcher shares restoreTerminal's Once with the deferred teardown, so the
@@ -375,7 +396,6 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 		case <-done:
 		}
 	}()
-	keys := readKeys(tty, done)
 	navigated := make(chan error, 1)
 	go func() {
 		navigated <- eng.Navigate(url)
@@ -911,9 +931,16 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			if err != nil {
 				return err
 			}
-			s.assembled = buf
-			s.assembledEncodeMS = encodeMS
-			s.assembledTimed = s.fps != nil && s.fps.gated
+			if buf.Len() == 0 {
+				// An over-limit tmux Sixel frame stays off the wire. Pace
+				// retries as usual so a burst does not keep encoding it.
+				s.lastTmuxSixel = time.Now()
+				avail = append(avail, buf)
+			} else {
+				s.assembled = buf
+				s.assembledEncodeMS = encodeMS
+				s.assembledTimed = s.fps != nil && s.fps.gated
+			}
 		}
 
 		// Enable the handoff case only when a buffer waits. A nil channel send never
@@ -988,6 +1015,10 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			avail = avail[:len(avail)-1]
 			if err := s.assembleSettle(buf); err != nil {
 				return err
+			}
+			if buf.Len() == 0 {
+				avail = append(avail, buf)
+				continue
 			}
 			s.assembled = buf
 			s.assembledEncodeMS = 0
@@ -1424,8 +1455,13 @@ func (s *streamSession) assembleSettle(buf *bytes.Buffer) error {
 	buf.Reset()
 	buf.WriteString(cursorHome)
 	buf.WriteString(beginSixelDisplayMode)
+	prefixLen := buf.Len()
 	if err := s.st.renderSixelSettle(buf); err != nil {
 		return err
+	}
+	if buf.Len() == prefixLen {
+		buf.Reset()
+		return nil
 	}
 	buf.WriteString(endSixelDisplayMode)
 	return nil
@@ -1564,9 +1600,18 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	if nonScrollingSixel {
 		buf.WriteString(beginSixelDisplayMode)
 	}
+	sixelStart := buf.Len()
 	kittyBelowText := timed && s.st.Backend == BackendKitty
 	if rerr := s.st.renderStreamFrame(frame, buf, kittyBelowText, timed); rerr != nil {
 		return 0, rerr
+	}
+	if nonScrollingSixel && s.st.mux == muxTmux && buf.Len() == sixelStart {
+		buf.Reset()
+		budget := &s.st.sixelBudget
+		if !budget.hasFrame && budget.overHardLimit(budget.buf.Len()) {
+			return 0, fmt.Errorf("viewer: Sixel frame exceeds tmux's %d-byte image budget. Use --backend=block", budget.hardLimit)
+		}
+		return 0, nil
 	}
 	s.firstDrawn.Store(true)
 	if nonScrollingSixel {

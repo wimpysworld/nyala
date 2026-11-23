@@ -38,7 +38,7 @@ func (w *liveKittySHMWriter) Create(id, size int) (kittySHMObject, error) {
 // kittySHMLive reports whether live Kitty frames should travel over shared
 // memory.
 func (s *State) kittySHMLive() bool {
-	return s.kittyTransport == KittyTransportSHM
+	return !s.kittyTmux && s.kittyTransport == KittyTransportSHM
 }
 
 // takeKittySHMID returns the image id of the frame just rendered as an shm
@@ -69,10 +69,13 @@ func (s *State) closeKittySHM() {
 // the complete viewport at the stale launch paint density, and the grid fit
 // keeps it spanning the page (a matching frame scales 1:1).
 func (s *State) encodeKittyPNG(data string, w io.Writer, belowText bool) error {
-	next := nextKittyID(s.kittyID)
 	if s.kittyEnc == nil {
 		s.kittyEnc = &kitty.LiveEncoder{}
 	}
+	if s.kittyTmux {
+		return s.encodeTmuxKittyPNG(data, w)
+	}
+	next := nextKittyID(s.kittyID)
 	rows := engineRows(s.Rows)
 	var err error
 	if belowText {
@@ -188,6 +191,9 @@ func nextKittyID(prev int) int {
 // calls it when the backend cycle leaves kitty.
 func (s *State) resetKitty(w io.Writer) error {
 	s.closeKittySHM()
+	if s.kittyTmux {
+		return s.resetTmuxKitty(w)
+	}
 	if s.kittyID == 0 {
 		return nil
 	}
