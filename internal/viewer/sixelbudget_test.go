@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"image"
+	"image/color"
 	"math/rand"
 	"strings"
 	"testing"
@@ -95,21 +96,86 @@ func TestSixelBudgetDownscalesNoisyFrameUnderBudget(t *testing.T) {
 // staying blurred forever.
 func TestSixelBudgetProbesWeakerPeriodically(t *testing.T) {
 	st := tmuxSixelState()
-	// A flat frame fits at any factor; pin the state as if noise had settled
-	// the ladder at its floor, one frame short of the probe.
+	// A flat frame fits at any factor. Start one frame before a probe from
+	// the most blurred motion factor.
 	flat := image.NewRGBA(image.Rect(0, 0, 640, 464))
 	for i := range flat.Pix {
 		flat.Pix[i] = 0xff
 	}
-	st.sixelBudget.idx = len(sixelDownscaleLadder) - 1
+	st.sixelBudget.idx = sixelMotionMaxIdx
 	st.sixelBudget.sinceProbe = sixelProbeInterval - 1
 
 	var out bytes.Buffer
 	if err := st.RenderStreamFrame(render.Frame{Img: flat}, &out); err != nil {
 		t.Fatalf("RenderStreamFrame(probe frame) = %v", err)
 	}
-	if got, want := st.sixelBudget.idx, len(sixelDownscaleLadder)-2; got != want {
+	if got, want := st.sixelBudget.idx, sixelMotionMaxIdx-1; got != want {
 		t.Fatalf("probe frame ladder index = %d, want the one-step-weaker %d", got, want)
+	}
+}
+
+func TestSixelBudgetHardLimitBlurOnlyAffectsOversizedFrame(t *testing.T) {
+	const width, height = 640, 464
+	const limit = 100_000
+	heavy := render.Frame{Img: noisyImage(width, height)}
+	motionOnly := tmuxSixelState()
+	motionOnly.sixelBudget.limit = limit
+	var out bytes.Buffer
+	if err := motionOnly.RenderStreamFrame(heavy, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() <= limit {
+		t.Fatalf("test frame fits in %d bytes at the motion limit, want more than %d", out.Len(), limit)
+	}
+
+	st := tmuxSixelState()
+	b := &st.sixelBudget
+	b.limit, b.hardLimit = limit, limit
+	// Start at the motion ceiling to isolate the hard-limit retry from
+	// motion escalations, which reset the probe cadence.
+	b.idx = sixelMotionMaxIdx
+	b.sinceProbe = 2
+	out.Reset()
+	if err := st.RenderStreamFrame(heavy, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() == 0 || out.Len() > limit {
+		t.Fatalf("oversized frame wrote %d bytes, want a non-empty frame within %d bytes", out.Len(), limit)
+	}
+	if b.idx != sixelMotionMaxIdx || b.sinceProbe != 3 || b.escalationSkips != 0 {
+		t.Fatalf("hard-limit retry changed motion index, probe cadence or sample skips: %d, %d, %d", b.idx, b.sinceProbe, b.escalationSkips)
+	}
+	if !st.sixelSettleNeeded() {
+		t.Fatal("blurred frame did not arm a settle")
+	}
+
+	// Motion factor 4 preserves stripes four pixels wide. The extra blur
+	// that fits the oversized frame would blend adjacent stripes.
+	stripes := image.NewRGBA(image.Rect(0, 0, width, height))
+	colours := [...]color.RGBA{{R: 255, A: 255}, {B: 255, A: 255}}
+	for y := range height {
+		for x := range width {
+			stripes.SetRGBA(x, y, colours[(x/4)%len(colours)])
+		}
+	}
+	out.Reset()
+	if err := st.RenderStreamFrame(render.Frame{Img: stripes}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() > limit {
+		t.Fatalf("ordinary frame wrote %d bytes, want at most %d", out.Len(), limit)
+	}
+	decoded, err := renderdecode.DecodeSixel(out.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decoded.Bounds(); got.Dx() != width || got.Dy() != height {
+		t.Fatalf("ordinary frame bounds = %v, want %dx%d", got, width, height)
+	}
+	leftRed, _, leftBlue, _ := decoded.At(1, 0).RGBA()
+	rightRed, _, rightBlue, _ := decoded.At(5, 0).RGBA()
+	if leftRed <= leftBlue || rightBlue <= rightRed {
+		t.Fatal("ordinary frame lost stripe detail after the oversized frame")
 	}
 }
 

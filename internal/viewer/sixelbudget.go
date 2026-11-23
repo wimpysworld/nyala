@@ -113,7 +113,7 @@ const sixelMotionMaxIdx = 4
 type sixelBudget struct {
 	limit     int  // motion byte target; 0 disables budgeting
 	hardLimit int  // maximum size of a complete DCS
-	idx       int  // active sixelDownscaleLadder index, remembered across frames
+	idx       int  // motion ladder index, remembered across frames
 	hasFrame  bool // a Sixel frame fits the current geometry and backend stint
 
 	// minInterval is the resolved tmux Sixel pacing floor, written once at
@@ -195,10 +195,9 @@ type sixelBudget struct {
 	small  *image.RGBA  // reused downscale destination
 	fitted *image.RGBA  // reused upscale-back destination
 
-	// lastImg retains the source of the last budgeted emit so the idle
-	// settle path can re-encode it at full quality. Every budgeted frame
-	// replaces it and renderSixelSettle drops it, so a settle cannot re-fire
-	// until a new budgeted frame goes out.
+	// lastImg retains the source of a blurred frame for the idle settle.
+	// The frame can use a stronger factor than the motion ladder when it
+	// exceeds the hard limit.
 	lastImg image.Image
 
 	// debug arms the per-frame stderr trace of the encoded byte size and the
@@ -327,7 +326,8 @@ func (b *sixelBudget) probeWindowStable() bool {
 // renderSixelBudgeted encodes one Sixel frame under the byte budget: it
 // encodes at the remembered ladder factor, escalates the factor until the
 // output fits, and skips the frame when even the ladder floor exceeds the
-// hard limit. A factor above 1 downscales the source and
+// hard limit. Extra steps for the hard limit apply only to this frame.
+// A factor above 1 downscales the source and
 // upscales it back to the exact input extent before encoding, so the DCS
 // raster W;H is unchanged and the page keeps covering the full grid; the
 // round trip acts as a blur that shortens the encoded output on noisy
@@ -370,27 +370,34 @@ func (s *State) renderSixelBudgeted(img image.Image, w io.Writer) error {
 		b.probePending = true
 	}
 	buf := &b.buf
-	for {
+	idx := b.idx
+	for ; ; idx++ {
 		buf.Reset()
-		if err := s.sixelEnc.Render(render.Frame{Img: s.sixelAtFactor(img, b.idx)}, buf); err != nil {
+		if err := s.sixelEnc.Render(render.Frame{Img: s.sixelAtFactor(img, idx)}, buf); err != nil {
 			return err
 		}
-		fitsMotion := buf.Len() <= b.limit || b.idx >= sixelMotionMaxIdx
-		if (fitsMotion && !b.overHardLimit(buf.Len())) || b.idx == len(sixelDownscaleLadder)-1 {
+		overMotion := buf.Len() > b.limit && idx < sixelMotionMaxIdx
+		if idx == len(sixelDownscaleLadder)-1 || (!overMotion && !b.overHardLimit(buf.Len())) {
 			break
 		}
-		b.idx++
-		b.sinceProbe = 0
-		b.escalationSkips = sixelSlowWriteStreak
+		if overMotion {
+			b.idx = idx + 1
+			b.sinceProbe = 0
+			b.escalationSkips = sixelSlowWriteStreak
+		}
 	}
 	if b.overHardLimit(buf.Len()) {
 		b.lastImg = nil
 		return nil
 	}
-	b.lastImg = img
+	if idx == 0 {
+		b.lastImg = nil
+	} else {
+		b.lastImg = img
+	}
 	if b.debug {
 		fmt.Fprintf(os.Stderr, "nyala timing: sixel frame_bytes=%d downscale_factor=%g\n",
-			buf.Len(), sixelDownscaleLadder[b.idx])
+			buf.Len(), sixelDownscaleLadder[idx])
 	}
 	_, err := w.Write(buf.Bytes())
 	if err == nil {
@@ -412,7 +419,7 @@ func (b *sixelBudget) invalidateFrame() {
 // above 1), and its source is retained for the re-encode.
 func (s *State) sixelSettleNeeded() bool {
 	b := &s.sixelBudget
-	return b.limit > 0 && b.idx > 0 && b.lastImg != nil
+	return b.limit > 0 && b.lastImg != nil
 }
 
 // renderSixelSettle re-encodes the retained last budgeted frame at ladder
