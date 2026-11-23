@@ -7,6 +7,16 @@ git:
   ignore_tags:
     - latest
 
+before:
+  hooks:
+    - >-
+      sh -c 'case "$GITHUB_REPOSITORY" in
+      ""|/*|*/|*/*/*|*[[:space:][:cntrl:]]*) ;;
+      */*) test -n "$GITHUB_REPOSITORY_OWNER" &&
+      test "$GITHUB_REPOSITORY_OWNER" = "${GITHUB_REPOSITORY%%/*}" && exit 0 ;;
+      esac;
+      echo "set GITHUB_REPOSITORY=owner/repository and GITHUB_REPOSITORY_OWNER=owner before running GoReleaser" >&2; exit 1'
+
 builds:
   - main: ./cmd/nyala
     binary: nyala
@@ -88,30 +98,41 @@ nfpms:
     vendor: Martin Wimpress
     maintainer: "Martin Wimpress <code@wimpress.io>"
     description: "A browser for the terminal."
-    homepage: https://github.com/wimpysworld/nyala
+    homepage: https://nyala.wimpys.world/
     license: BlueOak-1.0.0
     file_name_template: "{{ .ConventionalFileName }}"
+    bindir: /usr/bin
     formats:
       - deb
       - rpm
       - apk
       - archlinux
 
-
 aurs:
   - ids:
       - compressed
     name: nyala-bin
+    provides:
+      - nyala
+    conflicts:
+      - nyala
     description: "A browser for the terminal."
-    homepage: https://github.com/wimpysworld/nyala
+    homepage: https://nyala.wimpys.world/
     maintainers:
       - "Martin Wimpress <code@wimpress.io>"
     license: BlueOak-1.0.0
+    optdepends:
+      - "chromium: local headless browser rendering"
     private_key: "{{ .Env.AUR_KEY }}"
     git_url: "ssh://aur@aur.archlinux.org/nyala-bin.git"
     package: |
       install -Dm755 nyala "${pkgdir}/usr/bin/nyala"
+      install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/nyala-bin/LICENSE"
 
+retry:
+  attempts: 5
+  delay: 10s
+  max_delay: 2m
 
 dockers_v2:
   - id: ghcr

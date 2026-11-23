@@ -49,7 +49,7 @@ bin install github.com/wimpysworld/nyala
 ### Container
 
 ```shell
-docker run --rm ghcr.io/wimpysworld/nyala
+docker run --rm ghcr.io/wimpysworld/nyala --version
 ```
 
 ### GitHub Actions
