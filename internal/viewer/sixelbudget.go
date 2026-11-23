@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/draw"
 	"io"
 	"math/bits"
 	"os"
@@ -195,9 +196,8 @@ type sixelBudget struct {
 	small  *image.RGBA  // reused downscale destination
 	fitted *image.RGBA  // reused upscale-back destination
 
-	// lastImg retains the source of a blurred frame for the idle settle.
-	// The frame can use a stronger factor than the motion ladder when it
-	// exceeds the hard limit.
+	// lastImg retains the source of the last emitted frame if it was blurred.
+	// A rejected frame does not replace the image on screen.
 	lastImg image.Image
 
 	// debug arms the per-frame stderr trace of the encoded byte size and the
@@ -349,7 +349,7 @@ func (b *sixelBudget) probeWindowStable() bool {
 // later (survival) or crosses the band (retreat), so no trial-length cap is
 // needed. The whole frame lands in the reused scratch buffer first, so the
 // caller sees one write.
-func (s *State) renderSixelBudgeted(img image.Image, w io.Writer) error {
+func (s *State) renderSixelBudgeted(img image.Image, pooled bool, w io.Writer) error {
 	b := &s.sixelBudget
 	if b.resumeIdx > 0 {
 		b.idx = max(b.idx, b.resumeIdx)
@@ -387,23 +387,30 @@ func (s *State) renderSixelBudgeted(img image.Image, w io.Writer) error {
 		}
 	}
 	if b.overHardLimit(buf.Len()) {
-		b.lastImg = nil
 		return nil
-	}
-	if idx == 0 {
-		b.lastImg = nil
-	} else {
-		b.lastImg = img
 	}
 	if b.debug {
 		fmt.Fprintf(os.Stderr, "nyala timing: sixel frame_bytes=%d downscale_factor=%g\n",
 			buf.Len(), sixelDownscaleLadder[idx])
 	}
-	_, err := w.Write(buf.Bytes())
-	if err == nil {
-		b.hasFrame = true
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		return err
 	}
-	return err
+	b.hasFrame = true
+	if idx == 0 {
+		b.lastImg = nil
+	} else {
+		// A grid fit reuses scratch pixels, even when the next frame is
+		// rejected. A pooled frame returns its pixels after this render.
+		if pooled || img == s.scratch.dst {
+			bounds := img.Bounds()
+			owned := image.NewRGBA(bounds)
+			draw.Draw(owned, bounds, img, bounds.Min, draw.Src)
+			img = owned
+		}
+		b.lastImg = img
+	}
+	return nil
 }
 
 // invalidateFrame drops the retained image and current presentation state

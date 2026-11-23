@@ -576,7 +576,7 @@ func (s *State) renderStreamFrame(frame render.Frame, w io.Writer, kittyBelowTex
 	}
 	img = s.fitSixelToGrid(img)
 	if s.sixelBudget.limit > 0 {
-		return s.renderSixelBudgeted(img, w)
+		return s.renderSixelBudgeted(img, frame.Release != nil, w)
 	}
 	return s.sixelEnc.Render(render.Frame{Img: img}, w)
 }

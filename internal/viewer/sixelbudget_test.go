@@ -5,6 +5,7 @@ import (
 	"errors"
 	"image"
 	"image/color"
+	"image/draw"
 	"math/rand"
 	"strings"
 	"testing"
@@ -1348,8 +1349,7 @@ func TestTmuxSixelHardLimit(t *testing.T) {
 		t.Fatal("oversized idle settle wrote bytes or remained pending")
 	}
 
-	// Test a cap too small for any quality. Do not clear the last image or
-	// schedule a settle when the encoder cannot send this new frame.
+	// A skipped frame must not clear the terminal or arm a new settle.
 	st.sixelBudget.limit = 32
 	st.sixelBudget.hardLimit = 32
 	if _, err := s.assemble(&motion, frame); err != nil {
@@ -1363,6 +1363,68 @@ func TestTmuxSixelHardLimit(t *testing.T) {
 	st.Resize(st.Cols, st.Rows)
 	if _, err := s.assemble(&motion, frame); err == nil || !strings.Contains(err.Error(), "--backend=block") {
 		t.Fatalf("first oversized Sixel frame after resize error = %v, want Block advice", err)
+	}
+}
+
+func TestSixelSettleKeepsLastFrameAfterHardLimitSkip(t *testing.T) {
+	st := tmuxSixelState()
+	st.sixelBudget.hardLimit = 20_000
+	s := &streamSession{st: &st}
+	// Both frames require fitting to the grid, so encoding the rejected frame
+	// overwrites the scratch pixels that the displayed frame used.
+	displayed := image.NewRGBA(image.Rect(0, 0, 320, 232))
+	draw.Draw(displayed, displayed.Bounds(), image.NewUniform(color.RGBA{R: 255, A: 255}), image.Point{}, draw.Src)
+	displayed.SetRGBA(4, 4, color.RGBA{B: 255, A: 255})
+	frame := render.Frame{Img: displayed}
+	var sharp, out bytes.Buffer
+	if err := st.RenderStreamFrame(frame, &sharp); err != nil {
+		t.Fatal(err)
+	}
+	st.sixelBudget.idx = 1
+	if _, err := s.assemble(&out, frame); err != nil {
+		t.Fatal(err)
+	}
+	if sharp.Len() == 0 || out.Len() == 0 || !s.tmuxSixelSettlePending() {
+		t.Fatal("test did not produce a sharp reference and an accepted blurred frame")
+	}
+
+	rejected := render.Frame{Img: noisyImage(320, 232)}
+	if _, err := s.assemble(&out, rejected); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != 0 || !s.tmuxSixelSettlePending() {
+		t.Fatal("over-limit frame wrote bytes or cleared the pending settle")
+	}
+	if err := st.renderSixelSettle(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(out.Bytes(), sharp.Bytes()) || s.tmuxSixelSettlePending() {
+		t.Fatal("settle did not emit the displayed frame at full quality once")
+	}
+}
+
+func TestSixelSettleKeepsPixelsAfterFrameRelease(t *testing.T) {
+	st := tmuxSixelState()
+	img := noisyImage(640, 464)
+	var sharp, out bytes.Buffer
+	st.sixelBudget.limit = sixelBudgetRaised
+	if err := st.RenderStreamFrame(render.Frame{Img: img}, &sharp); err != nil {
+		t.Fatal(err)
+	}
+	st.sixelBudget.idx = 1
+	frame := render.Frame{Img: img, Release: func() { clear(img.Pix) }}
+	if err := st.RenderStreamFrame(frame, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !st.sixelSettleNeeded() || img.Pix[3] != 0 {
+		t.Fatal("test did not arm a settle and release the pooled frame")
+	}
+	out.Reset()
+	if err := st.renderSixelSettle(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(out.Bytes(), sharp.Bytes()) {
+		t.Fatal("settle did not preserve the released frame's pixels")
 	}
 }
 
