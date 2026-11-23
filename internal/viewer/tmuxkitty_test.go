@@ -18,10 +18,11 @@ func TestConfigureTmuxKitty(t *testing.T) {
 	for _, tc := range []struct {
 		name, option, limit, transport string
 		unverified, fallback, multiple bool
-		queryError                     bool
+		queryError, optOut             bool
 		want                           bool
 	}{
 		{name: "verified visible passthrough", option: "on", limit: "1048576", want: true},
+		{name: "without opt-in", option: "on", limit: "1048576", optOut: true},
 		{name: "disabled", option: "off"},
 		{name: "hidden pane passthrough", option: "all"},
 		{name: "unknown pane", unverified: true},
@@ -33,6 +34,9 @@ func TestConfigureTmuxKitty(t *testing.T) {
 		{name: "shared memory requested", option: "on", limit: "1048576", transport: "shm"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.optOut {
+				t.Setenv("NYALA_TMUX_KITTY", "0")
+			}
 			session := tmuxSession{paneID: "%4", clients: []tmuxClient{{termName: "xterm-kitty", features: "RGB", utf8: true}}}
 			if tc.multiple {
 				session.clients = append(session.clients, tmuxClient{termName: "xterm-ghostty"})
@@ -60,10 +64,6 @@ func TestConfigureTmuxKitty(t *testing.T) {
 				t.Fatalf("transport = %q, want direct", st.kittyTransport)
 			}
 		})
-	}
-	t.Setenv("NYALA_TMUX_KITTY", "0")
-	if configureTmuxKitty(&State{}, tmuxSession{}, true, "tmux 3.8", true, "direct") {
-		t.Fatal("Kitty relay enabled without opt-in")
 	}
 }
 
