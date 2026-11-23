@@ -231,7 +231,7 @@ func TestPaletteToggleKeepsBarModeOwnership(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			eng := streamTestEngine{currentURL: "https://example.org/"}
 			s, st := modeSession(t, eng)
-			s.ctl = &control{eng: eng, work: make(chan func(Engine), 1)}
+			s.ctl = &control{pending: make(chan captureConfig, 1)}
 			st.Backend = BackendBlock
 			st.Colour = ColourXTerm256
 			st.paletteQueryOK = true

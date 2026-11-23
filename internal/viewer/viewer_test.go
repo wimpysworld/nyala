@@ -773,15 +773,14 @@ type streamTestEngine struct {
 	pasteDiscarded bool
 }
 
-func (e streamTestEngine) SetBackend(backend Backend) {
+func (e streamTestEngine) ConfigureCapture(backend Backend, _, _, _, _ int, _ bool) error {
 	if e.setBackend != nil {
 		e.setBackend(backend.String())
 	}
+	return nil
 }
 
-func (e streamTestEngine) SetCellPx(int, int) {}
-
-func (e streamTestEngine) Resize(int, int) {}
+func (e streamTestEngine) StreamError() error { return nil }
 
 func (e streamTestEngine) Navigate(string) error { return nil }
 

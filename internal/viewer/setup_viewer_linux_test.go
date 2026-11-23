@@ -3,6 +3,7 @@
 package viewer
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -43,6 +44,51 @@ func newSetupViewerTTY(t *testing.T) *os.File {
 	return slave
 }
 
+// TestCaptureControlCoalescesResizeAndBackendCycle holds a restart open while
+// the viewer resizes and cycles back to Kitty. It must apply the last backend
+// and geometry together, not the pending Block resize.
+func TestCaptureControlCoalescesResizeAndBackendCycle(t *testing.T) {
+	tty := newSetupViewerTTY(t)
+	started := make(chan captureConfig, 3)
+	gate := make(chan struct{}, 1)
+	done := make(chan struct{})
+	defer close(done)
+	eng := &captureControlTestEngine{configure: func(cfg captureConfig) error {
+		started <- cfg
+		select {
+		case <-gate:
+		case <-done:
+		}
+		return nil
+	}}
+	st := shmState()
+	st.Resize(80, 24)
+	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
+	s := &streamSession{eng: eng, st: &st, fd: tty.Fd(), tty: &bytes.Buffer{}, ctl: newControl(eng, done)}
+
+	s.handleKey(keyEvent{act: actionCycleBackend})
+	first := awaitCaptureConfig(t, started)
+	if first.backend != BackendBlock || first.kittySHM {
+		t.Fatalf("first restart = %+v, want Block without Kitty shm", first)
+	}
+
+	if err := unix.IoctlSetWinsize(int(tty.Fd()), unix.TIOCSWINSZ, &unix.Winsize{
+		Col: 90, Row: 30, Xpixel: 900, Ypixel: 600,
+	}); err != nil {
+		t.Fatalf("resize PTY: %v", err)
+	}
+	if err := s.resize(); err != nil {
+		t.Fatalf("resize viewer: %v", err)
+	}
+	s.handleKey(keyEvent{act: actionCycleBackend})
+
+	gate <- struct{}{}
+	want := captureConfig{backend: BackendKitty, cols: 90, rows: 29, px: cellPx{W: 10, H: 20}, kittySHM: true}
+	if got := awaitCaptureConfig(t, started); got != want {
+		t.Fatalf("final restart = %+v, want %+v", got, want)
+	}
+}
+
 // TestSetupViewerRawModeClearsIXON proves the raw-mode termios setup clears
 // IXON explicitly, not by assumed cfmakeraw semantics. With IXON set, the
 // line discipline consumes Ctrl+Q (XON) and Ctrl+S (XOFF) as flow control and
@@ -53,7 +99,7 @@ func TestSetupViewerRawModeClearsIXON(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
 	tty := newSetupViewerTTY(t)
 
-	fd, _, restore, err := setupViewer(&fakeEngine{}, tty, "auto", "auto", block.SchemeQuadrant)
+	fd, _, restore, err := setupViewer(tty, "auto", "auto", block.SchemeQuadrant)
 	if err != nil {
 		t.Fatalf("setupViewer: %v", err)
 	}
@@ -94,8 +140,7 @@ func TestSetupViewerWiresResolvedScheme(t *testing.T) {
 				t.Fatalf("resolveScheme(%q, env) = %d, want %d", tc.blocks, scheme, tc.want)
 			}
 
-			eng := &fakeEngine{}
-			_, state, restore, err := setupViewer(eng, newSetupViewerTTY(t), "auto", "auto", scheme)
+			_, state, restore, err := setupViewer(newSetupViewerTTY(t), "auto", "auto", scheme)
 			if err != nil {
 				t.Fatalf("setupViewer: %v", err)
 			}

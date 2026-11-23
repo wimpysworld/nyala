@@ -3,12 +3,14 @@
 package engine
 
 import (
+	"context"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
 
@@ -18,6 +20,93 @@ import (
 // carry at least one crisp GlyphRun.
 const liveTestPage = "data:text/html," +
 	"<html><body style='margin:0'><p>nyala live smoke</p></body></html>"
+
+func TestLiveGraphicsStartupClearsBlockForcing(t *testing.T) {
+	if _, err := resolveExecutable(""); err != nil {
+		t.Skipf("no Chromium for the live test: %v", err)
+	}
+	e := New("")
+	t.Cleanup(func() { _ = e.Close() })
+	if err := e.ConfigureCapture(backendBlock, 80, 24, 8, 16, false); err != nil {
+		t.Fatal(err)
+	}
+	awaitPromise := func(p *runtime.EvaluateParams) *runtime.EvaluateParams { return p.WithAwaitPromise(true) }
+	var captureCtx context.Context
+	e.beforeInitialLock = func() {
+		e.beforeInitialLock = nil
+		captureCtx = e.ctx
+		// Launch registered the Block stylesheet. Watch its live removal, then
+		// switch to graphics before the initial capture takes the new settings.
+		const watchRemoval = `(async () => {
+			if (document.readyState === 'loading') {
+				await new Promise(resolve => document.addEventListener('DOMContentLoaded', resolve, {once: true}));
+			}
+			const style = document.getElementById('nyala-font-forcing');
+			if (!style) return false;
+			window.forcingRemoved = new Promise(resolve => {
+				const watcher = new MutationObserver(() => {
+					if (style.isConnected) return;
+					watcher.disconnect();
+					resolve(true);
+				});
+				watcher.observe(style.parentNode, {childList: true});
+			});
+			return true;
+		})()`
+		var watchSet bool
+		if err := chromedp.Run(captureCtx, chromedp.Evaluate(watchRemoval, &watchSet, awaitPromise)); err != nil {
+			t.Fatal(err)
+		}
+		if !watchSet {
+			t.Fatal("Block stylesheet was not present before graphics capture")
+		}
+		if err := e.ConfigureCapture(backendKitty, 80, 24, 8, 16, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const testPage = "data:text/html,<html><body style='margin:0;background:white;color:black'><p>nyala live smoke</p></body></html>"
+	if err := e.Navigate(testPage); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(captureCtx, 5*time.Second)
+	defer cancel()
+	var removed bool
+	if err := chromedp.Run(ctx, chromedp.Evaluate("window.forcingRemoved", &removed, awaitPromise)); err != nil {
+		t.Fatalf("wait for Block stylesheet removal: %v", err)
+	}
+	if !removed || e.fontForcingActive() {
+		t.Fatal("graphics capture retained the Block stylesheet")
+	}
+	var fill string
+	if err := chromedp.Run(ctx, chromedp.Evaluate("getComputedStyle(document.querySelector('p')).webkitTextFillColor", &fill)); err != nil {
+		t.Fatal(err)
+	}
+	if fill != "rgb(0, 0, 0)" {
+		t.Fatalf("page text fill after removal = %s, want black", fill)
+	}
+	frames := 0
+	for {
+		select {
+		case frame, open := <-e.Frames():
+			if !open {
+				t.Fatalf("graphics capture stopped: %v", e.StreamError())
+			}
+			frames++
+			img, err := decodeScreencastNative(frame.EncodedPNG)
+			if err != nil {
+				t.Fatalf("decode Kitty frame: %v", err)
+			}
+			bounds := img.Bounds()
+			// Only the text can change the fixture's white background. Glyph
+			// antialiasing does not guarantee a fully black pixel.
+			if countColour(img, [3]int{255, 255, 255}) < bounds.Dx()*bounds.Dy() {
+				return
+			}
+		case <-ctx.Done():
+			t.Fatalf("graphics capture did not paint the restored page text in %d frames", frames)
+		}
+	}
+}
 
 // TestLiveSyncedFrame launches a real Chromium, navigates to a self-contained
 // page, and asserts that at least one synced frame arrives with non-empty Text

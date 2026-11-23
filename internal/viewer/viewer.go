@@ -107,12 +107,9 @@ type State struct {
 	// buffers never alias across goroutines.
 	scratch frameScratch
 
-	// kittyID is the Kitty image id the last drawn kitty frame placed, or 0 before
-	// the first kitty frame. The kitty path double-buffers by alternating id 1 and
-	// 2: each frame places the new image under the next id, then deletes the
-	// previous id, so the swap never blanks the screen. resetKitty clears it back
-	// to 0 when the backend cycle leaves kitty. It stays 0 on the block and
-	// sixel paths.
+	// kittyID is the last Kitty image ID, or 0 before the first frame or after
+	// a reset. Herdr keeps one ID. The other routes place the next image before
+	// deleting the previous one.
 	kittyID int
 
 	// kittyTmux selects inline Kitty passthrough with pane-local placeholders.

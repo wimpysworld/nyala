@@ -151,11 +151,10 @@ func staleScreencastJPEG(data string) bool {
 // SetKittyDecode selects the kitty-shm decode mode. When on, frames that would
 // travel as direct Kitty PNG payloads instead decode into RGBA planes
 // (render.Frame.Img plus a Release hook) so the viewer can copy raw pixels
-// into a shared-memory object at write time. The viewer sets the mode before
-// the initial stream start and before each backend change. The next stream
-// start then selects JPEG q90 for shm or PNG for direct transport. The viewer
-// must call Frame.Release exactly once per plane frame at its drop and
-// post-paint points (Release is nil-safe, and a JPEG plane carries none).
+// into a shared-memory object at write time. The next stream start selects JPEG
+// q90 for shm or PNG for direct transport. The viewer sets the mode through
+// ConfigureCapture. The viewer must call Frame.Release once when it drops or
+// paints a plane frame. Release is nil-safe, and a JPEG plane carries none.
 func (e *ChromiumEngine) SetKittyDecode(on bool) {
 	e.mu.Lock()
 	e.kittyDecode = on

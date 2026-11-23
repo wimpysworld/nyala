@@ -133,6 +133,9 @@ func TestKittyDoubleBufferAlternatesIDs(t *testing.T) {
 		t.Fatalf("frame 1 emitted %d commands, want 1 (transmit only)", len(f1))
 	}
 	assertTransmit(t, f1[0], "1")
+	if strings.Contains(f1[0], "p=") {
+		t.Fatalf("native Kitty transmit carries a placement ID: %q", f1[0])
+	}
 
 	f2 := renderKittyFrame(t, &s, img)
 	if len(f2) != 2 {
@@ -147,6 +150,69 @@ func TestKittyDoubleBufferAlternatesIDs(t *testing.T) {
 	}
 	assertTransmit(t, f3[0], "1")
 	assertDelete(t, f3[1], "2")
+}
+
+func TestKittyHerdrReplacesStablePlacement(t *testing.T) {
+	s := NewState(8, 4)
+	s.Backend = BackendKitty
+	s.mux = muxHerdr
+	first := solidImageSize(8, 8, color.RGBA{R: 0xff, A: 0xff})
+	second := solidImageSize(16, 8, color.RGBA{G: 0xff, A: 0xff})
+	frame1 := renderKittyFrame(t, &s, first)
+	if len(frame1) != 1 {
+		t.Fatalf("first frame emitted %d commands, want only a transmit", len(frame1))
+	}
+	assertTransmit(t, frame1[0], "1")
+	if !hasOpt(frame1[0], "p=1") || strings.Contains(frame1[0], "z=") {
+		t.Fatalf("first transmit = %q, want p=1 without z", frame1[0])
+	}
+
+	var out bytes.Buffer
+	if err := s.renderStreamFrame(render.Frame{EncodedPNG: encodedPNG(t, second)}, &out, true, false); err != nil {
+		t.Fatalf("render timed Herdr Kitty frame: %v", err)
+	}
+	frame2 := kittyCommands(out.String())
+	if len(frame2) != 1 {
+		t.Fatalf("second frame emitted %d commands, want only a transmit", len(frame2))
+	}
+	assertTransmit(t, frame2[0], "1")
+	for _, opt := range []string{"f=100", "t=d", "p=1", "c=8", "r=3", "z=-1073741825"} {
+		if !hasOpt(frame2[0], opt) {
+			t.Errorf("Herdr transmit %q missing %s", frame2[0], opt)
+		}
+	}
+	decoded, err := renderdecode.DecodeKitty(out.Bytes())
+	if err != nil {
+		t.Fatalf("decode replacement: %v", err)
+	}
+	if !decoded.Bounds().Eq(second.Bounds()) || decoded.RGBAAt(0, 0) != second.RGBAAt(0, 0) {
+		t.Fatal("replacement payload differs from the second frame")
+	}
+
+	out.Reset()
+	if err := s.resetKitty(&out); err != nil {
+		t.Fatalf("reset Herdr Kitty: %v", err)
+	}
+	deletes := kittyCommands(out.String())
+	if len(deletes) != 1 {
+		t.Fatalf("reset emitted %d commands, want one scoped delete", len(deletes))
+	}
+	assertDelete(t, deletes[0], "1")
+	if s.kittyID != 0 {
+		t.Fatalf("Kitty ID after reset = %d, want 0", s.kittyID)
+	}
+
+	s.Resize(16, 8)
+	resized := renderKittyFrame(t, &s, second)
+	if len(resized) != 1 {
+		t.Fatalf("resized frame emitted %d commands, want only a transmit", len(resized))
+	}
+	assertTransmit(t, resized[0], "1")
+	for _, opt := range []string{"p=1", "c=16", "r=7"} {
+		if !hasOpt(resized[0], opt) {
+			t.Errorf("resized Herdr transmit %q missing %s", resized[0], opt)
+		}
+	}
 }
 
 // TestKittyDoubleBufferResize asserts a resize does not break the swap: the next

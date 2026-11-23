@@ -121,6 +121,38 @@ func TestLiveEncoderPNGPassThrough(t *testing.T) {
 	}
 }
 
+func TestLiveEncoderPNGPlacementOnlyOnFirstChunk(t *testing.T) {
+	var raw bytes.Buffer
+	pngEncoder := png.Encoder{CompressionLevel: png.NoCompression}
+	if err := pngEncoder.Encode(&raw, image.NewRGBA(image.Rect(0, 0, 64, 64))); err != nil {
+		t.Fatalf("encode source PNG: %v", err)
+	}
+	data := base64.StdEncoding.EncodeToString(raw.Bytes())
+	var e LiveEncoder
+	var out bytes.Buffer
+	if err := e.EncodePNGPlacement(data, 1, 1, -42, 80, 24, &out); err != nil {
+		t.Fatalf("encode PNG with placement: %v", err)
+	}
+	frames := splitAPCFrames(t, out.String())
+	if len(frames) < 3 {
+		t.Fatalf("PNG emitted %d chunks, want at least three", len(frames))
+	}
+	for _, opt := range []string{"i=1", "p=1", "z=-42", "m=1"} {
+		if !hasControlOpt(frames[0].control, opt) {
+			t.Errorf("first chunk control %q missing %s", frames[0].control, opt)
+		}
+	}
+	for i, frame := range frames[1:] {
+		want := chunkMore
+		if i == len(frames)-2 {
+			want = chunkLast
+		}
+		if frame.control != want {
+			t.Errorf("continuation control %q, want %q", frame.control, want)
+		}
+	}
+}
+
 // TestLiveEncoderSHMRaw checks the raw shared-memory path emits exactly one
 // unchunked f=32 t=s escape carrying the base64 object name, with the caller's
 // dimensions, image id, optional z-index, and quiet mode, and never an m= key.

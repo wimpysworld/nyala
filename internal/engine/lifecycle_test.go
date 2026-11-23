@@ -140,6 +140,55 @@ func TestSuperviseCloseWinsOverRebuild(t *testing.T) {
 	}
 }
 
+func TestSuperviseCloseDuringTeardownSkipsRelaunch(t *testing.T) {
+	e := New("")
+	ctx, cancel := context.WithCancel(t.Context())
+	e.ctx, e.cancel = ctx, cancel
+	e.frames = make(chan render.Frame)
+	e.supDone = make(chan struct{})
+	e.supervised = true
+	teardownStarted := make(chan struct{})
+	e.closeBrowserOp = func(ctx context.Context) error {
+		close(teardownStarted)
+		select {
+		case <-e.closing:
+			cancel()
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	relaunched := false
+	e.startSessionOp = func() (chan struct{}, error) {
+		relaunched = true
+		return nil, errors.New("unexpected relaunch")
+	}
+	crashed := make(chan struct{})
+	close(crashed)
+	go e.supervise(crashed)
+	select {
+	case <-teardownStarted:
+	case <-time.After(time.Second):
+		t.Fatal("supervisor did not start teardown")
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- e.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not return")
+	}
+	if relaunched {
+		t.Fatal("supervisor relaunched after Close signalled during teardown")
+	}
+	if err := e.StreamError(); err != nil {
+		t.Errorf("StreamError after Close = %v, want nil", err)
+	}
+}
+
 // TestCloseGracefullyClosesLiveSession asserts that Close runs the graceful
 // closeBrowserOp with no engine lock held and skips raw cancellation when the
 // op succeeds. On a shared profile the op is sharedCloseOp: close this
@@ -335,8 +384,8 @@ func TestRebuildContinuesAfterBoundedTeardown(t *testing.T) {
 
 			rebuildDone := make(chan bool, 1)
 			go func() {
-				crashed, ok := e.rebuild()
-				rebuildDone <- ok && crashed == replacementCrashed
+				crashed, err := e.rebuild()
+				rebuildDone <- err == nil && crashed == replacementCrashed
 			}()
 			select {
 			case <-replacementStarted:
@@ -410,7 +459,7 @@ func TestRecoveryProfileGuardHeldUntilClose(t *testing.T) {
 	devToolsWaitTimeout = 200 * time.Millisecond
 	t.Cleanup(func() { devToolsWaitTimeout = savedWait })
 
-	if _, ok := e.rebuild(); ok {
+	if _, err := e.rebuild(); err == nil {
 		t.Fatal("rebuild with recording browser succeeded, want its start failure")
 	}
 	if e.profileGuard != guard || e.profileGuard.file.Fd() != fd {

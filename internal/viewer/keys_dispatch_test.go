@@ -515,7 +515,7 @@ func TestGlobalAltBindingsAcrossBarModes(t *testing.T) {
 					st.paletteQueryOK = true
 					s := dispatchSession(eng, &st)
 					s.version = "dev"
-					s.ctl = &control{eng: eng, work: make(chan func(Engine), 1)}
+					s.ctl = &control{pending: make(chan captureConfig, 1)}
 					s.barMode = mode.mode
 					s.menuSel = 2
 					if mode.mode == barModeEdit || mode.mode == barModeFind {

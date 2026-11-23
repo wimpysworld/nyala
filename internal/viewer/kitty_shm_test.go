@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -488,7 +489,7 @@ func TestKittySHMLateErrorAfterCycleAwayIsIgnored(t *testing.T) {
 	if !st.kittySHMLive() {
 		t.Fatal("shm transport not live after returning to Kitty")
 	}
-	if !eng.kittyDecode {
+	if !waitFor(time.Second, eng.kittyDecode.Load) {
 		t.Fatal("engine kitty-shm decode not re-enabled on return to Kitty")
 	}
 	handoffKittySHM(s, 1)
@@ -518,7 +519,9 @@ func TestKittySHMLateErrorAfterCycleAwayIsIgnored(t *testing.T) {
 func TestKittySHMResponseErrorPreservesTransportAndDecode(t *testing.T) {
 	st := shmState()
 	eng := &decodeFakeEngine{}
-	syncEngineKittyDecode(eng, &st)
+	if err := captureConfigFor(&st).apply(eng); err != nil {
+		t.Fatal(err)
+	}
 	s := &streamSession{eng: eng, st: &st}
 
 	handoffKittySHM(s, 1)
@@ -529,45 +532,38 @@ func TestKittySHMResponseErrorPreservesTransportAndDecode(t *testing.T) {
 	if !st.kittySHMLive() {
 		t.Fatal("failure response changed the selected shm transport")
 	}
-	if !eng.kittyDecode {
+	if !eng.kittyDecode.Load() {
 		t.Fatal("failure response disabled the engine kitty-shm decode")
 	}
 }
 
-// decodeFakeEngine extends the fake engine with the optional kitty-shm decode
-// capability, recording the last toggle.
+// decodeFakeEngine records the worker's most recent Kitty shm decode setting.
 type decodeFakeEngine struct {
 	fakeEngine
-	kittyDecode bool
+	kittyDecode atomic.Bool
 }
 
-func (e *decodeFakeEngine) SetKittyDecode(on bool) { e.kittyDecode = on }
+func (e *decodeFakeEngine) ConfigureCapture(_ Backend, _, _, _, _ int, on bool) error {
+	e.kittyDecode.Store(on)
+	return nil
+}
 
-// TestSyncEngineKittyDecode asserts the engine decode mode follows the
-// backend and transport: on only for Kitty plus a live shm transport, off
-// after a cycle away or direct transport resolution, and a no-op for engines
-// without the capability.
-func TestSyncEngineKittyDecode(t *testing.T) {
+// TestCaptureConfigKittyDecode checks that only Kitty with shm requests decode.
+func TestCaptureConfigKittyDecode(t *testing.T) {
 	st := shmState()
-	eng := &decodeFakeEngine{}
 
-	syncEngineKittyDecode(eng, &st)
-	if !eng.kittyDecode {
+	if !captureConfigFor(&st).kittySHM {
 		t.Fatal("kitty backend with live shm transport must enable the decode")
 	}
 
 	st.Backend = BackendBlock
-	syncEngineKittyDecode(eng, &st)
-	if eng.kittyDecode {
+	if captureConfigFor(&st).kittySHM {
 		t.Fatal("leaving kitty must disable the decode")
 	}
 
 	st.Backend = BackendKitty
 	st.kittyTransport = KittyTransportDirect
-	syncEngineKittyDecode(eng, &st)
-	if eng.kittyDecode {
+	if captureConfigFor(&st).kittySHM {
 		t.Fatal("direct transport must keep the decode off")
 	}
-
-	syncEngineKittyDecode(&fakeEngine{}, &st) // must not panic without the capability
 }

@@ -16,72 +16,30 @@ import (
 	"github.com/wimpysworld/nyala/internal/render/block"
 )
 
-// TestSwitchBackendOpOrder pins the restart closure: a backend switch never
-// moves the engine grid (the bottom-row bar reservation applies to every
-// backend), so the closure issues SetBackend alone.
-func TestSwitchBackendOpOrder(t *testing.T) {
-	eng := &switchOpEngine{}
-	switchBackendOp(BackendSixel)(eng)
-	want := []string{"SetBackend(sixel)"}
-	if !reflect.DeepEqual(eng.calls(), want) {
-		t.Fatalf("calls = %v; want %v", eng.calls(), want)
-	}
-}
-
-// switchOpEngine records the engine calls a control closure makes, in order,
-// under a mutex so the Tab wiring test can read them across the control
-// goroutine.
+// switchOpEngine records the capture settings applied by the worker.
 type switchOpEngine struct {
+	fakeEngine
 	mu  sync.Mutex
-	got []string
+	got []captureConfig
 }
 
-func (e *switchOpEngine) SetBackend(b render.Backend) {
+func (e *switchOpEngine) ConfigureCapture(backend Backend, cols, rows, cellW, cellH int, kittySHM bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.got = append(e.got, fmt.Sprintf("SetBackend(%s)", b))
+	e.got = append(e.got, captureConfig{backend, cols, rows, cellPx{W: cellW, H: cellH}, kittySHM})
+	return nil
 }
 
-func (e *switchOpEngine) Resize(cols, rows int) {
+func (e *switchOpEngine) calls() []captureConfig {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.got = append(e.got, fmt.Sprintf("Resize(%d,%d)", cols, rows))
+	return append([]captureConfig(nil), e.got...)
 }
-
-func (e *switchOpEngine) calls() []string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return append([]string(nil), e.got...)
-}
-
-func (e *switchOpEngine) SetCellPx(int, int)          {}
-func (e *switchOpEngine) Navigate(string) error       { return nil }
-func (e *switchOpEngine) Frames() <-chan render.Frame { return nil }
-func (e *switchOpEngine) SendKey(string)              {}
-func (e *switchOpEngine) SendText(string)             {}
-func (e *switchOpEngine) SendPaste(string) bool       { return false }
-func (e *switchOpEngine) SendNav(NavAction)           {}
-func (e *switchOpEngine) CurrentURL() string          { return "" }
-func (e *switchOpEngine) CurrentTitle() string        { return "" }
-func (e *switchOpEngine) PointerCursor() string       { return "" }
-
-func (e *switchOpEngine) LoadState() render.LoadState { return render.LoadState{} }
-func (e *switchOpEngine) OpenURL(string)              {}
-func (e *switchOpEngine) BrowserVersion() string      { return "" }
-func (e *switchOpEngine) Find(string)                 {}
-func (e *switchOpEngine) FindNext()                   {}
-func (e *switchOpEngine) FindPrev()                   {}
-func (e *switchOpEngine) FindClear()                  {}
-func (e *switchOpEngine) FindState() FindState        { return FindState{} }
-func (e *switchOpEngine) Selection() (string, bool)   { return "", false }
-func (e *switchOpEngine) SendMouse(MouseEvent)        {}
-func (e *switchOpEngine) Close() error                { return nil }
 
 // TestTabKeepsEngineGridUnderMultiplexer drives handleKey through Tab under
 // tmux with Sixel active and asserts a backend switch never resizes the
-// engine grid: the bottom-row bar reservation applies to every backend, so
-// only SetBackend restarts land, while the viewer State keeps the full
-// terminal grid throughout.
+// engine grid: the bottom-row bar reservation applies to every backend,
+// while the viewer State keeps the full terminal grid throughout.
 func TestTabKeepsEngineGridUnderMultiplexer(t *testing.T) {
 	eng := &switchOpEngine{}
 	done := make(chan struct{})
@@ -93,14 +51,12 @@ func TestTabKeepsEngineGridUnderMultiplexer(t *testing.T) {
 	st.SetEnabled([]Backend{BackendSixel, BackendBlock})
 	s := &streamSession{eng: eng, st: &st, ctl: ctl, tty: &bytes.Buffer{}}
 
-	// Sixel to Block, then back: no Resize rides either switch. Wait out the
-	// first restart before the second Tab, because the one-slot control
-	// channel drops a queued duplicate.
+	// Wait for each restart to check its grid before switching again.
 	s.handleKey(keyEvent{act: actionCycleBackend})
 	if st.Backend != BackendBlock {
 		t.Fatalf("backend after first Tab = %v, want Block", st.Backend)
 	}
-	wantFirst := []string{"SetBackend(block)"}
+	wantFirst := []captureConfig{{backend: BackendBlock, cols: 80, rows: 23, px: st.cellPx}}
 	if !waitFor(2*time.Second, func() bool { return reflect.DeepEqual(eng.calls(), wantFirst) }) {
 		t.Fatalf("calls after the first Tab = %v; want %v", eng.calls(), wantFirst)
 	}
@@ -108,9 +64,9 @@ func TestTabKeepsEngineGridUnderMultiplexer(t *testing.T) {
 	if st.Backend != BackendSixel {
 		t.Fatalf("backend after second Tab = %v, want Sixel", st.Backend)
 	}
-	want := []string{"SetBackend(block)", "SetBackend(sixel)"}
-	if !waitFor(2*time.Second, func() bool { return reflect.DeepEqual(eng.calls(), want) }) {
-		t.Fatalf("calls after the two Tabs = %v; want %v", eng.calls(), want)
+	wantFirst = append(wantFirst, captureConfig{backend: BackendSixel, cols: 80, rows: 23, px: st.cellPx})
+	if !waitFor(2*time.Second, func() bool { return reflect.DeepEqual(eng.calls(), wantFirst) }) {
+		t.Fatalf("calls after the two Tabs = %v; want %v", eng.calls(), wantFirst)
 	}
 
 	// The viewer's own grid (bar row included) never shrinks.
@@ -220,7 +176,7 @@ func TestTabSwitchClearsAndRepaintsBar(t *testing.T) {
 			if drawn && !strings.Contains(got, "│ 🅢  │ 256a │ ☰") {
 				t.Fatalf("backend switch bar %q missing the Sixel render glyph", got)
 			}
-			want := []string{"SetBackend(sixel)"}
+			want := []captureConfig{captureConfigFor(&st)}
 			if !waitFor(2*time.Second, func() bool { return reflect.DeepEqual(eng.calls(), want) }) {
 				t.Fatalf("calls after Block-to-Sixel Tab = %v; want %v", eng.calls(), want)
 			}
@@ -297,7 +253,7 @@ func TestAltPTogglesAndRecomposesBlock(t *testing.T) {
 			if barAt < len(prefix) {
 				t.Fatalf("static toggle bar precedes the palette release: %q", got)
 			}
-			wantCalls := []string{"SetBackend(block)"}
+			wantCalls := []captureConfig{captureConfigFor(st)}
 			if !waitFor(2*time.Second, func() bool { return reflect.DeepEqual(eng.calls(), wantCalls) }) {
 				t.Fatalf("calls after the static toggle = %v, want %v", eng.calls(), wantCalls)
 			}
@@ -319,7 +275,7 @@ func TestAltPTogglesAndRecomposesBlock(t *testing.T) {
 			if !strings.HasPrefix(got, sgrReset+clearScreen) || strings.Contains(got, palette.OSC104) {
 				t.Fatalf("adaptive toggle output = %q, want reset and clear without OSC 104", got)
 			}
-			wantCalls = append(wantCalls, "SetBackend(block)")
+			wantCalls = append(wantCalls, captureConfigFor(st))
 			if !waitFor(2*time.Second, func() bool { return reflect.DeepEqual(eng.calls(), wantCalls) }) {
 				t.Fatalf("calls after both toggles = %v, want %v", eng.calls(), wantCalls)
 			}

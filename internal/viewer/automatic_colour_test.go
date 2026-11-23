@@ -3,6 +3,7 @@ package viewer
 import (
 	"bytes"
 	"image/color"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -180,8 +181,8 @@ func TestAutomaticColourFallbackOrdersTransitionAndNextPalette(t *testing.T) {
 	if queuedAt < 0 || staleAt <= queuedAt || clearAt <= staleAt || barAt <= clearAt {
 		t.Fatalf("fallback output order = %q", out)
 	}
-	wantRestart := []string{"SetBackend(block)"}
-	if !waitFor(2*time.Second, func() bool { return strings.Join(eng.calls(), ",") == strings.Join(wantRestart, ",") }) {
+	wantRestart := []captureConfig{captureConfigFor(&st)}
+	if !waitFor(2*time.Second, func() bool { return slices.Equal(eng.calls(), wantRestart) }) {
 		t.Fatalf("fallback restart calls = %v, want %v", eng.calls(), wantRestart)
 	}
 

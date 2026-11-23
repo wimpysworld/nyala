@@ -253,7 +253,7 @@ type LiveEncoder struct {
 // non-positive pair omits both keys. A malformed or incomplete payload returns
 // ErrInvalidPNGData before writing.
 func (e *LiveEncoder) EncodePNGID(data string, id, cols, rows int, w io.Writer) error {
-	return e.encodePNGID(data, id, 0, false, cols, rows, w)
+	return e.encodePNGID(data, id, 0, 0, false, cols, rows, w)
 }
 
 // EncodePNGIDAtZ is EncodePNGID with an explicit Kitty placement z-index. The
@@ -261,16 +261,25 @@ func (e *LiveEncoder) EncodePNGID(data string, id, cols, rows int, w io.Writer) 
 // their protocol-only m control. The viewer uses this live-only variant when a
 // terminal text badge must remain above the page image.
 func (e *LiveEncoder) EncodePNGIDAtZ(data string, id, z, cols, rows int, w io.Writer) error {
-	return e.encodePNGID(data, id, z, true, cols, rows, w)
+	return e.encodePNGID(data, id, 0, z, true, cols, rows, w)
 }
 
-func (e *LiveEncoder) encodePNGID(data string, id, z int, withZ bool, cols, rows int, w io.Writer) error {
+// EncodePNGPlacement is EncodePNGID with an explicit placement ID on the
+// first APC chunk. A zero z leaves the terminal's default z-index unchanged.
+func (e *LiveEncoder) EncodePNGPlacement(data string, id, placement, z, cols, rows int, w io.Writer) error {
+	return e.encodePNGID(data, id, placement, z, z != 0, cols, rows, w)
+}
+
+func (e *LiveEncoder) encodePNGID(data string, id, placement, z int, withZ bool, cols, rows int, w io.Writer) error {
 	control := "f=100,t=d,a=T,q=2,C=1"
 	if cols > 0 && rows > 0 {
 		control += fmt.Sprintf(",c=%d,r=%d", cols, rows)
 	}
 	if id > 0 {
 		control += fmt.Sprintf(",i=%d", id)
+	}
+	if placement > 0 {
+		control += fmt.Sprintf(",p=%d", placement)
 	}
 	if withZ {
 		control += fmt.Sprintf(",z=%d", z)

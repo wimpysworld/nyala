@@ -80,18 +80,17 @@ type pipeEngine struct {
 	frames chan render.Frame
 }
 
-func (e *pipeEngine) SetBackend(Backend)          {}
-func (e *pipeEngine) SetCellPx(int, int)          {}
-func (e *pipeEngine) Resize(int, int)             {}
-func (e *pipeEngine) Navigate(string) error       { return nil }
-func (e *pipeEngine) Frames() <-chan render.Frame { return e.frames }
-func (e *pipeEngine) SendKey(string)              {}
-func (e *pipeEngine) SendText(string)             {}
-func (e *pipeEngine) SendPaste(string) bool       { return false }
-func (e *pipeEngine) SendNav(NavAction)           {}
-func (e *pipeEngine) CurrentURL() string          { return "" }
-func (e *pipeEngine) CurrentTitle() string        { return "" }
-func (e *pipeEngine) PointerCursor() string       { return "" }
+func (e *pipeEngine) ConfigureCapture(Backend, int, int, int, int, bool) error { return nil }
+func (e *pipeEngine) StreamError() error                                       { return nil }
+func (e *pipeEngine) Navigate(string) error                                    { return nil }
+func (e *pipeEngine) Frames() <-chan render.Frame                              { return e.frames }
+func (e *pipeEngine) SendKey(string)                                           {}
+func (e *pipeEngine) SendText(string)                                          {}
+func (e *pipeEngine) SendPaste(string) bool                                    { return false }
+func (e *pipeEngine) SendNav(NavAction)                                        {}
+func (e *pipeEngine) CurrentURL() string                                       { return "" }
+func (e *pipeEngine) CurrentTitle() string                                     { return "" }
+func (e *pipeEngine) PointerCursor() string                                    { return "" }
 
 func (e *pipeEngine) LoadState() render.LoadState { return render.LoadState{} }
 func (e *pipeEngine) OpenURL(string)              {}
@@ -105,7 +104,7 @@ func (e *pipeEngine) Selection() (string, bool)   { return "", false }
 func (e *pipeEngine) SendMouse(MouseEvent)        {}
 func (e *pipeEngine) Close() error                { return nil }
 
-// shmPipeEngine records the optional Kitty shm decode mode while exposing the
+// shmPipeEngine records the Kitty shm decode mode while exposing the
 // same scripted frame channel as pipeEngine.
 type shmPipeEngine struct {
 	pipeEngine
@@ -113,7 +112,10 @@ type shmPipeEngine struct {
 	keyC        chan string
 }
 
-func (e *shmPipeEngine) SetKittyDecode(on bool) { e.kittyDecode = on }
+func (e *shmPipeEngine) ConfigureCapture(_ Backend, _, _, _, _ int, on bool) error {
+	e.kittyDecode = on
+	return nil
+}
 
 func (e *shmPipeEngine) SendKey(code string) {
 	if e.keyC != nil {
@@ -713,7 +715,9 @@ func TestStreamLoopKittySHMAssemblyErrorReleasesOnce(t *testing.T) {
 	st := shmState()
 	st.kittySHM = shm
 	defer st.closeKittySHM()
-	syncEngineKittyDecode(eng, &st)
+	if err := captureConfigFor(&st).apply(eng); err != nil {
+		t.Fatal(err)
+	}
 	out := &syncBuf{}
 	s := &streamSession{eng: eng, st: &st, tty: out}
 
@@ -766,7 +770,9 @@ func TestStreamLoopKittySHMWriteErrorStopsWithoutDirect(t *testing.T) {
 	st := shmState()
 	st.kittySHM = shm
 	defer st.closeKittySHM()
-	syncEngineKittyDecode(eng, &st)
+	if err := captureConfigFor(&st).apply(eng); err != nil {
+		t.Fatal(err)
+	}
 	s := &streamSession{eng: eng, st: &st, tty: out}
 
 	released := 0
@@ -820,7 +826,9 @@ func TestStreamLoopControlWriteErrorWithKittySHMAwaiting(t *testing.T) {
 	st := shmState()
 	st.kittySHM = shm
 	defer st.closeKittySHM()
-	syncEngineKittyDecode(eng, &st)
+	if err := captureConfigFor(&st).apply(eng); err != nil {
+		t.Fatal(err)
+	}
 	outcomes := make(chan inputOutcome, 1)
 	s := &streamSession{eng: eng, st: &st, tty: out, outcomes: outcomes}
 
@@ -896,7 +904,9 @@ func TestStreamLoopKittySHMWriteErrorAfterAcknowledgement(t *testing.T) {
 	st := shmState()
 	st.kittySHM = shm
 	defer st.closeKittySHM()
-	syncEngineKittyDecode(eng, &st)
+	if err := captureConfigFor(&st).apply(eng); err != nil {
+		t.Fatal(err)
+	}
 	s := &streamSession{eng: eng, st: &st, tty: out}
 	keys := make(chan keyEvent, 2)
 	loopDone := make(chan error, 1)
@@ -963,7 +973,9 @@ func TestStreamLoopKittySHMRejectionStopsWithoutDirect(t *testing.T) {
 	st := shmState()
 	st.kittySHM = shm
 	defer st.closeKittySHM()
-	syncEngineKittyDecode(eng, &st)
+	if err := captureConfigFor(&st).apply(eng); err != nil {
+		t.Fatal(err)
+	}
 	s := &streamSession{eng: eng, st: &st, tty: out}
 	keys := make(chan keyEvent, 1)
 	loopDone := make(chan error, 1)

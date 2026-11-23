@@ -214,9 +214,9 @@ func (e *ChromiumEngine) transitionScreencastLocked(ctx context.Context, change 
 	return nil
 }
 
-// recoverScreencastTransition cancels the failed active session. The supervisor
-// observes the cancellation and rebuilds it from the engine's held backend, size,
-// URL, and scroll state.
+// recoverScreencastTransition records the error and cancels the failed active
+// session. The supervisor observes the cancellation and rebuilds the session
+// from the engine's held backend, size, URL, and scroll state.
 func (e *ChromiumEngine) recoverScreencastTransition(ctx context.Context, err error) {
 	if err == nil {
 		return
@@ -225,6 +225,9 @@ func (e *ChromiumEngine) recoverScreencastTransition(ctx context.Context, err er
 	var cancel context.CancelFunc
 	if sameScreencastSession(e.ctx, ctx) {
 		cancel = e.cancel
+		if e.sessionStreamErr == nil {
+			e.sessionStreamErr = err
+		}
 	}
 	e.mu.Unlock()
 	if cancel != nil {
@@ -374,7 +377,7 @@ func (e *ChromiumEngine) ackPump(ctx context.Context, acks *ackQueue) {
 				// An acknowledgement command failure loses Chromium's screencast
 				// credit. Cancel this session so the supervisor rebuilds it; never
 				// retry the popped SessionID and risk a duplicate acknowledgement.
-				e.recoverScreencastTransition(ctx, err)
+				e.recoverScreencastTransition(ctx, fmt.Errorf("engine: acknowledge screencast frame: %w", err))
 				return
 			}
 			continue
@@ -622,11 +625,13 @@ func (e *ChromiumEngine) runTextSync(ctx context.Context, ts *textSync, reSnap, 
 }
 
 // waitForFirstSnapshot blocks until the active backend takes the overlay. A
-// graphics backend publishes nil and backs off rather than reading layout it
-// ignores. It returns false when ctx is cancelled, so
-// the caller exits without snapshotting.
+// graphics backend clears any Block style from startup, then backs off without
+// reading layout. It returns false when ctx is cancelled.
 func (e *ChromiumEngine) waitForFirstSnapshot(ctx context.Context, ts *textSync) bool {
 	for !e.textOverlayBackend() {
+		if ctx.Err() == nil && e.fontForcingActive() {
+			e.syncFontForcing(ctx)
+		}
 		ts.store(nil, nil, 0, 0)
 		if sleepCtx(ctx, noSnapshotBackoff) {
 			return false
@@ -1109,9 +1114,9 @@ func screencastMeta(meta *page.ScreencastFrameMetadata) render.ScreencastMeta {
 	}
 }
 
-// restartStreamLocked stops the current screencast and starts a fresh one at the
-// recomputed surface size while the caller holds screencastCtl. Resize and SetBackend
-// use it so their state change and restart stay atomic.
+// restartStreamLocked stops the current screencast and starts it at the new
+// capture size. The caller holds screencastCtl across the settings update and
+// restart.
 func (e *ChromiumEngine) restartStreamLocked() error {
 	e.mu.Lock()
 	ctx := e.ctx

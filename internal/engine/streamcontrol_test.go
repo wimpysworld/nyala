@@ -10,6 +10,7 @@ import (
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/page"
+	"github.com/wimpysworld/nyala/internal/render"
 )
 
 func newStreamControlTestEngine(t *testing.T) (*ChromiumEngine, context.Context) {
@@ -161,7 +162,6 @@ func TestKittyTransportPreStartStartsOnce(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, ctx := newStreamControlTestEngine(t)
-			e.backend = backendKitty
 			e.screencastFmt = screencastFmt{}
 			e.screencastStarted = false
 			sink := e.rawQ
@@ -178,9 +178,11 @@ func TestKittyTransportPreStartStartsOnce(t *testing.T) {
 				return nil
 			}
 
-			e.SetKittyDecode(tc.kittyDecode)
+			if err := e.ConfigureCapture(backendKitty, 80, 24, 8, 16, tc.kittyDecode); err != nil {
+				t.Fatal(err)
+			}
 			if stops != 0 || len(starts) != 0 {
-				t.Fatalf("pre-start mode update issued stops=%d starts=%d, want none", stops, len(starts))
+				t.Fatalf("pre-start capture update issued stops=%d starts=%d, want none", stops, len(starts))
 			}
 
 			e.rawQ = sink
@@ -491,5 +493,121 @@ func TestCloseDuringRestartFailureReturns(t *testing.T) {
 	}
 	if !errors.Is(ctx.Err(), context.Canceled) {
 		t.Fatalf("session error = %v, want context.Canceled", ctx.Err())
+	}
+}
+
+func TestConfigureCaptureRestartsWithCompleteSettings(t *testing.T) {
+	e, _ := newStreamControlTestEngine(t)
+	var steps []string
+	e.stopScreencastOp = func(context.Context) error {
+		steps = append(steps, "stop")
+		return nil
+	}
+	e.applySizingOp = func(_ context.Context, _ browser.WindowID, w, h int, _ float64) error {
+		steps = append(steps, "size")
+		if w != 960 || h != 560 {
+			t.Errorf("surface = %dx%d, want 960x560", w, h)
+		}
+		return nil
+	}
+	e.startScreencastOp = func(_ context.Context, w, h int, format screencastFmt) error {
+		steps = append(steps, "start")
+		if w != 960 || h != 560 {
+			t.Errorf("capture = %dx%d, want 960x560", w, h)
+		}
+		want := screencastFmt{format: page.ScreencastFormatJpeg, quality: blockScreencastQuality}
+		if format != want || !e.kittyPlaneMode() {
+			t.Errorf("start format = %v, Kitty plane mode = %v, want shm JPEG", format, e.kittyPlaneMode())
+		}
+		return nil
+	}
+	for range 2 {
+		if err := e.ConfigureCapture(backendKitty, 96, 28, 10, 20, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := []string{"stop", "size", "start", "stop", "size", "start"}; !slices.Equal(steps, want) {
+		t.Errorf("transition calls = %v, want %v", steps, want)
+	}
+}
+
+func TestConfigureCaptureReportsOnlyFailedRecovery(t *testing.T) {
+	restartErr := errors.New("injected stop error")
+	rebuildErr := errors.New("injected rebuild error")
+	for _, name := range []string{"successful recovery", "failed recovery"} {
+		t.Run(name, func(t *testing.T) {
+			e, _ := newStreamControlTestEngine(t)
+			e.frames = make(chan render.Frame)
+			e.closing, e.supDone = make(chan struct{}), make(chan struct{})
+			e.navigated = true
+			e.supervised = true
+			e.stopScreencastOp = func(context.Context) error { return restartErr }
+			rebuilt := make(chan struct{})
+			e.startSessionOp = func() (chan struct{}, error) {
+				defer close(rebuilt)
+				if name == "failed recovery" {
+					return nil, rebuildErr
+				}
+				e.mu.Lock()
+				e.ctx, e.cancel = context.WithCancel(t.Context())
+				e.mu.Unlock()
+				return make(chan struct{}), nil
+			}
+			go e.supervise(make(chan struct{}))
+			t.Cleanup(func() {
+				if err := e.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			if err := e.ConfigureCapture(backendKitty, 96, 28, 10, 20, true); err != nil {
+				t.Fatalf("ConfigureCapture reported a recoverable error: %v", err)
+			}
+			select {
+			case <-rebuilt:
+			case <-time.After(time.Second):
+				t.Fatal("supervisor did not attempt recovery")
+			}
+			if name == "successful recovery" {
+				select {
+				case <-e.Frames():
+					t.Fatal("successful recovery closed Frames")
+				default:
+				}
+				if err := e.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := e.StreamError(); err != nil {
+					t.Errorf("StreamError after successful recovery and Close = %v, want nil", err)
+				}
+				return
+			}
+			select {
+			case _, ok := <-e.Frames():
+				if ok {
+					t.Fatal("Frames sent a frame, want closed channel")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("failed recovery did not close Frames")
+			}
+			if err := e.StreamError(); !errors.Is(err, restartErr) || !errors.Is(err, rebuildErr) {
+				t.Errorf("StreamError = %v, want both %v and %v", err, restartErr, rebuildErr)
+			}
+		})
+	}
+}
+
+func TestConfigureCaptureDefersFailedRestartBeforeSupervisor(t *testing.T) {
+	e, ctx := newStreamControlTestEngine(t)
+	e.navigated = true // The initial screencast started, but Navigate has not called finishStartup.
+	restartErr := errors.New("injected stop error")
+	e.stopScreencastOp = func(context.Context) error { return restartErr }
+	if err := e.ConfigureCapture(backendKitty, 96, 28, 10, 20, true); err != nil {
+		t.Fatalf("ConfigureCapture reported a recoverable error: %v", err)
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatal("failed restart did not cancel the session for the supervisor to recover")
+	}
+	if !errors.Is(e.sessionStreamErr, restartErr) {
+		t.Errorf("session stream error = %v, want %v", e.sessionStreamErr, restartErr)
 	}
 }

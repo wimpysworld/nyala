@@ -386,9 +386,9 @@ Mid-session zoom re-derives the cell pair. Every SIGWINCH re-reads
 TIOCGWINSZ and derives the pair afresh (`internal/viewer/cellpx.go`),
 rounding each axis rather than flooring: a fractional device-pixel cell
 lost up to one pixel per column, the Ghostty and WezTerm zoom-out shrink. A
-failed derivation keeps the last known-good pair. The new pair travels
-inside the same control closure as the grid restart, because the one-slot
-drop-on-full control channel could drop a separate message. Headless
+failed derivation keeps the last known-good pair. The viewer queues the
+backend, grid, cell size and Kitty transport together. While a restart runs,
+the next request replaces any pending request. Headless
 Chromium paints at the launch device scale for the whole process, and the
 live metrics override changes layout only, so after a zoom-in the frame
 arrives undersized and the viewer fits it to the grid: Kitty through the
@@ -1600,12 +1600,15 @@ run (82.6 in, 72.9 out) proves 60 is Chromium's cap, not the pipeline's.
 
 Frame discipline avoids blanking:
 
-- Frames alternate two image IDs. Nyala transmits and puts the next image,
+- Outside Herdr, frames alternate two image IDs. Nyala transmits and puts the next image,
   then deletes the previous one (`a=d,d=I,i=<id>`, the capital `I` frees the
   stored data). The old image leaves the screen only after the new one is
   placed, so no blank shows between frames. The `a=f,r=1,o=z`
   animation-frame edit was tried and rejected: it rendered partial or black
   on kitty and WezTerm, so the double-buffered id swap stays.
+- In Herdr, direct PNG frames keep one image ID and one placement ID. Each
+  full transfer replaces that placement. Herdr can keep its file-backed
+  upload path when the pane's image identity stays the same.
 - Direct PNG uses `q=2` to suppress terminal replies. Shared memory uses `q=0`
   so each transmit returns the acknowledgement used for pacing or a rejection
   that stops the stream.
