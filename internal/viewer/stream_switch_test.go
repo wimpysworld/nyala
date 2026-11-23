@@ -155,6 +155,7 @@ func TestTabSwitchClearsAndRepaintsBar(t *testing.T) {
 			st.mux = muxTmux
 			st.SetEnabled([]Backend{BackendSixel, BackendBlock})
 			st.Backend = BackendBlock
+			want := []captureConfig{{backend: BackendSixel, cols: 80, rows: 23, px: st.cellPx}}
 
 			out := &bytes.Buffer{}
 			s := &streamSession{eng: eng, st: &st, tty: out, ctl: ctl}
@@ -176,7 +177,6 @@ func TestTabSwitchClearsAndRepaintsBar(t *testing.T) {
 			if drawn && !strings.Contains(got, "│ 🅢  │ 256a │ ☰") {
 				t.Fatalf("backend switch bar %q missing the Sixel render glyph", got)
 			}
-			want := []captureConfig{captureConfigFor(&st)}
 			if !waitFor(2*time.Second, func() bool { return reflect.DeepEqual(eng.calls(), want) }) {
 				t.Fatalf("calls after Block-to-Sixel Tab = %v; want %v", eng.calls(), want)
 			}
