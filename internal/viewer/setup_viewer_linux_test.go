@@ -3,9 +3,13 @@
 package viewer
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
+	"slices"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -40,6 +44,51 @@ func newSetupViewerTTY(t *testing.T) *os.File {
 	return slave
 }
 
+// TestCaptureControlCoalescesResizeAndBackendCycle holds a restart open while
+// the viewer resizes and cycles back to Kitty. It must apply the last backend
+// and geometry together, not the pending Block resize.
+func TestCaptureControlCoalescesResizeAndBackendCycle(t *testing.T) {
+	tty := newSetupViewerTTY(t)
+	started := make(chan captureConfig, 3)
+	gate := make(chan struct{}, 1)
+	done := make(chan struct{})
+	defer close(done)
+	eng := &captureControlTestEngine{configure: func(cfg captureConfig) error {
+		started <- cfg
+		select {
+		case <-gate:
+		case <-done:
+		}
+		return nil
+	}}
+	st := shmState()
+	st.Resize(80, 24)
+	st.SetEnabled([]Backend{BackendKitty, BackendBlock})
+	s := &streamSession{eng: eng, st: &st, fd: tty.Fd(), tty: &bytes.Buffer{}, ctl: newControl(eng, done)}
+
+	s.handleKey(keyEvent{act: actionCycleBackend})
+	first := awaitCaptureConfig(t, started)
+	if first.backend != BackendBlock || first.kittySHM {
+		t.Fatalf("first restart = %+v, want Block without Kitty shm", first)
+	}
+
+	if err := unix.IoctlSetWinsize(int(tty.Fd()), unix.TIOCSWINSZ, &unix.Winsize{
+		Col: 90, Row: 30, Xpixel: 900, Ypixel: 600,
+	}); err != nil {
+		t.Fatalf("resize PTY: %v", err)
+	}
+	if err := s.resize(); err != nil {
+		t.Fatalf("resize viewer: %v", err)
+	}
+	s.handleKey(keyEvent{act: actionCycleBackend})
+
+	gate <- struct{}{}
+	want := captureConfig{backend: BackendKitty, cols: 90, rows: 29, px: cellPx{W: 10, H: 20}, kittySHM: true}
+	if got := awaitCaptureConfig(t, started); got != want {
+		t.Fatalf("final restart = %+v, want %+v", got, want)
+	}
+}
+
 // TestSetupViewerRawModeClearsIXON proves the raw-mode termios setup clears
 // IXON explicitly, not by assumed cfmakeraw semantics. With IXON set, the
 // line discipline consumes Ctrl+Q (XON) and Ctrl+S (XOFF) as flow control and
@@ -50,7 +99,7 @@ func TestSetupViewerRawModeClearsIXON(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
 	tty := newSetupViewerTTY(t)
 
-	fd, _, restore, err := setupViewer(&fakeEngine{}, tty, "auto", "auto", block.SchemeQuadrant)
+	fd, _, restore, err := setupViewer(tty, "auto", "auto", block.SchemeQuadrant)
 	if err != nil {
 		t.Fatalf("setupViewer: %v", err)
 	}
@@ -91,14 +140,99 @@ func TestSetupViewerWiresResolvedScheme(t *testing.T) {
 				t.Fatalf("resolveScheme(%q, env) = %d, want %d", tc.blocks, scheme, tc.want)
 			}
 
-			eng := &fakeEngine{}
-			_, state, restore, err := setupViewer(eng, newSetupViewerTTY(t), "auto", "auto", scheme)
+			_, state, restore, err := setupViewer(newSetupViewerTTY(t), "auto", "auto", scheme)
 			if err != nil {
 				t.Fatalf("setupViewer: %v", err)
 			}
 			t.Cleanup(restore)
 			if state.Scheme != scheme {
 				t.Fatalf("viewer scheme = %d, want resolved scheme %d", state.Scheme, scheme)
+			}
+		})
+	}
+}
+
+func TestConfigureBackendsHerdr(t *testing.T) {
+	clearMuxEnv(t)
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("HERDR_PANE_ID", "p1")
+	t.Setenv(cellPxEnv, "")
+	if err := os.Unsetenv(cellPxEnv); err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		okReply  = "\x1b_Gi=31;OK\x1b\\"
+		badReply = "\x1b_Gi=31;ENOTSUP:graphics disabled\x1b\\"
+		geometry = "\x1b[6;24;12t"
+		fence    = "\x1b[?62;4c"
+		query    = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[16t\x1b[14t\x1b[18t\x1b[>0q\x1b[c"
+	)
+	cases := []struct {
+		name      string
+		reply     string
+		override  string
+		transport KittyTransport
+		wantKitty bool
+		wantPx    cellPx
+	}{
+		{"direct support and geometry", okReply + geometry + fence, "", KittyTransportAuto, true, cellPx{W: 12, H: 24}},
+		{"direct support and geometry override", okReply + fence, "11x22", KittyTransportDirect, true, cellPx{W: 11, H: 22}},
+		{"direct support without geometry", okReply + fence, "", KittyTransportAuto, false, cellPx{W: 8, H: 16}},
+		{"unusable geometry", okReply + "\x1b[4;23;79t" + fence, "", KittyTransportAuto, false, cellPx{W: 8, H: 16}},
+		{"explicit shared memory", okReply + geometry + fence, "", KittyTransportSHM, false, cellPx{W: 12, H: 24}},
+		{"unsupported graphics", badReply + geometry + fence, "", KittyTransportAuto, false, cellPx{W: 12, H: 24}},
+		{"no Kitty reply", geometry + fence, "", KittyTransportAuto, false, cellPx{W: 12, H: 24}},
+		{"no replies", "", "", KittyTransportAuto, false, cellPx{W: 8, H: 16}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.override != "" {
+				t.Setenv(cellPxEnv, c.override)
+			}
+			fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_NONBLOCK, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tty := os.NewFile(uintptr(fds[0]), "pane")
+			terminal := os.NewFile(uintptr(fds[1]), "terminal")
+			t.Cleanup(func() { _ = tty.Close() })
+			t.Cleanup(func() { _ = terminal.Close() })
+			if _, err := terminal.WriteString(c.reply); err != nil {
+				t.Fatal(err)
+			}
+
+			st := NewState(80, 24)
+			if err := configureBackends(&st, tty, 80, 24, "auto", string(c.transport)); err != nil {
+				t.Fatalf("configureBackends: %v", err)
+			}
+
+			want := []Backend{BackendBlock}
+			if c.wantKitty {
+				want = []Backend{BackendKitty, BackendBlock}
+			}
+			if !slices.Equal(st.Enabled, want) || st.Backend != want[0] {
+				t.Fatalf("enabled = %v, active = %v, want %v with active %v", st.Enabled, st.Backend, want, want[0])
+			}
+			if got := ValidateForcedBackend(ModeKitty, st.Enabled) == nil; got != c.wantKitty {
+				t.Fatalf("forced Kitty accepted = %v, want %v", got, c.wantKitty)
+			}
+			if st.cellPx != c.wantPx || st.kittyTransport != KittyTransportDirect {
+				t.Fatalf("cell geometry = %+v, transport = %q, want %+v and direct", st.cellPx, st.kittyTransport, c.wantPx)
+			}
+			if st.kittyKeyboard || st.pointerShapeOK || st.paletteQueryOK {
+				t.Fatal("graphics probe enabled an unrelated capability")
+			}
+
+			if err := terminal.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if err := unix.Shutdown(fds[0], unix.SHUT_WR); err != nil {
+				t.Fatal(err)
+			}
+			got, err := io.ReadAll(terminal)
+			if err != nil || string(got) != query {
+				t.Fatalf("handshake = %q, err = %v, want %q", got, err, query)
 			}
 		})
 	}

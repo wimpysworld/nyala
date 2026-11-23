@@ -846,6 +846,7 @@ func (e *ChromiumEngine) teardownSession() {
 	e.screencastFmt = screencastFmt{}
 	e.screencastStarted = false
 	e.sizedSurfaceW, e.sizedSurfaceH, e.sizedScale = 0, 0, 0
+	e.sessionStreamErr = nil
 	e.windowID = 0
 	e.fontForcingID = ""
 	e.forcedCellW, e.forcedCellH = 0, 0
@@ -906,10 +907,9 @@ func (e *ChromiumEngine) teardownSession() {
 // session down and closes frames, the single point that closes it. On a crash or
 // a lost connection it tears the dead session down and rebuilds from held state,
 // re-navigating to the held URL so frames resume. A rebuild that fails to
-// relaunch ends the supervisor; frames closes and the consumer stops. Close has
-// priority over a rebuild: when a crash or context cancellation races Close, the
-// supervisor re-checks closing after the select and tears down rather than
-// relaunching Chromium during shutdown.
+// relaunch records the error and ends the supervisor, closing frames. Close has
+// priority over a rebuild. The supervisor checks for Close before and after
+// tearing down the failed session so it does not relaunch during shutdown.
 func (e *ChromiumEngine) supervise(crashed chan struct{}) {
 	defer close(e.supDone)
 	defer close(e.frames)
@@ -935,8 +935,20 @@ func (e *ChromiumEngine) supervise(crashed chan struct{}) {
 			e.teardownSession()
 			return
 		}
-		next, ok := e.rebuild()
-		if !ok {
+		e.mu.Lock()
+		sessionErr := e.sessionStreamErr
+		e.mu.Unlock()
+		next, err := e.rebuild()
+		if err != nil {
+			if !channelClosed(e.closing) {
+				streamErr := fmt.Errorf("engine: rebuild screencast: %w", err)
+				if sessionErr != nil {
+					streamErr = fmt.Errorf("%w (recovery failed: %w)", sessionErr, err)
+				}
+				e.mu.Lock()
+				e.streamErr = streamErr
+				e.mu.Unlock()
+			}
 			return
 		}
 		crashed = next
@@ -944,20 +956,18 @@ func (e *ChromiumEngine) supervise(crashed chan struct{}) {
 }
 
 // rebuild tears down the dead session and starts a fresh one from held state. It
-// returns the new session's crash channel and ok=true on success, or ok=false
-// when the relaunch fails, in which case the supervisor stops. On a shared
+// returns the new session's crash channel or the relaunch error. On a shared
 // profile a dead browser closes the websocket, the remote allocator cancels the
 // holder context and with it e.ctx, and the rerun of launch reacquires the lock
 // in the right mode on the same guard fd, so it relaunches or reconnects.
-func (e *ChromiumEngine) rebuild() (crashed chan struct{}, ok bool) {
+func (e *ChromiumEngine) rebuild() (chan struct{}, error) {
 	e.teardownSession()
+	if channelClosed(e.closing) {
+		return nil, context.Canceled
+	}
 	startSession := e.startSession
 	if e.startSessionOp != nil {
 		startSession = e.startSessionOp
 	}
-	next, err := startSession()
-	if err != nil {
-		return nil, false
-	}
-	return next, true
+	return startSession()
 }

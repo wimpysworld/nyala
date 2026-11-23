@@ -107,13 +107,14 @@ type State struct {
 	// buffers never alias across goroutines.
 	scratch frameScratch
 
-	// kittyID is the Kitty image id the last drawn kitty frame placed, or 0 before
-	// the first kitty frame. The kitty path double-buffers by alternating id 1 and
-	// 2: each frame places the new image under the next id, then deletes the
-	// previous id, so the swap never blanks the screen. resetKitty clears it back
-	// to 0 when the backend cycle leaves kitty. It stays 0 on the block and
-	// sixel paths.
+	// kittyID is the last Kitty image ID, or 0 before the first frame or after
+	// a reset. Herdr keeps one ID. The other routes place the next image before
+	// deleting the previous one.
 	kittyID int
+
+	// kittyTmux selects inline Kitty passthrough with pane-local placeholders.
+	kittyTmux      bool
+	kittyTmuxPaint *tmuxKittyPlacement
 
 	// kittyEnc is the reused Kitty live encoder. It holds the APC frame assembly
 	// buffer across direct PNG frames. It is lazily built on the
@@ -154,9 +155,10 @@ type State struct {
 	// keep the legacy parser.
 	kittyKeyboard bool
 
-	// probe is the terminal handshake result configureBackends recorded, so
-	// the About bar reads the terminal identity from one source. It stays the
-	// zero value under GNU screen and herdr, which run no handshake.
+	// probe is the handshake result that the About bar uses for terminal identity.
+	// A bare terminal uses the full handshake. Tmux, Zellij and Herdr use reduced
+	// handshakes. Only Herdr includes a Kitty query in its reduced handshake.
+	// GNU Screen runs no handshake, so probe stays at its zero value.
 	probe probeResult
 
 	// pointerShapeOK records that the startup handshake confirmed OSC 22
@@ -364,6 +366,9 @@ func (s *State) SetEnabled(enabled []Backend) {
 		enabled = []Backend{BackendBlock}
 	}
 	s.Enabled = enabled
+	if s.Backend != enabled[0] {
+		s.sixelBudget.invalidateFrame()
+	}
 	s.Backend = enabled[0]
 }
 
@@ -395,7 +400,11 @@ func (s *State) cycleBackendStep(dir int) Backend {
 		}
 	}
 	n := len(s.Enabled)
-	s.Backend = s.Enabled[(idx+dir+n)%n]
+	next := s.Enabled[(idx+dir+n)%n]
+	if s.Backend != next {
+		s.sixelBudget.invalidateFrame()
+	}
+	s.Backend = next
 	return s.Backend
 }
 
@@ -496,6 +505,8 @@ func cycleValue[T comparable](cycle []T, current T, reverse bool, allowed func(T
 // Resize records a new terminal size in cells. The next frame reflects the new
 // size.
 func (s *State) Resize(cols, rows int) {
+	// A resize can also change cell pixels without changing the grid.
+	s.sixelBudget.invalidateFrame()
 	s.Cols = cols
 	s.Rows = rows
 }
@@ -566,7 +577,7 @@ func (s *State) renderStreamFrame(frame render.Frame, w io.Writer, kittyBelowTex
 	}
 	img = s.fitSixelToGrid(img)
 	if s.sixelBudget.limit > 0 {
-		return s.renderSixelBudgeted(img, w)
+		return s.renderSixelBudgeted(img, frame.Release != nil, w)
 	}
 	return s.sixelEnc.Render(render.Frame{Img: img}, w)
 }

@@ -1,11 +1,74 @@
 package viewer
 
 import (
-	"bufio"
+	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestReadKeysAcrossReadBoundaries(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+		want []keyEvent
+	}{
+		{"SGR mouse", "\x1b[<0;12;5M", []keyEvent{{mouse: &MouseEvent{Col: 11, Row: 4}}}},
+		{"consecutive reports", "\x1b[<0;12;5m\x1b[A", []keyEvent{
+			{mouse: &MouseEvent{Action: MouseActionRelease, Col: 11, Row: 4}},
+			{scroll: ScrollUp},
+		}},
+		{"Alt+R", "\x1br", []keyEvent{{act: actionCycleBackend}}},
+		{"unbound Alt", "\x1bq", []keyEvent{{b: keyEsc}, {b: 'q'}}},
+		{"Alt+] then digit", "\x1b]1", []keyEvent{{b: keyEsc}, {b: ']'}, {b: '1'}}},
+		{"Alt+P then digit", "\x1bP1", []keyEvent{{b: keyEsc}, {b: 'P'}, {b: '1'}}},
+		{"keyboard CSI", "\x1b[B", []keyEvent{{scroll: ScrollDown}}},
+		{"Kitty keyboard", "\x1b[27u", []keyEvent{{b: keyEsc}}},
+		{"paste", "\x1b[200~é\nhello\x1b[201~", []keyEvent{{paste: "é\nhello"}}},
+		{"OSC with BEL", "\x1b]11;rgb:ff/ff/ff\x07", []keyEvent{{osc: "11;rgb:ff/ff/ff"}}},
+		{"OSC with ST", "\x1b]11;rgb:ff/ff/ff\x1b\\", []keyEvent{{osc: "11;rgb:ff/ff/ff"}}},
+		{"DCS", "\x1bP>|terminal\x1b\\", []keyEvent{{dcs: ">|terminal"}}},
+		{"DCS DECRPSS", "\x1bP1$r2026;1$y\x1b\\", []keyEvent{{dcs: "1$r2026;1$y"}}},
+		{"Kitty APC", "\x1b_Gi=1;OK\x1b\\", []keyEvent{{apc: "i=1;OK"}}},
+		{"malformed mouse", "\x1b[<0;12M", nil},
+	}
+	for _, tc := range cases {
+		for split := 1; split < len(tc.data); split++ {
+			t.Run(fmt.Sprintf("%s/%d", tc.name, split), func(t *testing.T) {
+				r := io.MultiReader(strings.NewReader(tc.data[:split]), strings.NewReader(tc.data[split:]+"x"))
+				events, _ := readKeys(newKeyDecoder(r, nil), t.Context().Done())
+				want := append(append([]keyEvent(nil), tc.want...), keyEvent{b: 'x'})
+				var got []keyEvent
+				for event := range events {
+					got = append(got, event)
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("events after split in %q: got %+v, want %+v", tc.data, got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestReadKeysEscapeAtBufferEnd(t *testing.T) {
+	d := newKeyDecoder(strings.NewReader(""), nil)
+	plain := d.Size() - 1
+	d.Reset(strings.NewReader(strings.Repeat("a", plain) + "\x1b[<0;12;5M"))
+	for range plain {
+		if b, err := d.ReadByte(); err != nil || b != 'a' {
+			t.Fatalf("prefix byte = %q, %v; want 'a'", b, err)
+		}
+	}
+	first, err := d.ReadByte()
+	if err != nil || first != keyEsc || d.Buffered() != 0 {
+		t.Fatalf("last byte in the buffer = %q, %v with %d buffered bytes", first, err, d.Buffered())
+	}
+	event, emit := d.nextEvent(first)
+	if !emit || event.mouse == nil || *event.mouse != (MouseEvent{Col: 11, Row: 4}) {
+		t.Fatalf("buffer-crossing report = %+v (emit %v), want a mouse press at 11,4", event, emit)
+	}
+}
 
 // TestDecodeCSI asserts the CSI body decoder maps the arrow finals A/B/C/D,
 // the PageUp/PageDown bodies 5~/6~, and both encodings each of Home (H, 1~)
@@ -154,12 +217,12 @@ func TestNextEventCSI(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			br := bufio.NewReader(strings.NewReader(c.in))
+			br := newKeyDecoder(strings.NewReader(c.in), nil)
 			first, err := br.ReadByte()
 			if err != nil {
 				t.Fatalf("read first byte: %v", err)
 			}
-			ev, emit := nextEvent(br, first)
+			ev, emit := br.nextEvent(first)
 			if emit != c.wantEmit {
 				t.Fatalf("nextEvent emit = %v, want %v", emit, c.wantEmit)
 			}
@@ -180,12 +243,12 @@ func TestNextEventCSI(t *testing.T) {
 // reaches a final byte within maxCSIBody, matching the paste and APC caps, so
 // garbage input cannot grow the buffer without limit.
 func TestNextEventCSIBodyBounded(t *testing.T) {
-	br := bufio.NewReader(strings.NewReader("\x1b[" + strings.Repeat("1;", maxCSIBody) + "A"))
+	br := newKeyDecoder(strings.NewReader("\x1b["+strings.Repeat("1;", maxCSIBody)+"A"), nil)
 	first, err := br.ReadByte()
 	if err != nil {
 		t.Fatalf("read first byte: %v", err)
 	}
-	if _, emit := nextEvent(br, first); emit {
+	if _, emit := br.nextEvent(first); emit {
 		t.Fatal("over-long CSI body emitted an event")
 	}
 }
@@ -217,12 +280,12 @@ func TestNextEventActions(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			br := bufio.NewReader(strings.NewReader(c.in + "x"))
+			br := newKeyDecoder(strings.NewReader(c.in+"x"), nil)
 			first, err := br.ReadByte()
 			if err != nil {
 				t.Fatalf("read first byte: %v", err)
 			}
-			ev, emit := nextEvent(br, first)
+			ev, emit := br.nextEvent(first)
 			if !emit {
 				t.Fatalf("nextEvent dropped %q", c.in)
 			}
@@ -252,7 +315,7 @@ func TestReadKeysKeepsQuitKeysAfterDownArrow(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			done := make(chan struct{})
 			defer close(done)
-			keys := readKeys(strings.NewReader(c.in), done)
+			keys, _ := readKeys(newKeyDecoder(strings.NewReader(c.in), nil), done)
 
 			first, ok := <-keys
 			if !ok {
@@ -289,12 +352,12 @@ func TestNextEventUTF8Runes(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			br := bufio.NewReader(strings.NewReader(c.in + "x"))
+			br := newKeyDecoder(strings.NewReader(c.in+"x"), nil)
 			first, err := br.ReadByte()
 			if err != nil {
 				t.Fatalf("read first byte: %v", err)
 			}
-			ev, emit := nextEvent(br, first)
+			ev, emit := br.nextEvent(first)
 			if !emit {
 				t.Fatalf("nextEvent dropped %q", c.in)
 			}
@@ -309,9 +372,9 @@ func TestNextEventUTF8Runes(t *testing.T) {
 	}
 
 	t.Run("stray continuation dropped", func(t *testing.T) {
-		br := bufio.NewReader(strings.NewReader("\x80x"))
+		br := newKeyDecoder(strings.NewReader("\x80x"), nil)
 		first, _ := br.ReadByte()
-		if _, emit := nextEvent(br, first); emit {
+		if _, emit := br.nextEvent(first); emit {
 			t.Fatal("stray continuation byte emitted an event")
 		}
 		if rest, err := br.ReadByte(); err != nil || rest != 'x' {
@@ -319,9 +382,9 @@ func TestNextEventUTF8Runes(t *testing.T) {
 		}
 	})
 	t.Run("cut sequence unreads the cutter", func(t *testing.T) {
-		br := bufio.NewReader(strings.NewReader("\xc3x"))
+		br := newKeyDecoder(strings.NewReader("\xc3x"), nil)
 		first, _ := br.ReadByte()
-		if _, emit := nextEvent(br, first); emit {
+		if _, emit := br.nextEvent(first); emit {
 			t.Fatal("cut UTF-8 sequence emitted an event")
 		}
 		if rest, err := br.ReadByte(); err != nil || rest != 'x' {
@@ -330,24 +393,22 @@ func TestNextEventUTF8Runes(t *testing.T) {
 	})
 }
 
-// TestNextEventLoneEsc asserts the buffered-byte lone-Esc detection: an ESC
-// with nothing buffered behind it (a bare Esc key press arrives alone in its
-// read burst) emits an ESC byte event immediately, while an ESC with a
-// buffered chord letter behind it stays an Alt chord.
+// TestNextEventLoneEsc checks that a lone Esc emits an ESC byte event
+// at EOF and that an ESC followed by a chord letter stays an Alt chord.
 func TestNextEventLoneEsc(t *testing.T) {
-	br := bufio.NewReader(strings.NewReader("\x1b"))
+	br := newKeyDecoder(strings.NewReader("\x1b"), nil)
 	first, err := br.ReadByte()
 	if err != nil {
 		t.Fatalf("read first byte: %v", err)
 	}
-	ev, emit := nextEvent(br, first)
+	ev, emit := br.nextEvent(first)
 	if !emit || ev.b != keyEsc || ev.act != actionNone {
 		t.Fatalf("lone Esc = (%+v, %v), want an ESC byte event", ev, emit)
 	}
 
-	br = bufio.NewReader(strings.NewReader("\x1br"))
+	br = newKeyDecoder(strings.NewReader("\x1br"), nil)
 	first, _ = br.ReadByte()
-	ev, emit = nextEvent(br, first)
+	ev, emit = br.nextEvent(first)
 	if !emit || ev.act != actionCycleBackend {
 		t.Fatalf("buffered chord = (%+v, %v), want the Alt+R action", ev, emit)
 	}
@@ -369,12 +430,12 @@ func TestNextEventBracketedPaste(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			br := bufio.NewReader(strings.NewReader(c.in + "x"))
+			br := newKeyDecoder(strings.NewReader(c.in+"x"), nil)
 			first, err := br.ReadByte()
 			if err != nil {
 				t.Fatalf("read first byte: %v", err)
 			}
-			ev, emit := nextEvent(br, first)
+			ev, emit := br.nextEvent(first)
 			if !emit {
 				t.Fatalf("nextEvent dropped the paste %q", c.in)
 			}
@@ -389,9 +450,9 @@ func TestNextEventBracketedPaste(t *testing.T) {
 	}
 
 	t.Run("empty paste dropped", func(t *testing.T) {
-		br := bufio.NewReader(strings.NewReader("\x1b[200~\x1b[201~x"))
+		br := newKeyDecoder(strings.NewReader("\x1b[200~\x1b[201~x"), nil)
 		first, _ := br.ReadByte()
-		if _, emit := nextEvent(br, first); emit {
+		if _, emit := br.nextEvent(first); emit {
 			t.Fatal("empty paste emitted an event")
 		}
 		if rest, err := br.ReadByte(); err != nil || rest != 'x' {
@@ -399,9 +460,9 @@ func TestNextEventBracketedPaste(t *testing.T) {
 		}
 	})
 	t.Run("unterminated paste dropped", func(t *testing.T) {
-		br := bufio.NewReader(strings.NewReader("\x1b[200~orphan"))
+		br := newKeyDecoder(strings.NewReader("\x1b[200~orphan"), nil)
 		first, _ := br.ReadByte()
-		if _, emit := nextEvent(br, first); emit {
+		if _, emit := br.nextEvent(first); emit {
 			t.Fatal("unterminated paste emitted an event")
 		}
 	})
@@ -652,21 +713,20 @@ func TestNextEventOSCAndDCSReplies(t *testing.T) {
 // event: no byte of the over-long reply arrives as a key event, the buffer
 // stays bounded, and the key after the terminator still arrives.
 func TestNextEventOSCBodyBounded(t *testing.T) {
-	// The body leads with a digit so the reply classifier takes the reply arm.
-	long := "1" + strings.Repeat("a", maxAPCBody+1)
+	long := strings.Repeat("a", maxAPCBody+1)
 	cases := []struct {
 		name string
 		in   string
 	}{
-		{"osc bel", "\x1b]" + long + "\x07" + "\x1b[A"},
-		{"osc st", "\x1b]" + long + "\x1b\\" + "\x1b[A"},
-		{"dcs st", "\x1bP" + long + "\x1b\\" + "\x1b[A"},
+		{"osc bel", "\x1b]11;" + long + "\x07" + "\x1b[A"},
+		{"osc st", "\x1b]11;" + long + "\x1b\\" + "\x1b[A"},
+		{"dcs st", "\x1bP1$r" + long + "\x1b\\" + "\x1b[A"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			events := collectEvents(t, c.in)
 			if len(events) != 1 {
-				t.Fatalf("events = %d (%+v), want 1: only the Up arrow after the drop", len(events), events)
+				t.Fatalf("events = %d, want 1: only the Up arrow after the drop", len(events))
 			}
 			if events[0].scroll != ScrollUp || events[0].osc != "" || events[0].dcs != "" {
 				t.Fatalf("event after the drop = %+v, want ScrollUp", events[0])
@@ -706,7 +766,7 @@ func TestNextEventAltChordIntroducersStayLegacy(t *testing.T) {
 			t.Fatalf("%q text events = %+v, want %q then 'x'", in, events[1:], in[1])
 		}
 	}
-	// The introducer alone, with nothing buffered behind it, must not block.
+	// At EOF, the introducer alone passes through as an Alt chord.
 	for _, in := range []string{"\x1b]", "\x1bP"} {
 		events := collectEvents(t, in)
 		if len(events) != 2 || events[0].b != keyEsc || events[1].b != in[1] {
@@ -723,7 +783,7 @@ func TestReadKeysOSCSplitWrite(t *testing.T) {
 	pr, pw := io.Pipe()
 	done := make(chan struct{})
 	defer close(done)
-	keys := readKeys(pr, done)
+	keys, _ := readKeys(newKeyDecoder(pr, nil), done)
 	go func() {
 		defer pw.Close()
 		if _, err := pw.Write([]byte("\x1b]11;rgb:1c1c/1c1c")); err != nil {
@@ -756,18 +816,18 @@ func TestNextEventPasteBound(t *testing.T) {
 		t.Fatalf("maxPasteBody = %d, want 1 MiB", maxPasteBody)
 	}
 	atBound := strings.Repeat("a", maxPasteBody)
-	br := bufio.NewReader(strings.NewReader("\x1b[200~" + atBound + pasteEnd))
+	br := newKeyDecoder(strings.NewReader("\x1b[200~"+atBound+pasteEnd), nil)
 	first, _ := br.ReadByte()
-	ev, emit := nextEvent(br, first)
+	ev, emit := br.nextEvent(first)
 	if !emit || len(ev.paste) != maxPasteBody {
 		t.Fatalf("paste at the bound = %d bytes (emit %v), want %d delivered whole",
 			len(ev.paste), emit, maxPasteBody)
 	}
 
 	over := strings.Repeat("a", maxPasteBody+1)
-	br = bufio.NewReader(strings.NewReader("\x1b[200~" + over + pasteEnd))
+	br = newKeyDecoder(strings.NewReader("\x1b[200~"+over+pasteEnd), nil)
 	first, _ = br.ReadByte()
-	if ev, emit := nextEvent(br, first); emit {
+	if ev, emit := br.nextEvent(first); emit {
 		t.Fatalf("oversized paste emitted %d bytes, want rejection", len(ev.paste))
 	}
 }

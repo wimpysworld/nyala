@@ -29,20 +29,15 @@ import (
 // forwards scroll keys by their code and wheel deltas in CSS pixels, and the
 // engine owns the offset.
 type Engine interface {
-	// SetBackend sets the active backend so the engine
-	// sizes the capture: sub-cell for block, cell-pixel for the graphics
-	// backends. When streaming it restarts the stream at the new size.
-	SetBackend(backend render.Backend)
-	// SetCellPx sets the resolved terminal cell pixel size the engine uses to
-	// size the graphics capture and to bin DOM text boxes to cells.
-	SetCellPx(w, h int)
-	// Resize sets the terminal grid in cells; the engine recomputes the capture
-	// size and, when streaming, restarts the stream.
-	Resize(cols, rows int)
+	// ConfigureCapture applies the backend, grid, cell pixels and transport
+	// together. When streaming it restarts capture, even for unchanged settings.
+	ConfigureCapture(backend render.Backend, cols, rows, cellW, cellH int, kittySHM bool) error
 	// Navigate loads url and starts emitting frames.
 	Navigate(url string) error
 	// Frames returns the channel of pixel or direct-PNG frames, each with Text synced on.
 	Frames() <-chan render.Frame
+	// StreamError reports why Frames closed, or nil on normal shutdown.
+	StreamError() error
 	// SendKey forwards a key by its code (for example ArrowDown) to the page.
 	// The codes Tab, ShiftTab, Enter, Backspace, Escape, SelectAll, and the
 	// caret keys dispatch full key strokes for native focus traversal,
@@ -157,29 +152,6 @@ const (
 	NavHome
 )
 
-// kittyDecodeSetter is the optional engine capability the viewer toggles when
-// the Kitty shm transport is in play. ChromiumEngine implements it; a fake
-// engine that does not simply keeps sending direct PNG frames. The viewer
-// type-asserts the Engine against it, so the Engine seam and all fakes stay
-// unchanged.
-type kittyDecodeSetter interface {
-	// SetKittyDecode selects the kitty-shm decode mode: on, frames arrive as
-	// pooled RGBA planes with a Release hook; off, as direct PNG payloads.
-	SetKittyDecode(on bool)
-}
-
-// syncEngineKittyDecode aligns the engine's kitty-shm decode mode with the
-// viewer state: on only while the active backend is Kitty and the shm
-// transport is resolved. It runs at startup after the backend settles and on
-// every backend cycle.
-func syncEngineKittyDecode(eng Engine, st *State) {
-	d, ok := eng.(kittyDecodeSetter)
-	if !ok {
-		return
-	}
-	d.SetKittyDecode(st.Backend == BackendKitty && st.kittySHMLive())
-}
-
 // fatalSignals are the terminating signals Stream's watcher catches so the
 // terminal is restored before the process dies. SIGHUP arrives when the
 // terminal window closes or an SSH connection drops, SIGINT and SIGQUIT from a
@@ -248,9 +220,16 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 		fps.ingest = ingest
 	}
 	defer printStreamSummary(os.Stdout, fps, ingest)
-	fd, st, restore, err := setupViewer(eng, tty, colourFlag, kittyTransport, scheme)
+	fd, st, restore, err := setupViewer(tty, colourFlag, kittyTransport, scheme)
 	if err != nil {
 		return err
+	}
+	var sessionTTY io.Writer = tty
+	var tmuxTTY *tmuxKittyTTY
+	if st.kittyTmux {
+		st.kittyTmuxPaint = newTmuxKittyPlacement()
+		tmuxTTY = &tmuxKittyTTY{tty: tty, deletes: st.kittyTmuxPaint.deletes}
+		sessionTTY = tmuxTTY
 	}
 	// restoreTerminal is the one terminal-restore path: the exit escapes
 	// (mouse reporting off, auto-wrap and cursor back, and, once a frame
@@ -261,6 +240,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	// never races the producer's write.
 	var restoreOnce sync.Once
 	var session *streamSession
+	var stopKeys func()
 	// titlePushed records that the enterTerminalModes write below reached the
 	// terminal, so the teardown pops the title stack only after a matching
 	// push. It is an atomic because the fatal-signal watcher goroutine reads
@@ -268,8 +248,16 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	var titlePushed atomic.Bool
 	restoreTerminal := func() {
 		restoreOnce.Do(func() {
+			if stopKeys != nil {
+				stopKeys()
+			}
 			drawn := session != nil && session.firstDrawn.Load()
-			_, _ = io.WriteString(tty, exitTerminalWithTitle(st.Rows, drawn, st.kittyKeyboard, titlePushed.Load(), st.paletteDisturbed(), st.compat.titlePopIgnored))
+			exit := exitTerminalWithTitle(st.Rows, drawn, st.kittyKeyboard, titlePushed.Load(), st.paletteDisturbed(), st.compat.titlePopIgnored)
+			if tmuxTTY == nil {
+				_, _ = io.WriteString(tty, exit)
+			} else {
+				tmuxTTY.finish(exit)
+			}
 			restore()
 		})
 	}
@@ -281,19 +269,13 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	if cerr := st.validateColourCompatibility(colourFlag); cerr != nil {
 		return cerr
 	}
-	// Start on the named --backend mode now that validation passed, so a forced
-	// block start overrides a higher-fidelity detected nomination while Alt+R
-	// keeps the full detected cycle. setupViewer handed the engine the detected backend;
-	// re-notify it so the engine sizes its capture for the starting backend, not
-	// the detected one. The bottom-row bar reservation applies to every
-	// backend, so a forced start never moves the engine grid setupViewer sized.
+	// Tell the engine the final backend after a forced start, without changing
+	// the detected cycle. Unlink any unconsumed Kitty shm objects on exit.
 	applyForcedBackend(st, mode)
-	eng.SetBackend(st.Backend)
-	// The backend is final now, so arm the engine's kitty-shm decode when the
-	// resolved transport is shm and the session starts on Kitty. Unlink any
-	// unconsumed shm objects when the session ends, however it ends.
-	syncEngineKittyDecode(eng, st)
 	defer st.closeKittySHM()
+	if err := captureConfigFor(st).apply(eng); err != nil {
+		return err
+	}
 
 	// Mouse reporting, bracketed paste, and the kitty keyboard protocol enable
 	// here, beside the full-screen escapes and after the setupViewer handshake,
@@ -317,8 +299,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	winch, stopResize := notifyResize(fd)
 	defer stopResize()
 
-	// done stops the key-reader goroutine when Stream returns, so a goroutine
-	// blocked on a send after the consumer stops selecting cannot leak.
+	// done stops the control goroutine when Stream returns.
 	done := make(chan struct{})
 	defer close(done)
 
@@ -331,9 +312,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	// waits on the loop rather than dropping the result.
 	outcomes := make(chan inputOutcome, 1)
 
-	// The control goroutine runs the engine restarts (Resize, SetBackend) off the
-	// consumer loop, so a slow restartStream cannot freeze draw, keys, and quit
-	// handling. It stops when Stream returns and the deferred close(done) fires.
+	// The control goroutine restarts capture without blocking the consumer loop.
 	ctl := newControl(eng, done)
 
 	// The cell differ drives the live block paint: each draw emits only the cells
@@ -343,7 +322,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	diff := &block.GridDiff{}
 	st.SetDiff(diff)
 
-	s := &streamSession{eng: eng, st: st, tty: tty, fd: fd, keySender: keySender, outcomes: outcomes, ctl: ctl, diff: diff, fps: fps, launchURL: url, version: version, pointerWake: make(chan struct{}, 1)}
+	s := &streamSession{eng: eng, st: st, tty: sessionTTY, fd: fd, keySender: keySender, outcomes: outcomes, ctl: ctl, diff: diff, fps: fps, launchURL: url, version: version, pointerWake: make(chan struct{}, 1)}
 	session = s
 	// Clear the screen and draw the bar immediately, with a blank page region
 	// and the launch URL: the first user feedback is the bar, not a text cue.
@@ -359,6 +338,11 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	// launch URL host while the page loads.
 	s.maybeEmitTitle()
 	s.maybeEmitProgress()
+	keys, stopInput, keyErr := readTerminalKeys(tty)
+	if keyErr != nil {
+		return fmt.Errorf("viewer: start terminal input: %w", keyErr)
+	}
+	stopKeys = stopInput
 	// A caught signal restores the terminal before bounded browser teardown can
 	// wait, or raw mode and mouse reporting could remain active during that wait.
 	// The watcher shares restoreTerminal's Once with the deferred teardown, so the
@@ -367,15 +351,10 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	// so the drawn-state read never races this goroutine's start.
 	fatal := make(chan os.Signal, 1)
 	signal.Notify(fatal, fatalSignals...)
-	defer signal.Stop(fatal)
-	go func() {
-		select {
-		case sig := <-fatal:
-			handleFatalSignal(sig, restoreTerminal, eng.Close, os.Exit)
-		case <-done:
-		}
-	}()
-	keys := readKeys(tty, done)
+	stopFatal := watchFatalSignal(fatal, restoreTerminal, eng.Close, os.Exit)
+	// Restoring the terminal stops the key reader. Join the watcher so a
+	// closed key channel cannot let Stream return before the fatal exit.
+	defer stopFatal()
 	navigated := make(chan error, 1)
 	go func() {
 		navigated <- eng.Navigate(url)
@@ -386,61 +365,79 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	return s.loop(winch, keys)
 }
 
-// control runs engine restarts off the viewer consumer loop. The loop enqueues a
-// resize or a backend switch with a non-blocking send; this goroutine runs the
-// engine call (which may block in restartStream) serially, so a slow restart
-// never freezes draw, keys, or quit. It selects on done and exits when Stream
-// returns. The one-slot buffer plus the drop-on-full send keeps the loop
-// responsive: a coalesced restart is fine because each request re-reads the
-// current size and backend from the engine state.
+// captureConfig is one complete desired capture state. Each config requests
+// a restart so a static page repaints after a same-backend clear.
+type captureConfig struct {
+	backend    Backend
+	cols, rows int
+	px         cellPx
+	kittySHM   bool
+}
+
+func captureConfigFor(st *State) captureConfig {
+	return captureConfig{
+		backend:  st.Backend,
+		cols:     st.Cols,
+		rows:     engineRows(st.Rows),
+		px:       st.cellPx,
+		kittySHM: st.Backend == BackendKitty && st.kittySHMLive(),
+	}
+}
+
+func (cfg captureConfig) apply(eng Engine) error {
+	return eng.ConfigureCapture(cfg.backend, cfg.cols, cfg.rows, cfg.px.W, cfg.px.H, cfg.kittySHM)
+}
+
+// control holds the latest pending restart and applies it off the consumer loop.
 type control struct {
-	eng  Engine
-	work chan func(Engine)
-	done <-chan struct{}
+	eng     Engine
+	pending chan captureConfig
+	errors  chan error
+	done    <-chan struct{}
 }
 
 // newControl starts the control goroutine and returns the handle the loop
 // enqueues restarts on. done stops the goroutine when Stream returns; the caller
 // owns done and closes it, so control needs no close of its own.
 func newControl(eng Engine, done <-chan struct{}) *control {
-	c := &control{eng: eng, work: make(chan func(Engine), 1), done: done}
+	c := &control{eng: eng, pending: make(chan captureConfig, 1), errors: make(chan error, 1), done: done}
 	go c.run()
 	return c
 }
 
-// submit enqueues one engine restart for the control goroutine. The send is
-// non-blocking: if a restart is already queued the request is dropped, because
-// the queued one will re-read the latest size and backend when it runs. So the
-// consumer loop never blocks on a wedged restart.
-func (c *control) submit(fn func(Engine)) {
+// submit replaces any pending config. The viewer is the only sender and the
+// worker only reads, so the slot is free after the first select.
+func (c *control) submit(cfg captureConfig) {
 	select {
-	case c.work <- fn:
+	case <-c.pending:
 	default:
 	}
+	c.pending <- cfg
 }
 
-// run processes restart requests serially until done closes. Running them here,
-// not on the consumer loop, keeps that loop responsive while an engine call blocks.
+// run applies restarts in order until shutdown or an unrecoverable error.
 func (c *control) run() {
 	for {
 		select {
-		case fn := <-c.work:
-			fn(c.eng)
+		case cfg := <-c.pending:
+			select {
+			case <-c.done:
+				return
+			default:
+			}
+			if err := cfg.apply(c.eng); err != nil {
+				c.errors <- fmt.Errorf("viewer: restart capture: %w", err)
+				return
+			}
 		case <-c.done:
 			return
 		}
 	}
 }
 
-// setupViewer performs Stream's terminal setup: it checks tty is a terminal, reads the grid size, puts the
-// terminal into raw mode, builds the State, runs backend and colour detection,
-// and hands the resolved backend and cell px to the engine before Navigate so
-// the engine sizes its screencast capture and derives its layout scale. It
-// returns the tty fd, the State, and a restore closure the caller must defer to
-// leave raw mode. Scheme is the resolved block glyph scheme; it is set directly
-// on State. The caller resolves it through detection.
-// kittyTransport is the --kitty-transport intent, resolved inside configureBackends.
-func setupViewer(eng Engine, tty *os.File, colourFlag, kittyTransport string, scheme block.Scheme) (fd uintptr, st *State, restore func(), err error) {
+// setupViewer enters raw mode, reads the terminal grid and detects backend
+// capabilities. The caller must defer restore to leave raw mode.
+func setupViewer(tty *os.File, colourFlag, kittyTransport string, scheme block.Scheme) (fd uintptr, st *State, restore func(), err error) {
 	fd = tty.Fd()
 	if !cterm.IsTerminal(fd) {
 		return 0, nil, nil, fmt.Errorf("viewer: %s is not a terminal", tty.Name())
@@ -467,14 +464,6 @@ func setupViewer(eng Engine, tty *os.File, colourFlag, kittyTransport string, sc
 		_ = cterm.Restore(fd, oldState)
 		return 0, nil, nil, err
 	}
-
-	// Hand the resolved backend and cell px to the engine before Navigate; the
-	// engine sizes the screencast capture and derives its layout scale from them.
-	// The engine grid reserves the bottom bar row, so the engine gets
-	// engineRows while State keeps the full terminal grid.
-	eng.SetCellPx(state.W, state.H)
-	eng.SetBackend(state.Backend)
-	eng.Resize(cols, engineRows(rows))
 
 	return fd, &state, func() { _ = cterm.Restore(fd, oldState) }, nil
 }
@@ -534,6 +523,8 @@ type streamSession struct {
 	// assembledTmuxSixel marks the assembled frame as a tmux Sixel frame, so
 	// the handoff to the writer stamps the emit-rate pacing gate. Producer only.
 	assembledTmuxSixel bool
+	// assembledTmuxKitty records a Kitty paint for the writer to commit.
+	assembledTmuxKitty tmuxKittyWrite
 	// lastTmuxSixel is the instant of the last tmux Sixel frame handoff; the
 	// pacing gate holds the next encode until the effective emit interval
 	// (tmuxSixelInterval) has passed. Producer only. The zero value leaves the
@@ -842,12 +833,11 @@ func (s *streamSession) maybeEmitPointerShape() {
 
 // loop runs the push consumer until the frames or keys channel closes, a quit
 // key arrives, or an I/O error occurs. It draws each pushed frame, restarts the
-// stream on SIGWINCH at the recomputed grid, and forwards keys. It caches the
-// frame channel once: the engine keeps the channel stable across Resize and
-// SetBackend and replaces it only by Navigate, which is single-shot, so a backend
-// switch or a resize never strands this cached handle.
+// stream on SIGWINCH at the recomputed grid, and forwards keys. The engine
+// keeps the frame channel stable across restarts.
 func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error {
 	frames := s.eng.Frames()
+	controlErrors := s.controlErrors()
 	s.resetWritePressure()
 	// Heartbeat the bar's fps segment so an idle page decays it to a live 0
 	// rather than freezing it at the last frame's rate. The block backend
@@ -911,9 +901,16 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			if err != nil {
 				return err
 			}
-			s.assembled = buf
-			s.assembledEncodeMS = encodeMS
-			s.assembledTimed = s.fps != nil && s.fps.gated
+			if buf.Len() == 0 {
+				// An over-limit tmux Sixel frame stays off the wire. Pace
+				// retries as usual so a burst does not keep encoding it.
+				s.lastTmuxSixel = time.Now()
+				avail = append(avail, buf)
+			} else {
+				s.assembled = buf
+				s.assembledEncodeMS = encodeMS
+				s.assembledTimed = s.fps != nil && s.fps.gated
+			}
 		}
 
 		// Enable the handoff case only when a buffer waits. A nil channel send never
@@ -925,6 +922,7 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			item = writeItem{
 				buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed,
 				tmuxSixel: s.assembledTmuxSixel, kittySHM: s.assembledSHM.id != 0,
+				tmuxKitty:      s.assembledTmuxKitty,
 				pressureSample: s.assembledPressureSample, pressureGen: s.assembledPressureGen,
 			}
 		}
@@ -989,14 +987,21 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			if err := s.assembleSettle(buf); err != nil {
 				return err
 			}
+			if buf.Len() == 0 {
+				avail = append(avail, buf)
+				continue
+			}
 			s.assembled = buf
 			s.assembledEncodeMS = 0
 			s.assembledTimed = false
 			s.assembledTmuxSixel = true
+			s.assembledTmuxKitty = 0
 		case <-winch:
 			if err := s.resize(); err != nil {
 				return err
 			}
+		case err := <-controlErrors:
+			return err
 		case now := <-s.fpsBeat:
 			// Refresh the terminal title on the once-per-second beat, so a
 			// title the page set after load reaches the terminal without a
@@ -1015,7 +1020,7 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 			}
 		case frame, ok := <-frames:
 			if !ok {
-				return nil
+				return s.eng.StreamError()
 			}
 			// Coalesce a queued burst to the newest frame, so a scroll burst presents
 			// once with the latest frame instead of every stale one. Channel close
@@ -1030,7 +1035,8 @@ func (s *streamSession) loop(winch <-chan os.Signal, keys <-chan keyEvent) error
 				s.fps.countReceived(1 + drained)
 			}
 			if !ok {
-				return nil
+				releaseFrame(frame)
+				return s.eng.StreamError()
 			}
 			if !frame.HasImage() {
 				s.nilImageOnce.Do(func() {
@@ -1424,8 +1430,13 @@ func (s *streamSession) assembleSettle(buf *bytes.Buffer) error {
 	buf.Reset()
 	buf.WriteString(cursorHome)
 	buf.WriteString(beginSixelDisplayMode)
+	prefixLen := buf.Len()
 	if err := s.st.renderSixelSettle(buf); err != nil {
 		return err
+	}
+	if buf.Len() == prefixLen {
+		buf.Reset()
+		return nil
 	}
 	buf.WriteString(endSixelDisplayMode)
 	return nil
@@ -1489,6 +1500,7 @@ const barSpinnerInterval = 90 * time.Millisecond
 func (s *streamSession) waitForNavigate(winch <-chan os.Signal, keys <-chan keyEvent, navigated <-chan error) error {
 	spin := time.NewTicker(barSpinnerInterval)
 	defer spin.Stop()
+	controlErrors := s.controlErrors()
 	for {
 		select {
 		case <-spin.C:
@@ -1502,6 +1514,8 @@ func (s *streamSession) waitForNavigate(winch <-chan os.Signal, keys <-chan keyE
 			if err := s.resize(); err != nil {
 				return err
 			}
+		case err := <-controlErrors:
+			return err
 		case ev, ok := <-keys:
 			if !ok {
 				return nil
@@ -1513,6 +1527,13 @@ func (s *streamSession) waitForNavigate(winch <-chan os.Signal, keys <-chan keyE
 			return err
 		}
 	}
+}
+
+func (s *streamSession) controlErrors() <-chan error {
+	if s.ctl == nil {
+		return nil
+	}
+	return s.ctl.errors
 }
 
 // startupQuit reports whether a pre-navigation key requests exit (Ctrl+Q, or
@@ -1564,9 +1585,19 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	if nonScrollingSixel {
 		buf.WriteString(beginSixelDisplayMode)
 	}
+	sixelStart := buf.Len()
 	kittyBelowText := timed && s.st.Backend == BackendKitty
+	previousKittyID := s.st.kittyID
 	if rerr := s.st.renderStreamFrame(frame, buf, kittyBelowText, timed); rerr != nil {
 		return 0, rerr
+	}
+	if nonScrollingSixel && s.st.mux == muxTmux && buf.Len() == sixelStart {
+		buf.Reset()
+		budget := &s.st.sixelBudget
+		if !budget.hasFrame && budget.overHardLimit(budget.buf.Len()) {
+			return 0, fmt.Errorf("viewer: Sixel frame exceeds tmux's %d-byte image budget. Use --backend=block", budget.hardLimit)
+		}
+		return 0, nil
 	}
 	s.firstDrawn.Store(true)
 	if nonScrollingSixel {
@@ -1578,6 +1609,10 @@ func (s *streamSession) assemble(buf *bytes.Buffer, frame render.Frame) (encodeM
 	// Tag an shm transmit for reply correlation and the pacing gate.
 	s.markKittySHMAssembled(s.st.takeKittySHMID())
 	s.assembledTmuxSixel = nonScrollingSixel && s.st.mux == muxTmux
+	s.assembledTmuxKitty = 0
+	if s.st.kittyTmux && s.st.kittyID != previousKittyID {
+		s.assembledTmuxKitty = tmuxKittyPaint
+	}
 	s.assembledPressureSample, s.assembledPressureGen = s.nextWritePressureSample()
 
 	if s.fps != nil {
@@ -1611,6 +1646,7 @@ func (s *streamSession) flushAssembled() {
 	s.writer.send(writeItem{
 		buf: s.assembled, encodeMS: s.assembledEncodeMS, timed: s.assembledTimed,
 		tmuxSixel: s.assembledTmuxSixel, kittySHM: s.assembledSHM.id != 0,
+		tmuxKitty:      s.assembledTmuxKitty,
 		pressureSample: s.assembledPressureSample, pressureGen: s.assembledPressureGen,
 	})
 	s.assembled = nil
@@ -1634,12 +1670,16 @@ func (s *streamSession) flushAssembled() {
 // only on a rare resize, backend cycle, or startup spinner tick, because the
 // per-second heartbeat runs only when the fps meter is armed.
 func (s *streamSession) emitControl(b []byte) error {
+	return s.emitControlWithTmuxKitty(b, 0)
+}
+
+func (s *streamSession) emitControlWithTmuxKitty(b []byte, effect tmuxKittyWrite) error {
 	if s.writer == nil {
-		_, err := s.tty.Write(b)
+		_, err := writeTerminal(s.tty, b, effect)
 		return err
 	}
 	s.flushAssembled()
-	s.writer.send(writeItem{ctrl: append([]byte(nil), b...), timed: s.fps != nil})
+	s.writer.send(writeItem{ctrl: append([]byte(nil), b...), timed: s.fps != nil, tmuxKitty: effect})
 	return nil
 }
 
@@ -1675,7 +1715,7 @@ func (s *streamSession) resize() error {
 	// never freezes the consumer loop; the loop keeps drawing and handling quit.
 	// The engine grid takes engineRows, so the bottom-row bar reservation
 	// survives a resize while State keeps the full grid.
-	s.ctl.submit(resizeEngineOp(px, changed, nc, engineRows(nr)))
+	s.ctl.submit(captureConfigFor(s.st))
 	// The resize clears the screen, so the differ full-repaints the next frame
 	// even when the grid dimensions are unchanged. The clear routes through the
 	// writer so it never races an in-flight frame write.
@@ -1687,39 +1727,18 @@ func (s *streamSession) resize() error {
 		// A Kitty placement survives the ANSI clear, so a resize that shrank the
 		// image (a zoom-out moves the cell pair) would leave the old image's
 		// pixels standing outside the new one. Reuse the backend-switch delete-all
-		// seam: free both double-buffer ids so the next frame rebuilds from id 1,
+		// seam: free the current route's image IDs before the next frame,
 		// and drop the shm pacing gate so a stale in-flight wait cannot gate the
 		// first post-resize frame.
 		_ = s.resetKitty(&ctl)
 	}
+	var effect tmuxKittyWrite
+	if s.st.kittyTmux && ctl.Len() > 0 {
+		effect = tmuxKittyReset
+	}
 	ctl.WriteString(clearScreen)
 	s.appendBar(&ctl)
-	return s.emitControl(ctl.Bytes())
-}
-
-// resizeEngineOp returns the control-goroutine closure for one resize. A
-// changed cell pair is set on the engine inside the same closure as the grid
-// restart, before Resize, so the restart recomputes the capture from the new
-// pair; the control channel is one-slot drop-on-full, so a separately queued
-// SetCellPx could be dropped while the Resize survives and restart at the
-// stale pair.
-func resizeEngineOp(px cellPx, changed bool, cols, rows int) func(Engine) {
-	return func(eng Engine) {
-		if changed {
-			eng.SetCellPx(px.W, px.H)
-		}
-		eng.Resize(cols, rows)
-	}
-}
-
-// switchBackendOp returns the control-goroutine closure for one backend
-// switch or a same-backend restart. The engine grid never moves on a switch:
-// the bottom-row bar reservation applies to every backend, so SetBackend
-// restarts the stream at the grid the engine already holds.
-func switchBackendOp(backend Backend) func(Engine) {
-	return func(eng Engine) {
-		eng.SetBackend(backend)
-	}
+	return s.emitControlWithTmuxKitty(ctl.Bytes(), effect)
 }
 
 // handleMouse routes one decoded mouse event by bar mode and row and reports
@@ -2141,7 +2160,7 @@ func (s *streamSession) forwardNav(a NavAction) {
 
 // cycleBackend steps the backend cycle (Alt+R forwards, Alt+Shift+R
 // backwards) and runs the whole switch: the leave-kitty reset, the shared
-// switch clear, the kitty-shm decode sync, and the engine restart at the new
+// switch clear and the engine restart at the new
 // capture size on the control goroutine.
 func (s *streamSession) cycleBackend(reverse bool) {
 	previous := s.st.Backend
@@ -2160,9 +2179,12 @@ func (s *streamSession) cycleBackend(reverse bool) {
 	// frame via the writer's error channel.
 	var ctl bytes.Buffer
 	if wasKitty && s.st.Backend != BackendKitty {
-		// Free both double-buffer images when leaving kitty, so the terminal keeps
-		// no stale image and a later return rebuilds from id 1.
+		// Free Kitty images before the new backend draws.
 		_ = s.resetKitty(&ctl)
+	}
+	var effect tmuxKittyWrite
+	if s.st.kittyTmux && ctl.Len() > 0 {
+		effect = tmuxKittyReset
 	}
 	if s.st.Backend != previous {
 		// Every backend change erases the screen before the new backend's
@@ -2192,16 +2214,9 @@ func (s *streamSession) cycleBackend(reverse bool) {
 		s.appendBar(&ctl)
 	}
 	if ctl.Len() > 0 {
-		_ = s.emitControl(ctl.Bytes())
+		_ = s.emitControlWithTmuxKitty(ctl.Bytes(), effect)
 	}
-	// Align the engine's kitty-shm decode with the new backend before the
-	// restart, so frames after the switch arrive in the right form: planes
-	// while Kitty runs the shm transport, direct PNG otherwise. The toggle
-	// is a cheap flag write, safe on the consumer loop.
-	syncEngineKittyDecode(s.eng, s.st)
-	// Cycle the backend off the consumer loop: the engine restart runs on the
-	// control goroutine so a slow restartStream cannot freeze draw or quit.
-	s.ctl.submit(switchBackendOp(s.st.Backend))
+	s.ctl.submit(captureConfigFor(s.st))
 }
 
 // cycleColour changes the Block colour mode and recomposes the current view.
@@ -2261,7 +2276,7 @@ func (s *streamSession) recomposeBlock(changed bool, paletteControl ...string) {
 	}
 	s.appendBar(&ctl)
 	_ = s.emitControl(ctl.Bytes())
-	s.ctl.submit(switchBackendOp(s.st.Backend))
+	s.ctl.submit(captureConfigFor(s.st))
 }
 
 // keySender serialises forwarded input (page keys and mouse events) away

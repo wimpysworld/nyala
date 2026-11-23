@@ -50,8 +50,8 @@ func deriveCellPixels(xpixel, ypixel, col, row int) (cellPx, bool) {
 // the viewer and engine should use after a terminal resize and whether it
 // changed. A forced NYALA_CELL_PX pair never moves, a failed winsize
 // derivation keeps the current pair (fail closed, the same policy as startup),
-// and an unchanged derivation reports no change so the engine restart skips
-// SetCellPx. The ioctl stays at the seam edge in winsizeCellPixels.
+// and an unchanged derivation reports no change. winsizeCellPixels reads
+// the terminal size.
 func resizeCellPx(forced bool, current, derived cellPx, derivedOK bool) (cellPx, bool) {
 	if forced || !derivedOK || derived == current {
 		return current, false

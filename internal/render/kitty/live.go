@@ -253,7 +253,7 @@ type LiveEncoder struct {
 // non-positive pair omits both keys. A malformed or incomplete payload returns
 // ErrInvalidPNGData before writing.
 func (e *LiveEncoder) EncodePNGID(data string, id, cols, rows int, w io.Writer) error {
-	return e.encodePNGID(data, id, 0, false, cols, rows, w)
+	return e.encodePNGID(data, id, 0, 0, false, cols, rows, w)
 }
 
 // EncodePNGIDAtZ is EncodePNGID with an explicit Kitty placement z-index. The
@@ -261,13 +261,16 @@ func (e *LiveEncoder) EncodePNGID(data string, id, cols, rows int, w io.Writer) 
 // their protocol-only m control. The viewer uses this live-only variant when a
 // terminal text badge must remain above the page image.
 func (e *LiveEncoder) EncodePNGIDAtZ(data string, id, z, cols, rows int, w io.Writer) error {
-	return e.encodePNGID(data, id, z, true, cols, rows, w)
+	return e.encodePNGID(data, id, 0, z, true, cols, rows, w)
 }
 
-func (e *LiveEncoder) encodePNGID(data string, id, z int, withZ bool, cols, rows int, w io.Writer) error {
-	if !ValidDirectPNGData(data) {
-		return ErrInvalidPNGData
-	}
+// EncodePNGPlacement is EncodePNGID with an explicit placement ID on the
+// first APC chunk. A zero z leaves the terminal's default z-index unchanged.
+func (e *LiveEncoder) EncodePNGPlacement(data string, id, placement, z, cols, rows int, w io.Writer) error {
+	return e.encodePNGID(data, id, placement, z, z != 0, cols, rows, w)
+}
+
+func (e *LiveEncoder) encodePNGID(data string, id, placement, z int, withZ bool, cols, rows int, w io.Writer) error {
 	control := "f=100,t=d,a=T,q=2,C=1"
 	if cols > 0 && rows > 0 {
 		control += fmt.Sprintf(",c=%d,r=%d", cols, rows)
@@ -275,21 +278,39 @@ func (e *LiveEncoder) encodePNGID(data string, id, z int, withZ bool, cols, rows
 	if id > 0 {
 		control += fmt.Sprintf(",i=%d", id)
 	}
+	if placement > 0 {
+		control += fmt.Sprintf(",p=%d", placement)
+	}
 	if withZ {
 		control += fmt.Sprintf(",z=%d", z)
+	}
+	return e.writePNG(data, control, false, w)
+}
+
+// EncodeTmuxPNGID sends a virtual placement for the given image and cell grid.
+// Each Kitty APC has its own tmux passthrough envelope. The caller displays the
+// image with Unicode placeholder cells outside those envelopes.
+func (e *LiveEncoder) EncodeTmuxPNGID(data string, id, cols, rows int, w io.Writer) error {
+	control := fmt.Sprintf("f=100,t=d,a=T,q=2,U=1,c=%d,r=%d,i=%d", cols, rows, id)
+	return e.writePNG(data, control, true, w)
+}
+
+func (e *LiveEncoder) writePNG(data, control string, tmux bool, w io.Writer) error {
+	if !ValidDirectPNGData(data) {
+		return ErrInvalidPNGData
 	}
 
 	e.frame = e.frame[:0]
 	if len(data) <= kitty.MaxChunkSize {
-		e.frame = appendStringFrame(e.frame, control, data)
+		e.frame = appendPNGChunk(e.frame, control, data, tmux)
 	} else {
 		first := control + "," + chunkMore
 		for len(data) > kitty.MaxChunkSize {
-			e.frame = appendStringFrame(e.frame, first, data[:kitty.MaxChunkSize])
+			e.frame = appendPNGChunk(e.frame, first, data[:kitty.MaxChunkSize], tmux)
 			data = data[kitty.MaxChunkSize:]
 			first = chunkMore
 		}
-		e.frame = appendStringFrame(e.frame, chunkLast, data)
+		e.frame = appendPNGChunk(e.frame, chunkLast, data, tmux)
 	}
 	if _, err := w.Write(e.frame); err != nil {
 		return fmt.Errorf("kitty: write APC payload: %w", err)
@@ -355,14 +376,29 @@ func (e *LiveEncoder) encodeSHMID(name string, width, height, id, z int, withZ b
 	return nil
 }
 
-// appendStringFrame is appendFrame for an already-base64 string. Appending the
-// string copies its bytes straight into the reusable APC buffer without an
-// intermediate []byte allocation.
-func appendStringFrame(dst []byte, control, chunk string) []byte {
+const tmuxDCSIntro = "\x1bPtmux;"
+
+// WrapTmuxAPC wraps one complete Kitty command for tmux passthrough.
+func WrapTmuxAPC(command string) string {
+	return tmuxDCSIntro + strings.ReplaceAll(command, "\x1b", "\x1b\x1b") + st
+}
+
+// appendPNGChunk copies the base64 string straight into the reused APC buffer.
+// The control keys and base64 cannot contain ESC, so only the APC introducer
+// and terminator need doubling when wrapped for tmux.
+func appendPNGChunk(dst []byte, control, chunk string, tmux bool) []byte {
+	if tmux {
+		dst = append(dst, tmuxDCSIntro...)
+		dst = append(dst, '\x1b')
+	}
 	dst = append(dst, apcIntro...)
 	dst = append(dst, control...)
 	dst = append(dst, ';')
 	dst = append(dst, chunk...)
+	if tmux {
+		dst = append(dst, '\x1b')
+		dst = append(dst, st...)
+	}
 	dst = append(dst, st...)
 	return dst
 }

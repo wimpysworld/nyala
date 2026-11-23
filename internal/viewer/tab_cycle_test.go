@@ -15,7 +15,7 @@ import (
 )
 
 // tabCycleEngine drives the streamSession end to end for the backend-cycle
-// test. It records every SetBackend name and, on each SetBackend, pushes one
+// test. It records each requested backend and pushes one
 // fresh frame so the drawing loop repaints with the newly selected backend,
 // mimicking the real engine's restartStream re-emit.
 type tabCycleEngine struct {
@@ -26,7 +26,7 @@ type tabCycleEngine struct {
 	names []string
 }
 
-func (e *tabCycleEngine) SetBackend(backend Backend) {
+func (e *tabCycleEngine) ConfigureCapture(backend Backend, _, _, _, _ int, _ bool) error {
 	e.mu.Lock()
 	e.names = append(e.names, backend.String())
 	e.mu.Unlock()
@@ -34,9 +34,10 @@ func (e *tabCycleEngine) SetBackend(backend Backend) {
 	// representation. Mirror that so the loop repaints through the production seam.
 	if backend == BackendKitty {
 		e.frames <- render.Frame{EncodedPNG: e.kittyPNG}
-		return
+		return nil
 	}
 	e.frames <- render.Frame{Img: image.NewRGBA(image.Rect(0, 0, 16, 16))}
+	return nil
 }
 
 func (e *tabCycleEngine) backends() []string {
@@ -46,8 +47,7 @@ func (e *tabCycleEngine) backends() []string {
 }
 
 func (e *tabCycleEngine) Frames() <-chan render.Frame { return e.frames }
-func (e *tabCycleEngine) SetCellPx(int, int)          {}
-func (e *tabCycleEngine) Resize(int, int)             {}
+func (e *tabCycleEngine) StreamError() error          { return nil }
 func (e *tabCycleEngine) Navigate(string) error       { return nil }
 func (e *tabCycleEngine) SendKey(string)              {}
 func (e *tabCycleEngine) SendText(string)             {}
@@ -106,7 +106,7 @@ func waitFor(d time.Duration, fn func() bool) bool {
 
 // TestStreamAltRCyclesBackend drives the real streamSession.loop through an
 // Alt+R press and asserts the on-screen backend actually flips. It starts on
-// kitty, presses Alt+R, and checks that the engine received a SetBackend for
+// kitty, presses Alt+R, and checks that the engine received a restart for
 // the next backend and that the state advanced to block. This locks the whole
 // backend-cycle wiring through streamSession.handleKey, including the engine
 // restart and repaint at the new backend.
@@ -150,7 +150,7 @@ func TestStreamAltRCyclesBackend(t *testing.T) {
 		t.Fatalf("no kitty graphics escape before Alt+R; output = %q", out.String())
 	}
 
-	// Press Alt+R: it must cycle the state to block and submit a SetBackend.
+	// Press Alt+R: it must cycle the state to block and submit a restart.
 	keys <- keyEvent{act: actionCycleBackend}
 
 	if !waitFor(2*time.Second, func() bool {
@@ -161,7 +161,7 @@ func TestStreamAltRCyclesBackend(t *testing.T) {
 		}
 		return false
 	}) {
-		t.Fatalf("Alt+R did not submit SetBackend(block); got %v", eng.backends())
+		t.Fatalf("Alt+R did not request Block; got %v", eng.backends())
 	}
 	if st.Backend != BackendBlock {
 		t.Fatalf("after Alt+R, state backend = %d, want BackendBlock", st.Backend)

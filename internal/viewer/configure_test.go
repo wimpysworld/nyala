@@ -6,43 +6,24 @@ import (
 	"testing"
 )
 
-// TestConfigureBackendsSkipsHandshakeUnderScreenAndHerdr asserts that under
-// GNU screen and herdr configureBackends enables block only and runs no
-// handshake at all. Both probes write their query batch to the tty as a first
-// act, so a tty file left empty after the call proves neither ran. A non-mux
-// baseline proves the same file path does carry a write when the handshake
-// runs. With no handshake, paletteQueryOK must stay false.
-func TestConfigureBackendsSkipsHandshakeUnderScreenAndHerdr(t *testing.T) {
-	cases := []struct {
-		name string
-		env  map[string]string
-	}{
-		{"screen", map[string]string{"STY": "1234.pts-0.host"}},
-		{"herdr", map[string]string{"HERDR_ENV": "1", "HERDR_PANE_ID": "p1"}},
+func TestConfigureBackendsSkipsHandshakeUnderScreen(t *testing.T) {
+	clearMuxEnv(t)
+	t.Setenv("STY", "1234.pts-0.host")
+
+	tty := newTempTTY(t)
+	st := NewState(80, 24)
+	if err := configureBackends(&st, tty, 80, 24, "auto", "auto"); err != nil {
+		t.Fatalf("configureBackends: %v", err)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			clearMuxEnv(t)
-			for k, v := range c.env {
-				t.Setenv(k, v)
-			}
 
-			tty := newTempTTY(t)
-			st := NewState(80, 24)
-			if err := configureBackends(&st, tty, 80, 24, "auto", "auto"); err != nil {
-				t.Fatalf("configureBackends: %v", err)
-			}
-
-			if len(st.Enabled) != 1 || st.Enabled[0] != BackendBlock {
-				t.Fatalf("enabled = %v, want [BackendBlock]", st.Enabled)
-			}
-			if n := ttyByteCount(t, tty); n != 0 {
-				t.Fatalf("handshake wrote %d bytes; no probe must run", n)
-			}
-			if st.paletteQueryOK {
-				t.Fatal("paletteQueryOK = true; no handshake ran, so no OSC 4 query was sent")
-			}
-		})
+	if len(st.Enabled) != 1 || st.Enabled[0] != BackendBlock {
+		t.Fatalf("enabled = %v, want [BackendBlock]", st.Enabled)
+	}
+	if n := ttyByteCount(t, tty); n != 0 {
+		t.Fatalf("handshake wrote %d bytes; no probe must run", n)
+	}
+	if st.paletteQueryOK {
+		t.Fatal("paletteQueryOK = true; no handshake ran, so no OSC 4 query was sent")
 	}
 }
 

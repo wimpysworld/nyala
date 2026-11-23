@@ -348,13 +348,13 @@ func TestHandleMouseAboutClose(t *testing.T) {
 // open. Esc closes it, a page-row press closes it without forwarding, and page
 // input flows again once it is closed.
 func TestAboutModeOwnsPageInput(t *testing.T) {
-	var sent, text, backends []string
+	var sent, text, captureBackends []string
 	var forwarded []MouseEvent
 	s, _ := modeSession(t, streamTestEngine{
-		sendKey:    func(code string) { sent = append(sent, code) },
-		sendText:   func(t string) { text = append(text, t) },
-		setBackend: func(name string) { backends = append(backends, name) },
-		sendMouse:  func(ev MouseEvent) { forwarded = append(forwarded, ev) },
+		sendKey:            func(code string) { sent = append(sent, code) },
+		sendText:           func(t string) { text = append(text, t) },
+		onConfigureCapture: func(name string) { captureBackends = append(captureBackends, name) },
+		sendMouse:          func(ev MouseEvent) { forwarded = append(forwarded, ev) },
 	})
 	s.enterAbout()
 	for _, ev := range []keyEvent{
@@ -374,8 +374,8 @@ func TestAboutModeOwnsPageInput(t *testing.T) {
 			t.Fatalf("key %+v left About: mode %d", ev, s.barMode)
 		}
 	}
-	if len(sent) != 0 || len(text) != 0 || len(backends) != 0 {
-		t.Fatalf("About leaked input: keys %v, text %q, backends %v", sent, text, backends)
+	if len(sent) != 0 || len(text) != 0 || len(captureBackends) != 0 {
+		t.Fatalf("About leaked input: keys %v, text %q, ConfigureCapture calls %v", sent, text, captureBackends)
 	}
 
 	s.handleKey(keyEvent{b: keyEsc})

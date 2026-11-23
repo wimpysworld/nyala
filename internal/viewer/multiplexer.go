@@ -42,44 +42,21 @@ func detectMultiplexer() multiplexerKind {
 	return muxNone
 }
 
-// tmuxSixelSupported reports whether the tmux version named by the XTVERSION
-// identity may carry Sixel at all: 3.6 and later. tmux 3.4 through 3.5a
-// compile in a 1 MiB DCS input cap with no input-buffer-size option to raise
-// it, so any busy frame over 1 MiB is silently discarded (the original
-// invisible black-screen failure). The 900 KB fallback budget cannot
-// guarantee that cap on large grids: the ladder floor at factor 4 encodes
-// ~1.45 MB and the smallest-anyway rule would feed tmux frames it throws
-// away with no signal. Those versions are also untested, and the ecosystem
-// answer for them is shrink or refuse, so Nyala refuses. An unknown or
-// unparsed identity fails the gate, matching the conservative treatment of
-// unknown versions elsewhere.
+// tmuxSixelSupported reports whether the XTVERSION identity names a
+// supported tmux release (3.6 or later). Earlier releases have a fixed DCS
+// input cap and do not expose the server option that Nyala checks.
 func tmuxSixelSupported(termID string) bool {
 	major, minor, ok := parseTmuxVersion(termID)
 	return ok && (major > 3 || (major == 3 && minor >= 6))
 }
 
-// multiplexerBackends returns the backend cycle offered under a focus
-// multiplexer. Kitty is never offered: tmux and zellij consume the Kitty APC
-// protocol without passthrough, and screen and herdr pass no graphics at all.
-// Sixel is offered under tmux only, and only when the DA1 reply advertised
-// attribute 4, the resolved cell pixel geometry is real, terminal
-// compatibility allows Sixel, and the XTVERSION identity is 3.6 or later
-// (tmuxSixelSupported): older tmux caps DCS input at an unraisable 1 MiB and
-// discards busy frames silently. tmux advertises DA1 Sixel only when both its
-// build and its outer terminal support it, so its DA1 is honest, and without
-// real geometry the Sixel surface would be sized from the 8x16 fallback and
-// render at the wrong physical scale. zellij never enters the Sixel branch,
-// regardless of DA1 and geometry: zellij 0.31+ re-encodes Sixel but allocates
-// image ids as the current store size (sixel.rs next_image_id) instead of
-// monotonically, so a full-frame-replacement stream collides ids and drops
-// every third frame, and its bare re-emission of visible image chunks to the
-// host breaks scrolling (the page appears to scroll, then snaps back). Both
-// are zellij-side defects with no Nyala-side workaround; blocking Sixel keeps
-// them from presenting as Nyala bugs, so zellij stays block only. Lift the
-// block, gated on the XTVERSION identity Zellij(<version>), once a zellij
-// release fixes both. screen and herdr stay block only.
-func multiplexerBackends(mux multiplexerKind, termID string, sixelDA1, realGeometry bool, compat terminalCompatibility) []Backend {
-	if mux == muxTmux && tmuxSixelSupported(termID) && sixelDA1 && realGeometry && compat.sixelAllowed() {
+// multiplexerBackends is the native graphics policy under a multiplexer.
+// Native Sixel requires tmux 3.6+, DA1 attribute 4, real cell geometry,
+// terminal compatibility and a verified Sixel-capable host. tmux's DA1
+// describes its own decoder, not the capability of its attached clients.
+// Zellij stays on Block because of image id reuse and scroll redraw defects.
+func multiplexerBackends(mux multiplexerKind, termID string, sixelDA1, realGeometry, hostSixel bool, compat terminalCompatibility) []Backend {
+	if mux == muxTmux && tmuxSixelSupported(termID) && sixelDA1 && realGeometry && hostSixel && compat.sixelAllowed() {
 		return []Backend{BackendSixel, BackendBlock}
 	}
 	return []Backend{BackendBlock}

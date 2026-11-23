@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"image"
+	"image/color"
+	"image/draw"
 	"math/rand"
 	"strings"
 	"testing"
@@ -95,21 +97,86 @@ func TestSixelBudgetDownscalesNoisyFrameUnderBudget(t *testing.T) {
 // staying blurred forever.
 func TestSixelBudgetProbesWeakerPeriodically(t *testing.T) {
 	st := tmuxSixelState()
-	// A flat frame fits at any factor; pin the state as if noise had settled
-	// the ladder at its floor, one frame short of the probe.
+	// A flat frame fits at any factor. Start one frame before a probe from
+	// the most blurred motion factor.
 	flat := image.NewRGBA(image.Rect(0, 0, 640, 464))
 	for i := range flat.Pix {
 		flat.Pix[i] = 0xff
 	}
-	st.sixelBudget.idx = len(sixelDownscaleLadder) - 1
+	st.sixelBudget.idx = sixelMotionMaxIdx
 	st.sixelBudget.sinceProbe = sixelProbeInterval - 1
 
 	var out bytes.Buffer
 	if err := st.RenderStreamFrame(render.Frame{Img: flat}, &out); err != nil {
 		t.Fatalf("RenderStreamFrame(probe frame) = %v", err)
 	}
-	if got, want := st.sixelBudget.idx, len(sixelDownscaleLadder)-2; got != want {
+	if got, want := st.sixelBudget.idx, sixelMotionMaxIdx-1; got != want {
 		t.Fatalf("probe frame ladder index = %d, want the one-step-weaker %d", got, want)
+	}
+}
+
+func TestSixelBudgetHardLimitBlurOnlyAffectsOversizedFrame(t *testing.T) {
+	const width, height = 640, 464
+	const limit = 100_000
+	heavy := render.Frame{Img: noisyImage(width, height)}
+	motionOnly := tmuxSixelState()
+	motionOnly.sixelBudget.limit = limit
+	var out bytes.Buffer
+	if err := motionOnly.RenderStreamFrame(heavy, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() <= limit {
+		t.Fatalf("test frame fits in %d bytes at the motion limit, want more than %d", out.Len(), limit)
+	}
+
+	st := tmuxSixelState()
+	b := &st.sixelBudget
+	b.limit, b.hardLimit = limit, limit
+	// Start at the motion ceiling to isolate the hard-limit retry from
+	// motion escalations, which reset the probe cadence.
+	b.idx = sixelMotionMaxIdx
+	b.sinceProbe = 2
+	out.Reset()
+	if err := st.RenderStreamFrame(heavy, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() == 0 || out.Len() > limit {
+		t.Fatalf("oversized frame wrote %d bytes, want a non-empty frame within %d bytes", out.Len(), limit)
+	}
+	if b.idx != sixelMotionMaxIdx || b.sinceProbe != 3 || b.escalationSkips != 0 {
+		t.Fatalf("hard-limit retry changed motion index, probe cadence or sample skips: %d, %d, %d", b.idx, b.sinceProbe, b.escalationSkips)
+	}
+	if !st.sixelSettleNeeded() {
+		t.Fatal("blurred frame did not arm a settle")
+	}
+
+	// Motion factor 4 preserves stripes four pixels wide. The extra blur
+	// that fits the oversized frame would blend adjacent stripes.
+	stripes := image.NewRGBA(image.Rect(0, 0, width, height))
+	colours := [...]color.RGBA{{R: 255, A: 255}, {B: 255, A: 255}}
+	for y := range height {
+		for x := range width {
+			stripes.SetRGBA(x, y, colours[(x/4)%len(colours)])
+		}
+	}
+	out.Reset()
+	if err := st.RenderStreamFrame(render.Frame{Img: stripes}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() > limit {
+		t.Fatalf("ordinary frame wrote %d bytes, want at most %d", out.Len(), limit)
+	}
+	decoded, err := renderdecode.DecodeSixel(out.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decoded.Bounds(); got.Dx() != width || got.Dy() != height {
+		t.Fatalf("ordinary frame bounds = %v, want %dx%d", got, width, height)
+	}
+	leftRed, _, leftBlue, _ := decoded.At(1, 0).RGBA()
+	rightRed, _, rightBlue, _ := decoded.At(5, 0).RGBA()
+	if leftRed <= leftBlue || rightBlue <= rightRed {
+		t.Fatal("ordinary frame lost stripe detail after the oversized frame")
 	}
 }
 
@@ -801,52 +868,35 @@ func TestParseTmuxVersion(t *testing.T) {
 	}
 }
 
-// TestResolveTmuxSixelBudget pins the resolution through a seamed command
-// runner: no shell-out happens in tests. A successful input-buffer-size
-// raise returns the raised full-quality budget on tmux 3.7 and later and
-// the 1.5 MB output-stage rate cap on 3.6.x; tmux 3.5a, an unknown
-// identity, and a failed set keep the 900 KB fallback.
 func TestResolveTmuxSixelBudget(t *testing.T) {
 	cases := []struct {
-		name    string
-		termID  string
-		runErr  error
-		want    int
-		wantRun bool
+		name, termID, output string
+		runErr               error
+		wantTarget, wantHard int
 	}{
-		{"3.5a keeps the fallback without running tmux", "tmux 3.5a", nil, sixelBudgetDefault, false},
-		{"3.6 successful raise returns the legacy rate cap", "tmux 3.6", nil, sixelBudgetLegacyRate, true},
-		{"3.6a successful raise returns the legacy rate cap", "tmux 3.6a", nil, sixelBudgetLegacyRate, true},
-		{"3.7 successful raise returns the raised budget", "tmux 3.7", nil, sixelBudgetRaised, true},
-		{"3.7b successful raise returns the raised budget", "tmux 3.7b", nil, sixelBudgetRaised, true},
-		{"unknown version keeps the fallback without running tmux", "", nil, sixelBudgetDefault, false},
-		{"failed option set keeps the fallback", "tmux 3.6a", errTmuxRun, sixelBudgetDefault, true},
+		{"default buffer", "tmux 3.8", "1048576\n", nil, sixelBudgetDefault, sixelBudgetDefault},
+		{"large legacy buffer", "tmux 3.6a", "16777216\n", nil, sixelBudgetLegacyRate, sixelBudgetRaised},
+		{"large current buffer", "tmux 3.7b", "16777216\n", nil, sixelBudgetRaised, sixelBudgetRaised},
+		{"unsupported buffer", "tmux 3.8", "524288\n", nil, 0, 0},
+		{"non-power-of-two buffer", "tmux 3.8", "1572864\n", nil, sixelBudgetDefault, sixelBudgetDefault},
+		{"malformed buffer", "tmux 3.8", "1048576 extra\n", nil, 0, 0},
+		{"failed query", "tmux 3.8", "1048576\n", errors.New("tmux query failed"), 0, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var gotArgs []string
-			run := func(args ...string) error {
-				gotArgs = args
-				return tc.runErr
-			}
-			if got := resolveTmuxSixelBudget(tc.termID, run); got != tc.want {
-				t.Fatalf("budget = %d, want %d", got, tc.want)
-			}
-			if ran := gotArgs != nil; ran != tc.wantRun {
-				t.Fatalf("tmux command ran = %v, want %v", ran, tc.wantRun)
-			}
-			if tc.wantRun {
-				want := []string{"set", "-s", "input-buffer-size", tmuxInputBufferSize}
-				if strings.Join(gotArgs, " ") != strings.Join(want, " ") {
-					t.Fatalf("tmux command args = %v, want %v", gotArgs, want)
+			query := func(args ...string) (string, error) {
+				if got := strings.Join(args, " "); got != "show-options -sv input-buffer-size" {
+					t.Fatalf("tmux query = %q", got)
 				}
+				return tc.output, tc.runErr
+			}
+			target, hard := resolveTmuxSixelBudget(tc.termID, query)
+			if target != tc.wantTarget || hard != tc.wantHard {
+				t.Fatalf("budget = (%d, %d), want (%d, %d)", target, hard, tc.wantTarget, tc.wantHard)
 			}
 		})
 	}
 }
-
-// errTmuxRun stands in for a failed tmux client invocation.
-var errTmuxRun = errors.New("tmux set failed")
 
 // TestResolveTmuxSixelMinInterval pins the version-tuned pacing floor: tmux
 // 3.7 and later drain their output scheduler at the 250 ms floor, while older
@@ -1272,6 +1322,139 @@ func TestSixelSettleReencodesSharp(t *testing.T) {
 	}
 	if st.sixelSettleNeeded() {
 		t.Fatal("settle emit stayed armed; a second settle would loop without a new frame")
+	}
+}
+
+func TestTmuxSixelHardLimit(t *testing.T) {
+	st := tmuxSixelState()
+	st.sixelBudget.hardLimit = sixelBudgetDefault
+	s := &streamSession{st: &st}
+	frame := render.Frame{Img: noisyImage(640, 464)}
+	var motion, settle bytes.Buffer
+	if _, err := s.assemble(&motion, frame); err != nil {
+		t.Fatal(err)
+	}
+	dcsStart := bytes.Index(motion.Bytes(), []byte("\x1bP"))
+	dcsEnd := bytes.Index(motion.Bytes(), []byte("\x1b\\"))
+	if dcsStart < 0 || dcsEnd < dcsStart || dcsEnd+2-dcsStart > st.sixelBudget.hardLimit {
+		t.Fatalf("motion Sixel DCS bounds: start %d, end %d, cap %d", dcsStart, dcsEnd, st.sixelBudget.hardLimit)
+	}
+	if !s.tmuxSixelSettlePending() {
+		t.Fatal("motion did not arm a sharp settle")
+	}
+	if err := s.assembleSettle(&settle); err != nil {
+		t.Fatal(err)
+	}
+	if settle.Len() != 0 || s.tmuxSixelSettlePending() {
+		t.Fatal("oversized idle settle wrote bytes or remained pending")
+	}
+
+	// A skipped frame must not clear the terminal or arm a new settle.
+	st.sixelBudget.limit = 32
+	st.sixelBudget.hardLimit = 32
+	if _, err := s.assemble(&motion, frame); err != nil {
+		t.Fatal(err)
+	}
+	if motion.Len() != 0 || s.tmuxSixelSettlePending() {
+		t.Fatal("oversized motion frame wrote bytes or armed a settle")
+	}
+	// The resize clears the displayed image but the session still counts
+	// as drawn. A failure to paint the new grid must not leave it blank.
+	st.Resize(st.Cols, st.Rows)
+	if _, err := s.assemble(&motion, frame); err == nil || !strings.Contains(err.Error(), "--backend=block") {
+		t.Fatalf("first oversized Sixel frame after resize error = %v, want Block advice", err)
+	}
+}
+
+func TestSixelSettleKeepsLastFrameAfterHardLimitSkip(t *testing.T) {
+	st := tmuxSixelState()
+	st.sixelBudget.hardLimit = 20_000
+	s := &streamSession{st: &st}
+	// Both frames require fitting to the grid, so encoding the rejected frame
+	// overwrites the scratch pixels that the displayed frame used.
+	displayed := image.NewRGBA(image.Rect(0, 0, 320, 232))
+	draw.Draw(displayed, displayed.Bounds(), image.NewUniform(color.RGBA{R: 255, A: 255}), image.Point{}, draw.Src)
+	displayed.SetRGBA(4, 4, color.RGBA{B: 255, A: 255})
+	frame := render.Frame{Img: displayed}
+	var sharp, out bytes.Buffer
+	if err := st.RenderStreamFrame(frame, &sharp); err != nil {
+		t.Fatal(err)
+	}
+	st.sixelBudget.idx = 1
+	if _, err := s.assemble(&out, frame); err != nil {
+		t.Fatal(err)
+	}
+	if sharp.Len() == 0 || out.Len() == 0 || !s.tmuxSixelSettlePending() {
+		t.Fatal("test did not produce a sharp reference and an accepted blurred frame")
+	}
+
+	rejected := render.Frame{Img: noisyImage(320, 232)}
+	if _, err := s.assemble(&out, rejected); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != 0 || !s.tmuxSixelSettlePending() {
+		t.Fatal("over-limit frame wrote bytes or cleared the pending settle")
+	}
+	if err := st.renderSixelSettle(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(out.Bytes(), sharp.Bytes()) || s.tmuxSixelSettlePending() {
+		t.Fatal("settle did not emit the displayed frame at full quality once")
+	}
+}
+
+func TestSixelSettleKeepsPixelsAfterFrameRelease(t *testing.T) {
+	st := tmuxSixelState()
+	img := noisyImage(640, 464)
+	var sharp, out bytes.Buffer
+	st.sixelBudget.limit = sixelBudgetRaised
+	if err := st.RenderStreamFrame(render.Frame{Img: img}, &sharp); err != nil {
+		t.Fatal(err)
+	}
+	st.sixelBudget.idx = 1
+	frame := render.Frame{Img: img, Release: func() { clear(img.Pix) }}
+	if err := st.RenderStreamFrame(frame, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !st.sixelSettleNeeded() || img.Pix[3] != 0 {
+		t.Fatal("test did not arm a settle and release the pooled frame")
+	}
+	out.Reset()
+	if err := st.renderSixelSettle(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(out.Bytes(), sharp.Bytes()) {
+		t.Fatal("settle did not preserve the released frame's pixels")
+	}
+}
+
+func TestTmuxSixelInvalidatesPendingSettle(t *testing.T) {
+	for _, change := range []struct {
+		name  string
+		apply func(*State)
+	}{
+		{"resize", func(st *State) { st.Resize(70, 28) }},
+		{"resize at same grid", func(st *State) { st.Resize(st.Cols, st.Rows) }},
+		{"cycle away and back", func(st *State) { st.CycleBackend(); st.CycleBackendReverse() }},
+		{"replace enabled backends", func(st *State) {
+			st.SetEnabled([]Backend{BackendBlock})
+			st.SetEnabled([]Backend{BackendSixel, BackendBlock})
+		}},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			st := tmuxSixelState()
+			s := &streamSession{st: &st}
+			st.sixelBudget.idx = 2
+			st.sixelBudget.lastImg = noisyImage(640, 464)
+			st.sixelBudget.hasFrame = true
+			if !s.tmuxSixelSettlePending() {
+				t.Fatal("test did not arm a settle")
+			}
+			change.apply(&st)
+			if s.tmuxSixelSettlePending() || st.sixelBudget.hasFrame {
+				t.Fatal("old Sixel frame stayed valid across a resize or backend change")
+			}
+		})
 	}
 }
 

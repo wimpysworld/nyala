@@ -94,17 +94,17 @@ type findCalls struct {
 func findSession(t *testing.T, c *findCalls) (*streamSession, *State) {
 	t.Helper()
 	return modeSession(t, streamTestEngine{
-		currentURL: "https://example.org/",
-		find:       func(q string) { c.ops = append(c.ops, "find:"+q) },
-		findNext:   func() { c.ops = append(c.ops, "next") },
-		findPrev:   func() { c.ops = append(c.ops, "prev") },
-		findClear:  func() { c.ops = append(c.ops, "clear") },
-		findState:  &c.state,
-		sendKey:    func(code string) { c.page = append(c.page, "key:"+code) },
-		sendText:   func(text string) { c.page = append(c.page, "text:"+text) },
-		sendPaste:  func(text string) { c.page = append(c.page, "paste:"+text) },
-		sendMouse:  func(ev MouseEvent) { c.mouse = append(c.mouse, ev) },
-		setBackend: func(name string) { c.page = append(c.page, "backend:"+name) },
+		currentURL:         "https://example.org/",
+		find:               func(q string) { c.ops = append(c.ops, "find:"+q) },
+		findNext:           func() { c.ops = append(c.ops, "next") },
+		findPrev:           func() { c.ops = append(c.ops, "prev") },
+		findClear:          func() { c.ops = append(c.ops, "clear") },
+		findState:          &c.state,
+		sendKey:            func(code string) { c.page = append(c.page, "key:"+code) },
+		sendText:           func(text string) { c.page = append(c.page, "text:"+text) },
+		sendPaste:          func(text string) { c.page = append(c.page, "paste:"+text) },
+		sendMouse:          func(ev MouseEvent) { c.mouse = append(c.mouse, ev) },
+		onConfigureCapture: func(name string) { c.page = append(c.page, "capture:"+name) },
 	})
 }
 

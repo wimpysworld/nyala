@@ -24,7 +24,8 @@ func msSince(start time.Time) float64 {
 // pacing gate feeds on the duration even with the fps meter off. kittySHM marks
 // a Kitty shared-memory frame so a failed write keeps that provenance after the
 // producer's acknowledgement state changes. pressureSample requests one sampled
-// duration for the write-pressure observer.
+// duration for the write-pressure observer. tmuxKitty records whether the item
+// paints a Kitty image or resets its images and cells.
 type writeItem struct {
 	buf            *bytes.Buffer
 	ctrl           []byte
@@ -32,6 +33,7 @@ type writeItem struct {
 	timed          bool
 	tmuxSixel      bool
 	kittySHM       bool
+	tmuxKitty      tmuxKittyWrite
 	pressureSample bool
 	pressureGen    uint64
 }
@@ -122,7 +124,7 @@ func (w *streamWriter) run() {
 			if clocked {
 				start = w.now()
 			}
-			n, err := w.tty.Write(data)
+			n, err := writeTerminal(w.tty, data, item.tmuxKitty)
 			if err == nil && n < len(data) {
 				// A short write with a nil error drops the frame tail silently. Treat it
 				// as a failure so the io.Writer seam cannot tear frames unnoticed.

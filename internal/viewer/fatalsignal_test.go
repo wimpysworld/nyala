@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 )
 
 // TestFatalSignalsCoverTheKillingSignals pins the set the watcher registers.
@@ -78,6 +79,55 @@ func TestHandleFatalSignalRestoresClosesAndExitsInOrder(t *testing.T) {
 	if exitStatus != 143 {
 		t.Fatalf("fatal signal exit status = %d, want 143", exitStatus)
 	}
+}
+
+func TestStopFatalSignalWatcherWaitsForSignalExit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fatal := make(chan os.Signal, 1)
+		fatal <- syscall.SIGTERM
+		allowClose := make(chan struct{})
+		exited := make(chan int, 1)
+		stop := watchFatalSignal(fatal, func() {}, func() error {
+			<-allowClose
+			return nil
+		}, func(status int) { exited <- status })
+		stopped := make(chan struct{})
+		go func() {
+			stop()
+			close(stopped)
+		}()
+
+		// The consumer can reach stop when terminal restore closes its keys.
+		// It must not return while the fatal handler waits for the engine.
+		synctest.Wait()
+		select {
+		case <-stopped:
+			t.Error("watcher stop returned before the fatal handler exited")
+		default:
+		}
+		close(allowClose)
+		<-stopped
+		select {
+		case status := <-exited:
+			if status != 143 {
+				t.Errorf("fatal signal exit status = %d, want 143", status)
+			}
+		default:
+			t.Error("watcher stop returned without a fatal exit")
+		}
+	})
+}
+
+func TestStopFatalSignalWatcherWithoutSignal(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fatal := make(chan os.Signal, 1)
+		handled := false
+		stop := watchFatalSignal(fatal, func() { handled = true }, func() error { return nil }, func(int) {})
+		stop()
+		if handled {
+			t.Error("stopping the watcher without a signal started fatal teardown")
+		}
+	})
 }
 
 // unnumberedSignal is an os.Signal that is not a syscall.Signal, the case the

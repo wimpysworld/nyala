@@ -48,35 +48,37 @@ func TestDetectMultiplexer(t *testing.T) {
 // input at an unraisable 1 MiB and discards busy frames silently), Kitty is
 // never offered, zellij refuses Sixel regardless of capability (its image id
 // collision drops every third full-replacement frame and its bare host
-// re-emission breaks scrolling), screen and herdr stay block only regardless
-// of capability, and the Rio compatibility deny still gates Sixel off.
+// re-emission breaks scrolling), screen and herdr do not use this native Sixel policy, and host
+// support and the Rio compatibility deny can both gate Sixel off.
 func TestMultiplexerBackends(t *testing.T) {
 	cases := []struct {
-		name     string
-		mux      multiplexerKind
-		termID   string
-		sixelDA1 bool
-		geometry bool
-		compat   terminalCompatibility
-		want     []Backend
+		name      string
+		mux       multiplexerKind
+		termID    string
+		sixelDA1  bool
+		geometry  bool
+		hostSixel bool
+		compat    terminalCompatibility
+		want      []Backend
 	}{
-		{"tmux sixel and geometry", muxTmux, "tmux 3.6", true, true, terminalCompatibility{}, []Backend{BackendSixel, BackendBlock}},
-		{"tmux 3.6a passes the version gate", muxTmux, "tmux 3.6a", true, true, terminalCompatibility{}, []Backend{BackendSixel, BackendBlock}},
-		{"tmux 3.7b passes the version gate", muxTmux, "tmux 3.7b", true, true, terminalCompatibility{}, []Backend{BackendSixel, BackendBlock}},
-		{"tmux 3.5a fails the version gate", muxTmux, "tmux 3.5a", true, true, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"tmux 3.4 fails the version gate", muxTmux, "tmux 3.4", true, true, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"tmux unknown identity fails the version gate", muxTmux, "", true, true, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"tmux sixel no geometry", muxTmux, "tmux 3.7b", true, false, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"tmux no sixel", muxTmux, "tmux 3.7b", false, true, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"zellij refuses sixel despite da1 and geometry", muxZellij, "Zellij(0.43.1)", true, true, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"zellij without capability stays block", muxZellij, "Zellij(0.43.1)", false, false, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"screen ignores capability", muxScreen, "", true, true, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"herdr ignores capability", muxHerdr, "", true, true, terminalCompatibility{}, []Backend{BackendBlock}},
-		{"rio deny gates tmux sixel", muxTmux, "tmux 3.7b", true, true, terminalCompatibility{rio04: true}, []Backend{BackendBlock}},
+		{"tmux sixel and geometry", muxTmux, "tmux 3.6", true, true, true, terminalCompatibility{}, []Backend{BackendSixel, BackendBlock}},
+		{"tmux 3.6a passes the version gate", muxTmux, "tmux 3.6a", true, true, true, terminalCompatibility{}, []Backend{BackendSixel, BackendBlock}},
+		{"tmux 3.7b passes the version gate", muxTmux, "tmux 3.7b", true, true, true, terminalCompatibility{}, []Backend{BackendSixel, BackendBlock}},
+		{"tmux 3.5a fails the version gate", muxTmux, "tmux 3.5a", true, true, true, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"tmux 3.4 fails the version gate", muxTmux, "tmux 3.4", true, true, true, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"tmux unknown identity fails the version gate", muxTmux, "", true, true, true, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"tmux sixel no geometry", muxTmux, "tmux 3.7b", true, false, true, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"tmux DA1 but host lacks Sixel", muxTmux, "tmux 3.7b", true, true, false, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"tmux no sixel", muxTmux, "tmux 3.7b", false, true, true, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"zellij refuses sixel despite da1 and geometry", muxZellij, "Zellij(0.43.1)", true, true, true, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"zellij without capability stays block", muxZellij, "Zellij(0.43.1)", false, false, true, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"screen ignores capability", muxScreen, "", true, true, true, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"herdr ignores capability", muxHerdr, "", true, true, true, terminalCompatibility{}, []Backend{BackendBlock}},
+		{"rio deny gates tmux sixel", muxTmux, "tmux 3.7b", true, true, true, terminalCompatibility{rio04: true}, []Backend{BackendBlock}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := multiplexerBackends(c.mux, c.termID, c.sixelDA1, c.geometry, c.compat)
+			got := multiplexerBackends(c.mux, c.termID, c.sixelDA1, c.geometry, c.hostSixel, c.compat)
 			if !slices.Equal(got, c.want) {
 				t.Fatalf("multiplexerBackends = %v, want %v", got, c.want)
 			}
@@ -88,12 +90,16 @@ func TestMultiplexerBackends(t *testing.T) {
 // policy offers Sixel, an explicit --backend=sixel passes the generic
 // validator, so live testing inside tmux and zellij can force the backend.
 func TestMultiplexerSixelPassesForcedBackend(t *testing.T) {
-	enabled := multiplexerBackends(muxTmux, "tmux 3.7b", true, true, terminalCompatibility{})
+	enabled := multiplexerBackends(muxTmux, "tmux 3.7b", true, true, true, terminalCompatibility{})
 	if err := ValidateForcedBackend(ModeSixel, enabled); err != nil {
 		t.Fatalf("ValidateForcedBackend(sixel, %v) = %v, want nil", enabled, err)
 	}
 	if err := ValidateForcedBackend(ModeKitty, enabled); err == nil {
 		t.Fatalf("ValidateForcedBackend(kitty, %v) = nil, want error", enabled)
+	}
+	withoutHost := multiplexerBackends(muxTmux, "tmux 3.7b", true, true, false, terminalCompatibility{})
+	if err := ValidateForcedBackend(ModeSixel, withoutHost); err == nil {
+		t.Fatalf("ValidateForcedBackend(sixel, %v) = nil without Sixel host", withoutHost)
 	}
 }
 
@@ -104,7 +110,7 @@ func TestMultiplexerSixelPassesForcedBackend(t *testing.T) {
 // unsupported-backend error, no zellij-specific error path.
 func TestZellijSixelBlocked(t *testing.T) {
 	st := NewState(80, 24)
-	st.SetEnabled(multiplexerBackends(muxZellij, "Zellij(0.43.1)", true, true, terminalCompatibility{}))
+	st.SetEnabled(multiplexerBackends(muxZellij, "Zellij(0.43.1)", true, true, true, terminalCompatibility{}))
 	if st.Backend != BackendBlock {
 		t.Fatalf("zellij auto start = %v, want %v", st.Backend, BackendBlock)
 	}

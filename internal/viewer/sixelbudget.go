@@ -2,12 +2,12 @@ package viewer
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"image"
+	"image/draw"
 	"io"
+	"math/bits"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -15,45 +15,19 @@ import (
 	"github.com/wimpysworld/nyala/internal/render"
 )
 
-// sixelBudgetDefault is the per-frame Sixel byte budget fallback under tmux
-// where the input-buffer-size raise failed on a 3.6-or-later server. It keeps
-// a safety margin under tmux's default 1 MiB input buffer, whose overflow
-// discards the DCS silently. tmux below 3.6 never reaches it: the version
-// gate (tmuxSixelSupported) refuses Sixel there outright, because the 1 MiB
-// cap is compiled in with no option to raise it and this margin cannot
-// guarantee the cap on large grids.
+// sixelBudgetDefault leaves room below tmux's default 1 MiB input limit.
 const sixelBudgetDefault = 900_000
 
-// sixelBudgetRaised is the per-frame Sixel byte budget under tmux once the
-// input-buffer-size raise succeeded: 15 MiB, riding under the 16 MiB raised
-// buffer. What tmux needs is rate pacing, not byte capping: live tmux 3.7b
-// runs with no per-frame erase sustained ~4 MB full-quality frames
-// indefinitely at the tmuxSixelMinInterval pacing, tmux consuming each
-// frame in about 230 ms. The raised budget keeps tmux 3.7 and later at full
-// quality; tmux 3.6.x takes sixelBudgetLegacyRate instead and the downscale
-// ladder stays the compatibility fallback for older tmux.
+// sixelBudgetRaised caps our per-image budget at 15 MiB. tmux 3.7 and later
+// can sustain full-quality frames at the pacing floor with a large input
+// buffer. Live tmux 3.7b consumed ~4 MB frames in about 230 ms.
 const sixelBudgetRaised = 15 << 20
 
-// sixelBudgetLegacyRate is the per-frame Sixel byte budget under tmux 3.6.x
-// once the input-buffer-size raise succeeded: 1.5 MB, an output-stage rate
-// cap of ~5 MB/s at the 300 ms legacy pacing floor. The raised budget is too
-// generous for 3.6.x: live 3.6a with the ladder settled at factor 2 (2.5 MB
-// frames, 300 ms pacing, ~8.3 MB/s) kept its pty writes fully drained at
-// ~21 ms, yet quitting replayed a queued backlog, and an earlier factor-3
-// run at the 250 ms floor (~8.8 MB/s) burst identically. The bottleneck is
-// 3.6's re-encoded output toward the host terminal, invisible to every
-// write-duration signal, and factor 3 trims only ~10 percent off factor 2 on
-// such content, so the fix is a byte-rate cap, not a deeper ladder factor.
-// The ladder fit loop enforces the cap per frame: the heaviest observed
-// factor-4 encode (~1.45 MB) fits and calm pages pass at factor 1.
+// sixelBudgetLegacyRate bounds the steady byte rate at about 5 MB/s on tmux
+// 3.6.x. Larger frames can build a backlog in the host-facing output
+// scheduler despite short write durations. A single idle redraw can exceed
+// this rate target, but not the input buffer's hard limit.
 const sixelBudgetLegacyRate = 1_500_000
-
-// tmuxInputBufferSize is the value handed to `tmux set -s input-buffer-size`
-// on tmux 3.6 and later: 16 MiB. The raised budgets ride on this raise: a
-// successful set returns sixelBudgetRaised (3.7+) or sixelBudgetLegacyRate
-// (3.6.x) from resolveTmuxSixelBudget, and a failure keeps the
-// sixelBudgetDefault fallback under tmux's default 1 MiB input buffer.
-const tmuxInputBufferSize = "16777216"
 
 // debugTimingEnv is the live timing control the budgeted Sixel path reads at
 // configure time: set to any non-empty value, each budgeted frame reports its
@@ -127,19 +101,21 @@ const sixelProbeStabilityWindow = 3
 // cadence applies.
 const sixelProbeCooldown = 40
 
-// sixelDownscaleLadder is the escalation ladder of source downscale factors
-// the budget loop steps through until the encoded frame fits. Index 0 encodes
-// the source untouched; the last entry is the floor, sent even when it still
-// exceeds the budget.
-var sixelDownscaleLadder = [...]float64{1, 1.5, 2, 3, 4}
+// sixelDownscaleLadder preserves the raster extent while reducing detail.
+// Steps beyond sixelMotionMaxIdx are only for the hard tmux parser limit.
+var sixelDownscaleLadder = [...]float64{1, 1.5, 2, 3, 4, 8, 16, 32}
+
+const sixelMotionMaxIdx = 4
 
 // sixelBudget is the tmux Sixel byte-budget state the viewer keeps across
 // frames. A zero limit disables the machinery, so every non-tmux path pays
 // one integer check. The encode buffer and the two scale destinations are
 // reused across frames on the single draw goroutine.
 type sixelBudget struct {
-	limit int // per-frame byte budget; 0 disables budgeting
-	idx   int // active sixelDownscaleLadder index, remembered across frames
+	limit     int  // motion byte target; 0 disables budgeting
+	hardLimit int  // maximum size of a complete DCS
+	idx       int  // motion ladder index, remembered across frames
+	hasFrame  bool // a Sixel frame fits the current geometry and backend stint
 
 	// minInterval is the resolved tmux Sixel pacing floor, written once at
 	// configure time by resolveTmuxSixelMinInterval (250 ms on tmux 3.7 and
@@ -220,10 +196,8 @@ type sixelBudget struct {
 	small  *image.RGBA  // reused downscale destination
 	fitted *image.RGBA  // reused upscale-back destination
 
-	// lastImg retains the source of the last budgeted emit so the idle
-	// settle path can re-encode it at full quality. Every budgeted frame
-	// replaces it and renderSixelSettle drops it, so a settle cannot re-fire
-	// until a new budgeted frame goes out.
+	// lastImg retains the source of the last emitted frame if it was blurred.
+	// A rejected frame does not replace the image on screen.
 	lastImg image.Image
 
 	// debug arms the per-frame stderr trace of the encoded byte size and the
@@ -298,7 +272,7 @@ func (b *sixelBudget) recordWrite(d time.Duration) {
 		return
 	}
 	b.slowStreak = 0
-	if b.idx < len(sixelDownscaleLadder)-1 {
+	if b.idx < sixelMotionMaxIdx {
 		b.idx++
 		b.sinceProbe = 0
 		b.escalationSkips = sixelSlowWriteStreak
@@ -351,8 +325,9 @@ func (b *sixelBudget) probeWindowStable() bool {
 
 // renderSixelBudgeted encodes one Sixel frame under the byte budget: it
 // encodes at the remembered ladder factor, escalates the factor until the
-// output fits, and sends the smallest encode anyway when even the ladder
-// floor exceeds the budget. A factor above 1 downscales the source and
+// output fits, and skips the frame when even the ladder floor exceeds the
+// hard limit. Extra steps for the hard limit apply only to this frame.
+// A factor above 1 downscales the source and
 // upscales it back to the exact input extent before encoding, so the DCS
 // raster W;H is unchanged and the page keeps covering the full grid; the
 // round trip acts as a blur that shortens the encoded output on noisy
@@ -374,7 +349,7 @@ func (b *sixelBudget) probeWindowStable() bool {
 // later (survival) or crosses the band (retreat), so no trial-length cap is
 // needed. The whole frame lands in the reused scratch buffer first, so the
 // caller sees one write.
-func (s *State) renderSixelBudgeted(img image.Image, w io.Writer) error {
+func (s *State) renderSixelBudgeted(img image.Image, pooled bool, w io.Writer) error {
 	b := &s.sixelBudget
 	if b.resumeIdx > 0 {
 		b.idx = max(b.idx, b.resumeIdx)
@@ -395,25 +370,55 @@ func (s *State) renderSixelBudgeted(img image.Image, w io.Writer) error {
 		b.probePending = true
 	}
 	buf := &b.buf
-	for {
+	idx := b.idx
+	for ; ; idx++ {
 		buf.Reset()
-		if err := s.sixelEnc.Render(render.Frame{Img: s.sixelAtFactor(img, b.idx)}, buf); err != nil {
+		if err := s.sixelEnc.Render(render.Frame{Img: s.sixelAtFactor(img, idx)}, buf); err != nil {
 			return err
 		}
-		if buf.Len() <= b.limit || b.idx == len(sixelDownscaleLadder)-1 {
+		overMotion := buf.Len() > b.limit && idx < sixelMotionMaxIdx
+		if idx == len(sixelDownscaleLadder)-1 || (!overMotion && !b.overHardLimit(buf.Len())) {
 			break
 		}
-		b.idx++
-		b.sinceProbe = 0
-		b.escalationSkips = sixelSlowWriteStreak
+		if overMotion {
+			b.idx = idx + 1
+			b.sinceProbe = 0
+			b.escalationSkips = sixelSlowWriteStreak
+		}
 	}
-	b.lastImg = img
+	if b.overHardLimit(buf.Len()) {
+		return nil
+	}
 	if b.debug {
 		fmt.Fprintf(os.Stderr, "nyala timing: sixel frame_bytes=%d downscale_factor=%g\n",
-			buf.Len(), sixelDownscaleLadder[b.idx])
+			buf.Len(), sixelDownscaleLadder[idx])
 	}
-	_, err := w.Write(buf.Bytes())
-	return err
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		return err
+	}
+	b.hasFrame = true
+	if idx == 0 {
+		b.lastImg = nil
+	} else {
+		// A grid fit reuses scratch pixels, even when the next frame is
+		// rejected. A pooled frame returns its pixels after this render.
+		if pooled || img == s.scratch.dst {
+			bounds := img.Bounds()
+			owned := image.NewRGBA(bounds)
+			draw.Draw(owned, bounds, img, bounds.Min, draw.Src)
+			img = owned
+		}
+		b.lastImg = img
+	}
+	return nil
+}
+
+// invalidateFrame drops the retained image and current presentation state
+// after a resize or backend change.
+func (b *sixelBudget) invalidateFrame() {
+	b.hasFrame = false
+	b.lastImg = nil
+	b.buf.Reset()
 }
 
 // sixelSettleNeeded reports whether the idle settle-to-sharp emit is due:
@@ -421,7 +426,7 @@ func (s *State) renderSixelBudgeted(img image.Image, w io.Writer) error {
 // above 1), and its source is retained for the re-encode.
 func (s *State) sixelSettleNeeded() bool {
 	b := &s.sixelBudget
-	return b.limit > 0 && b.idx > 0 && b.lastImg != nil
+	return b.limit > 0 && b.lastImg != nil
 }
 
 // renderSixelSettle re-encodes the retained last budgeted frame at ladder
@@ -430,12 +435,23 @@ func (s *State) sixelSettleNeeded() bool {
 // the next episode resumes at the sustained factor, the rest of the ladder
 // state resets (probing re-enabled), and the retained source drops, so the
 // settle cannot re-fire until a new budgeted frame goes out. The encode
-// bypasses the byte budget deliberately: the settle is a one-shot
-// full-quality emit inside the pacing gate.
+// bypasses the motion byte target, but skips the redraw if it exceeds the
+// hard limit. The terminal then keeps the existing blurred image.
 func (s *State) renderSixelSettle(w io.Writer) error {
 	b := &s.sixelBudget
 	img := b.lastImg
 	b.lastImg = nil
+	if img == nil {
+		return nil
+	}
+	buf := &b.buf
+	buf.Reset()
+	if err := s.sixelEnc.Render(render.Frame{Img: img}, buf); err != nil {
+		return err
+	}
+	if b.overHardLimit(buf.Len()) {
+		return nil
+	}
 	b.resumeIdx = b.idx
 	b.idx = 0
 	b.sinceProbe = 0
@@ -446,11 +462,6 @@ func (s *State) renderSixelSettle(w io.Writer) error {
 	b.probesExhausted = false
 	b.preProbeIdx = 0
 	b.recentWrites = b.recentWrites[:0]
-	buf := &b.buf
-	buf.Reset()
-	if err := s.sixelEnc.Render(render.Frame{Img: img}, buf); err != nil {
-		return err
-	}
 	if b.debug {
 		fmt.Fprintf(os.Stderr, "nyala timing: sixel settle frame_bytes=%d downscale_factor=1\n", buf.Len())
 	}
@@ -537,38 +548,30 @@ func resolveTmuxSixelMinInterval(termID string) time.Duration {
 	return tmuxSixelMinIntervalLegacy
 }
 
-// resolveTmuxSixelBudget returns the per-frame Sixel byte budget under tmux.
-// On tmux 3.6 and later it raises the input-buffer-size server option to
-// 16 MiB through run. A successful set returns a version-tuned budget: the
-// raised full-quality budget on 3.7 and later, where rate pacing is all
-// tmux's parse and re-encode pipeline needs (live 3.7b evidence: ~4 MB
-// full-quality frames sustained indefinitely at the tmuxSixelMinInterval
-// pacing), and the sixelBudgetLegacyRate cap on 3.6.x, whose output stage
-// toward the host terminal saturates at higher byte rates with no
-// write-duration signal to see it. The raise still runs on 3.6.x: it
-// protects ladder-floor frames that overshoot the cap, which the fit loop
-// sends anyway. Where the set fails the 900 KB fallback keeps a margin under
-// tmux's default 1 MiB input buffer, whose overflow discards the DCS
-// silently; that parser cap is then the tighter bound. The pre-3.6 branch is
-// defensive only: the version gate (tmuxSixelSupported) refuses Sixel there,
-// so configure never arms a budget for it. The option is never restored: it
-// persists for the tmux server lifetime.
-func resolveTmuxSixelBudget(termID string, run func(args ...string) error) int {
-	major, minor, ok := parseTmuxVersion(termID)
-	if !ok || major < 3 || (major == 3 && minor < 6) {
-		return sixelBudgetDefault
+// resolveTmuxSixelBudget reads the existing parser limit without changing
+// the server. An unknown limit cannot safely enable native Sixel.
+func resolveTmuxSixelBudget(termID string, query func(...string) (string, error)) (target, hardLimit int) {
+	out, err := query("show-options", "-sv", "input-buffer-size")
+	size, parseErr := strconv.ParseUint(strings.TrimSpace(out), 10, 32)
+	if err != nil || parseErr != nil || size < 1<<20 {
+		return 0, 0
 	}
-	if run("set", "-s", "input-buffer-size", tmuxInputBufferSize) != nil {
-		return sixelBudgetDefault
+
+	// tmux grows its buffer in powers of two and discards a sequence if
+	// the next allocation exceeds the option. Bound the complete DCS, not
+	// just the image bytes that tmux counts.
+	capacity := uint64(1) << (bits.Len64(size) - 1)
+	hardLimit = int(min(capacity-1, sixelBudgetRaised))
+	if capacity == 1<<20 {
+		hardLimit = sixelBudgetDefault
 	}
-	if major > 3 || minor >= 7 {
-		return sixelBudgetRaised
+	target = hardLimit
+	if resolveTmuxSixelMinInterval(termID) == tmuxSixelMinIntervalLegacy {
+		target = min(target, sixelBudgetLegacyRate)
 	}
-	return sixelBudgetLegacyRate
+	return target, hardLimit
 }
 
-// runTmux runs one tmux client command. The binary runs inside tmux, so the
-// client reaches the hosting server socket through the TMUX environment.
-func runTmux(args ...string) error {
-	return exec.CommandContext(context.Background(), "tmux", args...).Run()
+func (b *sixelBudget) overHardLimit(size int) bool {
+	return b.hardLimit > 0 && size > b.hardLimit
 }

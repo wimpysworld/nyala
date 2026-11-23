@@ -45,22 +45,22 @@ func TestCapabilitySnapshotReportsEnabledNotProbe(t *testing.T) {
 	}{
 		{
 			"probe kitty but multiplexer block",
-			multiplexerBackends(muxZellij, "kitty 0.40.1", true, true, terminalCompatibility{}),
+			multiplexerBackends(muxZellij, "kitty 0.40.1", true, true, true, terminalCompatibility{}),
 			capOff, capOff,
 		},
 		{
 			"tmux 3.7 offers sixel and never kitty",
-			multiplexerBackends(muxTmux, "tmux 3.7a", true, true, terminalCompatibility{}),
+			multiplexerBackends(muxTmux, "tmux 3.7a", true, true, true, terminalCompatibility{}),
 			capOff, capOn,
 		},
 		{
 			"tmux 3.5 blocks sixel",
-			multiplexerBackends(muxTmux, "tmux 3.5a", true, true, terminalCompatibility{}),
+			multiplexerBackends(muxTmux, "tmux 3.5a", true, true, true, terminalCompatibility{}),
 			capOff, capOff,
 		},
 		{
 			"tmux blocks sixel without real geometry",
-			multiplexerBackends(muxTmux, "tmux 3.7a", true, false, terminalCompatibility{}),
+			multiplexerBackends(muxTmux, "tmux 3.7a", true, false, true, terminalCompatibility{}),
 			capOff, capOff,
 		},
 		{

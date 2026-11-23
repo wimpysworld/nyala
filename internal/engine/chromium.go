@@ -233,7 +233,7 @@ type ChromiumEngine struct {
 	// window updates the held state but leaves the single initial start to apply it.
 	screencastStarted bool
 	// Frame plumbing.
-	frames chan render.Frame // emitted frames, created once and closed only on Close
+	frames chan render.Frame // emitted frames, closed on shutdown or failed recovery
 	// rawQ is the bounded, drop-oldest feed from the listener goroutine to the
 	// parallel decode pool.
 	// Reset per session by teardownSession.
@@ -282,9 +282,9 @@ type ChromiumEngine struct {
 
 	// kittyDecode selects the kitty-shm decode mode, guarded by e.mu. When true
 	// and the active backend takes direct payloads, decode workers decode each
-	// PNG screencast frame into a pooled RGBA plane (pendingFrame.release owns
-	// its return) instead of passing the encoded payload through. The viewer
-	// sets it through SetKittyDecode when it selects the shm transport.
+	// screencast frame into an RGBA plane (pendingFrame.release owns
+	// its return) instead of passing the encoded payload through. ConfigureCapture
+	// sets it when the viewer selects the shm transport.
 	kittyDecode bool
 	// decode is the decoded-RGBA test override. Frame-loop and decode-pool tests swap
 	// in a fake so they can drive queued frames without image payloads. It is nil in
@@ -336,12 +336,16 @@ type ChromiumEngine struct {
 
 	// Lifecycle. The supervisor goroutine owns the engine lifetime: it starts
 	// each browser session, watches for a crash or a lost connection, rebuilds
-	// from held state, and closes frames when Close stops it. closing signals a
-	// real shutdown so the supervisor exits instead of rebuilding.
+	// from held state, and closes frames on shutdown or failed recovery. closing
+	// signals a normal shutdown so the supervisor exits instead of rebuilding.
 	closing    chan struct{} // closed by Close to stop the supervisor
 	closeOnce  sync.Once     // guards closing against a double Close
 	supDone    chan struct{} // closed when the supervisor goroutine has exited
 	supervised bool          // true after the supervisor goroutine starts
+	// Both errors are guarded by mu. sessionStreamErr records why a live
+	// screencast session needs recovery. streamErr records a terminal failure.
+	sessionStreamErr error
+	streamErr        error
 	// navigated guards Navigate single-shot. The frame channel is created once by
 	// the first Navigate and replaced only by Navigate; Resize and SetBackend never
 	// touch it, preserving channel stability. A second Navigate is rejected
@@ -494,6 +498,36 @@ func (e *ChromiumEngine) Navigate(url string) error {
 	return nil
 }
 
+// ConfigureCapture updates the backend, grid, cell size, and Kitty transport
+// together. It restarts a live screencast even if the settings are unchanged.
+// After Navigate starts, the supervisor handles restart failures. If recovery
+// fails, StreamError reports the error when Frames closes.
+func (e *ChromiumEngine) ConfigureCapture(backend render.Backend, cols, rows, cellW, cellH int, kittySHM bool) error {
+	e.screencastCtl.Lock()
+	defer e.screencastCtl.Unlock()
+	e.mu.Lock()
+	if channelClosed(e.closing) {
+		e.mu.Unlock()
+		return context.Canceled
+	}
+	e.backend = backend
+	e.cols, e.rows = cols, rows
+	e.cellW, e.cellH = cellW, cellH
+	e.kittyDecode = kittySHM
+	streaming := e.screencastStartedLocked()
+	navigated := e.navigated
+	e.mu.Unlock()
+	if streaming {
+		err := e.restartStreamLocked()
+		// The first screencast can start before Navigate starts the supervisor.
+		// The supervisor will observe cancellation when it starts.
+		if !navigated {
+			return err
+		}
+	}
+	return nil
+}
+
 // Resize sets the terminal grid in cells and derives the capture size from the
 // resolved cell px and the active backend. When the engine is already streaming
 // it restarts the stream at the new capture size, so frames arrive at the new
@@ -523,22 +557,27 @@ func (e *ChromiumEngine) screencastStartedLocked() bool {
 	return e.streamingLocked() && e.screencastStarted
 }
 
-// Frames returns the emitted-frame channel. The channel is stable across Resize
-// and SetBackend (which restart the stream but keep the same channel) and is
-// replaced only by Navigate, which is single-shot. A consumer
-// that caches the handle keeps reading across a resize, a backend switch, and a
-// crash rebuild.
+// Frames returns the emitted-frame channel. A consumer that caches the handle
+// can keep reading across capture changes and browser recovery. Navigate creates
+// the channel once.
 func (e *ChromiumEngine) Frames() <-chan render.Frame {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.frames
 }
 
+// StreamError returns the terminal recovery failure after Frames closes, or nil
+// on normal shutdown.
+func (e *ChromiumEngine) StreamError() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.streamErr
+}
+
 // SetBackend switches the active backend and recomputes the capture size, since
 // the block backend captures a sub-cell grid and the graphics backends capture a
 // cell-pixel bitmap. When the engine is already streaming it restarts the stream
 // at the new capture size, so the next frames arrive sized for the new backend.
-// The viewer push consumer calls it through its local interface on a backend cycle.
 func (e *ChromiumEngine) SetBackend(backend render.Backend) {
 	e.screencastCtl.Lock()
 	defer e.screencastCtl.Unlock()
@@ -717,10 +756,12 @@ func (e *ChromiumEngine) Close() (err error) {
 	closing := e.closing
 	supDone := e.supDone
 	supervised := e.supervised
-	e.mu.Unlock()
+	// Keep the shutdown signal and ownership check together. finishStartup also
+	// takes mu before it hands teardown to the supervisor.
 	if closing != nil {
 		e.closeOnce.Do(func() { close(closing) })
 	}
+	e.mu.Unlock()
 	if closing == nil || supDone == nil { // Navigate was never called or startup failed.
 		e.teardownSession()
 		return nil

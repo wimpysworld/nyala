@@ -38,7 +38,7 @@ func (w *liveKittySHMWriter) Create(id, size int) (kittySHMObject, error) {
 // kittySHMLive reports whether live Kitty frames should travel over shared
 // memory.
 func (s *State) kittySHMLive() bool {
-	return s.kittyTransport == KittyTransportSHM
+	return !s.kittyTmux && s.kittyTransport == KittyTransportSHM
 }
 
 // takeKittySHMID returns the image id of the frame just rendered as an shm
@@ -61,29 +61,41 @@ func (s *State) closeKittySHM() {
 	s.kittySHM = nil
 }
 
-// encodeKittyPNG transmits a retained CDP PNG unchanged, then deletes the prior
-// double-buffer image. The placement carries the c=/r= grid keys at the page
-// grid (engineRows of the terminal rows, the same reduced grid the engine
+// encodeKittyPNG transmits a retained CDP PNG unchanged. Herdr reuses the image
+// and placement IDs so it can reuse its host transport. Other direct sessions
+// delete the prior double-buffer image. The placement carries the c=/r= keys at
+// the page grid (engineRows of the terminal rows, the same reduced grid the engine
 // captures at), so the terminal scales the image to the page cell area and
 // never over the bottom bar row: after a mid-session zoom the engine delivers
 // the complete viewport at the stale launch paint density, and the grid fit
 // keeps it spanning the page (a matching frame scales 1:1).
 func (s *State) encodeKittyPNG(data string, w io.Writer, belowText bool) error {
-	next := nextKittyID(s.kittyID)
 	if s.kittyEnc == nil {
 		s.kittyEnc = &kitty.LiveEncoder{}
 	}
+	if s.kittyTmux {
+		return s.encodeTmuxKittyPNG(data, w)
+	}
+	next := nextKittyID(s.kittyID)
 	rows := engineRows(s.Rows)
 	var err error
-	if belowText {
+	switch {
+	case s.mux == muxHerdr:
+		next = 1
+		z := 0
+		if belowText {
+			z = kittyFPSPageZ
+		}
+		err = s.kittyEnc.EncodePNGPlacement(data, next, 1, z, s.Cols, rows, w)
+	case belowText:
 		err = s.kittyEnc.EncodePNGIDAtZ(data, next, kittyFPSPageZ, s.Cols, rows, w)
-	} else {
+	default:
 		err = s.kittyEnc.EncodePNGID(data, next, s.Cols, rows, w)
 	}
 	if err != nil {
 		return err
 	}
-	if s.kittyID != 0 {
+	if s.kittyID != 0 && s.kittyID != next {
 		if _, err := io.WriteString(w, kitty.DeleteImage(s.kittyID)); err != nil {
 			return err
 		}
@@ -180,18 +192,26 @@ func nextKittyID(prev int) int {
 	return 1
 }
 
-// resetKitty deletes both double-buffer image ids and frees their data, then
-// clears the tracked id so a later return to the kitty backend rebuilds from a
-// clean slate with id 1. It also closes the shm writer, unlinking any
-// shared-memory objects the terminal never consumed. It is a no-op when no
-// kitty image has been placed and no shm object exists. The stream session
-// calls it when the backend cycle leaves kitty.
+// resetKitty deletes the image IDs used by the current route and frees their
+// data, then clears the tracked ID so Kitty can restart with ID 1. It also
+// closes the shm writer, unlinking any shared-memory objects the terminal never
+// consumed. It does nothing if no image exists and no shm object remains.
+// The stream session calls it on resize and when the backend cycle leaves Kitty.
 func (s *State) resetKitty(w io.Writer) error {
 	s.closeKittySHM()
+	if s.kittyTmux {
+		return s.resetTmuxKitty(w)
+	}
 	if s.kittyID == 0 {
 		return nil
 	}
-	if _, err := io.WriteString(w, kitty.DeleteImage(1)+kitty.DeleteImage(2)); err != nil {
+	var deletes string
+	if s.mux == muxHerdr {
+		deletes = kitty.DeleteImage(s.kittyID)
+	} else {
+		deletes = kitty.DeleteImage(1) + kitty.DeleteImage(2)
+	}
+	if _, err := io.WriteString(w, deletes); err != nil {
 		return err
 	}
 	s.kittyID = 0

@@ -311,17 +311,33 @@ That Sixel spread is not new, and it widens across more terminals. In an earlier
 
 #### Multiplexers
 
-Host mode means the Block glyph mode follows the outer terminal. Nyala never offers the Kitty backend under a multiplexer.
+Block works in every multiplexer below. Its glyph mode follows the outer terminal. Nyala uses Block when it cannot verify graphics support.
 
 | Multiplexer | Block | Sixel | Kitty | Notes |
 |---|---|---|---|---|
-| tmux | Host mode | Yes | No | Needs tmux 3.6+ built with `--enable-sixel` (3.6b+ recommended). Bottom row reserved; Sixel auto-selected. |
+| tmux | Host mode | Automatic when verified | Experimental opt-in | Sixel needs tmux 3.6+ built with `--enable-sixel` (3.6b+ recommended) and Sixel support on every client that can view the pane. |
 | zellij | Host mode | No | No | Sixel blocked by upstream zellij defects. |
 | GNU screen | Host mode | No | No | No graphics passthrough. |
-| herdr | Host mode | No | No | Consumes graphics sequences. |
+| Herdr | Host mode | No | Direct PNG when verified | Nyala needs a positive Kitty graphics reply and valid cell pixel geometry. |
 
-> [!WARNING]
-> zellij and herdr consume graphics sequences, so you get Block only. Run Nyala outside the multiplexer for Kitty or Sixel output.
+Nyala reads tmux settings without changing them. The graphics checks run at startup. Restart Nyala after reattaching or changing clients.
+
+##### Experimental Kitty graphics in tmux
+
+Prefer native Sixel when Nyala detects it, or use Block. To try Kitty passthrough on tmux 3.6 or later, use an outer terminal that supports Kitty Unicode placeholders. The opt-in is for passthrough, including on tmux 3.8, not native Kitty graphics in development versions of tmux.
+
+Run these commands inside the intended pane:
+
+```sh
+tmux set-option -p -t "$TMUX_PANE" allow-passthrough on
+NYALA_TMUX_KITTY=1 nyala --backend kitty
+```
+
+`NYALA_TMUX_KITTY=1` tells Nyala that the outer terminal supports Kitty Unicode placeholders. Nyala checks that it runs in the target pane, with valid cell pixel geometry and one attached client that can view the pane. That client needs UTF-8 and truecolour. The pane must have `allow-passthrough on`, not `all`, and the server must have an `input-buffer-size` of at least 8192 bytes. The Kitty transport uses direct PNG, not shared memory.
+
+Nested tmux and concurrent Kitty graphics applications are outside this experimental setup. If a check fails, `--backend kitty` reports that Kitty is unavailable. Omit `--backend kitty` to let Nyala choose native Sixel or Block.
+
+The Kitty page area can use up to 297 columns and 297 rows. If the pane is larger, increase the terminal font size, use a smaller pane, or start Nyala with `--backend block`.
 
 ## Development
 

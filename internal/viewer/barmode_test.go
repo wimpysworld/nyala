@@ -167,12 +167,12 @@ func modeSession(t *testing.T, eng streamTestEngine) (*streamSession, *State) {
 func TestEditModeLifecycle(t *testing.T) {
 	var opened []string
 	var sent []string
-	var backends []string
+	var captureBackends []string
 	s, _ := modeSession(t, streamTestEngine{
-		currentURL: "https://example.org/",
-		openURL:    func(u string) { opened = append(opened, u) },
-		sendKey:    func(code string) { sent = append(sent, code) },
-		setBackend: func(name string) { backends = append(backends, name) },
+		currentURL:         "https://example.org/",
+		openURL:            func(u string) { opened = append(opened, u) },
+		sendKey:            func(code string) { sent = append(sent, code) },
+		onConfigureCapture: func(name string) { captureBackends = append(captureBackends, name) },
 	})
 
 	if quit := s.handleKey(keyEvent{b: keyCtrlL}); quit {
@@ -196,8 +196,8 @@ func TestEditModeLifecycle(t *testing.T) {
 
 	// A page scroll key still belongs to the editor and forwards nothing.
 	s.handleKey(keyEvent{scroll: ScrollUp})
-	if len(backends) != 0 || len(sent) != 0 {
-		t.Fatalf("edit mode leaked input: backends %v, keys %v", backends, sent)
+	if len(captureBackends) != 0 || len(sent) != 0 {
+		t.Fatalf("edit mode leaked input: ConfigureCapture calls %v, keys %v", captureBackends, sent)
 	}
 
 	// Retype a schemeless host and commit: the rule prepends https://.
@@ -231,7 +231,7 @@ func TestPaletteToggleKeepsBarModeOwnership(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			eng := streamTestEngine{currentURL: "https://example.org/"}
 			s, st := modeSession(t, eng)
-			s.ctl = &control{eng: eng, work: make(chan func(Engine), 1)}
+			s.ctl = &control{pending: make(chan captureConfig, 1)}
 			st.Backend = BackendBlock
 			st.Colour = ColourXTerm256
 			st.paletteQueryOK = true
