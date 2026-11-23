@@ -2,6 +2,7 @@ package viewer
 
 import (
 	"errors"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -65,12 +66,16 @@ func TestInspectTmuxSession(t *testing.T) {
 }
 
 func TestTmuxSocket(t *testing.T) {
+	socket, err := filepath.Abs("tmux")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for input, want := range map[string]string{
-		"/tmp/tmux,other,42,0": "/tmp/tmux,other",
-		"/tmp/tmux,42,0":       "/tmp/tmux",
-		"/tmp/tmux,,0":         "",
-		"/tmp/tmux,42,z":       "",
-		"/tmp/tmux,42":         "",
+		socket + ",other,42,0": socket + ",other",
+		socket + ",42,0":       socket,
+		socket + ",,0":         "",
+		socket + ",42,z":       "",
+		socket + ",42":         "",
 		"tmux,42,0":            "",
 	} {
 		if got := tmuxSocket(input); got != want {
