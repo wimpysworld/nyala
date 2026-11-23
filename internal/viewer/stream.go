@@ -299,7 +299,7 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	winch, stopResize := notifyResize(fd)
 	defer stopResize()
 
-	// done stops the control and signal goroutines when Stream returns.
+	// done stops the control goroutine when Stream returns.
 	done := make(chan struct{})
 	defer close(done)
 
@@ -351,14 +351,10 @@ func Stream(eng Engine, url string, tty *os.File, colourFlag, mode, blocks, kitt
 	// so the drawn-state read never races this goroutine's start.
 	fatal := make(chan os.Signal, 1)
 	signal.Notify(fatal, fatalSignals...)
-	defer signal.Stop(fatal)
-	go func() {
-		select {
-		case sig := <-fatal:
-			handleFatalSignal(sig, restoreTerminal, eng.Close, os.Exit)
-		case <-done:
-		}
-	}()
+	stopFatal := watchFatalSignal(fatal, restoreTerminal, eng.Close, os.Exit)
+	// Restoring the terminal stops the key reader. Join the watcher so a
+	// closed key channel cannot let Stream return before the fatal exit.
+	defer stopFatal()
 	navigated := make(chan error, 1)
 	go func() {
 		navigated <- eng.Navigate(url)
