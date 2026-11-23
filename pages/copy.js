@@ -24,61 +24,49 @@ document.querySelectorAll("button[data-copy]").forEach((button) => {
 
 // Hero terminal animation: allow pausing and respect prefers-reduced-motion.
 (() => {
-  const img = document.getElementById("hero-gif");
+  const video = document.getElementById("hero-video");
   const toggle = document.getElementById("hero-motion-toggle");
-  if (!img || !toggle) return;
+  if (!video || !toggle) return;
 
-  const animatedSrc = img.getAttribute("src");
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-  let paused = false;
 
-  function snapshotFrame() {
-    if (!img.naturalWidth) return "";
-    try {
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return "";
-      ctx.drawImage(img, 0, 0);
-      return canvas.toDataURL("image/png");
-    } catch {
-      return "";
-    }
-  }
-
-  function setPaused(next) {
-    if (next) {
-      const stillSrc = snapshotFrame();
-      if (!stillSrc) return;
-      img.src = stillSrc;
-    } else {
-      img.src = animatedSrc;
-    }
-    paused = next;
+  function syncButton() {
+    const paused = video.paused;
     toggle.setAttribute("aria-pressed", String(paused));
     toggle.textContent = paused ? "Play animation" : "Pause animation";
   }
 
-  function init() {
-    if (!snapshotFrame()) return;
-    toggle.hidden = false;
-    if (reducedMotion.matches) setPaused(true);
+  function pauseVideo() {
+    video.pause();
+    syncButton();
   }
 
-  if (img.complete && img.naturalWidth > 0) init();
-  else img.addEventListener("load", init, { once: true });
+  function playVideo() {
+    const result = video.play();
+    if (result && typeof result.catch === "function") {
+      result.catch(() => {});
+    }
+    syncButton();
+  }
+
+  toggle.hidden = false;
+  video.addEventListener("play", syncButton);
+  video.addEventListener("pause", syncButton);
+
+  if (reducedMotion.matches) {
+    video.removeAttribute("autoplay");
+    pauseVideo();
+  } else {
+    syncButton();
+  }
 
   toggle.addEventListener("click", () => {
-    if (paused) {
-      img.addEventListener("load", () => {}, { once: true });
-      setPaused(false);
-    } else {
-      setPaused(true);
-    }
+    if (video.paused) playVideo();
+    else pauseVideo();
   });
+
   reducedMotion.addEventListener("change", (event) => {
-    if (event.matches && !paused) setPaused(true);
-    else if (!event.matches && paused) setPaused(false);
+    if (event.matches) pauseVideo();
+    else playVideo();
   });
 })();

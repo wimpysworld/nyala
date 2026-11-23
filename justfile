@@ -329,18 +329,45 @@ kitty-transport-bench:
     fi
     NYALA_KITTY_BENCH=1 go test -tags kittybench -run '^TestKittyTransportBenchmark$' -v -count=1 ./internal/viewer/
 
-# Record the demo GIF from nyala.tape. VHS records the Block backend only: its
-# xterm.js emulator cannot show Kitty or Sixel output. The nixpkgs vhs package
-# bundles the ttyd and ffmpeg it needs.
-vhs: build
+# Record the demo MP4, poster PNG, and README GIF from nyala.tape using ntrecord.
+record: build
     #!/usr/bin/env bash
     set -euo pipefail
 
-    command -v vhs >/dev/null || {
-        printf '%s\n' 'just vhs: vhs not found; the nixpkgs package bundles ttyd and ffmpeg' >&2
-        exit 1
-    }
+    for tool in ntrecord ffmpeg gifski; do
+        command -v "$tool" >/dev/null || {
+            printf "just record: %s not found; enter the Nix shell with 'nix develop'\n" "$tool" >&2
+            exit 1
+        }
+    done
 
-    mkdir -p assets
+    if [ "${FENCE_SANDBOX:-0}" = "1" ] \
+        && [ "${FENCE_DEBUG_CHROMIUM_NO_SANDBOX:-0}" != "1" ] \
+        && [ "${NYALA_DEBUG_CHROMIUM_NO_SANDBOX:-0}" != "1" ]; then
+        export FENCE_DEBUG_CHROMIUM_NO_SANDBOX=1
+        printf '%s\n' 'FENCE_SANDBOX=1 detected, setting FENCE_DEBUG_CHROMIUM_NO_SANDBOX=1 for this run.' >&2
+    fi
+
+    tmp_dir="$(mktemp -d)"
+    cleanup() {
+        if [ -n "${tmp_dir:-}" ] && [ -d "$tmp_dir" ]; then
+            rm -rf -- "$tmp_dir"
+        fi
+    }
+    trap cleanup EXIT
+
+    mkdir -p assets pages/images
+
     # The tape runs ./nyala, so it records the binary just built in this worktree.
-    vhs nyala.tape
+    ntrecord nyala.tape
+
+    # Remux MP4 in place with faststart so browsers begin playback immediately.
+    ffmpeg -y -v error -i pages/images/nyala.mp4 -c copy -movflags +faststart "$tmp_dir/nyala.mp4"
+    mv "$tmp_dir/nyala.mp4" pages/images/nyala.mp4
+
+    # Extract a clean early Kitty frame as the video poster.
+    ffmpeg -y -v error -ss 0.5 -i pages/images/nyala.mp4 -frames:v 1 -update 1 pages/images/nyala-poster.png
+
+    # Encode a high-quality README GIF comfortably under GitHub's 10 MB limit.
+    ffmpeg -y -v error -i pages/images/nyala.mp4 -vf "fps=12,scale=960:-1:flags=lanczos" "$tmp_dir/frame%04d.png"
+    gifski --fps 12 --width 960 --quality 75 --quiet --output assets/nyala.gif "$tmp_dir"/frame*.png

@@ -13,7 +13,7 @@ Nyala renders real web pages, HTML5, CSS and JavaScript, in your terminal. It dr
 > **Young, but it works.** `nyala <url>` drives headless Chromium, streams a live screencast over the Chrome DevTools Protocol, and renders with the crisp text overlay on all three backends. Expect rough edges and breaking changes before 1.0.
 
 <p align="center">
-  <img src="assets/nyala.gif" alt="Nyala browsing bbc.co.uk in a terminal, cycling colour modes">
+  <img src="assets/nyala.gif" alt="Nyala browsing bbc.co.uk in a terminal, switching between Kitty graphics and Block mode">
 </p>
 
 ## Why Nyala?
@@ -345,7 +345,7 @@ The Nix development shell, Nix package, and `go.mod` use Go 1.26.11. CI retains 
 
 Enter the pinned environment with `nix develop`, then run `just` to list the recipes. The three standard quality commands are `just build`, `just test`, and `just lint`. All three must pass after a code change.
 
-`just build` writes Go executables to `bin/`, then runs the project-owned `just/project/build.sh`. This script overwrites the stripped root `nyala` binary that `run`, `fps`, `vhs`, and `nyala.tape` use.
+`just build` writes Go executables to `bin/`, then runs the project-owned `just/project/build.sh`. This script overwrites the stripped root `nyala` binary that `run`, `fps`, `record`, and `nyala.tape` use.
 
 `just test` runs full standalone vet, then the normal test suite once with console coverage. The managed test command sets `-cover -covermode=atomic` without changing inherited `GOFLAGS` or other commands. Tests no longer write a coverage profile, move a temporary report, or print a per-function report.
 

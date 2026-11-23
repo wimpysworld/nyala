@@ -1,63 +1,59 @@
-# Nyala demo tape. Record with `just vhs`.
+# Nyala demo tape. Record with `just record`.
 #
-# VHS records through ttyd and xterm.js, not through your terminal. That stack
-# has no Kitty graphics parser, and VHS captures only the text and cursor
-# canvases, so the Sixel image layer never reaches the GIF. Block is the one
-# backend VHS can record.
-#
-# Two rules follow from that:
-#
-#   1. Force `--backend block`. With its image addon loaded, xterm.js answers
-#      DA1 with the Sixel attribute, so auto-detection would pick Sixel and
-#      record a page with no pixels in it.
-#   2. Never add `Alt+R`. Cycling backends switches to Sixel and the page
-#      vanishes from the recording.
-#
-# `--blocks quadrant` is deliberate too: xterm.js does not custom-draw the
-# sextant range, so sextants would record as tofu.
+# ntrecord renders through libghostty-vt, so it captures Kitty graphics and
+# Block Unicode output in the same session.
 
-Output assets/nyala.gif
+Output pages/images/nyala.mp4
 
-Require ./nyala
-
-Set Shell "fish"
-Set FontSize 14
+Set Shell "bash"
 Set Width 1280
 Set Height 720
-Set Padding 8
-Set WindowBar ColorfulRight
-Set WindowBarSize 32
-Set TypingSpeed 27ms
-Set Theme catppuccin-mocha
+Set FontSize 16
+Set Framerate 30
 
-# Start at the coarsest settings: half blocks, 256 colours.
-Type "./nyala --backend block --blocks half --color=256 https://www.bbc.co.uk" Sleep 250ms Enter
-Sleep 8s
+Hide
+Type "unset TMUX STY ZELLIJ HERDR_ENV HERDR_PANE_ID && ./nyala https://www.bbc.co.uk --backend kitty --kitty-transport direct --private"
+Enter
+Wait+Screen@30s /RGB/
+Sleep 7s
+Tab
+Sleep 200ms
+Tab
+Sleep 200ms
+Tab
+Sleep 200ms
+Enter
+Sleep 1.5s
+Show
 
-# Scroll the page, then return to the top.
+# Phase 1: Kitty at top
+Sleep 1.5s
+
+# Phase 2: Scroll down in Kitty
+Down@120ms 14
+Sleep 0.6s
 PageDown
-Sleep 2s
+Sleep 0.8s
 PageDown
-Sleep 2s
-PageUp 2
-Sleep 2s
+Sleep 1.0s
 
-# Alt+C cycles True Colour, 256, Monochrome. From 256 that means passing
-# through monochrome to reach truecolour, so move through it quickly.
-Alt+C
-Alt+C
-Sleep 2s
+# Phase 3: Switch live to Block at scrolled-down position
+Alt+r
+Sleep 1.8s
 
-# The same scroll again, now in truecolour.
-PageDown
-Sleep 2s
-PageDown
-Sleep 2s
-PageUp 2
-Sleep 2s
+# Phase 4: Scroll back up to top in Block
+PageUp
+Sleep 0.8s
+PageUp
+Sleep 0.6s
+Up@100ms 24
+Home
+Sleep 1.5s
 
-# Alt+B cycles Half, Quadrant, Sextant. Quadrant doubles the vertical
-# resolution of half blocks. The tape stops here: the cycle skips sextant on a
-# terminal that is not on the self-drawing allow-list, and ttyd is not on it.
-Alt+B
-Sleep 4s
+# Phase 5: Switch live back to Kitty at top
+Alt+r
+Sleep 2.2s
+
+Hide
+Ctrl+Q
+Sleep 1s

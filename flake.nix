@@ -44,6 +44,7 @@
         let
           pkgs = pkgsFor system;
           go = goFor pkgs;
+          ntrecord = import ./nix/ntrecord.nix { inherit pkgs; };
         in
         {
           default = pkgs.mkShell {
@@ -51,12 +52,15 @@
               (with pkgs; [
                 actionlint
                 cosign
+                ffmpeg-headless
                 gh
+                gifski
                 just
                 libsixel
                 pkg-config
                 poppler-utils
               ])
+              ++ [ ntrecord ]
               # Stage 3 runtime browser; Linux-only (nixpkgs chromium is
               # platforms = lib.platforms.linux).
               ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.chromium ]

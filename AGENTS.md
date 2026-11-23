@@ -64,7 +64,7 @@ then `NYALA_BROWSER`, `CHROME_PATH`, and `PATH`.
 - Keep `-cover -covermode=atomic` scoped to the managed `go test` invocation.
   Preserve inherited `GOFLAGS`. Coverage is console-only, with no profile or function report.
 - `just build` builds all Go packages and writes executables to `bin/`.
-  Then `just/project/build.sh` overwrites the stripped root `nyala` binary that `run`, `fps`, and `vhs` use.
+  Then `just/project/build.sh` overwrites the stripped root `nyala` binary that `run`, `fps`, and `record` use.
 - Keep project-specific quality steps in `just/project/build.sh` and `just/project/lint.sh`.
   The lint script receives `check` or `correct` from the project root.
 - Keep browser, diagnostic, and focused integration commands explicit and separate from the normal test suite.
