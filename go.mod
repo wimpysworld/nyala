@@ -6,7 +6,7 @@ require (
 	github.com/agnivade/levenshtein v1.2.2
 	github.com/alecthomas/kong v1.17.0
 	github.com/charmbracelet/colorprofile v0.4.3
-	github.com/charmbracelet/x/ansi v0.11.9
+	github.com/charmbracelet/x/ansi v0.11.10
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/charmbracelet/x/vt v0.1.0
 	github.com/charmbracelet/x/windows v0.2.2
@@ -16,8 +16,8 @@ require (
 	github.com/ebitengine/purego v0.11.3
 	github.com/emmansun/base64 v0.11.0
 	github.com/ericpauley/go-quantize v0.0.0-20200331213906-ae555eb2afa4
-	github.com/gen2brain/jpegn v0.6.2
-	github.com/klauspost/compress v1.20.4
+	github.com/gen2brain/jpegn v0.7.1
+	github.com/klauspost/compress v1.20.5
 	github.com/lucasb-eyer/go-colorful v1.4.1
 	github.com/mattn/go-runewidth v0.0.31
 	github.com/mattn/go-sixel v0.0.14
@@ -26,7 +26,7 @@ require (
 	github.com/soniakeys/quant v1.0.0
 	github.com/woozymasta/png v1.2.0
 	golang.org/x/sys v0.50.0
-	golang.org/x/tools v0.52.0
+	golang.org/x/tools v0.53.0
 	gonum.org/v1/plot v0.17.0
 )
 
