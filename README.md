@@ -25,7 +25,7 @@ Nyala renders real web pages, HTML5, CSS and JavaScript, in your terminal. It dr
 
 <!-- tailor:social-demo:start -->
 <p align="center">
-  <img src="pages/demo.webp" alt="Nyala demo">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/wimpysworld/nyala/social-assets/demo-dark.svg"><img src="https://raw.githubusercontent.com/wimpysworld/nyala/social-assets/demo-light.svg" alt="Nyala demo"></picture>
 </p>
 <!-- tailor:social-demo:end -->
 
