@@ -23,9 +23,11 @@ Nyala renders real web pages, HTML5, CSS and JavaScript, in your terminal. It dr
 > [!IMPORTANT]
 > **Young, but it works.** `nyala <url>` drives headless Chromium, streams a live screencast over the Chrome DevTools Protocol, and renders with the crisp text overlay on all three backends. Expect rough edges and breaking changes before 1.0.
 
+<!-- tailor:social-demo:start -->
 <p align="center">
-  <img src="assets/nyala.gif" alt="Nyala browsing bbc.co.uk in a terminal, switching between Kitty graphics and Block mode">
+  <img src="pages/demo.webp" alt="Nyala demo">
 </p>
+<!-- tailor:social-demo:end -->
 
 ## Features
 

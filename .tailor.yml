@@ -187,7 +187,7 @@ social:
       - brew
       - scoop
       - nix
-    demo: false
+    demo: true
     stats: true
     star_history:
       enabled: true
