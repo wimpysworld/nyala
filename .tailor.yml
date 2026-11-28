@@ -1,9 +1,10 @@
-# Refitted by tailor on 2026-09-24
+# Refitted by tailor on 2026-11-28
 license: BlueOak-1.0.0
 
 languages:
   go: true
 
+# Model Context Protocol integrations are opt-in.
 mcp:
   playwright: true
 
@@ -137,6 +138,11 @@ ruleset:
             alerts_threshold: errors
             security_alerts_threshold: high_or_higher
 
+# Pages is opt-in. Omission or enabled: false leaves Pages unmanaged.
+# generator: static (default) creates a starter in an empty path. Hugo and Jekyll need an existing site.
+# path: project-relative source directory, default pages.
+# branch: omit to use the current repository default branch.
+# cname: omit to preserve the domain, use "" to clear it, or set a domain.
 pages:
   enabled: true
   generator: static
@@ -150,6 +156,49 @@ pages:
     discord: https://discord.com/invite/vUsydfP
     podcast: https://linuxmatters.sh
     github_sponsors: https://github.com/sponsors/flexiondotorg
+  # branch: main
+  # cname: www.example.com
+  # Static only. Omit links to leave the page unchanged; {} clears its marked links.
+  # Use full HTTPS URLs, or a bare address for email. Empty values add no icon.
+  # links:
+  #   website: https://example.com
+  #   email: hello@example.com
+
+# Social assets are opt-in. Omission or enabled: false leaves social assets unmanaged.
+social:
+  enabled: true
+  theme: dark
+  og:
+    output: pages/og.png
+    include_preview: true
+    image: pages/images/nyala-poster.png
+  readme:
+    header: true
+    preferred_links:
+      - bluesky
+      - mastodon
+      - linkedin
+    community: auto
+    packages:
+      - apt
+      - rpm
+      - pkg
+      - apk
+      - brew
+      - scoop
+      - nix
+    demo: false
+    stats: true
+    star_history:
+      enabled: true
+      min_stars: 25
+      min_days: 30
+    sponsors: auto
+    contributors: true
+    footer: true
+  live:
+    branch: social-assets
+    schedule: "0 4 * * *"
 
 labels:
   - name: bug
@@ -294,4 +343,7 @@ swatches:
     alteration: first-fit
 
   - path: .github/workflows/tailor-wiki.yml
+    alteration: always
+
+  - path: .github/workflows/tailor-vendor-hash.yml
     alteration: always

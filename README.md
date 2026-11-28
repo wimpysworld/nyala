@@ -1,11 +1,22 @@
-<h1 align="center">
-  <img src="assets/nyala-logo.png" width="256" height="256" alt="Nyala">
-  <br />
-  Nyala
-</h1>
+<!-- tailor:social-header:start -->
+<p align="center">
+  <a href="https://nyala.wimpys.world"><picture><source media="(prefers-color-scheme: dark)" srcset="pages/social/hero-dark.svg"><img src="pages/social/hero-light.svg" alt="Nyala"></picture></a>
+</p>
+<!-- tailor:social-header:end -->
 
-<p align="center"><b>The fastest, bestest, most versatile web browser you never knew you needed 🦌</b><br /><i>...for your terminal.</i></p>
-<p align="center">Made with 💝 for 🐧🍏</p>
+<!-- tailor:social-links:start -->
+<p align="center">
+  <a href="https://bsky.app/profile/wimpys.world"><picture><source media="(prefers-color-scheme: dark)" srcset="pages/social/link-bluesky-dark.svg"><img src="pages/social/link-bluesky-light.svg" alt="Bluesky"></picture></a>
+  <a href="https://wimpysworld.social/@martin"><picture><source media="(prefers-color-scheme: dark)" srcset="pages/social/link-mastodon-dark.svg"><img src="pages/social/link-mastodon-light.svg" alt="Mastodon"></picture></a>
+  <a href="https://linkedin.com/in/martinwimpress"><picture><source media="(prefers-color-scheme: dark)" srcset="pages/social/link-linkedin-dark.svg"><img src="pages/social/link-linkedin-light.svg" alt="LinkedIn"></picture></a>
+</p>
+<!-- tailor:social-links:end -->
+
+<!-- tailor:social-community:start -->
+<p align="center">
+  <a href="https://discord.com/invite/vUsydfP"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/wimpysworld/nyala/social-assets/community-dark.svg"><img src="https://raw.githubusercontent.com/wimpysworld/nyala/social-assets/community-light.svg" alt="Discord community"></picture></a>
+</p>
+<!-- tailor:social-community:end -->
 
 Nyala renders real web pages, HTML5, CSS and JavaScript, in your terminal. It drives headless Chromium over the Chrome DevTools Protocol and composites a crisp Unicode text layer over a block bitmap, so text stays sharp instead of fuzzy. It runs wherever a TTY runs, down to a bare Linux console under [KMSCON](https://github.com/kmscon/kmscon), with no display server.
 
@@ -16,29 +27,41 @@ Nyala renders real web pages, HTML5, CSS and JavaScript, in your terminal. It dr
   <img src="assets/nyala.gif" alt="Nyala browsing bbc.co.uk in a terminal, switching between Kitty graphics and Block mode">
 </p>
 
-## Why Nyala?
+## Features
 
-Agentic development is moving to a terminal-first workflow. I started using [herdr](https://herdr.dev/) to organise my projects into "spaces", each with tabs for a coding agent, [lazygit](https://github.com/jesseduffield/lazygit) and [hunk](https://www.hunk.dev/), [gh dash](https://gh-dash.dev), the [fresh editor](https://getfresh.dev/), and [frogmouth](https://github.com/Textualize/frogmouth). Each space puts all my project tooling and reference at my fingertips, with one exception: a browser for project research and reference. So I made Nyala to fill that gap, taking inspiration from [browsh](https://www.brow.sh) and [carbonyl](https://github.com/fathyb/carbonyl). herdr is my preferred multiplexer for its agent integration, but [tmux](https://github.com/tmux/tmux) and [zellij](https://zellij.dev) are wildly popular, and agent-aware plugins will surely follow for both, so Nyala supports them too.
+- **Real Chromium in the terminal**: drives headless Chromium over the Chrome DevTools Protocol to render HTML5, CSS, and JavaScript, down to a bare Linux console under KMSCON with no display server.
+- **Three rendering backends**: auto-selects Kitty graphics (shared-memory RGBA or direct PNG), Sixel graphics, or Block Unicode glyphs (sextant 2x3 and quadrant 2x2), with live switching via `Alt+R`.
+- **Crisp DOM text overlay**: composites real terminal characters over the Block bitmap so text stays sharp instead of fuzzy.
+- **Scene-fitted 240-colour palettes**: adaptive `256` and `grey` Block modes fit 240 palette entries (`OSC 4` indexes 16..255) per frame and fall back automatically from `truecolor` under sustained terminal write pressure.
+- **Mouse, find, and clipboard**: pointer hover, wheel scroll, drag selection, `Ctrl+F` search, 1 MiB bracketed paste, and `OSC 52` copy (`Alt+W`).
+- **Persistent profiles and remote SSH attach**: keeps cookies and logins per browser family, supports `--private` disposable sessions, and attaches to a remote Chrome over `--remote-debugging-url`.
+- **Terminal and multiplexer detection**: works across Kitty, Ghostty, WezTerm, Contour, Alacritty, Foot, Rio, and mlterm, plus tmux, zellij, GNU screen, and Herdr.
 
-A nyala is a browsing antelope. Yes, that kind of browsing. It makes a fine mascot.
-
-How the project got here, decision by decision, is written up in [`docs/EVOLUTION.md`](docs/EVOLUTION.md).
+<!-- tailor:social-stats:start -->
+<p align="center">
+  <a href="https://github.com/wimpysworld/nyala/pulse"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/wimpysworld/nyala/social-assets/stats-dark.svg"><img src="https://raw.githubusercontent.com/wimpysworld/nyala/social-assets/stats-light.svg" alt="Nyala statistics"></picture></a>
+</p>
+<!-- tailor:social-stats:end -->
 
 ## Install
 
-| | Platform | Repository |
-| :-: | --- | --- |
-| <img src="https://apt.wimpys.world/logo.svg" width="32" height="32" alt=""> | Debian and Ubuntu | [apt.wimpys.world](https://apt.wimpys.world/#nyala) |
-| <img src="https://rpm.wimpys.world/logo.svg" width="32" height="32" alt=""> | Fedora and openSUSE | [rpm.wimpys.world](https://rpm.wimpys.world/#nyala) |
-| <img src="https://pkg.wimpys.world/logo.svg" width="32" height="32" alt=""> | Arch Linux | [pkg.wimpys.world](https://pkg.wimpys.world/#nyala) |
-| <img src="https://apk.wimpys.world/logo.svg" width="32" height="32" alt=""> | Alpine Linux | [apk.wimpys.world](https://apk.wimpys.world/#nyala) |
-| <img src="https://brew.wimpys.world/logo.svg" width="32" height="32" alt=""> | macOS (Homebrew) | [brew.wimpys.world](https://brew.wimpys.world/#nyala) |
-| <img src="https://scoop.wimpys.world/logo.svg" width="32" height="32" alt=""> | Windows (Scoop) | [scoop.wimpys.world](https://scoop.wimpys.world/#nyala) |
-| <img src="https://nix.wimpys.world/logo.svg" width="32" height="32" alt=""> | Nix and NixOS | [nix.wimpys.world](https://nix.wimpys.world/#nyala) |
+First-party signed package repositories are published for Linux, macOS, and Windows through [wimpys.world](https://wimpys.world/). Choose your platform below for setup instructions and automatic updates.
 
-Each repository is signed, and its page gives the setup steps and keeps Nyala up to date.
+<!-- tailor:social-packages:start -->
+<p align="center">
+  <a href="https://apt.wimpys.world/#nyala"><picture><source media="(prefers-color-scheme: dark)" srcset="pages/social/pkg-apt-dark.svg"><img src="pages/social/pkg-apt-light.svg" alt="Debian and Ubuntu"></picture></a>
+  <a href="https://rpm.wimpys.world/#nyala"><picture><source media="(prefers-color-scheme: dark)" srcset="pages/social/pkg-rpm-dark.svg"><img src="pages/social/pkg-rpm-light.svg" alt="Fedora and openSUSE"></picture></a>
+  <a href="https://pkg.wimpys.world/#nyala"><picture><source media="(prefers-color-scheme: dark)" srcset="pages/social/pkg-pkg-dark.svg"><img src="pages/social/pkg-pkg-light.svg" alt="Arch Linux"></picture></a>
+  <a href="https://apk.wimpys.world/#nyala"><picture><source media="(prefers-color-scheme: dark)" srcset="pages/social/pkg-apk-dark.svg"><img src="pages/social/pkg-apk-light.svg" alt="Alpine Linux"></picture></a>
+  <br>
+  <a href="https://brew.wimpys.world/#nyala"><picture><source media="(prefers-color-scheme: dark)" srcset="pages/social/pkg-brew-dark.svg"><img src="pages/social/pkg-brew-light.svg" alt="macOS (Homebrew)"></picture></a>
+  <a href="https://scoop.wimpys.world/#nyala"><picture><source media="(prefers-color-scheme: dark)" srcset="pages/social/pkg-scoop-dark.svg"><img src="pages/social/pkg-scoop-light.svg" alt="Windows (Scoop)"></picture></a>
+  <a href="https://nix.wimpys.world/#nyala"><picture><source media="(prefers-color-scheme: dark)" srcset="pages/social/pkg-nix-dark.svg"><img src="pages/social/pkg-nix-light.svg" alt="Nix and NixOS"></picture></a>
+</p>
+<!-- tailor:social-packages:end -->
 
-### Any platform
+<details>
+<summary><strong>Any platform (<code>bin</code>)</strong> - install and update the release binary directly</summary>
 
 [bin](https://github.com/marcosnils/bin) installs and updates the release binary:
 
@@ -46,20 +69,42 @@ Each repository is signed, and its page gives the setup steps and keeps Nyala up
 bin install github.com/wimpysworld/nyala
 ```
 
-### Container
+</details>
+
+<details>
+<summary><strong>Container (GHCR)</strong> - run <code>ghcr.io/wimpysworld/nyala</code></summary>
 
 ```shell
 docker run --rm ghcr.io/wimpysworld/nyala --version
 ```
 
-### GitHub Actions
+</details>
+
+<details>
+<summary><strong>GitHub Actions</strong> - use <code>wimpysworld/nyala</code> in a workflow</summary>
 
 ```yaml
 - uses: wimpysworld/nyala@v0
 ```
 
+</details>
+
+<!-- tailor:social-sponsors:start -->
+<p align="center">
+  <a href="https://github.com/sponsors/flexiondotorg"><picture><source media="(prefers-color-scheme: dark)" srcset="pages/social/sponsors-dark.svg"><img src="pages/social/sponsors-light.svg" alt="Nyala sponsors"></picture></a>
+</p>
+<!-- tailor:social-sponsors:end -->
+
 > [!TIP]
 > The Nix package ships its own Chromium, so there is nothing else to install. Every other install method needs a Chromium on your system.
+
+## Why Nyala?
+
+Agentic development is moving to a terminal-first workflow. I started using [herdr](https://herdr.dev/) to organise my projects into "spaces", each with tabs for a coding agent, [lazygit](https://github.com/jesseduffield/lazygit) and [hunk](https://www.hunk.dev/), [gh dash](https://gh-dash.dev), the [fresh editor](https://getfresh.dev/), and [frogmouth](https://github.com/Textualize/frogmouth). Each space puts all my project tooling and reference at my fingertips, with one exception: a browser for project research and reference. So I made Nyala to fill that gap, taking inspiration from [browsh](https://www.brow.sh) and [carbonyl](https://github.com/fathyb/carbonyl). herdr is my preferred multiplexer for its agent integration, but [tmux](https://github.com/tmux/tmux) and [zellij](https://zellij.dev) are wildly popular, and agent-aware plugins will surely follow for both, so Nyala supports them too.
+
+A nyala is a browsing antelope. Yes, that kind of browsing. It makes a fine mascot.
+
+How the project got here, decision by decision, is written up in [`docs/EVOLUTION.md`](docs/EVOLUTION.md).
 
 ## Usage
 
@@ -385,3 +430,21 @@ just diagnostics
 None of these replace a physical terminal. They check Nyala's byte stream and repaint state without a TTY, so they say nothing about a terminal's font choice, glyph metrics, ambiguous-width policy, colour profile, inter-row bleed, escape passthrough, image anchoring, alpha blending, or repaint timing. `just kmscon-testcard` and live terminal runs cover those. Nyala has no general recording mode or diagnostic bundle format. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) explains why each gate is drawn where it is.
 
 </details>
+
+<!-- tailor:social-stars:start -->
+<p align="center">
+  <a href="https://github.com/wimpysworld/nyala/stargazers"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/wimpysworld/nyala/social-assets/stars-dark.svg"><img src="https://raw.githubusercontent.com/wimpysworld/nyala/social-assets/stars-light.svg" alt="Nyala star history"></picture></a>
+</p>
+<!-- tailor:social-stars:end -->
+
+<!-- tailor:social-contributors:start -->
+<p align="center">
+  <a href="https://github.com/wimpysworld/nyala/graphs/contributors"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/wimpysworld/nyala/social-assets/contributors-dark.svg"><img src="https://raw.githubusercontent.com/wimpysworld/nyala/social-assets/contributors-light.svg" alt="Nyala contributors"></picture></a>
+</p>
+<!-- tailor:social-contributors:end -->
+
+<!-- tailor:social-footer:start -->
+<p align="center">
+  <a href="https://tailor.wimpys.world"><picture><source media="(prefers-color-scheme: dark)" srcset="pages/social/footer-dark.svg"><img src="pages/social/footer-light.svg" alt="Fitted by Tailor"></picture></a>
+</p>
+<!-- tailor:social-footer:end -->
